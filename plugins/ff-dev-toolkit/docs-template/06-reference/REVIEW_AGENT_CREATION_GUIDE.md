@@ -169,7 +169,7 @@ adapter-{cli}.sh <perspective-file> <output-file> [--changed-files <file-list>]
 
 | CLI         | コマンド       | 主要フラグ                                                  | 備考                                           |
 | ----------- | -------------- | ----------------------------------------------------------- | ---------------------------------------------- |
-| Claude Code | `claude`       | `-p "..." --allowed-tools "Read,Grep,Glob,Bash(git diff*)"` | ツール制限で安全性確保                         |
+| Claude Code | `claude`       | `-p "..." --allowed-tools "Read,Grep,Glob" --tools "Read,Grep,Glob" --strict-mcp-config` | 読み取り tool に限定し、継承 MCP を除外          |
 | Codex CLI   | `codex`        | `exec "..." --sandbox read-only`                            | 読み取り専用サンドボックス                     |
 | Copilot CLI | `copilot`      | `-p "..." --silent --allow-all-tools`                       | `--silent`でstats出力抑制                      |
 | Grok CLI    | `grok`         | `-p "..." --sandbox read-only --output-format plain`        | カーネル強制の read-only プロファイル          |

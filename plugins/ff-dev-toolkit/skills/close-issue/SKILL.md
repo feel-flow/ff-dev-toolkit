@@ -175,10 +175,10 @@ MCP: 取得値: MCPで全 comments id/body と report marker。形式: 全 page 
 <!--80affbd1cf30b389-->
 MCP: 取得値: MCPでPR title/headRefOid。形式: title 原文の構造化引数。渡し先: update_pull_request.title → fresh後読 → precheck。不足時: MCP 必須不足は停止。
 
-gh 経路は `MERGE_COMMAND_BEGIN` 〜 `END` の出力をそのまま実行し、手順 8 へ貼る。**書き写さない**（2b は何も保証しなくなる）。MCP 経路は[同じ最終 precheck の元値を6引数へ渡す契約](references/merge-gate.md#mcp-merge)に従い、生成 shell を parse/eval/unquote せず実行する。base / head を別 worktree が保持する回は、merge 成功後だけ ref を照会し、不在は成功・別 OID は保全・一致は lease 削除となる。`HEAD_DELETE_RESULT` と非 0 の読み方は [Git Workflow](../../docs-template/05-operations/deployment/git-workflow.md#ステップ8-マージmerge) に従う。
+gh 経路は `MERGE_COMMAND_BEGIN` 〜 `END` の出力をそのまま実行し、手順 8 へ貼る。**書き写さない**（2b は何も保証しなくなる）。MCP 経路は[同じ最終 precheck の元値を6引数へ渡す契約](references/merge-gate.md#mcp-merge)に従い、生成 shell を parse/eval/unquote せず実行する。merge commit 規約の回は precheck 全回に `--merge-method merge`（[方式](references/merge-gate.md#merge-method)）。`HEAD_DELETE_RESULT` と非 0 の読み方は [Git Workflow](../../docs-template/05-operations/deployment/git-workflow.md#ステップ8-マージmerge) に従う。
 
-<!--2e29cd9d5cca03f5-->
-MCP: 取得値: MCPで最終 headRefOid と元 subject/body。形式: merge_pull_request の6引数。渡し先: 同じ TARGET_REPO/PR/squash のMCP merge → fresh merged/state。不足時: MCP 必須不足は停止。
+<!--1c6d170a7caa37ae-->
+MCP: 取得値: MCPで最終 headRefOid と元 subject/body。形式: merge_pull_request の6引数。渡し先: 同じ TARGET_REPO/PR/方式のMCP merge → fresh merged/state。不足時: MCP 必須不足は停止。
 
 ### 8. 完了報告
 

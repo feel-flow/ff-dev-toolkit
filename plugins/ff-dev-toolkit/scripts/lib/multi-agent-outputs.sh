@@ -368,7 +368,7 @@ quarantine_cli_results() { # <cli>
       continue
     fi
     if [[ -z "$resolved_prev" ]]; then
-      if ! mkdir -p "$prev_dir"; then
+      if ! (umask 077; mkdir -p "$prev_dir"); then
         echo "ERROR: cannot create quarantine dir: ${prev_dir}" >&2
         return 1
       fi
@@ -412,7 +412,7 @@ quarantine_cli_results() { # <cli>
       echo "     Its header cannot be checked; moving it into previous/ so it is not read as this run's output." >&2
     fi
     if [[ -z "$resolved_prev" ]]; then
-      if ! mkdir -p "$prev_dir"; then
+      if ! (umask 077; mkdir -p "$prev_dir"); then
         echo "ERROR: cannot create quarantine dir: ${prev_dir}" >&2
         return 1
       fi
@@ -792,15 +792,13 @@ print_resume_manifest_changes() { # <prior manifest> <current manifest>; bounded
 cache_task_result() { # <cli> <perspective>
   local cli="$1" persp="$2" source_file cache_dir cache_file digest
   source_file="${OUTPUT_DIR}/${cli}/${persp}.md"
-  [[ -f "$source_file" ]] || return 1
+  ff_review_output_regular "$source_file" || return 1
   cache_dir="${RESUME_CACHE_DIR}/${cli}"
   cache_file="${cache_dir}/${persp}.md"
-  mkdir -p "$cache_dir" || return 1
+  output_artifact mkdir "${cache_dir#"$OUTPUT_DIR"/}" || return 1
   digest="$(git hash-object --no-filters "$source_file" 2>/dev/null)" || return 1
-  cp "$source_file" "${cache_file}.tmp.$$" || return 1
-  printf '%s\n' "$digest" >"${cache_file}.hash.tmp.$$" || return 1
-  mv "${cache_file}.tmp.$$" "$cache_file" || return 1
-  mv "${cache_file}.hash.tmp.$$" "${cache_file}.hash" || return 1
+  output_artifact copy "${cache_file#"$OUTPUT_DIR"/}" "${source_file#"$OUTPUT_DIR"/}" || return 1
+  printf '%s\n' "$digest" | output_artifact write "${cache_file#"$OUTPUT_DIR"/}.hash" || return 1
 }
 
 restore_cached_result() { # <cli> <perspective>
@@ -809,9 +807,9 @@ restore_cached_result() { # <cli> <perspective>
   [[ ! -e "${RESUME_CACHE_DIR}/.pending" ]] || return 1
   cache_file="${RESUME_CACHE_DIR}/${cli}/${persp}.md"
   CACHE_MISS_REASON=missing-result
-  [[ -f "$cache_file" ]] || return 1
+  ff_review_output_regular "$cache_file" || return 1
   CACHE_MISS_REASON=missing-hash
-  [[ -f "${cache_file}.hash" ]] || return 1
+  ff_review_output_regular "${cache_file}.hash" || return 1
   CACHE_MISS_REASON=unreadable-hash
   expected="$(cat "${cache_file}.hash" 2>/dev/null)" || return 1
   CACHE_MISS_REASON=invalid-hash
@@ -822,8 +820,7 @@ restore_cached_result() { # <cli> <perspective>
   [[ "$actual" == "$expected" ]] || return 1
   CACHE_MISS_REASON=restore-write-failed
   target="${OUTPUT_DIR}/${cli}/${persp}.md"
-  mkdir -p "$(dirname "$target")" || return 1
-  cp "$cache_file" "$target" || return 1
+  output_artifact copy "${target#"$OUTPUT_DIR"/}" "${cache_file#"$OUTPUT_DIR"/}" || return 1
 }
 
 prepare_resume_execution_plan() {
@@ -859,7 +856,7 @@ prepare_resume_execution_plan() {
       return 1
     fi
   done
-  mkdir -p "$RESUME_CACHE_DIR" || {
+  output_artifact mkdir "${RESUME_CACHE_DIR#"$OUTPUT_DIR"/}" || {
     echo "ERROR: cannot create resume cache: ${RESUME_CACHE_DIR}" >&2
     return 1
   }
@@ -869,13 +866,20 @@ prepare_resume_execution_plan() {
     prior_manifest="$(cat "${OUTPUT_DIR}/.resume-cache/last-inputs")" || return 1
     print_resume_manifest_changes "$prior_manifest" "$RESUME_INPUT_MANIFEST"
   fi
-  printf '%s\n' "$RESUME_INPUT_MANIFEST" > "${RESUME_CACHE_DIR}/inputs" || return 1
-  printf '%s\n' "$RESUME_INPUT_MANIFEST" > "${OUTPUT_DIR}/.resume-cache/last-inputs" || return 1
+  printf '%s\n' "$RESUME_INPUT_MANIFEST" | output_artifact write "${RESUME_CACHE_DIR#"$OUTPUT_DIR"/}/inputs" || return 1
+  printf '%s\n' "$RESUME_INPUT_MANIFEST" | output_artifact write .resume-cache/last-inputs || return 1
 
   while IFS= read -r entry; do
     [[ -n "$entry" ]] || continue
     cli="${entry%%:*}"
     persp="${entry#*:}"
+    output_artifact mkdir "${RESUME_CACHE_DIR#"$OUTPUT_DIR"/}/${cli}" || return 1
+    # A corrupt ordinary cache may be rerun; an unsafe filesystem path is a
+    # boundary failure and must stop before restoration/cleanup can hide it.
+    local guarded_leaf
+    for guarded_leaf in "${RESUME_CACHE_DIR}/${cli}/${persp}.md" "${RESUME_CACHE_DIR}/${cli}/${persp}.md.hash" "${OUTPUT_DIR}/${cli}/${persp}.md"; do
+      ff_review_output_regular "$guarded_leaf" true || return 1
+    done
     CACHE_MISS_REASON=response-waiting
     if [[ "$RESUME" == "true" ]] && ! delegated_response_waiting "$cli" "$persp" \
        && restore_cached_result "$cli" "$persp"; then
@@ -894,7 +898,7 @@ prepare_resume_execution_plan() {
 
   if [[ -n "$EXECUTION_PLAN" ]]; then
     RESUME_CACHE_PENDING="${RESUME_CACHE_DIR}/.pending"
-    if ! printf 'pid=%s\n' "$$" > "$RESUME_CACHE_PENDING"; then
+    if ! printf 'pid=%s\n' "$$" | output_artifact write "${RESUME_CACHE_PENDING#"$OUTPUT_DIR"/}"; then
       echo "ERROR: cannot mark the resume cache as pending verification: ${RESUME_CACHE_PENDING}" >&2
       return 1
     fi
@@ -951,7 +955,7 @@ write_run_in_flight() { # <task> <head-sha> <perspectives-csv>
   # 「この機構を入れる前」と同じ（revision guard は従来どおり効く）。
   if printf 'pid=%s\ntask=%s\nhead=%s\nstarted=%s\nstarted_epoch=%s\nperspectives=%s\n' \
       "$$" "$task" "$head_sha" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date -u +%s)" \
-      "$perspectives" > "$f" 2>/dev/null; then
+      "$perspectives" | output_artifact write .review-in-flight; then
     REVIEW_IN_FLIGHT_FILE="$f"
   else
     echo "WARNING: could not write the in-flight marker: ${f}" >&2
@@ -984,6 +988,7 @@ output_lock_exit() {
   # 失敗して返った回の理由ファイルはプロセス終了後も残る（削除は
   # current_review_series_id の冒頭にしかない）。stale 読み取りの種を残さない。
   clear_reason_file "$(review_series_reason_file)"
+  _ff_reason_namespace_cleanup
   if [[ "${ARCHIVE_KEEP_LOCK:-false}" == true ]]; then
     echo "ERROR: partial archive at ${ARCHIVE_DESTINATION}; live output: ${OUTPUT_DIR}" >&2
     echo "       Keeping lock: ${OUTPUT_LOCK_DIR}. Verify/restore partial results before removing it; process termination alone is insufficient." >&2
@@ -996,7 +1001,7 @@ output_lock_exit() {
 
 acquire_output_lock() {
   OUTPUT_LOCK_DIR="${OUTPUT_DIR}/.multi-agent-run.lock"
-  if ! mkdir "$OUTPUT_LOCK_DIR" 2>/dev/null; then
+  if ! (umask 077; mkdir "$OUTPUT_LOCK_DIR") 2>/dev/null; then
     echo "ERROR: output dir is already in use by another orchestrator (or a stale lock remains)." >&2
     echo "       output: ${OUTPUT_DIR}" >&2
     echo "       lock:   ${OUTPUT_LOCK_DIR}" >&2
@@ -1044,6 +1049,7 @@ archive_previous_outputs_if_fresh() {
   [[ "$FRESH" == "true" ]] || return 0
   [[ -n "${OUTPUT_DIR:-}" && -d "$OUTPUT_DIR" ]] || return 0
   archive_collect_live || return 1
+  archive_validate_inventory || return 1
   archive_live_outputs fresh
 }
 

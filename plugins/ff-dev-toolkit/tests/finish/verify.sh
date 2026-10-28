@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 空振り検出: 復帰案内の引用（F1c）を足した通常は272/0。finish-precheck.sh を base / head のブランチ名を裸で埋め込む旧形の案内へ戻すと271/1（F1c）で赤（2026-10-28 WSL実測）。
+# 空振り検出: マージ方式（--merge-method、Issue `#2313`）の M subset を足した通常は271/0。emitter へ方式の第9引数を渡さないと267/4（M1/M8/M9/M10）、merge方式のコミット由来抵触の停止を外すと269/2（件名M5・本文M5b）、重複拒否を外すと268/3（M4）、不正値を受理すると267/4（M3）、emitter の方式検証を外すと270/1（M11）、不正値の集合を空にすると267/1（件数照合のM3）で赤（2026-10-28 macOS実測、全変異のbash構文rc0）。
 # 空振り検出: round1の絶対path/basename Usage subsetは2/0。旧helper path解決へ戻すと1/1、finish.sh同名空は0/2、helper不在は0/2で赤（2026-10-22 macOS実測、構文rc0。Usage到達の検査でありmerge実行の測定ではない）。
 # 変異検出: 空subjectの早期拒否だけを外すと、通常251/0から250/1（B5bのみ赤）になる。後段emitterも空subjectを拒否するが、その別理由のrc2を早期拒否の成立へ数えない（2026-10-22 macOS実測、構文rc0）。
 # 空振り検出: D4のghログだけを別ファイルへ振り向ける単独変異は、未修正250/0から修正後249/1（D4のみ赤）になる。実watchは別ログに1件、共有ログは先行COLOR由来4件から0件へ変わり、COLOR15検査は両側で緑（2026-10-22 macOS実測。構文rc0。watch実行自体を消した実測ではない）。
@@ -575,11 +577,12 @@ BASE_OID="$(g -C "$WORK" rev-parse origin/develop)"
 # PR JSON を組み立てる: <body> <statusCheckRollup JSON>
 write_pr_json() {
   jq -n --arg body "$1" --arg head "$HEAD_OID" --argjson rollup "$2" --argjson number "$PRN" --argjson cross "${PR_CROSS:-false}" \
-    --arg title "feat(#${PRN}): x" --arg headline "fix: #${REFN} x" '{
-    number: $number, state: "OPEN", isDraft: false, headRefName: "feature/#7-x", headRefOid: $head, isCrossRepository: $cross,
-    baseRefName: "develop", title: $title, body: $body,
+    --arg title "feat(#${PRN}): x" --arg headline "${PR_HEADLINE:-fix: #${REFN} x}" --arg cbody "${PR_COMMIT_BODY:-body}" \
+    --arg head_ref "${PR_HEAD_REF:-feature/#7-x}" --arg base_ref "${PR_BASE_REF:-develop}" '{
+    number: $number, state: "OPEN", isDraft: false, headRefName: $head_ref, headRefOid: $head, isCrossRepository: $cross,
+    baseRefName: $base_ref, title: $title, body: $body,
     closingIssuesReferences: (if ($body | test("Closes")) then [{url: ("https://github.com/owner/repo/issues/" + ($number | tostring))}] else [] end),
-    commits: [{oid: $head, messageHeadline: $headline, messageBody: "body"}],
+    commits: [{oid: $head, messageHeadline: $headline, messageBody: $cbody}],
     statusCheckRollup: $rollup, additions: 20, deletions: 3, files: [{path: "x.txt"}]
   }' >"$TMP/pr.json"
 }
@@ -1258,6 +1261,33 @@ if ! has_text "$OUT" "MERGE_COMMAND_BEGIN" && has_line "$OUT" "PRECHECK=blocked"
 else
   bad "F1b: 抵触で止める回に merge コマンドが出ている: ${OUT}"
 fi
+# F1c: コミット数を照合できない回の復帰手段は、PR 由来の base / head のブランチ名を 1 語ずつ引用した
+# fetch コマンドで案内する。git の ref 名は ' ` $ ; を含められるので、案内を貼り付けた人のシェルで
+# 構文として働かないこと（git を argv の記録だけにするスタブの下で実行し、sentinel が無いこと）を見る
+# shellcheck disable=SC2016 # $(...) と `...` は名前の一部（展開しない）
+F1C_BASE='q/base-'"'"'$(touch${IFS}f1c-sent)'"'"'`true`;x'
+# shellcheck disable=SC2016
+F1C_HEAD='q/head-'"'"'$(touch${IFS}f1c-sent)'"'"'`true`;x'
+PR_BASE_REF="$F1C_BASE" PR_HEAD_REF="$F1C_HEAD" write_pr_json "Refs #${REFN}" '[]'
+run_finish "$WORK" precheck 7
+write_pr_json "Refs #${REFN}" '[]'
+F1C_CMD="$(awk 'index($0, "次を実行してから再実行する: ") { sub(/.*次を実行してから再実行する: /, ""); print; exit }' <<<"$ERR")"
+mkdir -p "$TMP/f1c/bin" "$TMP/f1c/cwd"
+cat > "$TMP/f1c/bin/git" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\0' "$@" > "$F1C_ARGV"
+STUB
+chmod +x "$TMP/f1c/bin/git"
+if [ -n "$F1C_CMD" ]; then
+  (cd "$TMP/f1c/cwd" && F1C_ARGV="$TMP/f1c/argv" PATH="$TMP/f1c/bin:$PATH" bash -c "$F1C_CMD") >/dev/null 2>&1 || true
+fi
+if [ "$RC" -eq 2 ] && has_text "$ERR" "コミット数を照合できません" && [ -n "$F1C_CMD" ] \
+  && [ ! -e "$TMP/f1c/cwd/f1c-sent" ] && [ -f "$TMP/f1c/argv" ] \
+  && cmp -s "$TMP/f1c/argv" <(printf '%s\0' fetch origin "$F1C_BASE" "$F1C_HEAD"); then
+  ok "F1c: コミット数を照合できない回の fetch の案内は、base / head のブランチ名を 1 語のリテラルとして渡す"
+else
+  bad "F1c: fetch の案内の引用が違う（rc=${RC} cmd=${F1C_CMD} sentinel=$([ -e "$TMP/f1c/cwd/f1c-sent" ] && echo 作成 || echo なし)）: ${ERR}"
+fi
 run_finish "$WORK" precheck 7 --subject "fix: #${REFN} y" --body "Refs #${REFN}"
 if [ "$RC" -eq 1 ] && has_line "$OUT" "MERGE_MESSAGE_GATE=conflict" && has_text "$ERR" "実際に渡す squash メッセージ"; then
   ok "F2: 実際に渡す件名が Issue を閉じるなら rc 1 で止める"
@@ -1298,6 +1328,150 @@ if has_line "$OUT" "MERGE_MESSAGE_GATE=ok" && has_line "$OUT" "KEYWORD_GATE=conf
 else
   bad "F5: 2a / 2b の分担が違う: ${OUT}"
 fi
+
+# ── M. precheck: マージ方式の明示（--merge-method squash|merge。Issue `#2313`） ────────
+echo
+echo "== M. precheck: マージ方式の明示 =="
+write_pr_json "Closes #${PRN}" '[]'
+run_finish "$WORK" precheck 7 --merge-method merge
+if [ "$RC" -eq 0 ] && has_line "$OUT" "MERGE_METHOD=merge" \
+  && has_text "$OUT" "gh pr merge 7 --repo 'https://github.com/owner/repo' --merge --match-head-commit ${HEAD_OID} --delete-branch" \
+  && ! has_text "$OUT" "--squash"; then
+  ok "M1: --merge-method merge は --merge だけを載せ、match-head と --delete-branch を保つ（--squash を併記しない）"
+else
+  bad "M1: merge 方式の merge コマンドが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+for m2_args in "" "--merge-method squash"; do
+  # shellcheck disable=SC2086 # 空と 2 語の引数集合を分割して渡す
+  run_finish "$WORK" precheck 7 $m2_args
+  if [ "$RC" -eq 0 ] && has_line "$OUT" "MERGE_METHOD=squash" \
+    && has_text "$OUT" "gh pr merge 7 --repo 'https://github.com/owner/repo' --squash --match-head-commit ${HEAD_OID} --delete-branch" \
+    && ! has_text "$OUT" " --merge "; then
+    ok "M2: 方式指定（${m2_args:-省略}）は従来どおり --squash を生成する"
+  else
+    bad "M2: ${m2_args:-省略}の方式が squash でない（rc=${RC}）: ${OUT}"
+  fi
+done
+# 不正値・空値・値の欠落・2 回目の指定は gh を呼ぶ前（PR_STATE= より前）に rc 2 で拒否する
+: >"$TMP/m3-cases"
+printf '%s\n' "rebase" "squash-merge" "MERGE" "" >"$TMP/m3-cases"
+m3_n=0
+while IFS= read -r m3_val; do
+  m3_n=$((m3_n + 1))
+  run_finish "$WORK" precheck 7 --merge-method "$m3_val"
+  if [ "$RC" -eq 2 ] && has_text "$ERR" "--merge-method の値が不正です" && ! has_line "$OUT" "PR_STATE=" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+    ok "M3: 不正値「${m3_val:-（空）}」は gh を呼ぶ前に rc 2 で拒否し、merge コマンドを出さない"
+  else
+    bad "M3: 不正値「${m3_val:-（空）}」が拒否されない（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+done <"$TMP/m3-cases"
+[ "$m3_n" -eq 4 ] || bad "M3: 不正値の集合が 4 件でない（${m3_n} 件。空振りで緑にしない）"
+run_finish "$WORK" precheck 7 --merge-method
+if [ "$RC" -eq 2 ] && ! has_line "$OUT" "PR_STATE=" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "M3b: 値の無い --merge-method は rc 2（Usage）で止まる"
+else
+  bad "M3b: 値の無い --merge-method の扱いが違う（rc=${RC}）: ${OUT}"
+fi
+for m4_pair in "merge squash" "squash merge" "merge merge"; do
+  # shellcheck disable=SC2086 # 2 語を 2 引数へ分ける
+  set -- $m4_pair
+  run_finish "$WORK" precheck 7 --merge-method "$1" --merge-method "$2"
+  if [ "$RC" -eq 2 ] && has_text "$ERR" "--merge-method が複数回指定されています" && ! has_line "$OUT" "PR_STATE=" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+    ok "M4: --merge-method の重複（${1} → ${2}）は競合として gh を呼ぶ前に rc 2 で拒否する"
+  else
+    bad "M4: --merge-method の重複（${1} → ${2}）が拒否されない（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+done
+set --
+# Refs 運用: コミット由来の抵触は merge commit 方式では --subject / --body で消せない（squash の F3 は rc 0）
+write_pr_json "Refs #${REFN}" '[]'
+M_SUBJ="release: develop を main へ (#${PRN})"
+M_BODY="$(printf 'Refs #%s\n\nmerge commit で develop の履歴を保持する。' "$REFN")"
+run_finish "$WORK" precheck 7 --merge-method merge --subject "$M_SUBJ" --body "$M_BODY"
+if [ "$RC" -eq 1 ] && has_line "$OUT" "KEYWORD_GATE=conflict-commit" && has_line "$OUT" "MERGE_MESSAGE_GATE=ok" \
+  && has_line "$OUT" "PRECHECK=blocked" && has_text "$ERR" "merge commit 方式" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "M5: Refs 運用 + merge 方式でコミットが Issue を閉じるなら、2b が通っても rc 1 で止めコマンドを出さない"
+else
+  bad "M5: merge 方式のコミット由来抵触が止まらない（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+# コミット本文側（commit-body:）の closing keyword も同じく merge 方式では止める
+PR_HEADLINE="chore: release prep" PR_COMMIT_BODY="fixes #${REFN}" write_pr_json "Refs #${REFN}" '[]'
+run_finish "$WORK" precheck 7 --merge-method merge --subject "$M_SUBJ" --body "$M_BODY"
+if [ "$RC" -eq 1 ] && has_line "$OUT" "KEYWORD_GATE=conflict-commit" && has_text "$OUT" "KEYWORD_CONFLICT=commit-body:" \
+  && has_line "$OUT" "PRECHECK=blocked" && has_text "$ERR" "merge commit 方式" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "M5b: コミット本文の closing keyword でも merge 方式は rc 1 で止める"
+else
+  bad "M5b: merge 方式のコミット本文由来抵触が止まらない（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+PR_HEADLINE="chore: release prep" write_pr_json "Refs #${REFN}" '[]'
+run_finish "$WORK" precheck 7 --merge-method merge
+if [ "$RC" -eq 1 ] && has_line "$OUT" "KEYWORD_GATE=ok" && has_line "$OUT" "MERGE_MESSAGE_GATE=required" && has_text "$ERR" "--subject / --body が無い" \
+  && has_text "$ERR" "merge commit の件名・本文" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "M6: Refs 運用 + merge 方式でも --subject / --body の明示は必須のまま（省略は rc 1）"
+else
+  bad "M6: merge 方式で Refs の明示要求が外れた（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+run_finish "$WORK" precheck 7 --merge-method merge --subject "fix: #${REFN} release" --body "Refs #${REFN}"
+if [ "$RC" -eq 1 ] && has_line "$OUT" "MERGE_MESSAGE_GATE=conflict" && has_text "$ERR" "実際に渡す merge メッセージ" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "M7: merge 方式でも実際に渡す件名が Issue を閉じるなら 2b で rc 1 に止める"
+else
+  bad "M7: merge 方式の 2b が働かない（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+run_finish "$WORK" precheck 7 --merge-method merge --subject "$M_SUBJ" --body "$M_BODY"
+if [ "$RC" -eq 0 ] && has_line "$OUT" "KEYWORD_GATE=ok" && has_line "$OUT" "MERGE_MESSAGE_GATE=ok" && has_line "$OUT" "MERGE_METHOD=merge" \
+  && has_text "$OUT" "--merge --match-head-commit ${HEAD_OID} --delete-branch" && ! has_text "$OUT" "--squash"; then
+  ok "M8: 抵触の無い Refs 運用 + merge 方式は検査済み subject / body 付きの --merge コマンドを出す"
+else
+  bad "M8: merge 方式の Refs 運用コマンドが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+# 生成物を評価し、gh が受け取る方式・match-head・subject / body を実値で照合する
+M_CMD="$(printf '%s\n' "$OUT" | awk '/^MERGE_COMMAND_BEGIN$/ { c = 1; next } /^MERGE_COMMAND_END$/ { c = 0 } c')"
+mkdir -p "$TMP/m-evalbin"
+cat >"$TMP/m-evalbin/gh" <<'GH'
+#!/usr/bin/env bash
+: >"$EVAL_FLAGS"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --subject) printf '%s' "$2" >"$EVAL_SUBJECT"; shift 2 ;;
+    --body) printf '%s' "$2" >"$EVAL_BODY"; shift 2 ;;
+    --match-head-commit) printf 'head=%s\n' "$2" >>"$EVAL_FLAGS"; shift 2 ;;
+    --squash|--merge|--rebase|--delete-branch) printf '%s\n' "$1" >>"$EVAL_FLAGS"; shift ;;
+    *) shift ;;
+  esac
+done
+GH
+chmod +x "$TMP/m-evalbin/gh"
+printf '%s' "$M_SUBJ" >"$TMP/m-subj.src"; printf '%s' "$M_BODY" >"$TMP/m-body.src"
+rm -f "$TMP/m-subj.got" "$TMP/m-body.got" "$TMP/m-flags.got"
+( EVAL_SUBJECT="$TMP/m-subj.got" EVAL_BODY="$TMP/m-body.got" EVAL_FLAGS="$TMP/m-flags.got" PATH="$TMP/m-evalbin:$PATH" LC_ALL=C bash -c "$M_CMD" ) || true
+M_FLAGS_EXPECT="$(printf -- '--merge\nhead=%s\n--delete-branch' "$HEAD_OID")"
+if [ -n "$M_CMD" ] && cmp -s "$TMP/m-subj.src" "$TMP/m-subj.got" && cmp -s "$TMP/m-body.src" "$TMP/m-body.got" \
+  && [ "$(cat "$TMP/m-flags.got" 2>/dev/null)" = "$M_FLAGS_EXPECT" ]; then
+  ok "M9: 評価した merge コマンドで gh が受け取るのは --merge・照合済み head・バイト同一の subject / body"
+else
+  bad "M9: 評価した merge 方式コマンドの引数が違う: flags=[$(cat "$TMP/m-flags.got" 2>/dev/null)] cmd=${M_CMD}"
+fi
+# 別 worktree が base を保持する回: 方式を変えても separate-push と lease 付き削除の条件を保つ
+g -C "$WORK" worktree add -q "$TMP/wt-develop-m" develop >/dev/null 2>&1 || bad "M10: worktree fixture を作れません"
+run_finish "$WORK" precheck 7 --merge-method merge --subject "$M_SUBJ" --body "$M_BODY"
+if [ "$RC" -eq 0 ] && has_line "$OUT" "DELETE_BRANCH_MODE=separate-push" && has_line "$OUT" "BASE_HELD_BY=" && has_line "$OUT" "HEAD_DELETE=lease" \
+  && has_text "$OUT" "--merge --match-head-commit ${HEAD_OID} \\" && ! has_text "$OUT" "--delete-branch" \
+  && has_text "$OUT" "&& bash -c" && has_text "$OUT" "ff-delete-merged-head"; then
+  ok "M10: base を別 worktree が保持する回は merge 方式でも --delete-branch を外し、merge 成功時だけの lease 削除を繋ぐ"
+else
+  bad "M10: merge 方式の worktree 保持時コマンドが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+g -C "$WORK" worktree remove --force "$TMP/wt-develop-m" >/dev/null 2>&1 || true
+# 共有 emitter 単体: 方式の第 9 引数は squash / merge 以外を rc 2 で拒否し、何も出さない（hook の復旧経路も同じ emitter）
+M_EMIT_RC=0
+M_EMIT_OUT="$( . "$PLUGIN_ROOT/scripts/lib/merge-message.sh" && ff_merge_emit 7 'https://github.com/owner/repo' "$HEAD_OID" 0 "" "" "" "" rebase )" || M_EMIT_RC=$?
+M_EMIT_DEFAULT="$( . "$PLUGIN_ROOT/scripts/lib/merge-message.sh" && ff_merge_emit 7 'https://github.com/owner/repo' "$HEAD_OID" 0 "" "" " --delete-branch" )"
+if [ "$M_EMIT_RC" -eq 2 ] && [ -z "$M_EMIT_OUT" ] && has_text "$M_EMIT_DEFAULT" "--squash --match-head-commit ${HEAD_OID} --delete-branch"; then
+  ok "M11: ff_merge_emit は不正な方式を出力 0 行の rc 2 で拒否し、第 9 引数の省略（hook の 7 引数呼び出し）は squash のまま"
+else
+  bad "M11: ff_merge_emit の方式引数の扱いが違う（rc=${M_EMIT_RC}）: [${M_EMIT_OUT}] / [${M_EMIT_DEFAULT}]"
+fi
+write_pr_json "Closes #${PRN}" '[]'
 
 # PR_COMMITS は head のコミット数ぶん出る（先頭 1 行だけを出す退行を 1 コミットの fixture では拾えないため、
 # ここで 2 コミット目を積んで行・順・件数を見る。以降の cleanup / knowledge-commit はコミット数に依存しない）

@@ -326,11 +326,10 @@ create_fixed_diff() {
   local target="${OUTPUT_DIR}/.fixed-diff"
   # get_diff_content は STAGED_DIFF を見て --staged 実行を切り替える（adapter-common）。
   # 同じプロセス内の変数なので、ここでの呼び出しにもそのまま効く。
-  if ! get_diff_content "$BASE_BRANCH" >"$target"; then
+  if ! output_artifact capture .fixed-diff get_diff_content "$BASE_BRANCH"; then
     echo "ERROR: cannot capture this run's diff: ${target}" >&2
     echo "       Every task must review the same bytes; refusing to let each adapter" >&2
     echo "       compute its own diff instead." >&2
-    rm -f "$target" || echo "WARNING: could not remove the partial fixed diff: ${target}" >&2
     return 1
   fi
   FIXED_DIFF_FILE="$target"
@@ -564,7 +563,7 @@ run_single_task() {
     # 別の場所を指した場合など）ではサンドボックス下の親ディレクトリ作成が拒まれ、
     # そこで詰まったエージェントは書ける場所を探し始める。既定の staging は CWD 配下
     # なので拒まれないが、その 1 ケースのために毎回エージェント任せにはしない。
-    if ! mkdir -p "$staging_dir"; then
+    if ! (umask 077; mkdir -p "$staging_dir"); then
       echo "  ❌ Cannot create staging dir: ${staging_dir}" >&2
       echo "     Check the permissions of --output-dir; re-running as-is will fail again." >&2
       return 1

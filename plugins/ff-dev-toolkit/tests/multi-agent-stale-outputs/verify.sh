@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: native-temp-aliasはmacOSのprivate user tempで2/0。標準別名の認識除去は1/1、case集合の空化は0/1で赤（syntax0、2026-10-28実測）。TMPDIR変更後の正常表記とsuffixリンク拒否を対にし、non-Darwinは実機対象外と明記する。
 #
 # multi-agent-stale-outputs: 前回実行の観点ファイルが「今回の結果」として読まれない
 # ことの実挙動検査（Issue #537 / #654）。
@@ -30,6 +31,11 @@
 #
 # 実 CLI は起動しない。codex を stub で覆い orchestrator の実経路を通す。
 # 書き込み不可の環境では suite 全体を skip する。
+# 空振り検出: Issue `#2429` の root/leaf 境界は所有marker不在・異なるroot・symlink・未知archive entryを非0にし、正常な外部出力の対照も実走する。
+# 空振り検出: 隔離した26件の対照は26/0。root準備を旧mkdir+pwdへ戻すと外部canary消失・project .git作成を検出してrc1、archive既知entry判定を常時成功へ変えるとfresh/archive-onlyの2件が赤24/2（2026-10-28実測）。
+# 空振り検出: Windows表記の隔離対照11/0に対しhost変換バイパスは4/7、UNC先頭//消去は10/1で各rc1（2026-10-28実測。実WindowsのACL/UNC接続を検証したとは扱わない）。
+# 空振り検出: Git管理領域の物理同一性対照7/0、判定バイパスは大文字.GIT経由の通常/fresh/archive-onlyを含む2/5。初期化中のpeer marker+lane受理は1/0、受理分岐を戻すと0/1（2026-10-28隔離fixture実測）。
+# 空振り検出: umask002/producerの隔離対照10/0。private anchorで祖先検査を打切る変異9/1、旧diff pipeline8/2、status/quarantine mkdirの077撤去7/3、archive/state mkdirの077撤去8/2。旧strict祖先判定と空のcase関数も各rc1（2026-10-28実測）。
 
 set -euo pipefail
 
@@ -182,6 +188,11 @@ run_review() { # <log> [extra args...]
 }
 
 echo "== プラン外の自筆結果だけを previous/ へ退避する =="
+# Old result fixtures are planted only after the real empty-root initializer.
+# Production never adopts unmarked nonempty output based on fake result headers.
+# shellcheck source=../../scripts/lib/multi-agent-boundary.sh
+. "$PLUGIN_ROOT/scripts/lib/multi-agent-boundary.sh"
+ff_review_output_prepare "$REPO" "$OUT" false review >/dev/null
 mkdir -p "$OUT/codex-cli/files/keep" "$OUT/claude-code"
 # 前回実行の残骸（今回のプランに無い観点） = 退避対象
 plant_result "$OUT/codex-cli/test-analysis.md" codex-cli test-analysis
@@ -984,6 +995,195 @@ else
 fi
 
 echo ""
+echo '== Root authorization and non-following artifact paths =='
+BOUNDARY_OUT="$TMP/boundary-results"
+BOUNDARY_VICTIM="$TMP/boundary-victim"
+mkdir -p "$BOUNDARY_VICTIM"
+printf 'EXTERNAL-CANARY\n' > "$BOUNDARY_VICTIM/integrated-report.md"
+BOUNDARY_HASH="$(git hash-object "$BOUNDARY_VICTIM/integrated-report.md")"
+rm -rf "$OUT"
+ln -s "$BOUNDARY_VICTIM" "$OUT"
+BOUNDARY_BEFORE="$(count_invocations)"
+if run_review "$TMP/boundary-root-link.log" || [[ "$(count_invocations)" != "$BOUNDARY_BEFORE" ]] \
+   || [[ "$(git hash-object "$BOUNDARY_VICTIM/integrated-report.md")" != "$BOUNDARY_HASH" ]]; then
+  bad 'implicit root symlink escaped before CLI dispatch'
+else ok 'implicit root symlink refuses ordinary cleanup before any external write/CLI'; fi
+if run_review "$TMP/boundary-root-fresh.log" --fresh \
+   || [[ "$(git hash-object "$BOUNDARY_VICTIM/integrated-report.md")" != "$BOUNDARY_HASH" ]] \
+   || find "$BOUNDARY_VICTIM" -maxdepth 1 -name '.prev-*' | grep . >/dev/null; then
+  bad 'fresh followed an implicit root symlink'
+else ok 'fresh refuses implicit root links before archive creation'; fi
+if ( cd "$REPO"; run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" --task review --base develop --archive-only ) >"$TMP/boundary-archive-root.log" 2>&1 \
+   || ! grep -q 'unsafe review output boundary' "$TMP/boundary-archive-root.log" \
+   || [[ "$(git hash-object "$BOUNDARY_VICTIM/integrated-report.md")" != "$BOUNDARY_HASH" ]]; then
+  bad 'archive-only failed to exercise/refuse the implicit root link'
+else ok 'archive-only independently refuses the original lexical root link'; fi
+rm "$OUT"
+ln -s "$BOUNDARY_VICTIM" "$REPO/output-link"
+if run_review "$TMP/boundary-parent-link.log" --output-dir "$REPO/output-link/uncreated" || [[ -e "$BOUNDARY_VICTIM/uncreated" ]]; then
+  bad 'intermediate output link created an external directory'
+else ok 'intermediate output link refuses before mkdir'; fi
+rm "$REPO/output-link"
+if ff_review_output_prepare "$REPO" "$REPO/../escape/uncreated" false review >"$TMP/boundary-traversal.log" 2>&1 \
+   || [[ -e "$TMP/escape" ]]; then bad 'project-style parent traversal accepted'; else ok 'project-style parent traversal refuses before mkdir'; fi
+if run_review "$TMP/boundary-git.log" --output-dir "$REPO/.git/uncreated" || [[ -e "$REPO/.git/uncreated" ]]; then
+  bad 'Git administrative output accepted'
+else ok 'Git administrative output refuses before mkdir'; fi
+mkdir -p "$REPO/.claude"
+printf 'version: "2.0"\n' > "$REPO/.claude/agent-config.yaml"
+cat > "$STUB/yq" <<'YQ'
+#!/usr/bin/env bash
+case "$*" in *output_dir*) echo .git/project-output ;; *version*) echo 2.0 ;; *) : ;; esac
+YQ
+chmod +x "$STUB/yq"
+for BOUNDARY_OPTION in ordinary fresh archive-only; do
+  BOUNDARY_RC=0
+  case "$BOUNDARY_OPTION" in
+    ordinary) run_review "$TMP/boundary-project-ordinary.log" || BOUNDARY_RC=$? ;;
+    fresh) run_review "$TMP/boundary-project-fresh.log" --fresh || BOUNDARY_RC=$? ;;
+    archive-only) ( cd "$REPO"; run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" --task review --base develop --archive-only ) >"$TMP/boundary-project-archive-only.log" 2>&1 || BOUNDARY_RC=$? ;;
+  esac
+  if [[ "$BOUNDARY_RC" != 0 && ! -e "$REPO/.git/project-output" ]] \
+     && grep -q 'Git administrative' "$TMP/boundary-project-${BOUNDARY_OPTION}.log"; then
+    ok "project-configured Git output refuses before mkdir: $BOUNDARY_OPTION"
+  else bad "project-configured Git output escaped: $BOUNDARY_OPTION"; fi
+done
+rm "$STUB/yq" "$REPO/.claude/agent-config.yaml"
+rmdir "$REPO/.claude"
+if ( git() { return 9; }; ff_review_output_prepare "$REPO" "$REPO/query-failed" false review ) >"$TMP/boundary-git-error.log" 2>&1 \
+   || [[ -e "$REPO/query-failed" ]]; then bad 'failed Git query silently disabled administrative/tracked protection'; else ok 'Git metadata query failure refuses before mkdir'; fi
+mkdir "$TMP/no-git-workspace"
+if ( IN_GIT_REPO=false; ff_review_output_prepare "$TMP/no-git-workspace" "$TMP/no-git-workspace/.explore-results" false explore ) >"$TMP/boundary-no-git.log" 2>&1; then
+  ok 'a legitimate non-Git exploration workspace still initializes'
+else bad 'non-Git exploration workspace was rejected'; fi
+ff_review_output_prepare "$REPO" "$TMP/bootstrap-race" true review >"$TMP/bootstrap-one" 2>"$TMP/bootstrap-one.err" &
+BOOTSTRAP_ONE=$!
+ff_review_output_prepare "$REPO" "$TMP/bootstrap-race" true review >"$TMP/bootstrap-two" 2>"$TMP/bootstrap-two.err" &
+BOOTSTRAP_TWO=$!
+BOOTSTRAP_RC=0
+wait "$BOOTSTRAP_ONE" || BOOTSTRAP_RC=1
+wait "$BOOTSTRAP_TWO" || BOOTSTRAP_RC=1
+if [[ "$BOOTSTRAP_RC" == 0 ]] && cmp -s "$TMP/bootstrap-one" "$TMP/bootstrap-two"; then
+  ok 'concurrent hook bootstrap accepts only the same completed ownership marker'
+else bad 'concurrent empty-root bootstrap dropped a hook invocation'; fi
+mkdir -p "$BOUNDARY_OUT"
+chmod 700 "$BOUNDARY_OUT"
+printf 'old-result\n' > "$BOUNDARY_OUT/integrated-report.md"
+if run_review "$TMP/boundary-old.log" --output-dir "$BOUNDARY_OUT" \
+   || [[ "$(cat "$BOUNDARY_OUT/integrated-report.md")" != old-result ]] \
+   || [[ -e "$BOUNDARY_OUT/.multi-agent-output-owner" ]]; then
+  bad 'unmarked nonempty output was silently adopted/changed'
+else ok 'unmarked old output remains unchanged with recovery guidance'; fi
+rm "$BOUNDARY_OUT/integrated-report.md"
+if run_review "$TMP/boundary-external.log" --output-dir "$BOUNDARY_OUT"; then
+  ok 'explicit empty external root initializes and completes a real review'
+else bad 'explicit empty external root failed'; fi
+if [[ -f "$BOUNDARY_OUT/.multi-agent-output-owner" && "$(ff_review_output_stat "$BOUNDARY_OUT" mode)" == 700 ]]; then
+  ok 'producer creates a private root with ownership marker'
+else bad 'producer did not create a private marked namespace'; fi
+mkdir -p "$TMP/boundary-other"
+chmod 700 "$TMP/boundary-other"
+cp "$BOUNDARY_OUT/.multi-agent-output-owner" "$TMP/boundary-other/.multi-agent-output-owner"
+if ff_review_output_prepare "$REPO" "$TMP/boundary-other" true review >"$TMP/boundary-binding.log" 2>&1; then
+  bad 'copied marker authorized a different root'
+else ok 'ownership marker binds the exact repository and output root'; fi
+for BOUNDARY_LEAF in .fixed-diff .review-in-flight; do
+  rm -f "$BOUNDARY_OUT/$BOUNDARY_LEAF"
+  ln -s "$BOUNDARY_VICTIM/integrated-report.md" "$BOUNDARY_OUT/$BOUNDARY_LEAF"
+  BOUNDARY_BEFORE="$(count_invocations)"
+  if run_review "$TMP/boundary-leaf-${BOUNDARY_LEAF}.log" --output-dir "$BOUNDARY_OUT" \
+     || [[ "$(count_invocations)" != "$BOUNDARY_BEFORE" ]] \
+     || [[ "$(git hash-object "$BOUNDARY_VICTIM/integrated-report.md")" != "$BOUNDARY_HASH" ]]; then
+    bad "artifact symlink was followed: $BOUNDARY_LEAF"
+  else ok "artifact symlink refuses before CLI and preserves target: $BOUNDARY_LEAF"; fi
+  rm "$BOUNDARY_OUT/$BOUNDARY_LEAF"
+done
+BOUNDARY_CACHE="$(find "$BOUNDARY_OUT/.resume-cache" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+[[ -n "$BOUNDARY_CACHE" ]] || { bad 'cache boundary fixture produced no identity directory'; exit 1; }
+rm -rf "$BOUNDARY_CACHE/codex-cli"
+ln -s "$BOUNDARY_VICTIM" "$BOUNDARY_CACHE/codex-cli"
+BOUNDARY_BEFORE="$(count_invocations)"
+if run_review "$TMP/boundary-cache-link.log" --output-dir "$BOUNDARY_OUT" --resume \
+   || [[ "$(count_invocations)" != "$BOUNDARY_BEFORE" ]] \
+   || [[ "$(git hash-object "$BOUNDARY_VICTIM/integrated-report.md")" != "$BOUNDARY_HASH" ]]; then
+  bad 'per-CLI cache directory symlink was followed'
+else ok 'per-CLI cache directory symlink refuses store and restore'; fi
+rm "$BOUNDARY_CACHE/codex-cli"
+if run_review "$TMP/boundary-cache-rebuild.log" --output-dir "$BOUNDARY_OUT"; then
+  ok 'cache control rebuilds successful results after unsafe-path refusal'
+else bad 'cache control could not rebuild successful results'; fi
+for BOUNDARY_LEAF in "$BOUNDARY_OUT/codex-cli/code-review.md" "$BOUNDARY_CACHE/codex-cli/code-review.md" "$BOUNDARY_CACHE/codex-cli/code-review.md.hash" "$BOUNDARY_CACHE/.pending"; do
+  BOUNDARY_SAVED=false
+  if [[ -f "$BOUNDARY_LEAF" ]]; then mv "$BOUNDARY_LEAF" "${BOUNDARY_LEAF}.fixture-save"; BOUNDARY_SAVED=true; fi
+  ln -s "$BOUNDARY_VICTIM/integrated-report.md" "$BOUNDARY_LEAF"
+  BOUNDARY_BEFORE="$(count_invocations)"
+  if run_review "$TMP/boundary-cache-leaf.log" --output-dir "$BOUNDARY_OUT" --resume \
+     || [[ "$(count_invocations)" != "$BOUNDARY_BEFORE" ]] \
+     || [[ "$(git hash-object "$BOUNDARY_VICTIM/integrated-report.md")" != "$BOUNDARY_HASH" ]]; then
+    bad "resume followed an unsafe result/hash/pending leaf: $BOUNDARY_LEAF"
+  else ok "resume refuses an unsafe result/hash/pending leaf: ${BOUNDARY_LEAF##*/}"; fi
+  rm "$BOUNDARY_LEAF"
+  [[ "$BOUNDARY_SAVED" != true ]] || mv "${BOUNDARY_LEAF}.fixture-save" "$BOUNDARY_LEAF"
+done
+printf 'USER-NOTES\n' > "$BOUNDARY_OUT/user-notes.txt"
+BOUNDARY_BEFORE="$(count_invocations)"
+if run_review "$TMP/boundary-fresh-unknown.log" --output-dir "$BOUNDARY_OUT" --fresh \
+   || [[ "$(count_invocations)" != "$BOUNDARY_BEFORE" ]] \
+   || [[ "$(cat "$BOUNDARY_OUT/user-notes.txt")" != USER-NOTES ]] \
+   || find "$BOUNDARY_OUT" -maxdepth 1 -name '.prev-*' | grep . >/dev/null; then
+  bad 'fresh adopted unrelated entries or moved before validation'
+else ok 'fresh refuses unknown inventory before creating an archive/moving entries'; fi
+if ( cd "$REPO"; run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" --task review --base develop --archive-only --output-dir "$BOUNDARY_OUT" ) >"$TMP/boundary-archive-unknown.log" 2>&1 \
+   || ! grep -q 'unknown archive entry' "$TMP/boundary-archive-unknown.log" \
+   || [[ "$(cat "$BOUNDARY_OUT/user-notes.txt")" != USER-NOTES ]]; then
+  bad 'archive-only adopted unrelated entries'
+else ok 'archive-only refuses unknown inventory before any move'; fi
+
+WINDOWS_CASES="$SCRIPT_DIR/windows-boundary-cases.sh"
+[[ -s "$WINDOWS_CASES" && -r "$WINDOWS_CASES" ]] || { bad 'Windows output-boundary cases missing/unreadable/empty'; exit 1; }
+# shellcheck source=windows-boundary-cases.sh
+. "$WINDOWS_CASES"
+[[ "$(type -t run_windows_boundary_cases)" == function ]] || { bad 'Windows output-boundary function missing'; exit 1; }
+WINDOWS_BEFORE=$((PASS + FAIL))
+run_windows_boundary_cases
+[[ $((PASS + FAIL - WINDOWS_BEFORE)) -ge 4 ]] || { bad 'Windows output-boundary assertion collection empty'; exit 1; }
+ADMIN_CASES="$SCRIPT_DIR/admin-identity-cases.sh"
+[[ -s "$ADMIN_CASES" && -r "$ADMIN_CASES" ]] || { bad 'Git administrative identity cases missing/unreadable/empty'; exit 1; }
+# shellcheck source=admin-identity-cases.sh
+. "$ADMIN_CASES"
+[[ "$(type -t run_admin_identity_cases)" == function ]] || { bad 'Git administrative identity function missing'; exit 1; }
+ADMIN_BEFORE=$((PASS + FAIL))
+run_admin_identity_cases
+[[ $((PASS + FAIL - ADMIN_BEFORE)) -ge 3 ]] || { bad 'Git administrative identity assertion collection empty'; exit 1; }
+BOOTSTRAP_CASES="$SCRIPT_DIR/bootstrap-interleaving-cases.sh"
+[[ -s "$BOOTSTRAP_CASES" && -r "$BOOTSTRAP_CASES" ]] || { bad 'bootstrap interleaving cases missing/unreadable/empty'; exit 1; }
+# shellcheck source=bootstrap-interleaving-cases.sh
+. "$BOOTSTRAP_CASES"
+[[ "$(type -t run_bootstrap_interleaving_cases)" == function ]] || { bad 'bootstrap interleaving function missing'; exit 1; }
+BOOTSTRAP_BEFORE=$((PASS + FAIL))
+run_bootstrap_interleaving_cases
+[[ $((PASS + FAIL - BOOTSTRAP_BEFORE)) -ge 1 ]] || { bad 'bootstrap interleaving assertion collection empty'; exit 1; }
+UMASK_DIFF_CASES="$SCRIPT_DIR/umask-diff-cases.sh"
+[[ -s "$UMASK_DIFF_CASES" && -r "$UMASK_DIFF_CASES" ]] || { bad 'umask/diff cases missing/unreadable/empty'; exit 1; }
+# shellcheck source=umask-diff-cases.sh
+. "$UMASK_DIFF_CASES"
+[[ "$(type -t run_umask_diff_cases)" == function ]] || { bad 'umask/diff function missing'; exit 1; }
+UMASK_DIFF_BEFORE=$((PASS + FAIL))
+run_umask_diff_cases
+[[ $((PASS + FAIL - UMASK_DIFF_BEFORE)) -ge 10 ]] || { bad 'umask/diff assertion collection empty'; exit 1; }
+
+NATIVE_ALIAS_CASES="$SCRIPT_DIR/native-temp-alias-cases.sh"
+[[ ! -L "$NATIVE_ALIAS_CASES" && -s "$NATIVE_ALIAS_CASES" && -r "$NATIVE_ALIAS_CASES" ]] || { bad 'native alias cases missing/unreadable/empty'; exit 1; }
+# shellcheck source=native-temp-alias-cases.sh
+. "$NATIVE_ALIAS_CASES"
+[[ "$(type -t run_native_temp_alias_cases)" == function ]] || { bad 'native alias function missing'; exit 1; }
+NATIVE_ALIAS_BEFORE=$((PASS + FAIL))
+run_native_temp_alias_cases
+case "${OSTYPE:-}" in
+  darwin*) [[ $((PASS + FAIL - NATIVE_ALIAS_BEFORE)) -ge 2 ]] || { bad 'native alias assertion collection empty'; exit 1; } ;;
+  *) [[ $((PASS + FAIL - NATIVE_ALIAS_BEFORE)) -ge 1 ]] || { bad 'native alias host decision missing'; exit 1; } ;;
+esac
+
 echo "== 結果 =="
 echo "PASS: $PASS"
 echo "FAIL: $FAIL"

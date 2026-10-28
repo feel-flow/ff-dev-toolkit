@@ -87,7 +87,7 @@ codex は**引数解析の段階で落ちる**ので CLI 本体は 1 バイト�
 |---|---|---|---|---|
 | codex-cli | 値つき | `read-only` `workspace-write` `danger-full-access` | 可 | codex-cli 0.149.1 / `codex exec --help` の `[possible values: ...]` |
 | grok-cli | 値つき | **（空）** | 不可 | grok 1.0.0 で転記 / インストール済みは 1.0.5（2026-08-26）でも `grok --help` は `--sandbox <PROFILE>` とだけ書き `[possible values:]` を持たない（層 2 が毎回この行を実 CLI で再確認する） |
-| claude-code | 渡さない | — | 不在のみ | `--sandbox` の概念を持たない。書き込みゲートは `--allowed-tools` |
+| claude-code | 渡さない | — | 不在のみ | read-only は `--tools Read,Grep,Glob` と `--strict-mcp-config`。`--allowed-tools` だけを境界としない |
 | copilot-cli | 渡さない | — | 不在のみ | `--sandbox` の概念を持たない |
 
 **grok の空欄は「検証済み」ではなく「照合できていない」の意**。誤読を防ぐため、層 1 は grok の列挙照合を `○ skip` として明示的に出力する。

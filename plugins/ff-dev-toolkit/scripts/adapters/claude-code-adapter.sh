@@ -73,14 +73,14 @@ fi
 
 get_allowed_tools() {
   if [[ "${TASK_TYPE:-review}" == "implement" && "${INLINE_OUTPUT:-false}" == "true" ]]; then
-    echo 'Read,Grep,Glob,Bash(git diff*)'
+    echo 'Read,Grep,Glob'
     return
   fi
   case "${TASK_TYPE:-review}" in
-    review)    echo 'Read,Grep,Glob,Bash(git diff*)' ;;
-    explore)   echo 'Read,Grep,Glob,Bash(git*),Bash(find*),Bash(ls*)' ;;
+    review)    echo 'Read,Grep,Glob' ;;
+    explore)   echo 'Read,Grep,Glob' ;;
     implement) echo 'Read,Grep,Glob,Edit,Write,Bash' ;;
-    *)         echo 'Read,Grep,Glob,Bash(git diff*)' ;;
+    *)         echo 'Read,Grep,Glob' ;;
   esac
 }
 
@@ -99,6 +99,13 @@ echo "   Task type: ${TASK_TYPE:-review}" >&2
 echo "   Timeout: ${TIMEOUT}s" >&2
 
 allowed_tools="$(get_allowed_tools)"
+# --allowed-tools は自動許可であり、利用可能な道具の集合ではない。
+# read-only レーンは Bash 自体（git diff --output 等）と継承 MCP を公開しない。
+# 通常の差分は build_prompt が渡し、追加探索は Read/Grep/Glob で行う。
+CLAUDE_PERMISSION_ARGS=()
+if [[ "${TASK_TYPE:-review}" != "implement" || "${INLINE_OUTPUT:-false}" == "true" ]]; then
+  CLAUDE_PERMISSION_ARGS=(--tools Read,Grep,Glob --strict-mcp-config)
+fi
 # Guard this mktemp explicitly: under `set -e` a failure here would kill the
 # adapter with a bare 1 before run_with_timeout is ever reached, filing a broken
 # TMPDIR as "the CLI exited 1" and writing no artifact at all.
@@ -153,6 +160,7 @@ _FF_PROMPT_FILE="$prompt_file"
 result=$(run_with_timeout --stdin-file "$prompt_file" "$TIMEOUT" \
   env RETROSPECTIVE_MODE=off "$CLI_COMMAND" -p \
     --allowed-tools "$allowed_tools" \
+    ${CLAUDE_PERMISSION_ARGS[@]+"${CLAUDE_PERMISSION_ARGS[@]}"} \
     ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   2>"$stderr_log") || {
     # Capture the status first: any command inside this block would overwrite $?.

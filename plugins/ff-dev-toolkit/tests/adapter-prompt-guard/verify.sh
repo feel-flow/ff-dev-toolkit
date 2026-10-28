@@ -60,6 +60,14 @@ ma_sources_load "$PLUGIN_ROOT/scripts"
 build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_MODEL_CLAUDE_CODE MULTI_AGENT_CROSS_REVIEW" \
   "${MA_SOURCES[@]}" "$ADAPTERS_DIR"/*.sh
 
+# Initialize the owned empty namespace before planting hostile descendant fixtures.
+initialize_output_root() {
+  (
+    . "$PLUGIN_ROOT/scripts/lib/multi-agent-boundary.sh"
+    ff_review_output_prepare "$REPO" "$1" true implement >/dev/null
+  )
+}
+
 # mktemp の stderr を捨てない。捨てると read-only 以外の失敗（TMPDIR が不正な
 # パス・quota 超過など）まで「書き込み可能な環境で再実行してください」に誤帰属し、
 # 恒常的に壊れた TMPDIR が suite を exit 0 で無効化し続ける。2>&1 で受けると
@@ -580,6 +588,7 @@ echo "== orchestrator 経由での staging 伝達（Issue #392 AC1） =="
 # が、argv.log が空になる形で fail-loud に落ちるので沈黙はしない。
 ORCH_OUT="$REPO/.implement-results"
 ORCH_STAGING="$ORCH_OUT/codex-cli/files/feature-implementation"
+initialize_output_root "$ORCH_OUT"
 
 # 前回実行の残骸を仕込む。clear_planned_outputs が staging も掃除することを確かめる
 # （消し漏らすと前回の生成物が今回の成果として読まれる）。
@@ -770,6 +779,7 @@ echo "== 前回の staging を消せないときの fail-loud =="
 # unlink できず rm が失敗する（親が書けても子は消せない）。
 RMFAIL_OUT="$REPO/.rmfail-out"
 RMFAIL_STAGING="$RMFAIL_OUT/codex-cli/files/feature-implementation"
+initialize_output_root "$RMFAIL_OUT"
 mkdir -p "$RMFAIL_STAGING"
 printf 'stale\n' > "$RMFAIL_STAGING/stale.txt"
 chmod 555 "$RMFAIL_STAGING"
@@ -805,6 +815,7 @@ echo "== symlink 経由の再帰削除を拒否する =="
 # その外部側を消す。OUTPUT_DIR を物理化しても文字列 prefix 判定では見抜けない。
 SYM_OUT="$REPO/.sym-out"
 SYM_VICTIM="$TMP/sym-victim"
+initialize_output_root "$SYM_OUT"
 mkdir -p "$SYM_OUT/codex-cli" "$SYM_VICTIM/feature-implementation"
 printf 'must survive\n' > "$SYM_VICTIM/feature-implementation/precious.txt"
 ln -s "$SYM_VICTIM" "$SYM_OUT/codex-cli/files"
@@ -852,6 +863,7 @@ echo "== 出力先の**内側**を指す symlink も追わない（Issue #1120�
 # 指し先が出力先の内か外かは、消してよいかどうかと関係がない。
 IN_OUT="$REPO/.inward-out"
 IN_VICTIM="$IN_OUT/claude-code/files/feature-implementation"
+initialize_output_root "$IN_OUT"
 mkdir -p "$IN_OUT/codex-cli" "$IN_VICTIM"
 printf 'must survive\n' > "$IN_VICTIM/precious.txt"
 ln -s ../claude-code/files "$IN_OUT/codex-cli/files"
@@ -886,6 +898,7 @@ echo "== 観点ディレクトリが未作成でも中間 symlink を素通し�
 # を作って書き込む — 初回実行がまさにこの形（実測で再現）。親を先に検査する。
 NEW_OUT="$REPO/.inward-new-out"
 NEW_VICTIM="$REPO/.inward-new-victim"
+initialize_output_root "$NEW_OUT"
 mkdir -p "$NEW_OUT/codex-cli" "$NEW_VICTIM"
 printf 'must survive\n' > "$NEW_VICTIM/precious.txt"
 ln -s "$NEW_VICTIM" "$NEW_OUT/codex-cli/files"   # leaf は作らない
@@ -921,6 +934,7 @@ echo "== 親も末端も symlink の組合せ（Issue #1120） =="
 BOTH_OUT="$REPO/.both-sym-out"
 BOTH_VICTIM="$REPO/.both-sym-victim"
 BOTH_PRECIOUS="$REPO/.both-sym-precious"
+initialize_output_root "$BOTH_OUT"
 mkdir -p "$BOTH_OUT/codex-cli" "$BOTH_VICTIM" "$BOTH_PRECIOUS"
 printf 'must survive\n' > "$BOTH_PRECIOUS/precious.txt"
 ln -s "$BOTH_VICTIM" "$BOTH_OUT/codex-cli/files"
@@ -963,6 +977,7 @@ echo "== staging パス自体が symlink ならリンクだけを外して続行
 # clear_quarantine_dir（previous/ が symlink のとき）と同じ扱いに揃える。
 LEAF_OUT="$REPO/.leaf-out"
 LEAF_VICTIM="$LEAF_OUT/claude-code/files/feature-implementation"
+initialize_output_root "$LEAF_OUT"
 mkdir -p "$LEAF_OUT/codex-cli/files" "$LEAF_VICTIM"
 printf 'must survive\n' > "$LEAF_VICTIM/precious.txt"
 ln -s ../../claude-code/files/feature-implementation \
@@ -1019,6 +1034,7 @@ echo "== staging を作れないときの fail-loud =="
 # 親ディレクトリが書けない状態は mkdir -p が失敗する reachable な経路。
 # ここを warn-and-continue に退行させると、staging 無しのまま実行が進む。
 MKFAIL_OUT="$REPO/.mkfail-out"
+initialize_output_root "$MKFAIL_OUT"
 mkdir -p "$MKFAIL_OUT/codex-cli"
 chmod 555 "$MKFAIL_OUT/codex-cli"
 if [ -w "$MKFAIL_OUT/codex-cli" ]; then

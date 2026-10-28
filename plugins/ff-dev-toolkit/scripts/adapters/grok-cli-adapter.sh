@@ -512,7 +512,7 @@ fi
 
 # ── Host Delegation ──
 # 起動経路と同じプロンプトをホストへ返す（"🔍 Running" より前。adapter-common.sh 参照）
-run_host_delegation_or_continue "$CLI_LANE" "$CLI_NAME" "$perspective_name" "$prompt" "Read,Grep,Glob,Bash(git diff*)"
+run_host_delegation_or_continue "$CLI_LANE" "$CLI_NAME" "$perspective_name" "$prompt" "Read,Grep,Glob"
 
 # ── Execute Task ──
 

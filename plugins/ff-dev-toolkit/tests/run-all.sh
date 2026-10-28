@@ -1657,8 +1657,6 @@ MISS_PROBE_BASELINE=(
   multi-agent-ignore-paths
   multi-agent-revision-guard
   multi-agent-skip-poisoned-cli
-  multi-agent-stale-outputs
-  multi-agent-timeout
   no-hardcoded-model
   plugin-description-enumeration-selftest
   plugin-description-enumeration

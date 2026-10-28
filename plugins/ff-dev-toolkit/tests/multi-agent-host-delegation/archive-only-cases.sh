@@ -15,8 +15,8 @@ run_archive_only_cases() {
   printf -- '- Critical: 1\n  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2\n- archive producer finding\n' > "$RESPONSE_FILE"
   run_ma archive-producer-accept --base develop --cli claude-code --perspective code-review --delegate-to-host --output-dir "$ar_out" --resume
   if [[ "$RUN_RC" == 0 ]] && grep -qF '<!-- CRITICAL_BLOCK -->' "$ar_out/integrated-report.md"; then ok 'archive producer writes an unresolved current-format report'; else bad 'archive producer lacks Critical report'; fi
-  mkdir -p "$ar_out/.empty" "$ar_out/.prev-existing"
-  printf 'hidden\n' > "$ar_out/.hidden"
+  mkdir -p "$ar_out/claude-code/files/.empty" "$ar_out/.prev-existing"
+  printf 'hidden\n' > "$ar_out/claude-code/files/.hidden"
   printf 'previous\n' > "$ar_out/.prev-existing/sentinel"
   cp -R "$ar_out" "$baseline"
   tree_hashes "$ar_out" > "$TMP/archive-before.hashes"
@@ -59,7 +59,9 @@ run_archive_only_cases() {
     launches="$(claude_launch_count):$(codex_launch_count)"
     run_ma "archive-request-$case_name" --route full --base develop "--archive-only=$old" --output-dir "$ar_out"
     tree_hashes "$ar_out" > "$TMP/archive-request-after.hashes"
-    if [[ "$RUN_RC" == 1 ]] && grep -qF 'outstanding request' "$RUN_ERR" && cmp -s "$TMP/archive-request-before.hashes" "$TMP/archive-request-after.hashes" && [[ "$(claude_launch_count):$(codex_launch_count)" == "$launches" ]]; then ok "archive preserves every request: $case_name"; else bad "archive request protection failed: $case_name rc=$RUN_RC"; fi
+    local request_refusal='outstanding request'
+    [[ "$case_name" != unknown-lane ]] || request_refusal='unknown archive entry'
+    if [[ "$RUN_RC" == 1 ]] && grep -qF "$request_refusal" "$RUN_ERR" && cmp -s "$TMP/archive-request-before.hashes" "$TMP/archive-request-after.hashes" && [[ "$(claude_launch_count):$(codex_launch_count)" == "$launches" ]]; then ok "archive preserves every request: $case_name"; else bad "archive request protection failed: $case_name rc=$RUN_RC"; fi
     rm -rf "$ar_out"; cp -R "$baseline" "$ar_out"
   done
   for case_name in absent-report legacy-footer corrupt-footer marker-mismatch symlink unreadable state-corrupt wrong-base staged-token cross-category; do
@@ -69,7 +71,7 @@ run_archive_only_cases() {
       corrupt-footer) printf 'invalid footer\n' >> "$ar_out/integrated-report.md" ;;
       marker-mismatch) sed 's/CRITICAL_BLOCK/OTHER_MARKER/' "$ar_out/integrated-report.md" > "$TMP/archive-report.tmp"; cp "$TMP/archive-report.tmp" "$ar_out/integrated-report.md" ;;
       symlink) ln -s "$TMP/no-such-target" "$ar_out/.dangling" ;;
-      unreadable) chmod 000 "$ar_out/.hidden" ;;
+      unreadable) chmod 000 "$ar_out/claude-code/files/.hidden" ;;
       state-corrupt) printf 'format=bogus\n' > "$ar_out/.delegation-state/metadata" ;;
       wrong-base) : ;;
       cross-category)
@@ -79,18 +81,18 @@ run_archive_only_cases() {
         cp "$TMP/archive-report.tmp" "$ar_out/integrated-report.md" ;;
       staged-token) sed 's/series:[0-9]*-[0-9]*/series:1-1/' "$ar_out/integrated-report.md" > "$TMP/archive-report.tmp"; cp "$TMP/archive-report.tmp" "$ar_out/integrated-report.md" ;;
     esac
-    [[ "$case_name" != unreadable ]] || chmod 644 "$ar_out/.hidden"
+    [[ "$case_name" != unreadable ]] || chmod 644 "$ar_out/claude-code/files/.hidden"
     tree_hashes "$ar_out" > "$TMP/archive-unsafe-before.hashes"
-    [[ "$case_name" != unreadable ]] || chmod 000 "$ar_out/.hidden"
+    [[ "$case_name" != unreadable ]] || chmod 000 "$ar_out/claude-code/files/.hidden"
     set -- --base develop; [[ "$case_name" != wrong-base ]] || set -- --base main
     run_ma "archive-unsafe-$case_name" --route full "$@" "--archive-only=$old" --output-dir "$ar_out"
     if [[ "$case_name" == unreadable ]]; then
-      [[ ! -r "$ar_out/.hidden" ]] || bad 'unreadable file mode changed during refusal'
-      if [[ -f "$ar_out/.hidden" ]]; then chmod 644 "$ar_out/.hidden"; else bad 'unreadable fixture file vanished during archive refusal'; fi
+      [[ ! -r "$ar_out/claude-code/files/.hidden" ]] || bad 'unreadable file mode changed during refusal'
+      if [[ -f "$ar_out/claude-code/files/.hidden" ]]; then chmod 644 "$ar_out/claude-code/files/.hidden"; else bad 'unreadable fixture file vanished during archive refusal'; fi
     fi
     tree_hashes "$ar_out" > "$TMP/archive-unsafe-after.hashes"
     if [[ "$RUN_RC" == 1 ]] && cmp -s "$TMP/archive-unsafe-before.hashes" "$TMP/archive-unsafe-after.hashes" && [[ ! -d "$ar_out/.multi-agent-run.lock" ]]; then ok "archive preserves unsafe input: $case_name"; else bad "archive unsafe input accepted: $case_name rc=$RUN_RC"; fi
-    [[ ! -e "$ar_out/.hidden" ]] || chmod 644 "$ar_out/.hidden"
+    [[ ! -e "$ar_out/claude-code/files/.hidden" ]] || chmod 644 "$ar_out/claude-code/files/.hidden"
     rm -rf "$ar_out"; cp -R "$baseline" "$ar_out"
   done
   # Inject failures into movement only; a partial operation must retain both report and existing lock.
@@ -98,8 +100,8 @@ run_archive_only_cases() {
   real_mv="$(command -v mv)"; real_mkdir="$(command -v mkdir)"
   for fault in first later report signal new-entry report-change; do
     rm -rf "$ar_out"; cp -R "$baseline" "$ar_out"
-    printf 'move me\n' > "$ar_out/a-first"
-    case "$fault" in first) target='.delegation-state'; action=fail ;; later) target=a-first; action=fail ;; report) target=integrated-report.md; action=fail ;; signal) target=a-first; action=signal ;; new-entry) target=a-first; action=new ;; report-change) target=a-first; action=report ;; esac
+    printf 'move me\n' > "$ar_out/.fixed-diff"
+    case "$fault" in first) target='.delegation-state'; action=fail ;; later) target=.fixed-diff; action=fail ;; report) target=integrated-report.md; action=fail ;; signal) target=.fixed-diff; action=signal ;; new-entry) target=.fixed-diff; action=new ;; report-change) target=.fixed-diff; action=report ;; esac
     cat > "$STUB/mv" <<SHIM
 #!/usr/bin/env bash
 if [[ "\${1##*/}" == "$target" && "\$2" == *'/.prev-'* ]]; then
@@ -125,10 +127,10 @@ SHIM
     done
   done
   rm -rf "$ar_out"; cp -R "$baseline" "$ar_out"
-  printf 'move me\n' > "$ar_out/a-first"
+  printf 'move me\n' > "$ar_out/.fixed-diff"
   cat > "$STUB/mv" <<SHIM
 #!/usr/bin/env bash
-if [[ "\${1##*/}" == a-first && "\$2" == *'/.prev-'* ]]; then exit 9; fi
+if [[ "\${1##*/}" == .fixed-diff && "\$2" == *'/.prev-'* ]]; then exit 9; fi
 exec "$real_mv" "\$@"
 SHIM
   chmod +x "$STUB/mv"
@@ -173,10 +175,10 @@ SHIM
   launches="$(claude_launch_count):$(codex_launch_count)"
   run_ma archive-success --route full --base origin/develop "--archive-only=refs/heads/$old" --output-dir "$ar_out"
   destination="$(find "$ar_out" -maxdepth 1 -type d -name '.prev-*' ! -name '.prev-existing' -print)"
-  if [[ "$RUN_RC" == 0 && -n "$destination" && -f "$destination/integrated-report.md" && -d "$destination/.empty" && -f "$destination/.hidden" && ! -e "$destination/.prev-existing" && -f "$ar_out/.prev-existing/sentinel" && ! -d "$ar_out/.multi-agent-run.lock" ]] && [[ "$(claude_launch_count):$(codex_launch_count)" == "$launches" ]]; then ok 'archive accepts deleted previous branch and normalized base without CLI, retaining all hidden bytes'; else bad "archive success failed rc=$RUN_RC destination=$destination"; fi
+  if [[ "$RUN_RC" == 0 && -n "$destination" && -f "$destination/integrated-report.md" && -d "$destination/claude-code/files/.empty" && -f "$destination/claude-code/files/.hidden" && ! -e "$destination/.prev-existing" && -f "$ar_out/.prev-existing/sentinel" && -f "$ar_out/.multi-agent-output-owner" && ! -d "$ar_out/.multi-agent-run.lock" ]] && [[ "$(claude_launch_count):$(codex_launch_count)" == "$launches" ]]; then ok 'archive accepts deleted previous branch and normalized base without CLI, retaining known hidden artifacts and the live ownership marker'; else bad "archive success failed rc=$RUN_RC destination=$destination"; fi
   if [[ -n "$destination" ]]; then
     tree_hashes "$destination" > "$TMP/archive-destination.hashes"
-    grep -v '^./.prev-existing/' "$TMP/archive-before.hashes" > "$TMP/archive-expected.hashes"
+    grep -vE '^./(.prev-existing/|.multi-agent-output-owner )' "$TMP/archive-before.hashes" > "$TMP/archive-expected.hashes"
     if cmp -s "$TMP/archive-expected.hashes" "$TMP/archive-destination.hashes"; then ok 'archived report/response/cache/state bytes match the live producer'; else bad 'archive bytes differ'; fi
   fi
   # Three host lanes converge after the one-shot archive. Archive never participates in resume.

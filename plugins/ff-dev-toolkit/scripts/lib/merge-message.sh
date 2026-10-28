@@ -83,8 +83,9 @@ ff_merge_issue_sets() { # <owner/repo> <PR body> <API closing refs> <checker key
 # Byte-transparent single-quote escaping; sentinel preserves trailing LF through command substitution.
 ff_merge_quote() { local s; s="$(printf '%sX' "$1" | sed "s/'/'\\\\''/g")" || return 1; printf "'%s'" "${s%X}"; }
 
-ff_merge_emit() { # <PR> <repo URL> <head> <have message> <subject> <body> [delete flag] [tail]
-  local quoted_target_repo quoted_merge_subject="" quoted_merge_body=""
+ff_merge_emit() { # <PR> <repo URL> <head> <have message> <subject> <body> [delete flag] [tail] [squash|merge]
+  local quoted_target_repo quoted_merge_subject="" quoted_merge_body="" method="${9:-squash}"
+  case "$method" in squash|merge) ;; *) return 2 ;; esac
   quoted_target_repo="$(ff_merge_quote "$2")" || return 2
   if [ "$4" -eq 1 ]; then
     [ -n "$5" ] || return 2
@@ -92,9 +93,9 @@ ff_merge_emit() { # <PR> <repo URL> <head> <have message> <subject> <body> [dele
   fi
   echo "MERGE_COMMAND_BEGIN"
   if [ "$4" -eq 1 ]; then
-    printf 'gh pr merge %s --repo %s --squash --match-head-commit %s%s \\\n  --subject %s \\\n  --body %s%s\n' "$1" "$quoted_target_repo" "$3" "${7:-}" "$quoted_merge_subject" "$quoted_merge_body" "${8:-}"
+    printf 'gh pr merge %s --repo %s --%s --match-head-commit %s%s \\\n  --subject %s \\\n  --body %s%s\n' "$1" "$quoted_target_repo" "$method" "$3" "${7:-}" "$quoted_merge_subject" "$quoted_merge_body" "${8:-}"
   else
-    printf 'gh pr merge %s --repo %s --squash --match-head-commit %s%s%s\n' "$1" "$quoted_target_repo" "$3" "${7:-}" "${8:-}"
+    printf 'gh pr merge %s --repo %s --%s --match-head-commit %s%s%s\n' "$1" "$quoted_target_repo" "$method" "$3" "${7:-}" "${8:-}"
   fi
   echo "MERGE_COMMAND_END"
 }

@@ -2,6 +2,7 @@
 # 空振り検出: 明示退避のfocused対照（3hostの通常往復を除く）は最終51/0。同branch照合・全世代request・marker整合・partial lock・report-last・在庫再照合・series照合・復旧command・分類互換を個別に反転すると各4/7/1/18/7/5/2/1/2件赤（2026-10-22）。moduleとcasesの不在/不可読/空、casesの名前だけ/関数名変更は全てrc1で停止し、空集合を緑にしない。syntaxは保存SHA一致の変異sourceで個別rc0を確認。
 # 空振り検出: R1復帰回帰は無変異18/0、元HEAD 69c3eb7dの不変runtimeでは5/9へ赤転（env config/base・Critical案内・detached・空fresh通知）。追加関数の不在と空のassertion集合はそれぞれrc1で停止（2026-10-22 実測）。
 # 空振り検出: R2復帰回帰は22/0、修正前5a90c9a0では19/3へ赤転（非委譲full/fastのfresh案内）。full委譲のtemplate往復とfast拒否templateは保持し、非委譲2routeは案内されたfreshでrequest無しに完了する。追加関数不在・空集合は各rc1（2026-10-22 実測）。
+# 空振り検出: 実hook完了レーンの退避回帰は24/0。制御directoryの退避除外を外すと22/2、活動中・不正な完了記録の検査を外すと6/18へ赤転。別copyでcase呼出だけを空化すると24件の下限照合がrc1で停止する（2026-10-28実測、Issue `#2429`）。
 # git-path-isolation: 固定 PATH は実 CLI / yq / 更新 CLI の混入と不在検査の偽緑を防ぐ。
 # git の親ディレクトリ全体は追加しない（同居する CLI も露出するため）。Xcode 障害時は
 # DEVELOPER_DIR=/Library/Developer/CommandLineTools bash plugins/ff-dev-toolkit/tests/multi-agent-host-delegation/verify.sh
@@ -1186,6 +1187,9 @@ echo "-- (29) state の無い plan 外 CLI の symlink は辿らず、対象レ�
 UNPLANNED_OUT="$TMP/unplanned-symlink-results"
 UNPLANNED_TARGET="$TMP/unplanned-external"
 mkdir -p "$UNPLANNED_OUT" "$UNPLANNED_TARGET"
+# Plant the unplanned link only after genuine empty-root initialization; old
+# nonempty unmarked output is intentionally no longer adopted (Issue `#2429`).
+( . "$PLUGIN_ROOT/scripts/lib/multi-agent-boundary.sh"; ff_review_output_prepare "$REPO" "$UNPLANNED_OUT" true review ) >/dev/null
 printf 'UNPLANNED_EXTERNAL_EVIDENCE\n' > "$UNPLANNED_TARGET/code-review.md"
 ln -s "$UNPLANNED_TARGET" "$UNPLANNED_OUT/claude-code"
 UNPLANNED_HASH="$(git hash-object "$UNPLANNED_TARGET/code-review.md")"
@@ -1273,6 +1277,17 @@ ARCHIVE_RECOVERY_BEFORE=$((PASS + FAIL))
 run_archive_recovery_cases
 [[ $((PASS + FAIL - ARCHIVE_RECOVERY_BEFORE)) -ge 22 ]] || { echo '✗ archive recovery assertion collection empty/incomplete' >&2; exit 1; }
 # archive-only-cases:end
+
+# completed-lane-cases:start
+COMPLETED_LANE_CASES_FILE="$SCRIPT_DIR/completed-lane-cases.sh"
+[[ ! -L "$COMPLETED_LANE_CASES_FILE" && -f "$COMPLETED_LANE_CASES_FILE" && -r "$COMPLETED_LANE_CASES_FILE" && -s "$COMPLETED_LANE_CASES_FILE" ]] || { echo '✗ completed lane cases missing/unreadable/empty' >&2; exit 1; }
+# shellcheck source=completed-lane-cases.sh
+. "$COMPLETED_LANE_CASES_FILE"
+[[ "$(type -t run_completed_lane_cases)" == function ]] || { echo '✗ completed lane case function missing' >&2; exit 1; }
+COMPLETED_LANE_BEFORE=$((PASS + FAIL))
+run_completed_lane_cases
+[[ $((PASS + FAIL - COMPLETED_LANE_BEFORE)) -ge 24 ]] || { echo '✗ completed lane assertion collection empty/incomplete' >&2; exit 1; }
+# completed-lane-cases:end
 
 echo ""
 echo "  PASS=${PASS} FAIL=${FAIL}"

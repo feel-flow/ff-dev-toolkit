@@ -45,8 +45,12 @@ write_output() {
 
   local dir
   dir="$(dirname "$output_file")"
-  if ! mkdir -p "$dir"; then
+  if ! (umask 077; mkdir -p "$dir"); then
     echo "ERROR: cannot create the output directory: ${dir}" >&2
+    return 1
+  fi
+  if ! _ff_reason_parent_is_safe "$dir"; then
+    echo "ERROR: refusing to write a result through an unowned, linked or shared-writable directory: ${dir}" >&2
     return 1
   fi
 
@@ -67,7 +71,7 @@ write_output() {
   # 名前は mktemp があればそれで作る。pid 由来の固定名は予測可能で、先に置かれた
   # symlink を `>` が追跡して**指し先を truncate する**余地を残すため（atomic publish
   # の前提もそこで崩れる）。
-  local base tmp
+  local base tmp tmp_dir=""
   base="$(basename "$output_file")"
   tmp="$(mktemp "${dir}/.${base}.partial.XXXXXX" 2>/dev/null)" || tmp=""
   if [ -z "$tmp" ]; then
@@ -77,14 +81,16 @@ write_output() {
     # 失敗だけが手ぶらで終わる（その経路は multi-agent-timeout の tmpdir ケースが
     # 実走で押さえている）。パスは 1 プロセス 1 成果物に閉じるので pid で衝突しない。
     tmp="${dir}/.${base}.partial.$$"
-    # 固定名へ落ちた回だけは、その名前が symlink / 非通常ファイルでないことを自分で
-    # 確かめる。確かめずに `>` で書くと、先置きされた symlink の指し先を truncate する。
-    if [ -L "$tmp" ] || { [ -e "$tmp" ] && [ ! -f "$tmp" ]; }; then
+    # mkdir is exclusive even when a planted leaf is a FIFO or symlink. Only
+    # reopen files inside the new owner-only directory, never a predictable leaf.
+    tmp_dir="${tmp}.d"
+    if ! (umask 077; mkdir "$tmp_dir") 2>/dev/null; then
       echo "ERROR: refusing to stage the ${task_type} result through ${tmp}" >&2
-      echo "       (mktemp is unavailable here, and that fixed-name temp path is a symlink or a non-regular file)." >&2
+      echo "       (mktemp is unavailable and the private staging directory could not be reserved exclusively)." >&2
       echo "       Remove it and re-run; writing through it would truncate whatever it points at." >&2
       return 1
     fi
+    tmp="${tmp_dir}/result"
   fi
 
   local generated
@@ -118,6 +124,7 @@ ${content}"
   # バイト数が合わない。どちらも成果物は所定のパスへ出さず、断片も残さない。
   if [ "$write_rc" -ne 0 ] || [ -z "$actual" ] || [ "$actual" != "$expected" ]; then
     rm -f "$tmp" 2>/dev/null || true
+    [[ -z "$tmp_dir" ]] || rmdir "$tmp_dir" 2>/dev/null || true
     echo "ERROR: the ${task_type} result could not be written to ${output_file}" >&2
     echo "       (wrote ${actual:-0} of ${expected} bytes, status ${write_rc})." >&2
     echo "       The new result was NOT published to that path; whatever was already there is untouched." >&2
@@ -127,11 +134,13 @@ ${content}"
 
   if ! mv "$tmp" "$output_file"; then
     rm -f "$tmp" 2>/dev/null || true
+    [[ -z "$tmp_dir" ]] || rmdir "$tmp_dir" 2>/dev/null || true
     echo "ERROR: the ${task_type} result was written but could not be moved into place: ${output_file}" >&2
     echo "       The new result was NOT published to that path; whatever was already there is untouched." >&2
     echo "       Check the directory's permissions and whether the mount is read-only: ${dir}" >&2
     return 1
   fi
+  [[ -z "$tmp_dir" ]] || rmdir "$tmp_dir" 2>/dev/null || true
 
   # publish 後の砦。`mv` の rc=0 は「所定のパスに通常ファイルが在る」を意味しない
   # （宛先がディレクトリなら一時ファイルはその**中**へ入る）。上の早期検査を素通りする
@@ -419,7 +428,7 @@ delegate_task() { # <lane-id> <cli-display-name> <perspective> <prompt> <allowed
   # 下の handoff 更新でこの値が要るため。
   local prev_digest prev_superseded consumed=0
 
-  if ! mkdir -p "$dir"; then
+  if ! (umask 077; mkdir -p "$dir"); then
     echo "ERROR: cannot create the delegation dir: ${dir}" >&2
     return 1
   fi
@@ -605,9 +614,86 @@ readonly TIMEOUT_KILL_GRACE
 # callers read it instead of inferring from the number.
 #
 # Why a file and not a variable: run_with_timeout runs inside `result=$(...)`, and
-# anything it assigns dies with that subshell. `$$` stays the invoking shell's pid
-# in a subshell, so both sides derive the same path with no argument to thread
-# through — and separate adapter processes get separate files.
+# anything it assigns dies with that subshell. Allocate the private namespace
+# once while sourcing, before command substitutions, so both sides inherit it.
+_ff_reason_reserve_directory() { # <parent> <prefix>; exclusive fallback when mktemp is unavailable.
+  local parent="$1" prefix="$2" candidate attempt
+  parent="$(CDPATH='' cd "$parent" && pwd -P)" || return 1
+  for attempt in 1 2 3 4 5; do
+    candidate="${parent}/${prefix}.$$-${RANDOM}-${RANDOM}-${RANDOM}-${attempt}"
+    if (umask 077; mkdir "$candidate") 2>/dev/null; then
+      [[ -d "$candidate" && ! -L "$candidate" && -O "$candidate" ]] || return 1
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_ff_reason_namespace_init() {
+  local candidate
+  if [[ "${_FF_REASON_NAMESPACE_PID:-}" == "$$" && -n "${_FF_REASON_PRIVATE_DIR:-}" && -d "$_FF_REASON_PRIVATE_DIR" && ! -L "$_FF_REASON_PRIVATE_DIR" ]]; then
+    return 0
+  fi
+  _FF_REASON_NAMESPACE_PID="$$"
+  _FF_REASON_PRIVATE_DIR=""
+  candidate="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/ff-review-reasons.XXXXXX" 2>/dev/null)" || candidate=""
+  if [[ -z "$candidate" ]]; then
+    candidate="$(_ff_reason_reserve_directory "${TMPDIR:-/tmp}" ff-review-reasons)" || return 0
+  fi
+  if [[ -n "$candidate" && -d "$candidate" && ! -L "$candidate" && -O "$candidate" ]]; then
+    _FF_REASON_PRIVATE_DIR="$(CDPATH='' cd "$candidate" && pwd -P)" || _FF_REASON_PRIVATE_DIR=""
+    if [[ -n "$_FF_REASON_PRIVATE_DIR" ]] && ! _ff_reason_parent_is_safe "$_FF_REASON_PRIVATE_DIR"; then
+      rmdir "$_FF_REASON_PRIVATE_DIR" 2>/dev/null || true
+      _FF_REASON_PRIVATE_DIR=""
+    fi
+  fi
+  return 0
+}
+
+_ff_reason_parent_is_safe() {
+  local parent="$1" permissions child='' owner unsafe=''
+  [[ -d "$parent" && ! -L "$parent" && -O "$parent" ]] || return 1
+  parent="$(CDPATH='' cd "$parent" && pwd -P)" || return 1
+  while :; do
+    permissions="$(LC_ALL=C ls -ldn "$parent" 2>/dev/null)" || return 1
+    [[ "${permissions:0:1}" == d ]] || return 1
+    owner="$(printf '%s' "$permissions" | awk '{print $3}')"
+    # An owner can rename its child even when group/other write is disabled.
+    [[ "$owner" == 0 || -O "$parent" ]] || return 1
+    if [[ "${permissions:5:1}" == w || "${permissions:8:1}" == w ]]; then
+      # Sticky ancestors protect the already owner-checked child, not arbitrary
+      # files directly in a shared destination directory.
+      if [[ -z "$child" || ! -k "$parent" ]]; then unsafe="$parent"; fi
+    fi
+    # A protected owner-only ancestor makes lower group bits unreachable to
+    # another UID. Continue above it: its parent must not permit replacement.
+    if [[ -O "$parent" && "${permissions:4:2}" == -- && "${permissions:7:2}" == -- \
+      && ( "${permissions:6:1}" == - || "${permissions:6:1}" == S ) \
+      && ( "${permissions:9:1}" == - || "${permissions:9:1}" == T ) ]]; then unsafe=''; fi
+    [[ "$parent" != / ]] || break
+    child="$parent"
+    parent="$(dirname "$parent")"
+  done
+  [[ -z "$unsafe" ]]
+}
+_ff_reason_namespace_init
+
+_ff_reason_namespace_cleanup() {
+  local metadata
+  [[ -n "${_FF_REASON_PRIVATE_DIR:-}" ]] || return 0
+  [[ "${_FF_REASON_NAMESPACE_PID:-}" == "$$" ]] || return 0
+  if _ff_reason_parent_is_safe "$_FF_REASON_PRIVATE_DIR"; then
+    rm -f "$_FF_REASON_PRIVATE_DIR/timeout" "$_FF_REASON_PRIVATE_DIR/review-series" 2>/dev/null || true
+    for metadata in "$_FF_REASON_PRIVATE_DIR"/command.* "$_FF_REASON_PRIVATE_DIR"/deadline.* "$_FF_REASON_PRIVATE_DIR"/.ff-reason.*; do
+      [[ -f "$metadata" && ! -L "$metadata" && -O "$metadata" ]] || continue
+      rm -f "$metadata" 2>/dev/null || true
+    done
+    rmdir "$_FF_REASON_PRIVATE_DIR" 2>/dev/null || true
+  fi
+  return 0
+}
+
 timeout_reason_file() {
   # Test seam (Issue `#266`): pin the marker path so write-failure / residue tests
   # do not depend on TMPDIR layout. Production callers leave this unset.
@@ -615,16 +701,15 @@ timeout_reason_file() {
     printf '%s\n' "$FF_TIMEOUT_REASON_FILE"
     return 0
   fi
-  printf '%s\n' "${TMPDIR:-/tmp}/ff-run-with-timeout-reason.$$"
+  [[ -n "${_FF_REASON_PRIVATE_DIR:-}" ]] || return 0
+  printf '%s' "${_FF_REASON_PRIVATE_DIR}/timeout"
 }
 
 # ── Reason-File Exclusive Write ──
 #
-# 理由ファイルの名前は「コマンド置換のサブシェルを跨いで両側が同じパスを導ける」ことが
-# 要件なので、引数を通さずに導ける ${TMPDIR:-/tmp} と自分の pid から作るしかない = 名前は
-# 推測できる。TMPDIR を設定していないホストでは共有 sticky /tmp に落ちるため、他ユーザーが
-# 先に実体を置ける。素の `>` は先に在るシンボリックリンクを追って**リンク先を truncate**
-# する（無関係のファイルが空になる）。
+# 理由はsource時に確保した私有directoryで共有する。固定leafを直接openせず、検査済みの
+# 親の中で排他的に確保した一時ファイルからrenameする。後からFIFOやリンクが固定leafへ
+# 挿入されても、そのleafをopenしないため待ち続けたりリンク先をtruncateしたりしない。
 #
 # 方針は「既存の実体には一切書かない」。掴んでよいのは**自分が同じ実行の中で作った通常
 # ファイル**だけで、それも一度消してから作り直す。判定は次の順で、1 つでも外れたら書かずに
@@ -642,13 +727,6 @@ timeout_reason_file() {
 #   4. 残った「自分所有・リンク数 1 の通常ファイル」= 同一実行内の再記録（run_with_timeout
 #      が起動時に書いた command を、アダプタが sandbox-refused などで上書きする経路）。
 #      ここを拒むと理由が呼び出し側へ届かなくなるので、`rm -f` してから作り直す。
-#
-# 最後の生成と書き込みは同じサブシェルの `set -C` 下で 1 操作にする（下見と書き込みを
-# 分けると、その間にリンクへ差し替えられる TOCTOU が残る）。
-#
-# 既知の限界: 4 の `rm -f` と生成の間のマイクロ秒の窓でシンボリックリンク → FIFO を
-# 差し込まれると、noclobber がリンクを追って open でブロックしうる。窓を完全に閉じるには
-# O_NOFOLLOW|O_EXCL を直に呼ぶ必要があり、シェルからは届かないので対策は入れていない。
 #
 # orchestrator（multi-agent.sh）も同じ形の理由ファイルを持つので、この関数を共有する
 # — 2 本目の実装を書き写すと、片方だけ直った状態へ静かにずれる。
@@ -682,6 +760,10 @@ _ff_reason_link_count() { # $1: パス / stdout: ハードリンク数（取れ�
 # 同じ条件を読む — 2 か所に書き写すと、片方だけ締めた状態へ静かにずれる（Issue `#1816`）。
 _ff_reason_refusal() { # $1: パス / stdout: 拒否理由（rc0 = 拒否する, rc1 = 掴んでよい）
   local f="$1" links
+  if [[ -z "$f" ]]; then
+    printf '%s' "the private failure-reason directory could not be allocated."
+    return 0
+  fi
   if [[ -L "$f" ]]; then
     printf '%s' "a symlink is already there, and writing would act on its target instead."
     return 0
@@ -710,7 +792,7 @@ _ff_reason_refusal() { # $1: パス / stdout: 拒否理由（rc0 = 拒否する,
 }
 
 write_reason_file() { # $1: パス / $2: 書く内容 -- rc0 = 書けた, rc1 = 書かなかった
-  local f="$1" content="$2" refusal
+  local f="$1" content="$2" refusal parent tmp tmp_dir=''
   if refusal="$(_ff_reason_refusal "$f")"; then
     echo "WARNING: refusing to write the failure reason at ${f}: ${refusal}" >&2
     if [[ -L "$f" ]]; then
@@ -718,18 +800,38 @@ write_reason_file() { # $1: パス / $2: 書く内容 -- rc0 = 書けた, rc1 = 
     fi
     return 1
   fi
-  if [[ -e "$f" ]]; then
-    if ! rm -f "$f" 2>/dev/null; then
-      echo "WARNING: refusing to write the failure reason at ${f}: the stale file from this run could not be removed." >&2
-      return 1
-    fi
-  fi
-  # 生成と書き込みを 1 操作にする。`rm` と生成の間に差し込まれた回はここで失敗する。
-  # サブシェルに閉じ、呼び出し側の noclobber 設定を変えない。
-  if ! ( set -C; printf '%s' "$content" > "$f" ) 2>/dev/null; then
-    echo "WARNING: refusing to write the failure reason at ${f}: it could not be created exclusively." >&2
+  parent="$(dirname "$f")"
+  if ! _ff_reason_parent_is_safe "$parent"; then
+    echo "WARNING: refusing to write the failure reason at ${f}: the parent is not an owned private directory." >&2
     return 1
   fi
+  if ! tmp="$(umask 077; mktemp "${parent}/.ff-reason.XXXXXX" 2>/dev/null)"; then
+    tmp_dir="$(_ff_reason_reserve_directory "$parent" .ff-reason-stage)" || return 1
+    tmp="${tmp_dir}/reason"
+    if ! (umask 077; : > "$tmp"); then rmdir "$tmp_dir" 2>/dev/null || true; return 1; fi
+  fi
+  if [[ ! -f "$tmp" || -L "$tmp" || ! -O "$tmp" ]]; then
+    [[ -z "$tmp_dir" ]] || rmdir "$tmp_dir" 2>/dev/null || true
+    return 1
+  fi
+  if ! printf '%s' "$content" > "$tmp"; then
+    rm -f "$tmp" 2>/dev/null || true
+    [[ -z "$tmp_dir" ]] || rmdir "$tmp_dir" 2>/dev/null || true
+    return 1
+  fi
+  if refusal="$(_ff_reason_refusal "$f")"; then
+    rm -f "$tmp" 2>/dev/null || true
+    [[ -z "$tmp_dir" ]] || rmdir "$tmp_dir" 2>/dev/null || true
+    echo "WARNING: refusing to publish the failure reason at ${f}: ${refusal}" >&2
+    return 1
+  fi
+  if ! mv -f "$tmp" "$f" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    [[ -z "$tmp_dir" ]] || rmdir "$tmp_dir" 2>/dev/null || true
+    echo "WARNING: refusing to write the failure reason at ${f}: it could not be published atomically." >&2
+    return 1
+  fi
+  [[ -z "$tmp_dir" ]] || rmdir "$tmp_dir" 2>/dev/null || true
   return 0
 }
 
@@ -803,10 +905,11 @@ read_timeout_reason() {
   # 書く側がリンクを掴まない以上、リンクが在る回の中身は自分が書いたものではない。
   # 読めば他人の内容を「今回の理由」として名乗ることになるので読まない（警告は
   # 書く側が既に出している）。
-  if [[ -L "$f" ]]; then
+  if _ff_reason_refusal "$f" >/dev/null; then
     return 0
   fi
   [[ -f "$f" ]] || return 0
+  _ff_reason_parent_is_safe "$(dirname "$f")" || return 0
   cat "$f" 2>/dev/null || true
 }
 
@@ -836,8 +939,8 @@ clear_timeout_reason() {
   clear_reason_file "$(timeout_reason_file)"
 }
 
-# 成功パスでは fail_cli_task が呼ばれないため、run_with_timeout が書いた
-# "command" マーカーが ${TMPDIR}/ff-run-with-timeout-reason.$$ に残る（Issue `#266`）。
+# 成功パスでは fail_cli_task が呼ばれないため、run_with_timeout が私有namespaceへ書いた
+# "command" マーカーもEXITで片付ける（Issue `#266` / `#2429`）。
 # プロセス終了時に必ず掃除し、stale 読み取りの種を残さない。fail_cli_task 内の
 # clear と二重になっても rm -f なので害はない。アダプタが source するたびに
 # trap を積み重ねないよう一度だけ仕掛ける。
@@ -849,6 +952,7 @@ clear_timeout_reason() {
 # （関数は $( ) で呼ばれるため、関数内で設定したグローバルは親に残らない）。
 _ff_adapter_exit_cleanup() {
   clear_timeout_reason
+  _ff_reason_namespace_cleanup
   if [[ -n "${_FF_PROMPT_FILE:-}" ]]; then
     rm -f "$_FF_PROMPT_FILE" 2>/dev/null || true
   fi

@@ -77,12 +77,10 @@
 #   - 宛先ディレクトリの早期検査を外す → 1 件赤（publish 後の砦が rc は拾うが、
 #     失敗の理由が読み手に届かなくなる）
 #   - publish 後の `-f` 検査を外す → 1 件赤
-#   - 固定名フォールバックの symlink 拒否を外す → 1 件赤（指し先が truncate される）
-#   - 一時ファイル名を mktemp 由来から pid 固定名のみへ戻す → 1 件赤（先置き
-#     symlink を踏む）。multi-agent-timeout は緑のまま
-#   - 逆に固定名フォールバックを外して mktemp のみにする → **本 suite は緑のまま**、
-#     multi-agent-timeout の tmpdir ケースが赤（mktemp が使えない環境では
-#     INCOMPLETE 成果物そのものが書けなくなる）。この性質はあちらが持ち場。
+#   - 旧PIDフォールバックの当時の実測では、symlink拒否除去と固定名だけへの復帰が
+#     各1件赤。2026-10-28の私有fallback移行後は、mktempの有無にかかわらず
+#     正規成果物の公開・旧リンク・canaryを独立照合する（本suite123件通過）。
+#     command metadataだけのmktemp故障で、準備段を通した125分類も維持する。
 #   - orchestrator の 125 専用分類を汎用 `Failed` へ戻す → 2 件赤（並列・逐次）
 #   - 委譲経路の書き込み失敗を専用 rc から素の 1 へ戻す → 2 件赤
 #   - (e)(f) がともに skip になる環境を模した状態で合流ガードを外す → 緑（見逃し。
@@ -1350,16 +1348,13 @@ else
   tail -6 "$TMP/shim-atomic.log" | sed 's/^/    | /' >&2
 fi
 
-# (m)(n) 一時ファイル名の予測可能性。pid 由来の固定名は先置きの symlink を `>` に
-#     追跡させ、**指し先を truncate** できる（atomic publish の前提もそこで崩れる）。
-#     mktemp が使えるならそれで作り、使えない環境へ落ちた回は書く前に塞ぐ、の 2 段を
-#     それぞれ実測する。`$$` は subshell でも呼び出し元シェルの pid のままなので、
-#     固定名フォールバックが選ぶ名前をテスト側から名指しできる。
+# (m)(n) 旧PID固定名のリンクに触れず、mktempの有無によらず私有stagingから公開する。
+#     正常な成果物、旧リンク、指し先のbytesを別々に照合する。
 SYM_DIR="$TMP/symlink-out"
 mkdir -p "$SYM_DIR"
 SYM_VICTIM="$TMP/symlink-victim.txt"
 
-# (m) mktemp が使えない環境（固定名フォールバック）で、先置き symlink を踏まない。
+# (m) mktempが使えない環境でも排他的な私有fallbackは正規の成果物を公開する。
 printf 'VICTIM-INTACT\n' > "$SYM_VICTIM"
 ln -s "$SYM_VICTIM" "$SYM_DIR/.fallback.md.partial.$$"
 set +e
@@ -1367,16 +1362,19 @@ set +e
   set +e +o pipefail
   # shellcheck source=../../scripts/adapters/adapter-common.sh
   source "$ADAPTER_COMMON"
-  mktemp() { return 1; }   # mktemp の無い環境を作る（固定名フォールバックへ落とす）
+  mktemp() { return 1; }
   w=0
   write_output "$SYM_DIR/fallback.md" "Claude Code" "code-review" "$SHORT_FINDING" || w=$?
   exit "$w"
 ) >"$TMP/shim-symlink.log" 2>&1
 SYM_RC=$?
 set -e
-if [ "$SYM_RC" -eq 1 ] && grep -qF 'VICTIM-INTACT' "$SYM_VICTIM" \
-   && [ ! -e "$SYM_DIR/fallback.md" ]; then
-  ok "固定名フォールバックは先置き symlink を踏まず rc=1（指し先を truncate しない）"
+if [ "$SYM_RC" -eq 0 ] && [ -f "$SYM_DIR/fallback.md" ] && [ ! -L "$SYM_DIR/fallback.md" ] \
+   && grep -qF "$SHORT_FINDING" "$SYM_DIR/fallback.md" \
+   && cmp -s "$SYM_VICTIM" <(printf '%s\n' VICTIM-INTACT) \
+   && [ -L "$SYM_DIR/.fallback.md.partial.$$" ] \
+   && [ "$(readlink "$SYM_DIR/.fallback.md.partial.$$")" = "$SYM_VICTIM" ]; then
+  ok "私有fallbackは正規成果物を公開し、旧予測可能リンクとcanaryを変更しない"
 else
   bad "固定名の一時ファイルが先置き symlink を追跡した (rc=${SYM_RC} 指し先=$(cat "$SYM_VICTIM" 2>/dev/null | head -1 | tr -d '\n') 成果物=$([ -e "$SYM_DIR/fallback.md" ] && echo あり || echo なし))"
   tail -6 "$TMP/shim-symlink.log" | sed 's/^/    | /' >&2
@@ -1589,15 +1587,17 @@ echo "== orchestrator 側の 125 分類（並列・逐次の両回収経路） =
 # 125 は「壊れているのは CLI ではなくこちら側（出力先・ラッパー）」の意味で、素の
 # `Failed (exit code: 125)` に丸めると読み手は存在しない CLI クラッシュを追い始める。
 # 分類は 1 箇所（report_task_failure）だが、回収経路は並列・逐次の 2 つある。
-# 125 を実際に起こすのは mktemp の失敗（アダプタが CLI 起動前に落ちる経路）。
-# ここは orchestrator 側の読み替えを見る場所なので、125 の出どころは問わない。
+# command metadataのmktempだけを失敗させる。固定差分の準備は通し、
+# アダプタがCLI起動前に125を返す経路まで実際に到達させる。
 MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 ORCH_STUB="$TMP/orch-bin"
 mkdir -p "$ORCH_STUB"
 cat > "$ORCH_STUB/mktemp" <<'SH'
 #!/usr/bin/env bash
-echo "mktemp: stubbed failure" >&2
-exit 1
+case "${1:-}" in
+  */command.XXXXXX) echo "mktemp: command metadata failure" >&2; exit 1 ;;
+esac
+command -p mktemp "$@"
 SH
 chmod +x "$ORCH_STUB/mktemp"
 cat > "$ORCH_STUB/claude" <<'SH'
@@ -1633,7 +1633,8 @@ for mode in parallel sequential; do
     bad "${mode}: アダプタが 125 で落ちたのに orchestrator が 0 で終わった"
     tail -12 "$TMP/orch-${mode}.log" | sed 's/^/    | /' >&2
   fi
-  if grep -qF 'Orchestrator-side failure, not the CLI' "$TMP/orch-${mode}.log"; then
+  if grep -qF 'Orchestrator-side failure, not the CLI' "$TMP/orch-${mode}.log" \
+    && grep -qF 'cannot create a temp file for command output.' "$TMP/orch-${mode}.log"; then
     ok "${mode}: 125 を専用の分類で報告する（CLI のクラッシュ調査へ送らない）"
   else
     bad "${mode}: 125 が汎用の Failed に丸められている（読み手が存在しない CLI クラッシュを追う）"

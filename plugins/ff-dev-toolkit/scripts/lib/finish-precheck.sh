@@ -11,11 +11,22 @@ fi
 # ── precheck ───────────────────────────────────────────────────────────────────
 cmd_precheck() {
   local PR_NUMBER="" MERGE_SUBJECT="" MERGE_BODY="" have_subject=0 have_body=0 GATE_RECORD="" have_gate_record=0
+  local MERGE_METHOD="squash" have_method=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --subject) [[ $# -ge 2 ]] || usage; MERGE_SUBJECT="$2"; have_subject=1; shift 2 ;;
       --body) [[ $# -ge 2 ]] || usage; MERGE_BODY="$2"; have_body=1; shift 2 ;;
       --gate-record) [[ $# -ge 2 ]] || usage; GATE_RECORD="$2"; have_gate_record=1; shift 2 ;;
+      --merge-method)
+        [[ $# -ge 2 ]] || usage
+        # 2 回目は値が同じでも受け付けない（値が違えば後勝ち・先勝ちのどちらで読んだかを生成物から判別できず、
+        # 同じ値でも指定箇所が 2 つある呼び出しは片方だけ書き換えた時点で競合に化ける）
+        [[ "$have_method" -eq 0 ]] || die_env "--merge-method が複数回指定されています（${MERGE_METHOD} と ${2:-（空）}）" "--merge-method を 1 回だけ渡して再実行する"
+        case "$2" in
+          squash|merge) MERGE_METHOD="$2"; have_method=1 ;;
+          *) die_env "--merge-method の値が不正です: ${2:-（空）}（squash または merge）" "squash（既定）か merge を渡して再実行する。rebase は --subject / --body を運べないので受け付けない" ;;
+        esac
+        shift 2 ;;
       --github-input) [[ $# -ge 2 && -n "$2" ]] || usage; github_input="$2"; shift 2 ;;
       -h|--help) usage ;;
       -*) echo "✗ 不明な引数: $1" >&2; usage ;;
@@ -76,6 +87,7 @@ cmd_precheck() {
     | select(sub("^https?://[^/]+/"; "") == $repo)
   ')" || die_env "ホストを含むリポジトリ URL を解決できません。merge コマンドを生成しない" "gh repo view --json nameWithOwner,url が同一リポジトリの完全な URL を返す状態に直して再実行する（GH_HOST から補完しない）"
   echo "TARGET_REPO=${TARGET_REPO}"
+  echo "MERGE_METHOD=${MERGE_METHOD}"
 
   # ── 1. 対象 Issue の検出（PR 本文からの抽出は機械で行う。目視で拾わない） ──
   local PR_BODY REFS_RAW CLOSES_RAW API_CLOSES_TOKENS CLOSES_UNION REFS_ONLY EXTRACT_RC
@@ -163,7 +175,7 @@ cmd_precheck() {
     # （API 側で切り詰められると、落ちた側の `fix: #N` は検査されないまま緑になる）
     actual_commits="$(printf '%s' "$PR_JSON" | jq -r '(.commits // []) | length')"
     expected_commits="$(git rev-list --count "origin/${base_ref}..${head_oid}" 2>/dev/null)" \
-      || { rm -f "$SURFACE"; die_env "コミット数を照合できません（origin/${base_ref}..${head_oid} を手元で解決できない）" "git fetch origin ${base_ref} ${head_ref} のうえ再実行する"; }
+      || { rm -f "$SURFACE"; die_env "コミット数を照合できません（origin/${base_ref}..${head_oid} を手元で解決できない）" "次を実行してから再実行する: $(ff_shell_argv git fetch origin "$base_ref" "$head_ref")"; }
     [[ "$expected_commits" -eq "$actual_commits" ]] \
       || { rm -f "$SURFACE"; die_env "コミット取得が切り詰められています（期待 ${expected_commits} / 取得 ${actual_commits}）" "PR のコミット数を減らす（squash）か、gh の版を上げてから再実行する"; }
     GATE_OUT="$(mktemp)" || { rm -f "$SURFACE"; die_env "一時ファイルを作れません" "TMPDIR を書ける場所へ向けて再実行する"; }
@@ -186,13 +198,19 @@ cmd_precheck() {
           blocked_reason="PR タイトルが Refs 運用の Issue を閉じる（改題で消せる抵触）"
           blocked_next="gh pr edit ${PR_NUMBER} --title '<Issue 参照を含まない件名>' で改題してから finish.sh precheck を再実行する"
         else
-          # コミットの件名・本文は書き換えられない。--subject / --body の明示（下の 2b）だけが解消手段
+          # コミットの件名・本文は書き換えられない。squash では --subject / --body の明示（下の 2b）だけが解消手段
           keyword_gate="conflict-commit"
+          if [[ "$MERGE_METHOD" == "merge" ]]; then
+            # merge commit 方式は各コミットをそのまま base へ載せる。merge commit のメッセージを
+            # どう明示してもコミットの closing keyword は残るので、2b では解消できない
+            blocked_reason="merge commit 方式（--merge-method merge）ではコミットがそのまま base へ載り、コミットの closing keyword が Refs 運用の Issue を閉じる（--subject / --body では解消できない）"
+            blocked_next="--merge-method を外して squash で finish.sh precheck を再実行するか、Issue 参照を含まないコミットへ積み直す"
+          fi
         fi ;;
       *) die_env "closing keyword 抵触検査が成立していません（status=${gate_status}）" "scripts/check-closing-keywords.sh を直接実行して原因を確かめる（抵触なしとして扱わない）" ;;
     esac
     echo "KEYWORD_GATE=${keyword_gate}"
-    # 2b. 実際に渡す squash メッセージの検査（これがマージの条件）。Refs 運用では両方明示が既定
+    # 2b. 実際に渡すマージメッセージ（squash / merge commit）の検査（これがマージの条件）。Refs 運用では両方明示が既定
     if [[ "$have_subject" -eq 1 ]]; then
       assert_bundled_shebang_lf "${GUARD}"
           { ff_merge_surface merge-subject "$MERGE_SUBJECT"; ff_merge_surface merge-body "$MERGE_BODY"; } \
@@ -201,12 +219,14 @@ cmd_precheck() {
           case "$gate_status" in
         0) message_gate="ok" ;;
         1) message_gate="conflict"
-           [[ -n "$blocked_reason" ]] || { blocked_reason="実際に渡す squash メッセージ（--subject / --body）が Refs 運用の Issue を閉じる"; blocked_next="件名・本文から Issue 参照を外して finish.sh precheck を再実行する"; } ;;
-        *) die_env "squash メッセージの抵触検査が成立していません（status=${gate_status}）" "scripts/check-closing-keywords.sh を直接実行して原因を確かめる" ;;
+           [[ -n "$blocked_reason" ]] || { blocked_reason="実際に渡す ${MERGE_METHOD} メッセージ（--subject / --body）が Refs 運用の Issue を閉じる"; blocked_next="件名・本文から Issue 参照を外して finish.sh precheck を再実行する"; } ;;
+        *) die_env "${MERGE_METHOD} メッセージの抵触検査が成立していません（status=${gate_status}）" "scripts/check-closing-keywords.sh を直接実行して原因を確かめる" ;;
       esac
     else
       message_gate="required"
-      [[ -n "$blocked_reason" ]] || { blocked_reason="Refs 運用の Issue があるのに --subject / --body が無い（squash メッセージの供給源がリポジトリ設定へ戻り、コミットの fix: #N で閉じうる）"; blocked_next="finish.sh precheck ${PR_NUMBER} --subject '<件名>' --body '<本文>' で実際に渡す文字列を検査する"; }
+      local required_why="squash メッセージの供給源がリポジトリ設定へ戻り、コミットの fix: #N で閉じうる"
+      [[ "$MERGE_METHOD" == "merge" ]] && required_why="merge commit の件名・本文がリポジトリ設定の既定（PR タイトル・本文）へ戻り、Issue 参照を含みうる"
+      [[ -n "$blocked_reason" ]] || { blocked_reason="Refs 運用の Issue があるのに --subject / --body が無い（${required_why}）"; blocked_next="finish.sh precheck ${PR_NUMBER} --subject '<件名>' --body '<本文>' で実際に渡す文字列を検査する"; }
     fi
   else
     echo "KEYWORD_GATE=none"
@@ -555,8 +575,8 @@ cmd_precheck() {
     # consumer root を位置引数へ固定し、実行 cwd や plugin の origin を削除対象にしない。
     delete_tail="$(printf ' \\\n  && bash -c %s ff-delete-merged-head %s %s %s' "$(q "$delete_body")" "$(q "$repo_root")" "$(q "$head_ref")" "$(q "$REMOTE_HEAD")")"
   fi
-  ff_merge_emit "$PR_NUMBER" "$TARGET_REPO_URL" "$REMOTE_HEAD" "$have_subject" "$MERGE_SUBJECT" "$MERGE_BODY" "${DELETE_FLAG:-}" "${delete_tail:-}" \
-    || die_env "引用に失敗（sed が使えない）。merge コマンドを生成しない" "sed を PATH に戻して再実行する"
+  ff_merge_emit "$PR_NUMBER" "$TARGET_REPO_URL" "$REMOTE_HEAD" "$have_subject" "$MERGE_SUBJECT" "$MERGE_BODY" "${DELETE_FLAG:-}" "${delete_tail:-}" "$MERGE_METHOD" \
+    || die_env "merge コマンドを生成できません（引用の失敗＝sed が使えない、またはマージ方式 ${MERGE_METHOD} の不正）。merge コマンドを生成しない" "sed を PATH に戻し、--merge-method を squash / merge にして再実行する"
 
   if [[ "$FRESH_STATUS" -eq 2 && "$rerun" != "no" ]]; then
     echo "PRECHECK=undetermined"

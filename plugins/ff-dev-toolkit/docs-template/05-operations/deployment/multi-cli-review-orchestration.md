@@ -955,7 +955,7 @@ grok をホストにした場合は別の動機がある: `grok -p`（headless�
    perspective=code-review
    task-type=review
    timeout=900
-   allowed-tools=Read,Grep,Glob,Bash(git diff*)
+   allowed-tools=Read,Grep,Glob
    prompt-file=/abs/path/.review-results/claude-code/.delegated/generations/<generation>/code-review.prompt.md
    output-file=/abs/path/.review-results/claude-code/.delegated/generations/<generation>/code-review.response.md
    prompt-digest=<sha1>

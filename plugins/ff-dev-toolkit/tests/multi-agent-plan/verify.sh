@@ -1658,7 +1658,8 @@ for archive_route in full fast; do
       --route "$archive_route" --archive-only --base develop --output-dir "$archive_out"
   ) > "$TMP/archive-$archive_route.log" 2>&1 || archive_rc=$?
   if [[ "$archive_rc" == 0 && ! -f "$ARCHIVE_EARLY_LOG" && -d "$archive_out" && ! -f "$archive_out/integrated-report.md" \
-    && ! -d "$archive_out/.multi-agent-run.lock" ]] && ! find "$archive_out" -mindepth 1 -print | grep . >/dev/null; then
+    && ! -d "$archive_out/.multi-agent-run.lock" && -f "$archive_out/.multi-agent-output-owner" ]] \
+    && ! find "$archive_out" -mindepth 1 ! -name .multi-agent-output-owner -print | grep . >/dev/null; then
     ok "archive-only $archive_route is CLI-free and produces no review/plan/cache/round artifacts on empty output"
   else bad "archive-only $archive_route entered review or failed: rc=$archive_rc"; fi
 done

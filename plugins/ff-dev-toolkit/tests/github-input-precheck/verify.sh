@@ -42,7 +42,7 @@ PLUGIN="$2"; CASES="$3"; TMP="$4"; EVIDENCE="${5:-}"
 PASS=0; FAIL=0; READY=0
 ok() { printf '  ✓ %s\n' "$1"; PASS=$((PASS + 1)); }
 bad() { printf '  ✗ %s\n' "$1" >&2; FAIL=$((FAIL + 1)); }
-for file in scripts/finish.sh scripts/lib/finish-precheck.sh scripts/lib/abs-path.sh scripts/lib/github-input.sh scripts/lib/merge-message.sh scripts/link-sub-issues.sh scripts/merge-cleanup.sh tests/lib/git-fixture.sh; do
+for file in scripts/finish.sh scripts/lib/finish-precheck.sh scripts/lib/abs-path.sh scripts/lib/github-input.sh scripts/lib/merge-message.sh scripts/lib/shell-quote.sh scripts/link-sub-issues.sh scripts/merge-cleanup.sh tests/lib/git-fixture.sh; do
   [ -s "$PLUGIN/$file" ] && [ -r "$PLUGIN/$file" ] || { bad "source missing/unreadable/empty: $file"; exit 1; }
 done
 if ! jq -e 'type == "array" and length > 0 and (map(.name) | unique | length) == length and

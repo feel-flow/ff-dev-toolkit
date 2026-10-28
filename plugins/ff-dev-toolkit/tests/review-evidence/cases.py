@@ -35,7 +35,13 @@ class Evidence(unittest.TestCase):
         self.git('switch', '-qc', 'feature/test')
         self.git('commit', '-qm', 'change', '--allow-empty')
         self.output = self.tmp / '.review-results'
-        self.output.mkdir()
+        self.output.mkdir(mode=0o700)
+        # Authorize the empty namespace before an evidence fixture adds content.
+        subprocess.run(['bash', '-c',
+                        '. "$1" && ff_review_output_prepare "$2" "$3" false review',
+                        'evidence-output', str(SCRIPT.parent / 'lib/multi-agent-boundary.sh'),
+                        str(self.tmp), str(self.output)],
+                       check=True, capture_output=True, text=True)
         self.file = self.output / 'start.json'
         self.receipt = self.output / 'review-evidence.json'
 
@@ -117,8 +123,11 @@ class Evidence(unittest.TestCase):
                and k not in ('CLAUDE_PLUGIN_ROOT', 'GROK_PLUGIN_ROOT')}
         env.update(PATH=str(stub_bin) + ':' + env['PATH'], FF_REVIEW_ROUND_LIMIT='0',
                    FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE='1', FF_DEV_TOOLKIT_ROOT=str(root))
-        cmd = ['bash', str(root / 'scripts/multi-review.sh'), '--cli', 'codex-cli',
-               '--perspective', 'code-review', '--base', 'develop', '--evidence', *extra]
+        if extra == ('--archive-only',):
+            cmd = ['bash', str(root / 'scripts/multi-review.sh'), '--base', 'develop', '--archive-only']
+        else:
+            cmd = ['bash', str(root / 'scripts/multi-review.sh'), '--cli', 'codex-cli',
+                   '--perspective', 'code-review', '--base', 'develop', '--evidence', *extra]
         return subprocess.run(cmd, capture_output=True, text=True, env=env)
 
     def test_root_removed_after_the_last_cli_still_issues_evidence(self):
@@ -205,6 +214,59 @@ class Evidence(unittest.TestCase):
                 self.assertNotIn(str(spare), result.stderr)
                 self.assertFalse(count.exists())
                 self.assertFalse(self.receipt.exists())
+
+    def test_retained_cache_refuses_unknown_and_unsafe_entries_before_archive(self):
+        self.commit_diff()
+        root = SCRIPT.parents[1]
+        stub_bin, count, _ = self.stub('retained-cache')
+        result = self.review(root, stub_bin)
+        self.assertEqual(result.returncode, 0, result.stderr[-4000:])
+        baseline = self.tmp.parent / ('evidence-baseline-' + self.tmp.name)
+        shutil.copytree(self.output, baseline)
+        self.addCleanup(shutil.rmtree, baseline, True)
+        victim_dir = self.tmp.parent / ('evidence-victim-' + self.tmp.name)
+        victim_dir.mkdir(mode=0o700)
+        self.addCleanup(shutil.rmtree, victim_dir, True)
+        victim = victim_dir / 'canary'
+        victim.write_bytes(b'UNCHANGED')
+        calls = count.read_text()
+        probes = 0
+        kinds = ['unknown-name', 'directory-link', 'leaf-link', 'directory-leaf', 'hardlink']
+        if hasattr(os, 'mkfifo'):
+            kinds.append('fifo')
+        for kind in kinds:
+            with self.subTest(kind=kind):
+                shutil.rmtree(self.output)
+                shutil.copytree(baseline, self.output)
+                cache = self.output / '.evidence'
+                candidate = cache / ('0' * 32)
+                if kind == 'unknown-name':
+                    (cache / 'unrelated.txt').write_text('user note')
+                elif kind == 'directory-link':
+                    candidate.symlink_to(victim_dir, target_is_directory=True)
+                else:
+                    candidate.mkdir(mode=0o700)
+                    leaf = candidate / 'report.md'
+                    if kind == 'leaf-link':
+                        leaf.symlink_to(victim)
+                    elif kind == 'directory-leaf':
+                        leaf.mkdir()
+                    elif kind == 'hardlink':
+                        os.link(victim, leaf)
+                    else:
+                        os.mkfifo(leaf)
+                before_report = (self.output / 'integrated-report.md').read_bytes()
+                result = self.review(root, stub_bin, '--archive-only')
+                self.assertNotEqual(result.returncode, 0, result.stderr[-4000:])
+                self.assertIn(str(cache.resolve()), result.stderr)
+                self.assertTrue('cannot archive previous review output' in result.stderr or
+                                'unsafe review output boundary' in result.stderr, result.stderr)
+                self.assertEqual((self.output / 'integrated-report.md').read_bytes(), before_report)
+                self.assertEqual(count.read_text(), calls)
+                self.assertEqual(victim.read_bytes(), b'UNCHANGED')
+                self.assertEqual(list(self.output.glob('.prev-*')), [])
+                probes += 1
+        self.assertGreaterEqual(probes, 5, 'retained cache case collection is empty/incomplete')
 
     def test_finish_failure_keeps_inputs_and_resume_reissues(self):
         self.commit_diff()
@@ -342,6 +404,8 @@ class Evidence(unittest.TestCase):
             result = subprocess.run(cmd, capture_output=True, text=True, env=env)
             self.assertEqual(result.returncode, 0, result.stderr[-4000:])
             self.call('verify', '--required', 'code-review')
+            prior_report = Path(json.loads(self.receipt.read_text())['report'])
+            prior_bytes = prior_report.read_bytes()
             claude = stub / 'claude'
             claude.write_text(cli.read_text())
             claude.chmod(0o755)
@@ -349,7 +413,9 @@ class Evidence(unittest.TestCase):
             pair = ['bash', str(SCRIPT.parent / 'multi-review.sh'), '--route', 'full',
                     '--base', 'develop', '--evidence', '--fresh']
             result = subprocess.run(pair, capture_output=True, text=True, env=env)
+            self.assertEqual(prior_report.read_bytes(), prior_bytes)
             states = json.loads(self.receipt.read_text())['results']
+            self.assertIn('codex-cli:comprehensive-review', states, result.stderr[-4000:])
             self.assertEqual(states['codex-cli:comprehensive-review'], 'unavailable', result.stderr[-3000:])
             self.assertTrue(all(state == 'complete' for task, state in states.items() if task.startswith('claude-code:')))
             self.call('verify', '--required', 'code-review,comprehensive-review')

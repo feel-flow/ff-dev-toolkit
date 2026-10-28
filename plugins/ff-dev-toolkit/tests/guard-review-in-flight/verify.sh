@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # 空振り検出: archive-onlyの2形を巡の対象外から外す独立変異で(n16 archive)4件赤（580/4）、そのcase集合を空にすると下限照合が1件赤（577/1）。無変異は全584/0、通常reviewの3巡目denyを対照として維持（2026-10-22実測）。
 # Runtime contract for the review in-flight / dirty guard hook.
+# 空振り検出: 採用前oldbodyをcat返却直前で止めるlocal/foreign追加2件を含む対照44/0。pathだけのcacheへ戻すとforeignが43/1、stale/done削除のcurrentbody再照合を外すとlocalが43/1へ赤転し、いずれも採用済みbytesと後続denyを照合する。claim列挙・TTL・私有親・空集合を含む独立6変異は全検出（同期timeout無し、2026-10-28実測、Issue `#2429`）。
+# 空振り検出: claim対応readerのfocused対照は42/0。claim列挙除去はlocal/foreignの実Edit凍結・standalone・移動競合が赤（26/6）、claimをpending TTLへ戻すと41/1、私有親検査を外すと41/1、claim case呼出の空化も42件の下限照合が赤（24/1）。両方向のopen直前barrier、期限切れ保持・exact-path点検案内、必要scopeの不在/inert/途中切れも実測（2026-10-28、Issue `#2429`）。
 # 空振り検出: 世代別promptの隣接requestからoutput-fileを読む代入を空にすると、o6 subsetの無変異6/0から4/2へ赤転（laneの出力先欠落・B応答後の解放失敗。2026-10-22 実測）。未応答/遅いA応答のdeny対照は緑のまま。
+# 空振り検出: h-privateの14件は無変異14/0。取得・採用の一時leafをそれぞれ旧予測可能tmpへ戻す独立変異でcanary不変照合が赤（各rc=1）、case呼出を除去した空集合も下限照合で赤（rc=1）。hook先行の所有root・旧非空root保持と並列採用を正常対照に持つ（2026-10-28実測、Issue `#2429`）。
 #
 # 配布物 hooks/guard-review-in-flight.sh を stdin JSON で直接駆動し、受け入れ条件を
 # 固定する。
@@ -302,7 +305,10 @@ git -C "$REPO" commit -qm init
 
 LOCK_DIR="$REPO/.review-results"
 LOCK="$LOCK_DIR/.review-in-flight"
-mkdir -p "$LOCK_DIR"
+# fixtureも空rootを同じhelperで初期化する。未標識の旧成果物を自動採用しない。
+# shellcheck source=../../scripts/lib/multi-agent-boundary.sh
+. "$PLUGIN_ROOT/scripts/lib/multi-agent-boundary.sh"
+ff_review_output_prepare "$REPO" "$LOCK_DIR" false review >/dev/null
 
 # 生存 PID として自分自身を使う（kill -0 が必ず通る）。stale 側は「割り当てられて
 # いない PID」を探して使う — 固定値だと環境によっては実在してしまう。
@@ -1022,6 +1028,21 @@ else
 fi
 rm -f "$BARRIER"
 clear_lanes
+
+echo 'guard-review-in-flight: (h-private) 排他的tmpと非通常laneの拒否'
+# shellcheck source=lane-private-cases.sh
+if [ ! -s "$SCRIPT_DIR/lane-private-cases.sh" ]; then
+  bad '(h-private) 私有tmpの回帰ケースが不在・空'
+else
+  . "$SCRIPT_DIR/lane-private-cases.sh"
+  if declare -F run_lane_private_cases >/dev/null; then
+    H_PRIVATE_CHECKS="$((PASS + FAIL))"
+    run_lane_private_cases
+    [ "$((PASS + FAIL - H_PRIVATE_CHECKS))" -ge 44 ] || bad '(h-private) 回帰case集合が空・欠落している'
+  else
+    bad '(h-private) 私有tmpの回帰ケースを読み込めない'
+  fi
+fi
 
 echo "guard-review-in-flight: (h11) 既定の寿命上限の境界"
 # 上限を env で上書きした検査だけだと、既定値を別の値へ変異させても緑のままになる。
@@ -2183,6 +2204,11 @@ cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$K_COPY2/hooks/"
 cp "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$K_COPY2/hooks/" 2>/dev/null || true
 cp "$PLUGIN_ROOT/tests/lib/heredoc-strip.sh" "$K_COPY2/tests/lib/"
 cp "$PLUGIN_ROOT/tests/lib/review-in-flight-judge.sh" "$K_COPY2/tests/lib/"
+for K_REQUIRED_COPY in "$K_COPY" "$K_COPY2"; do
+  mkdir -p "$K_REQUIRED_COPY/scripts/lib"
+  cp "$PLUGIN_ROOT/tests/lib/review-lane-scope.sh" "$K_REQUIRED_COPY/tests/lib/"
+  cp "$PLUGIN_ROOT/scripts/lib/multi-agent-boundary.sh" "$K_REQUIRED_COPY/scripts/lib/"
+done
 write_lock "$LIVE_PID"
 K_OUT="$(printf '%s' "$(bash_json_at "tee $TEST_OUT/x" "$REPO")" | bash "$K_COPY/hooks/guard-review-in-flight.sh" 2>/dev/null)"
 case "$(printf '%s' "$K_OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" in
@@ -2455,6 +2481,9 @@ mkdir -p "$O_COPY/hooks" "$O_COPY/tests/lib"
 cp "$TARGET" "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$O_COPY/hooks/"
 cp "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$O_COPY/hooks/" 2>/dev/null || true
 cp "$PLUGIN_ROOT/tests/lib/heredoc-strip.sh" "$PLUGIN_ROOT/tests/lib/review-write-scan.sh" "$PLUGIN_ROOT/tests/lib/review-in-flight-judge.sh" "$O_COPY/tests/lib/"
+mkdir -p "$O_COPY/scripts/lib"
+cp "$PLUGIN_ROOT/tests/lib/review-lane-scope.sh" "$O_COPY/tests/lib/"
+cp "$PLUGIN_ROOT/scripts/lib/multi-agent-boundary.sh" "$O_COPY/scripts/lib/"
 O_OUT="$(printf '%s' "$(bash_json_at "ls" "$REPO")" | bash "$O_COPY/hooks/guard-review-in-flight.sh" 2>/dev/null)"
 case "$(printf '%s' "$O_OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null)" in
   *'review-shell-lex.sh'*) ok "(o3) 字句解析ライブラリが無いと判定不能として止める（理由にライブラリ名を出す）" ;;
@@ -3001,13 +3030,20 @@ esac
 git -C "$REPO" switch -q feature/n-rounds
 
 # --- 記録は出力先の外: レーン置き場の rm -rf と multi-agent.sh --fresh の退避を経ても 3 巡目を deny ---
+# Earlier delegation fixtures are unrelated to this counter check. Prepare an owned
+# namespace containing only known generated artifacts and an ended, empty lane dir.
+rm -rf "$LOCK_DIR"
+(
+  . "$PLUGIN_ROOT/scripts/lib/multi-agent-boundary.sh"
+  ff_review_output_prepare "$REPO" "$LOCK_DIR" true review >/dev/null
+)
 n_reset
 n_commit "fresh r1"
 run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
 n_commit "fresh r2"
 run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
 mkdir -p "$LANE_DIR"
-printf 'marker\n' > "$LANE_DIR/marker.lane"
+printf 'marker\n' > "$LOCK_DIR/.fixed-diff"
 printf 'fresh\n' > "$REPO/src/fresh.txt"
 git -C "$REPO" add src/fresh.txt
 git -C "$REPO" commit -q -m "fresh r3 (real diff for the orchestrator)"
@@ -3021,8 +3057,14 @@ chmod +x "$N_STUB/codex"
     PATH="$N_STUB:$PATH" bash "$MULTI_AGENT" --task review --mode cross-model --cli codex-cli \
     --perspective code-review --base n-base --fresh --timeout 5
 ) >/dev/null 2>"$TEST_TMP/n-fresh.err" || true
-if [ ! -e "$LANE_DIR/marker.lane" ] && grep -q -- '--fresh: archived' "$TEST_TMP/n-fresh.err"; then
-  ok "(n14) multi-agent.sh --fresh が出力先（レーン置き場を含む）を実際に退避した"
+N_FRESH_ARCHIVE=''
+for N_FRESH_CANDIDATE in "$LOCK_DIR"/.prev-*; do
+  [ -f "$N_FRESH_CANDIDATE/.fixed-diff" ] || continue
+  grep -qxF marker "$N_FRESH_CANDIDATE/.fixed-diff" || continue
+  N_FRESH_ARCHIVE="$N_FRESH_CANDIDATE"
+done
+if [ -n "$N_FRESH_ARCHIVE" ] && [ -d "$LANE_DIR" ] && grep -q -- '--fresh: archived' "$TEST_TMP/n-fresh.err"; then
+  ok "(n14) multi-agent.sh --fresh が成果物を退避し、レーン制御directoryは保持した"
 else
   bad "(n14) --fresh の退避が起きていない（統合検査の前提）: $(tail -n 3 "$TEST_TMP/n-fresh.err")"
 fi
@@ -3096,6 +3138,7 @@ done
 [[ "$N_ARCHIVE_COUNT" == 4 ]] && ok '(n16 archive) hook exclusion collection is complete' || bad '(n16 archive) hook exclusion collection is empty/incomplete'
 run_hook "$(bash_json 'bash /x/scripts/multi-review.sh --base n-base')" "$N_DEF"
 assert_n_deny '(n16 archive) ordinary review still counts and is denied at the third round'
+rm -rf "$REPO/.archive-round-check"
 # archive-rounds:end
 n_ma -- multi-review.sh --dry-run --route fast --base n-base
 case "$N_MA_ERR" in
@@ -3208,6 +3251,8 @@ N20_DIR="$TEST_TMP/n20-crash"
 mkdir -p "$N20_DIR/hooks" "$N20_DIR/tests"
 cp "$PLUGIN_ROOT/hooks/"*.sh "$N20_DIR/hooks/"
 cp -R "$PLUGIN_ROOT/tests/lib" "$N20_DIR/tests/lib"
+mkdir -p "$N20_DIR/scripts/lib"
+cp "$PLUGIN_ROOT/scripts/lib/multi-agent-boundary.sh" "$N20_DIR/scripts/lib/"
 awk '{ print } /^    ROUND_FINISH_ARMED=1$/ && !done { print "    exit 3 # injected-crash"; done = 1 }' \
   "$TARGET" > "$N20_DIR/hooks/guard-review-in-flight.sh"
 if [ "$(grep -c 'injected-crash' "$N20_DIR/hooks/guard-review-in-flight.sh" 2>/dev/null || true)" != "1" ]; then

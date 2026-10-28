@@ -519,6 +519,35 @@ else
 fi
 rm -rf "$SYM"
 
+# 展開される LICENSE のリンクは、scanner より前の copy でも外を変えない。
+# 実行するのは fixture の同期だけ。source/destination の両方、dry-run/通常を測る。
+for license_path in 'oss/ff-dev-toolkit/LICENSE' 'plugins/ff-dev-toolkit/LICENSE'; do
+  sentinel="$TMP_DIR/license-host-sentinel"
+  printf '%s\n' unchanged >"$sentinel"
+  rm -f "$SSOT/$license_path"
+  ln -s "$sentinel" "$SSOT/$license_path"
+  git -C "$SSOT" add -- "$license_path"
+  git -C "$SSOT" commit -qm 'fixture LICENSE link'
+  for sync_mode in dry real; do
+    link_rc=0
+    if [[ "$sync_mode" == dry ]]; then
+      link_out="$("$SSOT/scripts/sync-dev-toolkit-to-public.sh" --target "$PUB" --dry-run 2>&1)" || link_rc=$?
+    else
+      link_out="$(run_sync 2>&1)" || link_rc=$?
+    fi
+    if [[ "$link_rc" -ne 0 && "$(cat "$sentinel")" == unchanged ]] \
+      && [[ "$link_out" == *"公開入力は通常ファイルだけを許可します"* ]]; then
+      ok "$license_path ($sync_mode): 展開前にリンクを拒否しホスト sentinel を保持"
+    else
+      bad "$license_path ($sync_mode): copy 前に拒否できない rc=$link_rc / $link_out"
+    fi
+  done
+  rm -f "$SSOT/$license_path"
+  printf '%s\n' 'fixture license' >"$SSOT/$license_path"
+  git -C "$SSOT" add -- "$license_path"
+  git -C "$SSOT" commit -qm 'restore regular LICENSE'
+done
+
 # ---- A5. 中断した同期は記録を残さない（書き込み前に必ず消す） ----------------
 # 前回の記録が残ったまま同期が途中で落ちると、手順 4 がそれを読んで部分同期を
 # commit する（fail-open）。禁止パターン検査で落ちる入力を与え、事前に置いた

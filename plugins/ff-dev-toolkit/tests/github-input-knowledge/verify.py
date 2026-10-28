@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Local predicates and finish integration. --consumer-only excludes finish cases."""
-import argparse, json, os, pathlib, shutil, subprocess, sys, tempfile
+import argparse, json, os, pathlib, shlex, shutil, subprocess, sys, tempfile
 HERE = pathlib.Path(__file__).resolve().parent
 NAMES = ['effort-golden','effort-negative','lookup','doctor','subject','finish-probe','finish-push','finish-pr','mapping']
 REQUIRED = ['effort.json','labels.json','open.json','parents.json','drafts.json','empty.json','classic.json','repo.json','rules.json','subject.json','mcp-parent-404.json','mcp-parent-403.json','mcp-parent-400.json']
@@ -30,11 +30,12 @@ with tempfile.TemporaryDirectory(prefix='github-input-knowledge.') as d:
   loc=shutil.which(name)
   if loc: (b/name).symlink_to(loc)
  env={'PATH':str(b),'LC_ALL':'C','TMPDIR':str(t),'HOME':os.environ['HOME'],'CLAUDE_CONFIG_DIR':str(cfg),'FF_DEV_TOOLKIT_ROOT':str(p),'GIT_CONFIG_NOSYSTEM':'1','GIT_CONFIG_GLOBAL':'/dev/null'}
+ # Paths are data: every path concatenated into stub text goes through shlex.quote.
  def stub(body):
   q=b/'gh'
   if q.exists() or q.is_symlink():q.unlink()
   q.write_text('#!/bin/bash\n'+body+'\n');q.chmod(0o755)
- def refuse():stub("printf 'leak\\n' >> "+str(leak)+"\nexit 97")
+ def refuse():stub("printf 'leak\\n' >> "+shlex.quote(str(leak))+"\nexit 97")
  def run(script,argv,cwd=None,expected=0,diagnostic=None):
   cp=subprocess.run([str(b/'env'),'-i',*[key+'='+value for key,value in env.items()],str(b/'bash'),str(p/'scripts'/script),*map(str,argv)],cwd=cwd or t,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=60)
   if cp.returncode != expected:raise AssertionError(f'{script} {argv}: rc={cp.returncode} expected={expected}\n'+cp.stdout.decode(errors='replace')+'\n'+cp.stderr.decode(errors='replace'))
@@ -69,7 +70,7 @@ with tempfile.TemporaryDirectory(prefix='github-input-knowledge.') as d:
   check(not leak.exists(),'explicit empty --github-input '+label+' rc2 before gh')
  # effort: both acquisition modes feed exactly the same existing two passes.
  raw=f/'effort.json'
- stub("printf '%s\\n' \"$*\" >> "+str(calls)+"\ncat "+str(raw))
+ stub("printf '%s\\n' \"$*\" >> "+shlex.quote(str(calls))+"\ncat "+shlex.quote(str(raw)))
  gh=run('effort-report.sh',['--repo','example/repo','--state','closed','--limit','2','--format','kv'])
  check(calls.read_text()=='issue list --repo example/repo --state closed --limit 2 --json number,body\n','effort original gh argv')
  ix=index([entry('effort.issues',{'state':'closed','limit':2},raw,'collect')]);refuse()
@@ -92,7 +93,7 @@ with tempfile.TemporaryDirectory(prefix='github-input-knowledge.') as d:
 fixture
 ''')
  argv=['--root',root,'--promoted-open']
- stub("printf '%s\\n' \"$*\" >> "+str(calls)+"\nprintf '7\\n'")
+ stub("printf '%s\\n' \"$*\" >> "+shlex.quote(str(calls))+"\nprintf '7\\n'")
  gh=run('knowledge-lookup.sh',argv);refuse()
  ix=index([entry('lookup.open-set',{'state':'open','limit':1000},put('lookup-open.json',[{'number':7}]),'lookup')]);fi=run('knowledge-lookup.sh',[*argv,'--github-input',ix]);check(gh==fi and (b'#'+b'7(open)') in fi and (b'#'+b'8(closed)') in fi,'lookup gh/file bytes and repo cache')
  ix=index([]);out=run('knowledge-lookup.sh',[*argv,'--github-input',ix]);check(('#'+'7(未確認)').encode() in out,'lookup unavailable keeps local result unknown')

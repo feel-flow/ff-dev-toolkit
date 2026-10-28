@@ -396,6 +396,7 @@ finish/verify.sh
 github-input-precheck/verify.sh
 grok-hooks-sync/verify.sh
 guard-checkout-restore/verify.sh
+guard-review-in-flight/lane-private-cases.sh
 guard-review-in-flight/verify.sh
 markdownlint-selftest/verify.sh
 mbcs-guard-failclosed/verify.sh
@@ -403,6 +404,7 @@ merge-cleanup/agent-branches.sh
 merge-cleanup/detached-caller.sh
 merge-cleanup/verify.sh
 multi-agent-critical-marker/verify.sh
+multi-agent-host-delegation/completed-lane-cases.sh
 multi-agent-host-delegation/verify.sh
 multi-agent-ignore-paths/verify.sh
 multi-agent-load-gate/verify.sh

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: 所有済みrootのlive-lane拒否を迂回する単一変異でarchive-only/freshの2件が赤。live-lane集合を空にすると件数照合が赤（2026-10-28 focused probe）。
 # 空振り検出: 共有output boundaryのroot取得不能またはtracked問い合わせ不能を成功へ戻す独立変異で、通常review/archive-onlyの各2件が赤。5/0のfocused boundary集合を空にすると1件赤（2026-10-22）。故障fixtureは各operationで同じ非空sentinelを作り直し、前caseのpartial archiveを後caseへ混ぜない。
 # git-path-isolation: 固定 PATH は実 CLI / yq / 更新 CLI の混入と不在検査の偽緑を防ぐ。
 # git の親ディレクトリ全体は追加しない（同居する CLI も露出するため）。Xcode 障害時は
@@ -22,7 +23,8 @@
 #
 # Issue #1025: 別系列に残った未解消レポートがあっても、--cli だけのフルレビュー
 # （codex-review.sh の既定入口）は新系列を開始する。絞り込みは非 0 で止まり
-# --fresh を案内する。--fresh は lock 以外を <output-dir>/.prev-<ts>/ へ退避する。
+# --fresh を案内する。--fresh は所有marker・lock・既存退避を残し、既知生成物を
+# <output-dir>/.prev-<ts>/ へ退避する。
 #
 # https://github.com/feel-flow/ff-dev-toolkit/issues/96 : その退避先は出力
 # ディレクトリの**内側**でなければならない。兄弟
@@ -1363,14 +1365,16 @@ git switch -q other-review-series
 # だけがブランチトポロジと作業ツリーを触る。probe コミットを残すと、後続ケースが
 # commit 数や `develop...HEAD` の中身に依存し始めた時点で「原因が 1,000 行上にある」
 # 形で壊れる。`git reset --hard` は切り替えで持ち回っている作業ツリーの変更も巻き添えに
-# するので、退避してから戻す（2026-09-17 指摘）。
-git stash -q --include-untracked 2>/dev/null || true
+# するので、退避してから戻す（2026-09-17 指摘）。所有済みoutputはstashへ入れない。
+# Gitはディレクトリ権限を保存せず、popで私有rootを755へ戻してしまう。
+git stash -q --include-untracked -- . ':(exclude,top,literal).review-results' 2>/dev/null || true
 git reset -q --hard "$SERIES_PROBE_BEFORE"
 git stash pop -q 2>/dev/null || true
 rm -f "$REPO/merged-series-probe.txt"
 if [ "$(git rev-parse HEAD)" = "$SERIES_PROBE_BEFORE" ] \
   && [ "$(git rev-parse develop)" = "$DEVELOP_BEFORE_MERGE" ] \
-  && [ ! -e "$REPO/merged-series-probe.txt" ]; then
+  && [ ! -e "$REPO/merged-series-probe.txt" ] \
+  && ( . "$PLUGIN_ROOT/scripts/lib/multi-agent-boundary.sh"; ff_review_output_private "$REPO/.review-results" true ); then
   ok "マージ済み series ブロックは fixture の状態を元へ戻す（後続へ実行順結合を残さない）"
 else
   bad "マージ済み series ブロックが fixture を戻していない（HEAD=$(git rev-parse --short HEAD) develop=$(git rev-parse --short develop)）"
@@ -2613,8 +2617,9 @@ git switch -q feature/x
 # --fresh / 「別 series なら新シリーズ」導入より前に生成された
 # `.review-results/integrated-report.md` には機械状態行が無く、series を読めない。
 # 「今回の series である」ことは証明できないので、既定観点を全て回し直す
-# unfiltered full review は新シリーズを開始できなければならない（さもないと
-# アップグレード直後の最初のレビューが必ず止まり、手動退避を強いる）。
+# unfiltered full review は新シリーズを開始できなければならない。
+# ここは所有済みnamespace内のレポート形式だけを検査する。所有markerを持たない
+# 非空の旧rootは保存境界で拒否するため、この互換性の対象ではない。
 # 絞り込みは従来どおり止めるが、案内に復旧手段（--fresh と具体コマンド）が要る。
 echo
 echo "== 旧形式（series タグ無し）レポートの扱い =="
@@ -2634,7 +2639,11 @@ LEGACY_FULL_REVIEW_HINT='       bash scripts/codex-review.sh --base develop'
 # にする — 実測の障害はまさに「計画に無い観点」で起きており、計画内の観点だと
 # 観点照合を素通りして退行を検出できない。
 write_legacy_report() {
-  mkdir -p "$REPO/.review-results"
+  # This tests the report format inside an owned namespace, not unmarked-root migration.
+  (
+    . "$PLUGIN_ROOT/scripts/lib/multi-agent-boundary.sh"
+    ff_review_output_prepare "$REPO" "$REPO/.review-results" true review >/dev/null
+  )
   cat > "$REPORT" <<'REPORT_BODY'
 # Legacy integrated report (pre-series-tag format)
 <!-- CRITICAL_BLOCK -->
@@ -3484,6 +3493,13 @@ mkdir -p "$BOUNDARY_COPY"
 cp -R "$PLUGIN_ROOT/scripts" "$BOUNDARY_COPY/scripts"
 BOUNDARY_OUT="$REPO/.archive-boundary-results"
 BOUNDARY_MISSING="$TMP/missing-root"
+# Generate a complete owned inventory so an unrelated-entry rejection cannot hide
+# a broken boundary check. Restore it at the same bound path before each fault.
+printf '%s\n' '## Boundary fixture' '- verdict: none' > "$TMP/body.md"
+run_isolated PATH="$STUB:$PATH" HOME="$TMP/home" bash "$MULTI_AGENT" \
+  --task review --cli codex-cli --perspective code-review --base develop --timeout 60 \
+  --output-dir "$BOUNDARY_OUT" > "$TMP/boundary-fixture.log" 2>&1
+cp -R "$BOUNDARY_OUT" "$TMP/boundary-inventory"
 awk -v missing="$BOUNDARY_MISSING" '{print} /^validate_output_dir_boundary\(\) \{/ { print "  REPO_ROOT=\"" missing "\"" }' \
   "$PLUGIN_ROOT/scripts/lib/multi-agent-prepare.sh" > "$BOUNDARY_COPY/scripts/lib/multi-agent-prepare.sh"
 BOUNDARY_CASE_COUNT=0
@@ -3501,18 +3517,18 @@ SHIM
   for boundary_operation in archive review; do
     BOUNDARY_CASE_COUNT=$((BOUNDARY_CASE_COUNT + 1))
     rm -rf "$BOUNDARY_OUT"
-    mkdir -p "$BOUNDARY_OUT"
-    printf '<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:1-1 block:- nonblock:- -->\n' > "$BOUNDARY_OUT/integrated-report.md"
-    printf 'boundary sentinel\n' > "$BOUNDARY_OUT/sentinel"
+    cp -R "$TMP/boundary-inventory" "$BOUNDARY_OUT"
     boundary_before="$(git hash-object "$BOUNDARY_OUT/integrated-report.md")"
+    boundary_diff_before="$(git hash-object "$BOUNDARY_OUT/.fixed-diff")"
     boundary_calls="$(wc -l < "$TMP/stub-calls")"
     boundary_rc=0
     if [[ "$boundary_operation" == archive ]]; then BOUNDARY_ARGS=(--archive-only); else BOUNDARY_ARGS=(--fresh --cli codex-cli --perspective code-review); fi
     run_isolated PATH="$STUB:$PATH" HOME="$TMP/home" FF_DEV_TOOLKIT_ROOT="$BOUNDARY_ROOT" \
       bash "$BOUNDARY_ROOT/scripts/multi-agent.sh" --task review --base develop --output-dir "$BOUNDARY_OUT" \
       "${BOUNDARY_ARGS[@]}" > "$TMP/boundary-$boundary_fault-$boundary_operation.log" 2>&1 || boundary_rc=$?
-    if [[ "$boundary_rc" -ne 0 && -f "$BOUNDARY_OUT/sentinel" ]] \
+    if [[ "$boundary_rc" -ne 0 && -f "$BOUNDARY_OUT/.fixed-diff" ]] \
       && [[ "$(git hash-object "$BOUNDARY_OUT/integrated-report.md")" == "$boundary_before" ]] \
+      && [[ "$(git hash-object "$BOUNDARY_OUT/.fixed-diff")" == "$boundary_diff_before" ]] \
       && [[ "$(wc -l < "$TMP/stub-calls")" == "$boundary_calls" ]] \
       && grep -qF 'output boundary' "$TMP/boundary-$boundary_fault-$boundary_operation.log" \
       && ! find "$BOUNDARY_OUT" -name '.prev-*' -print | grep . >/dev/null; then
@@ -3522,6 +3538,31 @@ SHIM
   if [[ "$boundary_fault" == tracked ]]; then rm "$STUB/git"; ln -s "$REAL_GIT" "$STUB/git"; fi
 done
 [[ "$BOUNDARY_CASE_COUNT" == 4 ]] && ok 'shared boundary case collection is complete' || bad 'shared boundary case collection is empty/incomplete'
+# An owned namespace still cannot archive an active or uninspected review lane.
+LIVE_LANE_CASE_COUNT=0
+for boundary_operation in archive review; do
+  LIVE_LANE_CASE_COUNT=$((LIVE_LANE_CASE_COUNT + 1))
+  rm -rf "$BOUNDARY_OUT"
+  cp -R "$TMP/boundary-inventory" "$BOUNDARY_OUT"
+  mkdir -p "$BOUNDARY_OUT/.review-in-flight.d"
+  printf '%s\n' 'active lane must survive' > "$BOUNDARY_OUT/.review-in-flight.d/active.lane"
+  boundary_before="$(git hash-object "$BOUNDARY_OUT/integrated-report.md")"
+  boundary_calls="$(wc -l < "$TMP/stub-calls")"
+  boundary_rc=0
+  if [[ "$boundary_operation" == archive ]]; then BOUNDARY_ARGS=(--archive-only); else BOUNDARY_ARGS=(--fresh --cli codex-cli --perspective code-review); fi
+  run_isolated PATH="$STUB:$PATH" HOME="$TMP/home" bash "$MULTI_AGENT" \
+    --task review --base develop --output-dir "$BOUNDARY_OUT" "${BOUNDARY_ARGS[@]}" \
+    > "$TMP/boundary-live-lane-$boundary_operation.log" 2>&1 || boundary_rc=$?
+  if [[ "$boundary_rc" -ne 0 && -f "$BOUNDARY_OUT/.review-in-flight.d/active.lane" ]] \
+    && grep -qxF 'active lane must survive' "$BOUNDARY_OUT/.review-in-flight.d/active.lane" \
+    && [[ "$(git hash-object "$BOUNDARY_OUT/integrated-report.md")" == "$boundary_before" ]] \
+    && [[ "$(wc -l < "$TMP/stub-calls")" == "$boundary_calls" ]] \
+    && grep -qF 'review lanes remain active or need explicit inspection' "$TMP/boundary-live-lane-$boundary_operation.log" \
+    && ! find "$BOUNDARY_OUT" -name '.prev-*' -print | grep . >/dev/null; then
+    ok "live review lane stops $boundary_operation before archive or task dispatch"
+  else bad "live review lane was archived or silently bypassed by $boundary_operation rc=$boundary_rc"; fi
+done
+[[ "$LIVE_LANE_CASE_COUNT" == 2 ]] && ok 'live-lane refusal case collection is complete' || bad 'live-lane refusal case collection is empty/incomplete'
 # archive-boundary:end
 
 echo

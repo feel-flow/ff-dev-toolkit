@@ -26,14 +26,11 @@ pair_reviewers_report_line() {
 
 generate_review_report() {
   local final_report_file="${OUTPUT_DIR}/integrated-report.md"
-  local report_file="${final_report_file}.building.$$"
+  local report_file
+  report_file="$(umask 077; mktemp "${OUTPUT_DIR}/.report-building.XXXXXX")" || return 1
 
   echo "📝 Generating integrated review report..." >&2
 
-  if ! rm -f "$report_file"; then
-    echo "ERROR: cannot clear the temporary integrated review report: ${report_file}" >&2
-    return 1
-  fi
   if ! cat > "$report_file" <<HEADER
 # Multi-CLI Review — Integrated Report
 
@@ -457,18 +454,20 @@ HEADER
     return 1
   fi
 
-  if ! mv "$report_file" "$final_report_file"; then
+  if ! output_artifact copy integrated-report.md "${report_file#"$OUTPUT_DIR"/}"; then
     echo "ERROR: cannot publish the completed integrated review report." >&2
     rm -f "$report_file" 2>/dev/null || true
     return 1
   fi
+  rm -f "$report_file" || return 1
 
   echo "📄 Report: ${final_report_file}" >&2
 }
 
 # ── Generate Report (explore) ──
 generate_explore_report() {
-  local report_file="${OUTPUT_DIR}/integrated-report.md"
+  local report_file
+  report_file="$(umask 077; mktemp "${OUTPUT_DIR}/.report-building.XXXXXX")" || return 1
 
   echo "📝 Generating integrated explore report..." >&2
 
@@ -491,12 +490,15 @@ HEADER
     echo "(No explore results found.)" >> "$report_file"
   fi
 
-  echo "📄 Report: ${report_file}" >&2
+  output_artifact copy integrated-report.md "${report_file#"$OUTPUT_DIR"/}" || { rm -f "$report_file"; return 1; }
+  rm -f "$report_file" || return 1
+  echo "📄 Report: ${OUTPUT_DIR}/integrated-report.md" >&2
 }
 
 # ── Generate Report (implement) ──
 generate_implement_report() {
-  local report_file="${OUTPUT_DIR}/integrated-report.md"
+  local report_file
+  report_file="$(umask 077; mktemp "${OUTPUT_DIR}/.report-building.XXXXXX")" || return 1
 
   echo "📝 Generating integrated implement report..." >&2
 
@@ -532,7 +534,9 @@ HEADER
     echo "(No implement results found.)" >> "$report_file"
   fi
 
-  echo "📄 Report: ${report_file}" >&2
+  output_artifact copy integrated-report.md "${report_file#"$OUTPUT_DIR"/}" || { rm -f "$report_file"; return 1; }
+  rm -f "$report_file" || return 1
+  echo "📄 Report: ${OUTPUT_DIR}/integrated-report.md" >&2
 }
 
 # ── Generate Report (dispatcher) ──

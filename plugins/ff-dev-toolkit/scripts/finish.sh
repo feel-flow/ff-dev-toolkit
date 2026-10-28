@@ -5,7 +5,7 @@
 # skill 本文に残し、機械で決まる部分だけをここで実行して `KEY=値` で報告する。
 #
 # 使い方:
-#   finish.sh precheck <PR番号> [--subject <件名> --body <本文>] [--gate-record <記録のパス>]
+#   finish.sh precheck <PR番号> [--subject <件名> --body <本文>] [--gate-record <記録のパス>] [--merge-method squash|merge]
 #   finish.sh cleanup [--dry-run] <PR番号>
 #   finish.sh knowledge-commit add    [--claim <文書>] <knowledge-commit.sh add の引数>
 #   finish.sh knowledge-commit commit [--type <type>] [--force]
@@ -20,7 +20,10 @@
 #      PRECHECK=no-target を出して rc 0 で終わる（checks・鮮度照合・merge コマンド生成へ進まない）
 #   2. Refs 群があれば closing keyword 抵触検査（scripts/check-closing-keywords.sh）を
 #      供給源（PR タイトル + 全コミットの件名と本文）へ当て、`--subject` / `--body` が
-#      渡された回は実際に渡す squash メッセージにも当てる（これがマージの条件）
+#      渡された回は実際に渡す squash メッセージにも当てる（これがマージの条件）。
+#      `--merge-method merge`（merge commit 方式。develop の履歴を残す main への release など）では
+#      各コミットがそのまま base へ載るため、コミット由来の抵触（conflict-commit）は 2b で解消できず
+#      止める。--subject / --body は merge commit の件名・本文として同じく検査する
 #   3. Closes 群の各 Issue について hook の実測記録（scripts/effort-report.sh --issue-metrics）を
 #      読み、書き戻し用の値（wall-clock / 読み込みバイト / レビュー巡回数 / ゲート分 / 変更クラス）を出す
 #   4. checks の有無で分岐する: statusCheckRollup が非空なら `gh pr checks --watch --fail-fast`
@@ -46,6 +49,8 @@
 #      checks が全件成功した回だけ `no`。「汚れた木で測った」「記録が無い」は checks が成功して
 #      いても `yes`。それ以外の理由は `see-action`（ACTION に従う）
 #   7. merge コマンドを生成する（2 の抵触で止める回・worktree の一覧が取れない回は生成しない）。
+#      方式は `--merge-method`（squash / merge。省略時は squash）で、`--squash` / `--merge` の
+#      どちらかだけを載せる。不正値・空値・2 回目の指定は gh を呼ぶ前に rc 2 で拒否する。
 #      base ブランチまたは head ブランチが別の worktree に保持されていれば `--delete-branch` を
 #      付けず、取得済み TARGET_REPO を --repo に固定した merge と削除を `&& bash -c …` で繋ぐ（merge が
 #      失敗した回に削除だけが走らない）。削除は同一リポジトリの PR に限り
@@ -63,7 +68,7 @@
 #
 # precheck の出力（stdout、`KEY=値` は行頭一致。複数値のキーは行を繰り返す）:
 #   PR_NUMBER= PR_STATE= PR_IS_DRAFT= PR_HEAD_REF= PR_HEAD_OID= PR_BASE_REF= PR_TITLE=
-#   TARGET_REPO=owner/repo
+#   TARGET_REPO=owner/repo  MERGE_METHOD=squash|merge
 #   CLOSES=owner/repo#N（繰り返し） REFS=owner/repo#N（繰り返し） AUTO_CLOSE_UNRELIABLE=0|1
 #   PR_COMMITS_SOURCE=git|api|unavailable  PR_COMMITS=<短縮 hash> <件名>（繰り返し。`git log --format='%h %s'
 #     origin/<base>..<head>` と同じ行・同じ順。/close-issue 完了報告の「主要コミット」欄へ貼る。自分で書かない）
@@ -89,9 +94,10 @@
 #   0  マージへ進める（FRESH_STATUS=0、または 2 でも RERUN_FULL_GATE=no）
 #   0  対象 Issue が無い（PRECHECK=no-target。以降の判定を行わない）
 #   1  止める（checks 失敗 / 判定の途中で PR が変わった / 鮮度不一致 / 改題で消せる抵触 / 実際に
-#      渡す squash メッセージの抵触 / Refs 群があるのに --subject と --body が無い / 返信の無い
-#      レビュースレッドがある）。理由と次の一手を stderr へ
-#   2  判定不能・検査不成立（PR 不在 / gh 不通（checks の取得を含む）/ jq 不在 / 鮮度照合の検査不成立、および
+#      渡す squash メッセージの抵触 / Refs 群があるのに --subject と --body が無い / merge commit 方式で
+#      コミットが Refs 運用の Issue を閉じる / 返信の無いレビュースレッドがある）。理由と次の一手を stderr へ
+#   2  判定不能・検査不成立（`--merge-method` の不正値・空値・重複（PR を読む前）/ PR 不在 / gh 不通（checks の取得を含む）/
+#      jq 不在 / 鮮度照合の検査不成立、および
 #      FRESH_STATUS=2 で RERUN_FULL_GATE が no でない回）。判定できなかった項目を名指しし、
 #      復帰手段（何を直して再実行するか）を stderr へ出す。後者は MERGE_COMMAND も出す —
 #      記録の仕組みを持たないプロジェクトでは判定不能が常態で、止めるかどうかは skill 側の判断
@@ -302,7 +308,7 @@ unset FORCE_COLOR CLICOLOR_FORCE CLICOLOR
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: finish.sh precheck <PR番号> [--subject <件名> --body <本文>] [--gate-record <記録のパス>]
+Usage: finish.sh precheck <PR番号> [--subject <件名> --body <本文>] [--gate-record <記録のパス>] [--merge-method squash|merge]
        finish.sh cleanup [--dry-run] <PR番号>
        finish.sh knowledge-commit add [--claim <文書>] --source ace|obs --id <ID> --summary <要約> [--category <c>] [--type <t>] -- <path>...
        finish.sh knowledge-commit commit [--type <t>] [--force]
@@ -415,6 +421,9 @@ gh_pr_view_or_die() { # <PR番号> <--json フィールド> → stdout に JSON
 # 空の '' を返して rc=0 で成功し、件名・本文を失った merge コマンドを黙って出す（実測）。
 # shellcheck source=lib/merge-message.sh
 . "$self_dir/lib/merge-message.sh" || { echo "merge-message helper を読めません" >&2; exit 2; }
+# 復旧コマンドの案内（ブランチ名・refspec）は ff_shell_argv で 1 語ずつ引用してから出す
+# shellcheck source=lib/shell-quote.sh
+. "$self_dir/lib/shell-quote.sh" || { echo "shell-quote helper を読めません" >&2; exit 2; }
 q() { ff_merge_quote "$@"; }
 
 # Explicit file acquisition is separate from the unchanged gh calls below.
@@ -622,7 +631,7 @@ kc_assert_scope() { # <default branch> <出力キー> <fast-forward 必須: 1|0>
   git fetch -q origin "+refs/heads/${d}:refs/remotes/origin/${d}" \
     || die_env "origin/${d} を取得できません（送信範囲を判定できない）" "認証・通信・remote 設定を確かめて finish.sh knowledge-commit を再実行する"
   remote_tip="$(git rev-parse --verify --quiet "refs/remotes/origin/${d}")" \
-    || die_env "origin/${d} を解決できません" "git fetch origin ${d} のうえ再実行する"
+    || die_env "origin/${d} を解決できません" "次を実行してから再実行する: $(ff_shell_argv git fetch origin "$d")"
   if [[ "$need_ff" -eq 1 ]] && ! git merge-base --is-ancestor "$remote_tip" HEAD; then
     echo "${key}=rejected"
     die_stop "origin/${d} が先行しています（non-fast-forward）" "取り込んで記録内容を作り直し、再度 add → commit → push する（--force / --force-with-lease で上書きしない）"
@@ -839,15 +848,19 @@ kc_add() {
     need_bundled lib/abs-path.sh
     # shellcheck source=lib/abs-path.sh
     . "$self_dir/lib/abs-path.sh" || die_env "絶対パスの判定 lib を読めません: $self_dir/lib/abs-path.sh"
+    need_bundled lib/git-literal-pathspec.sh
+    assert_bundled_shebang_lf "$self_dir/lib/git-literal-pathspec.sh"
+    # shellcheck source=lib/git-literal-pathspec.sh
+    . "$self_dir/lib/git-literal-pathspec.sh" || die_env "literal Git lib を読めません" "plugin の同梱 lib を確かめる"
     for p in ${pathspecs[@]+"${pathspecs[@]}"}; do
       [[ -e "$p" ]] || continue
       if ff_path_is_absolute "$p"; then claim_paths+=("$p"); else claim_paths+=("$PWD/$p"); fi
     done
-    index_before="$(git -C "$repo_root" ls-files --stage -- "${claim_paths[@]}" 2>/dev/null)" || index_before=""
-    git -C "$repo_root" add -- "${claim_paths[@]}" || die_env "claim と文書を stage できません" "パスを確かめて再実行する"
+    index_before="$(ff_git_literal "$repo_root" ls-files --stage -- "${claim_paths[@]}" 2>/dev/null)" || index_before=""
+    ff_git_literal "$repo_root" add -- "${claim_paths[@]}" || die_env "claim と文書を stage できません" "パスを確かめて再実行する"
     assert_bundled_shebang_lf "${plugin_root}/scripts/check-version-claims.sh"
     if ! FF_DEV_TOOLKIT_ROOT="${plugin_root}" "${plugin_root}/scripts/check-version-claims.sh" --root "$repo_root"; then
-      git -C "$repo_root" reset -q -- "${claim_paths[@]}" 2>/dev/null || true
+      ff_git_literal "$repo_root" reset -q -- "${claim_paths[@]}" 2>/dev/null || true
       [[ -z "$index_before" ]] || printf '%s\n' "$index_before" | git -C "$repo_root" update-index --index-info
       die_stop "version claim の検証が赤です（保留・stage は変更していません）" "claim と文書を直してから finish.sh knowledge-commit add --claim を再実行する"
     fi

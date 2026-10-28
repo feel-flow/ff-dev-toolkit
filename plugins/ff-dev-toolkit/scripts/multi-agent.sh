@@ -481,7 +481,7 @@ get_cli_adapter() {
 # 全観点を担当するため、ディレクトリに置いた時点で既定に入る（opt-in にするには
 # comprehensive-review 型の除外機構を増やす必要があり、その複雑さに見合う根拠が無い）。
 # gh 呼び出しの増分コストは小さい: orchestrated 実行では大半のアダプタが gh を実行
-# できず（claude-code の review allowlist は Bash(git diff*) のみ、codex は read-only
+# できず（claude-code の review tools は Read/Grep/Glob のみ、codex は read-only
 # sandbox）、観点内の分岐が PR 本文・diff 内の AC 記載からの照合へ fallback する。
 # 所有を codex-cli にするのは、実装主体（多くは Claude 側）と別モデルの目で AC を
 # 照合するクロスモデル価値と、DoD / カバレッジ照合系（test-analysis）の系譜が
@@ -662,11 +662,18 @@ get_task_emoji() {
 #   source の前に読んで照合する — 関数やヒアドキュメントの途中で切れたファイルは source が
 #   構文エラーで落ち、案内を出す前に set -e で止まるため。source の後にも、印の代入が
 #   実際に走ったことを確かめる
-# - source は素のまま書く（`|| ...` を付けると、構成ファイルのトップレベルで set -e が効かなくなる）
+# - source は素のまま書く。`|| ...` を付けたときの set -e は版で違う。
+#   bash 3.2.39（2026-10-28 にこの環境で実行した Debian の bash 3.2-4）では、読み込み先
+#   トップレベルの失敗で set -e がシェルを止め、右辺は走らない。macOS の bash 3.2.57 で
+#   記録された同じ再現も標準出力が空で rc=1 だった。3.2.57 自体はこの環境では再ビルドしていない。
+#   bash 5.2.37（この環境の /bin/bash。ubuntu-latest の版はここでは照合していない）では、`||` の間は読み込み先
+#   トップレベルで set -e が効かない。途中の失敗は止まらず、右辺は source の戻り値
+#   （最後のコマンド）が非 0 のときだけ走る。案内は source の前の検査と、source の後の印で出す。
 MULTI_AGENT_PARTS=(
   "${SCRIPT_DIR}/lib/multi-agent-lanes.sh"
   "${SCRIPT_DIR}/lib/multi-agent-options.sh"
   "${SCRIPT_DIR}/lib/multi-agent-plan.sh"
+  "${SCRIPT_DIR}/lib/multi-agent-boundary.sh"
   "${SCRIPT_DIR}/lib/multi-agent-prepare.sh"
   "${SCRIPT_DIR}/lib/multi-agent-outputs.sh"
   "${SCRIPT_DIR}/lib/multi-agent-delegation-state.sh"
@@ -1019,7 +1026,7 @@ main() {
       exit 1
     fi
     evidence_results="${OUTPUT_DIR}/.evidence-results.$$"
-    : > "$evidence_results" || exit 1
+    output_artifact write "${evidence_results#"$OUTPUT_DIR"/}" < /dev/null || exit 1
     while IFS= read -r evidence_task; do
       [[ -n "$evidence_task" ]] || continue
       evidence_cli="${evidence_task%%:*}"

@@ -155,6 +155,8 @@
 # 変異検出: gateのfast環境分離・部分出力拒否・鮮度分類器の部分拒否・再検査の環境分離・NESTED保持を各々除去すると実runtimeの新規ケースが赤（5/5）。正常対照は緑、外側FULL未設定/1のsuiteは各157pass（2026-10-23）。
 # 空振り検出: gate-modeの新規case本体を空動作へ置換しても到達フラグが未設定でexit 1（実測）。環境記録や鮮度の正常会計に針が当たる肯定対照を持ち、空出力を成功根拠にしない。
 
+# 空振り検出: 同期の展開前 tree 種別検査を除く対照は source/destination LICENSE symlink の dry/real を4件検出して rc=1、通常対照 rc=0（2026-10-28、有限の隔離 sentinel のみ）。
+# 空振り検出: 非公開件名の公開 commit 転記を復元すると marker 検査だけが赤（158 pass / 1 fail、rc=1）、通常対照は159 pass / 0 fail、rc=0（2026-10-28、hook 省略の隔離 runtime）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

@@ -551,8 +551,8 @@ ${diff_content}"
   # パスを渡すかどうか（multi-agent.sh の run_single_task。scripts/lib/multi-agent-prepare.sh）を同時に揃えること。
   # (2) の関数名はアダプタごとに違う: codex は get_sandbox_mode、grok は
   # get_sandbox_profile、**claude-code は
-  # get_allowed_tools**（Write/Edit を許すかどうかが唯一の書き込みゲート。"sandbox"
-  # で grep すると取りこぼす）、copilot は permission deny 配列。どれか 1 つを忘れると
+  # get_allowed_tools** と読み取り専用時の --tools（Bash を含めない）および
+  # --strict-mcp-config、copilot は permission deny 配列。どれか 1 つを忘れると
   # 「サンドボックスは書けるのにプロンプトが read-only を命じる」「staging へ書けと
   # 命じるのにパスを渡していない」といった矛盾になる。
   # なお task-type 追加そのものに必要な同期先（perspective の割り当て、既定の

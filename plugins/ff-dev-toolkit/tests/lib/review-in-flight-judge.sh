@@ -20,6 +20,38 @@ shq() { # <文字列> → シェルの単一引用語
 # 消さない）。検査に失敗しても**起動は止めない** — C は追加の防御層という位置づけなので、
 # 安全に記帳できないときは素通しへ倒す。
 LANE_SAFE=0
+# hookとorchestratorは同じ所有markerを使う。hookが先に起動しても、未標識の非空rootを
+# 作って後続のorchestratorへ引き渡さない。正本helperが無い回はレーンを触らない。
+_ff_lane_scope_lib="${BASH_SOURCE[0]%/*}/review-lane-scope.sh"
+_ff_lane_boundary_loaded=0
+_ff_lane_output_prepared=0
+_ff_review_lane_scope_loaded=0
+if [ ! -L "$_ff_lane_scope_lib" ] && [ -f "$_ff_lane_scope_lib" ] && [ -r "$_ff_lane_scope_lib" ]; then
+  _ff_lane_scope_last="$(awk 'NF { l = $0 } END { print l }' "$_ff_lane_scope_lib" 2>/dev/null)" || _ff_lane_scope_last=""
+  if [ "$_ff_lane_scope_last" = '_ff_review_lane_scope_loaded=1' ]; then
+    # shellcheck source=review-lane-scope.sh
+    if . "$_ff_lane_scope_lib" \
+      && [ "${_ff_review_lane_scope_loaded:-0}" -eq 1 ] \
+      && [ "$(type -t ff_lane_visit_records 2>/dev/null)" = function ] \
+      && [ "$(type -t ff_lane_record_limit 2>/dev/null)" = function ] \
+      && [ "$(type -t ff_lane_body_field 2>/dev/null)" = function ] \
+      && [ "$(type -t ff_lane_claim_body_is_valid 2>/dev/null)" = function ] \
+      && [ "$(type -t ff_lane_foreign_record 2>/dev/null)" = function ] \
+      && [ "$(type -t ff_lane_foreign_live 2>/dev/null)" = function ] \
+      && [ "$(type -t ff_lane_infer_trees 2>/dev/null)" = function ]; then
+      _ff_lane_boundary_loaded=1
+    fi
+  fi
+fi
+[ "$_ff_lane_boundary_loaded" -eq 1 ] || emit_deny '⚠️ ff-dev-toolkit guard: review-lane-scope.sh の完全なclaim対応readerを読み込めないため停止します。pluginを更新・再導入してください。'
+lane_prepare_output() {
+  if [ "$_ff_lane_output_prepared" -eq 1 ]; then
+    ff_review_output_private "${ROOT}/${OUTPUT_DIR_NAME}" true >/dev/null 2>&1
+    return $?
+  fi
+  ff_review_output_prepare "$ROOT" "${ROOT}/${OUTPUT_DIR_NAME}" false review >/dev/null 2>&1 || return 1
+  _ff_lane_output_prepared=1
+}
 # 物理パスの包含判定（レーン置き場の検証と、Bash 書き込み走査の「ツリー内か」が共用する）
 phys_dir() { # <dir> → 物理パス（失敗は空）
   (cd "$1" 2>/dev/null && pwd -P 2>/dev/null)
@@ -41,6 +73,7 @@ path_within() { # <phys> <root_phys>
 }
 lane_dir_is_safe() {
   local out_dir root_phys phys
+  [ "$_ff_lane_boundary_loaded" -eq 1 ] || return 1
   out_dir="${ROOT}/${OUTPUT_DIR_NAME}"
   [ -L "$out_dir" ] && return 1
   [ -L "$LANE_DIR" ] && return 1
@@ -52,6 +85,7 @@ lane_dir_is_safe() {
     [ -n "$phys" ] || return 1
     path_within "$phys" "$root_phys" || return 1
     [ "$phys" != "$root_phys" ] || return 1
+    lane_prepare_output || return 1
   fi
   if [ -e "$LANE_DIR" ]; then
     [ -d "$LANE_DIR" ] || return 1
@@ -59,12 +93,26 @@ lane_dir_is_safe() {
     [ -n "$phys" ] || return 1
     path_within "$phys" "$root_phys" || return 1
     [ "$phys" != "$root_phys" ] || return 1
+    ff_review_output_private "$LANE_DIR" >/dev/null 2>&1 || return 1
   fi
   return 0
 }
 lane_dir_is_safe && LANE_SAFE=1
 
+lane_file_is_safe() { # <leaf>。FIFO等は開かずに落とす。
+  ff_review_output_regular "$1" >/dev/null 2>&1 && [ -r "$1" ]
+}
+
+lane_temp_dir() { # 検証済み置き場内へ排他的な私有namespaceを確保する。
+  local work
+  lane_dir_is_safe || return 1
+  work="$(umask 077; mktemp -d "${LANE_DIR}/.lane-work.XXXXXX" 2>/dev/null)" || return 1
+  ff_review_output_private "$work" true >/dev/null 2>&1 || return 1
+  printf '%s\n' "$work"
+}
+
 lane_field() { # <レーンのパス> <キー>
+  lane_file_is_safe "$1" || return 1
   sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n 1
 }
 
@@ -161,15 +209,11 @@ lane_key() {
 #                     していればそれ、無ければ cwd のツリー。ライブラリを読めない回も cwd のツリー
 #   output_file=<パス> 委譲レビューの結果の書き先（handoff の request レコードの output-file=）
 lane_extra_fields() { # <lane_type>
-  local lib trees="" t prompt req of path
+  local trees="" t prompt req of path
   prompt="$(printf '%s' "$input" | jq -r '.tool_input.prompt // ""' 2>/dev/null)" || prompt=""
   prompt="${prompt//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
   if [ "$1" != "delegated-review" ]; then
-    lib="${BASH_SOURCE[0]%/*}/review-lane-scope.sh"
-    # shellcheck source=review-lane-scope.sh
-    if [ -r "$lib" ] && . "$lib" 2>/dev/null && [ "$(type -t ff_lane_infer_trees 2>/dev/null)" = "function" ]; then
-      trees="$(ff_lane_infer_trees "$ROOT" "$prompt")" || trees=""
-    fi
+    trees="$(ff_lane_infer_trees "$ROOT" "$prompt")" || trees=""
   fi
   [ -n "$trees" ] || trees="$(phys_dir "$ROOT")"
   while IFS= read -r t; do
@@ -202,11 +246,12 @@ LANE_DONE=0   # 委譲レビューの結果が書かれたので解放したレ�
 LANE_TREES="" # 生きているレーンの対象ツリー（物理パス。改行区切り）
 
 acquire_lane() { # <subagent_type>
-  local key head_sha now f tmp existing lane_body
+  local key head_sha now f tmp existing lane_body work
   [ "$LANE_SAFE" -eq 1 ] || return 0
   key="$(lane_key)"
   [ -n "$key" ] || return 0
-  mkdir -p "$LANE_DIR" 2>/dev/null || return 0
+  lane_prepare_output || return 0
+  (umask 077; mkdir -p "$LANE_DIR") 2>/dev/null || return 0
   # mkdir 後にもう一度見る（作った先が symlink 越しでないこと）。
   lane_dir_is_safe || return 0
   # **鍵に対して冪等**にする。ハーネスには同じ `tool_use_id` で PreToolUse をもう一度流す
@@ -214,7 +259,8 @@ acquire_lane() { # <subagent_type>
   # ないと 1 回の起動で 2 本開き、解放イベント 1 回では 1 本しか閉じずに残りが寿命まで
   # 凍結を維持する。
   for existing in "$LANE_DIR/$key".*.lane; do
-    [ -f "$existing" ] && return 0
+    # 同じ鍵に特殊なleafが在る回も採用・上書きしない。
+    { [ -e "$existing" ] || [ -L "$existing" ]; } && return 0
   done
   now="$(date -u +%s 2>/dev/null)"
   case "$now" in
@@ -223,7 +269,9 @@ acquire_lane() { # <subagent_type>
   head_sha="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null)"
   [ -n "$head_sha" ] || head_sha="n/a"
   f="${LANE_DIR}/${key}.${now}.$$.lane"
-  tmp="${f}.tmp.$$"
+  work="$(lane_temp_dir)" || return 0
+  [ -d "$work" ] && [ ! -L "$work" ] || return 0
+  tmp="$(mktemp "${work}/body.XXXXXX" 2>/dev/null)" || { rmdir "$work" 2>/dev/null; return 0; }
   # 書けなくても起動は止めない（A と同じく、これは追加の防御層）。
   # `pid` ではなく `writer_pid` なのは意味が違うため: A の `pid` は「その PID が生きている
   # 間はロックが生きている」の判定材料だが、hook はすぐ死ぬ短命プロセスなので、レーンの
@@ -239,14 +287,15 @@ acquire_lane() { # <subagent_type>
   # 書き先（出現で完了とみなす。Issue `#1792`）を足す。無い行は従来どおり cwd のツリー・寿命で扱う。
   lane_body="${lane_body}$(lane_extra_fields "$1")"
   printf '%s\n' "$lane_body" > "$tmp" 2>/dev/null || {
-    # 置き場が外から消された場合の 1 回だけの作り直し。
-    mkdir -p "$LANE_DIR" 2>/dev/null
-    printf '%s\n' "$lane_body" > "$tmp" 2>/dev/null || {
-      rm -f "$tmp" 2>/dev/null
-      return 0
-    }
+    rm -f "$tmp" 2>/dev/null
+    rmdir "$work" 2>/dev/null
+    return 0
   }
-  mv "$tmp" "$f" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  if lane_dir_is_safe && [ ! -e "$f" ] && [ ! -L "$f" ]; then
+    mv "$tmp" "$f" 2>/dev/null || true
+  fi
+  rm -f "$tmp" 2>/dev/null
+  rmdir "$work" 2>/dev/null
   return 0
 }
 
@@ -254,7 +303,7 @@ acquire_lane() { # <subagent_type>
 # レーンを取るかどうかの判定材料（`isolation` / `subagent_type`）は `PreToolUse` にしか無く、
 # `SubagentStart` のペイロードには載らないため（claude 2.1.267 の同梱実装で確認）。
 adopt_lane() { # <agent_id（sanitize 済み）> <agent_type>
-  local f t a e best best_e body tmp claimed tries
+  local f t a e best best_e body tmp claimed tries work
   [ "$LANE_SAFE" -eq 1 ] || return 0
   [ -n "$1" ] || return 0
   [ -n "$2" ] || return 0
@@ -265,7 +314,7 @@ adopt_lane() { # <agent_id（sanitize 済み）> <agent_type>
     best=""
     best_e=""
     for f in "$LANE_DIR"/*.lane; do
-      [ -f "$f" ] || continue
+      lane_file_is_safe "$f" || continue
       t="$(lane_field "$f" perspectives)"
       [ "$t" = "$2" ] || continue
       a="$(lane_field "$f" agent_id)"
@@ -280,42 +329,70 @@ adopt_lane() { # <agent_id（sanitize 済み）> <agent_type>
       fi
     done
     [ -n "$best" ] || return 0
-    # 中身を先に作ってから rename 2 回で差し替える（レーンが見えない窓を rename 1 回ぶんに
-    # 縮める）。claim の rename に負けた側は再走査して別のレーンを取る。
-    body="$(sed 's/^agent_id=.*$/agent_id='"$1"'/' "$best" 2>/dev/null)"
-    [ -n "$body" ] || return 0
-    tmp="${best}.tmp.$$"
-    printf '%s\n' "$body" > "$tmp" 2>/dev/null || {
-      rm -f "$tmp" 2>/dev/null
-      return 0
-    }
-    claimed="${best}.claim.$$"
-    if ! mv "$best" "$claimed" 2>/dev/null; then
-      rm -f "$tmp" 2>/dev/null
+    work="$(lane_temp_dir)" || return 0
+    [ -d "$work" ] && [ ! -L "$work" ] || return 0
+    claimed="${work}/claimed.lane"
+    # claim先は排他的なnamespace内。取得後に中身を読むことで、別の採用者が先に
+    # 公開したagent_idを古いbodyで上書きする競合も避ける。
+    if ! lane_file_is_safe "$best" || ! mv "$best" "$claimed" 2>/dev/null; then
+      rmdir "$work" 2>/dev/null
       continue
     fi
-    mv "$tmp" "$best" 2>/dev/null || rm -f "$tmp" 2>/dev/null
-    rm -f "$claimed" 2>/dev/null
+    if ! lane_file_is_safe "$claimed" || [ -n "$(lane_field "$claimed" agent_id)" ]; then
+      mv "$claimed" "$best" 2>/dev/null || true
+      rmdir "$work" 2>/dev/null
+      continue
+    fi
+    body="$(sed 's/^agent_id=.*$/agent_id='"$1"'/' "$claimed" 2>/dev/null)"
+    tmp="$(mktemp "${work}/body.XXXXXX" 2>/dev/null)" || {
+      mv "$claimed" "$best" 2>/dev/null || true
+      rmdir "$work" 2>/dev/null
+      return 0
+    }
+    printf '%s\n' "$body" > "$tmp" 2>/dev/null || {
+      rm -f "$tmp" 2>/dev/null
+      mv "$claimed" "$best" 2>/dev/null || true
+      rmdir "$work" 2>/dev/null
+      return 0
+    }
+    if [ -n "$body" ] && lane_dir_is_safe && [ ! -e "$best" ] && [ ! -L "$best" ] \
+      && mv "$tmp" "$best" 2>/dev/null; then
+      rm -f "$claimed" 2>/dev/null
+    else
+      mv "$claimed" "$best" 2>/dev/null || true
+    fi
+    rm -f "$tmp" 2>/dev/null
+    rmdir "$work" 2>/dev/null
     return 0
   done
   return 0
 }
 
 lane_tombstone() { # <パス（空なら何もしない）>
-  local now
+  local now work tmp
   [ -n "$1" ] || return 0
+  # 既存leafを開かない。dangling linkも-eだけでは見つからない。
+  { [ -e "$1" ] || [ -L "$1" ]; } && return 0
   now="$(date -u +%s 2>/dev/null)"
   case "$now" in
     '' | *[!0-9]*) now=0 ;;
   esac
-  printf 'started_epoch=%s\n' "$now" > "$1" 2>/dev/null || true
+  work="$(lane_temp_dir)" || return 0
+  [ -d "$work" ] && [ ! -L "$work" ] || return 0
+  tmp="$(mktemp "${work}/body.XXXXXX" 2>/dev/null)" || { rmdir "$work" 2>/dev/null; return 0; }
+  if printf 'started_epoch=%s\n' "$now" > "$tmp" 2>/dev/null \
+    && lane_dir_is_safe && [ ! -e "$1" ] && [ ! -L "$1" ]; then
+    mv "$tmp" "$1" 2>/dev/null || true
+  fi
+  rm -f "$tmp" 2>/dev/null
+  rmdir "$work" 2>/dev/null
   return 0
 }
 
 # `SubagentStop` の解放。**agent_id で対応づける**のが本体で、同型の最古 1 本という
 # 弱い対応づけは「対応づいていないレーンしか無い」場合のフォールバックにだけ残す。
 release_lane_by_agent() { # <agent_id> <agent_type>
-  local id type f a t e best best_e claimed tomb tries
+  local id type f a t e best best_e claimed tomb tries work
   [ "$LANE_SAFE" -eq 1 ] || return 0
   type="$2"
   [ -n "$type" ] || return 0
@@ -328,7 +405,7 @@ release_lane_by_agent() { # <agent_id> <agent_type>
     # 応答を終えるたびに発火するので、`SendMessage` で継続された 1 本のレビュアーが
     # 複数回終端イベントを出す。これが無いと、その 1 本がまだ走っている別のレビュアーの
     # レーンまで削り、部分完了で凍結が解ける。
-    [ -f "$tomb" ] && return 0
+    { [ -e "$tomb" ] || [ -L "$tomb" ]; } && return 0
   fi
   tries=0
   while [ "$tries" -lt 5 ]; do
@@ -338,7 +415,7 @@ release_lane_by_agent() { # <agent_id> <agent_type>
     # 1) agent_id が一致するレーン（`SubagentStart` で対応づけ済み）
     if [ -n "$id" ]; then
       for f in "$LANE_DIR"/*.lane; do
-        [ -f "$f" ] || continue
+        lane_file_is_safe "$f" || continue
         a="$(lane_field "$f" agent_id)"
         [ "$a" = "$id" ] || continue
         best="$f"
@@ -350,7 +427,7 @@ release_lane_by_agent() { # <agent_id> <agent_type>
     #    対応づけ済みのレーンは**決して奪わない** — 走行中の別レビュアーのぶんだから。
     if [ -z "$best" ]; then
       for f in "$LANE_DIR"/*.lane; do
-        [ -f "$f" ] || continue
+        lane_file_is_safe "$f" || continue
         t="$(lane_field "$f" perspectives)"
         [ "$t" = "$type" ] || continue
         a="$(lane_field "$f" agent_id)"
@@ -368,9 +445,15 @@ release_lane_by_agent() { # <agent_id> <agent_type>
     [ -n "$best" ] || break
     # 「選択 → 削除」を rename で直列化する。同型の `SubagentStop` が同時に来ても
     # 同じレーンを 2 回は取れない（負けた側は再走査して別のレーンを取る）。
-    claimed="${best}.claim.$$"
-    mv "$best" "$claimed" 2>/dev/null || continue
+    work="$(lane_temp_dir)" || return 0
+    [ -d "$work" ] && [ ! -L "$work" ] || return 0
+    claimed="${work}/claimed.lane"
+    if ! lane_file_is_safe "$best" || ! mv "$best" "$claimed" 2>/dev/null; then
+      rmdir "$work" 2>/dev/null
+      continue
+    fi
     rm -f "$claimed" 2>/dev/null
+    rmdir "$work" 2>/dev/null
     lane_tombstone "$tomb"
     break
   done
@@ -380,7 +463,7 @@ release_lane_by_agent() { # <agent_id> <agent_type>
 # 鍵が一致し、かつ**まだ対応づいていない**レーンを 1 本だけ閉じる（`PermissionDenied` 用）。
 # 対応づけ済み = サブエージェントは実際に起動しているので、拒否イベントで閉じてはいけない。
 release_lane_by_key() {
-  local key f a found claimed tries
+  local key f a found claimed tries work
   [ "$LANE_SAFE" -eq 1 ] || return 0
   key="$(lane_key)"
   [ -n "$key" ] || return 0
@@ -390,16 +473,22 @@ release_lane_by_key() {
     tries=$((tries + 1))
     found=""
     for f in "$LANE_DIR/$key".*.lane; do
-      [ -f "$f" ] || continue
+      lane_file_is_safe "$f" || continue
       a="$(lane_field "$f" agent_id)"
       [ -z "$a" ] || continue
       found="$f"
       break
     done
     [ -n "$found" ] || break
-    claimed="${found}.claim.$$"
-    mv "$found" "$claimed" 2>/dev/null || continue
+    work="$(lane_temp_dir)" || return 0
+    [ -d "$work" ] && [ ! -L "$work" ] || return 0
+    claimed="${work}/claimed.lane"
+    if ! lane_file_is_safe "$found" || ! mv "$found" "$claimed" 2>/dev/null; then
+      rmdir "$work" 2>/dev/null
+      continue
+    fi
     rm -f "$claimed" 2>/dev/null
+    rmdir "$work" 2>/dev/null
     break
   done
   return 0
@@ -408,63 +497,82 @@ release_lane_by_key() {
 # 走行中のレーンを数える。上限より古い（または未来へ大きくずれた）レーンはその場で
 # 削除する — 解放イベントを取りこぼしても凍結が永続しないための出口。**回収したことは
 # 黙って済ませない**（LANE_RECLAIMED を立て、呼び出し側が systemMessage を出す）。
+lane_remove_public_snapshot() {
+  local current
+  lane_file_is_safe "$1" || return 1
+  current="$(cat "$1" 2>/dev/null)" || return 1
+  [ "$current" = "$2" ] || return 1
+  rm -f "$1" 2>/dev/null
+}
+
+lane_scan_record() { # ff_lane_visit_recordsのローカルcallback。2はbody更新の再走査。
+  local f="$1" kind="$2" body="$3" e t a age limit of lt claim_note=''
+  if [ "$kind" = unstable ]; then
+    LANE_LIVE=$((LANE_LIVE + 1))
+    LANE_TREES="${LANE_TREES}$(phys_dir "$ROOT")
+"
+    LANE_SUMMARY="${LANE_SUMMARY}  - レーンの移動中（記録を安定して読めないため保守的に凍結）
+"
+    return 0
+  fi
+  e="$(ff_lane_body_field "$body" started_epoch)"
+  case "$e" in
+    '' | *[!0-9]*)
+      if [ "$kind" = public ]; then
+        lane_remove_public_snapshot "$f" "$body" || return 2
+        LANE_RECLAIMED=$((LANE_RECLAIMED + 1))
+      fi
+      return 0 ;;
+  esac
+  a="$(ff_lane_body_field "$body" agent_id)"
+  limit="$(ff_lane_record_limit "$kind" "$a" "$LANE_MAX_AGE" "$LANE_PENDING_MAX_AGE")"
+  age=$((lane_scan_now - e))
+  if [ "$age" -gt "$limit" ] || [ "$age" -lt -300 ]; then
+    if [ "$kind" = public ]; then
+      lane_remove_public_snapshot "$f" "$body" || return 2
+      LANE_RECLAIMED=$((LANE_RECLAIMED + 1))
+    fi
+    return 0
+  fi
+  of="$(ff_lane_body_field "$body" output_file)"
+  if [ -n "$of" ] && [ -f "$of" ] && [ "$of" -nt "$f" ]; then
+    if [ "$kind" = public ]; then
+      lane_remove_public_snapshot "$f" "$body" || return 2
+      LANE_DONE=$((LANE_DONE + 1))
+    fi
+    return 0
+  fi
+  t="$(ff_lane_body_field "$body" perspectives)"
+  lt="$(printf '%s\n' "$body" | sed -n 's/^tree=//p')"
+  [ -n "$lt" ] || lt="$(phys_dir "$ROOT")"
+  LANE_TREES="${LANE_TREES}${lt}
+"
+  LANE_LIVE=$((LANE_LIVE + 1))
+  [ "$kind" != claim ] || claim_note=' / 採用中claim'
+  LANE_SUMMARY="${LANE_SUMMARY}  - ${t:-unknown}（経過 ${age} 秒${a:+ / 対応づけ済み}${claim_note} / 対象 $(printf '%s' "$lt" | tr '\n' ' ')）
+"
+  return 0
+}
+
 scan_lanes() {
-  local f e t a now age limit of lt
+  local f e lane_scan_now
   [ "$LANE_SAFE" -eq 1 ] || return 0
   [ -d "$LANE_DIR" ] || return 0
-  now="$(date -u +%s 2>/dev/null)"
-  case "$now" in
+  lane_scan_now="$(date -u +%s 2>/dev/null)"
+  case "$lane_scan_now" in
     '' | *[!0-9]*) return 0 ;;
   esac
-  for f in "$LANE_DIR"/*.lane; do
-    [ -f "$f" ] || continue
-    e="$(lane_field "$f" started_epoch)"
-    case "$e" in
-      '' | *[!0-9]*)
-        rm -f "$f" 2>/dev/null
-        LANE_RECLAIMED=$((LANE_RECLAIMED + 1))
-        continue
-        ;;
-    esac
-    a="$(lane_field "$f" agent_id)"
-    limit="$LANE_MAX_AGE"
-    if [ -z "$a" ] && [ "$LANE_PENDING_MAX_AGE" -lt "$LANE_MAX_AGE" ]; then
-      limit="$LANE_PENDING_MAX_AGE"
-    fi
-    age=$((now - e))
-    if [ "$age" -gt "$limit" ] || [ "$age" -lt -300 ]; then
-      rm -f "$f" 2>/dev/null
-      LANE_RECLAIMED=$((LANE_RECLAIMED + 1))
-      continue
-    fi
-    # 委譲レビューの結果がレーンより後に書かれていれば、そのレビューは終わっている（Issue `#1792`）。
-    # 回収（multi-agent.sh --resume）を待たずに解放する — 回収を起動するコマンド自体が、このレーンに
-    # 止められていた。
-    of="$(lane_field "$f" output_file)"
-    if [ -n "$of" ] && [ -f "$of" ] && [ "$of" -nt "$f" ]; then
-      rm -f "$f" 2>/dev/null
-      LANE_DONE=$((LANE_DONE + 1))
-      continue
-    fi
-    t="$(lane_field "$f" perspectives)"
-    lt="$(sed -n 's/^tree=//p' "$f" 2>/dev/null)"
-    [ -n "$lt" ] || lt="$(phys_dir "$ROOT")"
-    LANE_TREES="${LANE_TREES}${lt}
-"
-    LANE_LIVE=$((LANE_LIVE + 1))
-    LANE_SUMMARY="${LANE_SUMMARY}  - ${t:-unknown}（経過 ${age} 秒${a:+ / 対応づけ済み} / 対象 $(printf '%s' "$lt" | tr '\n' ' ')）
-"
-  done
+  ff_lane_visit_records "$LANE_DIR" lane_scan_record 1
   # 中断された claim / tmp と、解放済み agent_id の記録も同じ上限で片づける。
   # `started_epoch` が読めないものは**残す** — 書込み途中の tmp を消すと、書き手の
   # rename が失敗してレーンが 1 本も立たなくなる（atomic publish が壊れる）。
   for f in "$LANE_DIR"/*.claim.* "$LANE_DIR"/*.tmp.* "$LANE_DIR"/.done.*; do
-    [ -f "$f" ] || continue
+    lane_file_is_safe "$f" || continue
     e="$(lane_field "$f" started_epoch)"
     case "$e" in
       '' | *[!0-9]*) continue ;;
     esac
-    [ "$((now - e))" -gt "$LANE_MAX_AGE" ] && rm -f "$f" 2>/dev/null
+    [ "$((lane_scan_now - e))" -gt "$LANE_MAX_AGE" ] && rm -f "$f" 2>/dev/null
   done
   # **空になっても LANE_DIR は rmdir しない。** 消すと、同時に走る acquire_lane が
   # mkdir 済みのはずの置き場を失い、一時ファイルを作れずにレーンを落とす（同時取得を
@@ -572,10 +680,7 @@ fi
 scan_lanes
 # 別 worktree（レビューを起動したセッションの cwd）に置かれ、このツリーを対象とするレーンも数える
 # （Issue `#1935`。判定は tests/lib/review-lane-scope.sh。読めない回は従来どおり自分の置き場だけ）。
-LANE_SCOPE_LIB="${BASH_SOURCE[0]%/*}/review-lane-scope.sh"
-# shellcheck source=review-lane-scope.sh
-if [ "$LANE_SAFE" -eq 1 ] && [ -r "$LANE_SCOPE_LIB" ] && . "$LANE_SCOPE_LIB" 2>/dev/null \
-  && [ "$(type -t ff_lane_foreign_live 2>/dev/null)" = "function" ]; then
+if [ "$LANE_SAFE" -eq 1 ]; then
   me_phys="$(phys_dir "$ROOT")"
   if [ -n "$me_phys" ] && foreign="$(ff_lane_foreign_live "$ROOT" "$me_phys" "$LANE_MAX_AGE" "$LANE_PENDING_MAX_AGE")"; then
     while IFS='	' read -r ft fa fw; do

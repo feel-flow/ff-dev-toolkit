@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 空振り検出: bash-hook-batchの実登録12本は通常rc0。新guard登録だけの削除と子の引数集合0件は、いずれも登録集合assertでrc1になる（2026-10-22 macOS実測、構文rc0。期待リストの厳密一致は維持）。
 # 空振り検出: case26の実処理を抽出した対照で、負荷診断と有効宣言1件は成功、有効宣言0件と取得rc7は赤。未filterの反復・0件許容・終了コード消失の変異は全て検出。case47-Jは厳密な起動時負荷prefixだけを除き、他の警告・モード・summaryを維持し、filter除去変異を検出（2026-10-26 macOS実測）。
-# 空振り検出: case30の実normalizerは起動時負荷警告とstartup-load診断のPID差を除き、他の警告とsuite出力・集計を保持する。各filterを1つずつ除く2変異はいずれも比較不一致となる（2026-10-26 macOS実測）。
+# 空振り検出: case30の実normalizerは起動時負荷警告・startup-load診断・既知の失敗時負荷案内だけを除き、他の警告とsuite出力・集計を保持する。各filterの独立除去3変異、入力の空集合、処理のno-op化はいずれも合成対照を赤にする（2026-10-28 macOS実測）。
 #
 # verify.sh — テストランナー run-all.sh 自身の回帰検証（Issue #146 / 縮小: Issue #1022）
 #
@@ -1764,7 +1764,17 @@ echo "== case 30: 並列実行が逐次と同じ結果・同じ並びを出し�
 # 混在 fixture（fail / pass / skip / not-executable / missing）を同じ一覧で 2 回走らせ、逐次と並列の
 # 出力を丸ごと突き合わせる。個別のアサートを並べる代わりに全文比較にするのは、**後から suite の
 # 種別が増えても書き忘れが差分として出る**ため。比較では並列告知・計測行・起動時負荷診断・空行を除く。
-_norm_run_out() { printf '%s\n' "$1" | grep -v '^🧵 ' | grep -v '^elapsed-sec:' | grep -v '^slowest:' | grep -v '^⚠️  起動時の負荷:' | grep -v '^startup-load:' | grep -v '^[[:space:]]*$' || true; }
+_norm_run_out() { printf '%s\n' "$1" | grep -v '^🧵 ' | grep -v '^elapsed-sec:' | grep -v '^slowest:' | grep -v '^⚠️  起動時の負荷:' | grep -v '^startup-load:' | grep -vxF '⚠️  負荷の高い状態または別ゲートの並走中に開始しました。赤の suite は単体で再実行して切り分けてください。' | grep -v '^[[:space:]]*$' || true; }
+
+# Host load and independently running gates can change between the two runs.
+# Keep unrelated warnings and all suite/summary bytes in the comparison.
+_par_norm_expected="$(printf '%s\n' 'FIXTURE-NORMALIZER-OUTPUT' '⚠️  unrelated warning must remain' 'suites: total=1 run=1 passed=0 failed=1 skipped=0 not-run=0')"
+_par_norm_diagnostic="$(printf '%s\n' '⚠️  起動時の負荷: synthetic observation' 'startup-load: load=1 cores=1 threshold=10 other-gates=synthetic' '⚠️  負荷の高い状態または別ゲートの並走中に開始しました。赤の suite は単体で再実行して切り分けてください。' "$_par_norm_expected")"
+if [ -n "$_par_norm_expected" ] && [ "$(_norm_run_out "$_par_norm_diagnostic")" = "$_par_norm_expected" ]; then
+  ok "case 30: 負荷診断3形だけを除き、別の警告・suite出力・集計を保持する"
+else
+  bad "case 30: 負荷診断の正規化が空振り、または他の警告・suite出力・集計を落としている"
+fi
 
 RUN_JOBS=1 run_runner "${MIXED_FIXTURES[@]}"
 _par_seq_rc="$RUN_RC"

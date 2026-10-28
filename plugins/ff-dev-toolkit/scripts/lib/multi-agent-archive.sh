@@ -23,20 +23,104 @@ archive_current_identity() {
   fi
 }
 
+# Lane control state stays live across archives: completed IDs prevent a late
+# duplicate Stop from consuming a different, newly acquired unadopted lane.
+archive_validate_lane_control() {
+  local dir="${OUTPUT_DIR}/.review-in-flight.d" item base body GLOBIGNORE=''
+  [[ -e "$dir" || -L "$dir" ]] || return 0
+  ff_review_output_private "$dir" || return 1
+  [[ -r "$dir" && -x "$dir" ]] || return 1
+  for item in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
+    [[ -e "$item" || -L "$item" ]] || continue
+    base="${item##*/}"
+    [[ "$base" =~ ^\.done\.[A-Za-z0-9_-]+$ ]] || {
+      archive_error "review lanes remain active or need explicit inspection: ${item}"
+      echo "       Verify the writer/reviewer has ended, inspect this exact entry, then explicitly recover or remove it: ${item}" >&2
+      return 1
+    }
+    ff_review_output_regular "$item" && [[ -r "$item" ]] || return 1
+    body="$(cat "$item")" || return 1
+    [[ "$body" =~ ^started_epoch=[0-9]+$ ]] && cmp -s "$item" <(printf '%s\n' "$body") || {
+      archive_error 'invalid completed review lane record'; return 1
+    }
+  done
+}
+
 # GLOBIGNORE と dotglob の呼出元設定に左右されず、dotfile/壊れた link も列挙する。
 # 3 glob の重複だけを exact path 比較で除く。空集合と読取不能を区別する。
 archive_collect_live() {
   local item base seen prior GLOBIGNORE=''
   ARCHIVE_ITEMS=()
   [[ -d "$OUTPUT_DIR" && -r "$OUTPUT_DIR" && -x "$OUTPUT_DIR" ]] || { archive_error "unreadable output directory: ${OUTPUT_DIR}"; return 1; }
+  archive_validate_lane_control || return 1
+  # Receipts keep absolute paths to historical reports. Validate that retained
+  # namespace before moving anything, then leave its paths and bytes live.
+  if [[ -e "$OUTPUT_DIR/.evidence" || -L "$OUTPUT_DIR/.evidence" ]]; then
+    archive_check_tree "$OUTPUT_DIR/.evidence" || return 1
+  fi
   for item in "$OUTPUT_DIR"/* "$OUTPUT_DIR"/.[!.]* "$OUTPUT_DIR"/..?*; do
     [[ -e "$item" || -L "$item" ]] || continue
     base="${item##*/}"
-    case "$base" in .multi-agent-run.lock|.prev-*) continue ;; esac
+    case "$base" in .multi-agent-run.lock|.multi-agent-output-owner|.review-in-flight.d|.evidence|.prev-*) continue ;; esac
     seen=false
     for prior in ${ARCHIVE_ITEMS[@]+"${ARCHIVE_ITEMS[@]}"}; do [[ "$prior" != "$item" ]] || seen=true; done
     [[ "$seen" != true ]] || continue
     ARCHIVE_ITEMS+=("$item")
+  done
+}
+
+# A matching root marker grants a namespace, never permission to move arbitrary
+# user entries. Validate the whole inventory before the first archive mkdir/mv.
+archive_known_entry() { # <path>
+  local item="$1" rel first tail cli base
+  rel="${item#"$OUTPUT_DIR"/}"; first="${rel%%/*}"; base="${rel##*/}"
+  case "$rel" in
+    .evidence) [[ -d "$item" ]]; return $? ;;
+    .evidence/*)
+      tail="${rel#.evidence/}"; first="${tail%%/*}"
+      [[ "$first" =~ ^[0-9a-f]{32}$ ]] || return 1
+      if [[ "$tail" == "$first" ]]; then [[ -d "$item" ]]; return $?; fi
+      [[ "$tail" == "$first/report.md" && -f "$item" ]]; return $? ;;
+    integrated-report.md|.fixed-diff|review-evidence.json|.evidence-start.*.json|.evidence-results.*|.report-building.*|.ff-output.*) return 0 ;;
+    .delegation-state|.delegation-state/metadata|.delegation-state/manifest|.delegation-state/invocation|.delegation-state/unadopted) return 0 ;;
+    .review-in-flight)
+      archive_error 'in-flight marker remains; verify the run has ended and remove its stale marker explicitly'; return 1 ;;
+    .resume-cache|.resume-cache/last-inputs) return 0 ;;
+    .resume-cache/*)
+      tail="${rel#.resume-cache/}"; first="${tail%%/*}"
+      [[ "$first" =~ ^[0-9a-f]+$ ]] || return 1
+      [[ "$tail" == */* ]] || return 0
+      tail="${tail#*/}"
+      case "$tail" in inputs|.pending) return 0 ;; esac
+      cli="${tail%%/*}"; list_contains "$ALL_CLIS" "$cli" || return 1
+      [[ "$tail" == */* ]] || return 0
+      tail="${tail#*/}"
+      case "$tail" in *.md.hash) is_safe_token "${tail%.md.hash}" ;; *.md) is_safe_token "${tail%.md}" ;; *) return 1 ;; esac
+      return $? ;;
+    .task-rc.*)
+      [[ -d "$item" ]] && return 0
+      case "$base" in *.rc|*.skip) return 0 ;; *) return 1 ;; esac ;;
+  esac
+  cli="${rel%%/*}"; list_contains "$ALL_CLIS" "$cli" || return 1
+  [[ "$rel" == */* ]] || return 0
+  tail="${rel#*/}"
+  case "$tail" in
+    files|files/*|previous|.delegated|.delegated/generations|.delegated/generations/g-*)
+      if [[ -d "$item" ]]; then return 0; fi ;;
+  esac
+  case "$tail" in
+    files/*) return 0 ;;
+    .delegated/*.prompt.md|.delegated/*.response*.md) return 0 ;;
+    *.findings.tsv) is_safe_token "${base%.findings.tsv}"; return $? ;;
+    *.md) is_orchestrator_result "$item"; return $? ;;
+  esac
+  return 1
+}
+
+archive_validate_inventory() {
+  local item
+  for item in ${ARCHIVE_ITEMS[@]+"${ARCHIVE_ITEMS[@]}"}; do
+    archive_check_tree "$item" || return 1
   done
 }
 
@@ -48,7 +132,9 @@ archive_check_tree() {
   case "$item" in */.delegated/*.request|*/.delegated/*/*.request|*/.delegated/*/*/*.request)
     archive_error "outstanding request (a response or superseded flag is not adoption): ${item}"; return 1 ;;
   esac
+  archive_known_entry "$item" || { archive_error "unrelated or unknown archive entry: ${item}"; return 1; }
   if [[ -d "$item" ]]; then
+    ff_review_output_private "$item" || return 1
     [[ -x "$item" ]] || { archive_error "unsearchable directory: ${item}"; return 1; }
     for child in "$item"/* "$item"/.[!.]* "$item"/..?*; do
       [[ -e "$child" || -L "$child" ]] || continue
@@ -60,6 +146,8 @@ archive_check_tree() {
     done
   elif [[ ! -f "$item" ]]; then
     archive_error "not a regular file/directory: ${item}"; return 1
+  else
+    ff_review_output_regular "$item" || return 1
   fi
 }
 
@@ -139,7 +227,7 @@ archive_live_outputs() { # <fresh|archive-only>
   ts="$(date -u +%Y%m%dT%H%M%SZ)" || return 1
   archive="${OUTPUT_DIR}/.prev-${ts}"
   [[ ! -e "$archive" && ! -L "$archive" ]] || archive="${archive}-$$"
-  if ! mkdir "$archive"; then
+  if ! (umask 077; mkdir "$archive"); then
     archive_error "cannot create archive destination: ${archive}"; return 1
   fi
   ARCHIVE_DESTINATION="$archive"
@@ -172,14 +260,12 @@ run_archive_only() {
   [[ "$IN_GIT_REPO" == true ]] || { archive_error 'not inside a Git repository'; return 1; }
   ARCHIVE_REPO="$(cd "$REPO_ROOT" && pwd -P)" || return 1
   ARCHIVE_CURRENT_BRANCH="$(archive_current_identity)" || { archive_error 'current branch cannot be identified'; return 1; }
-  [[ ! -L "$OUTPUT_DIR" ]] || { archive_error 'output directory is a symlink'; return 1; }
-  mkdir -p "$OUTPUT_DIR" || return 1
-  OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd -P)" || return 1
+  prepare_output_namespace || return 1
   validate_output_dir_boundary || return 1
   acquire_output_lock || return 1
   archive_collect_live || return 1
   [[ "${#ARCHIVE_ITEMS[@]}" -gt 0 ]] || { archive_live_outputs archive-only; return $?; }
-  for item in "${ARCHIVE_ITEMS[@]}"; do archive_check_tree "$item" || return 1; done
+  archive_validate_inventory || return 1
   load_delegation_state || return 1
   archive_validate_report || return 1
   before_branch="$(archive_current_identity)" || return 1

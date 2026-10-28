@@ -280,7 +280,7 @@ identity=${RESUME_IDENTITY}
 generation=${DELEGATION_GENERATION}
 generation-hash=${generation_hash}
 invocation-hash=$(printf '%s\n' "$invocation" | git hash-object --stdin)"
-  mkdir -p "$DELEGATION_STATE_DIR" || return 1
+  (umask 077; mkdir -p "$DELEGATION_STATE_DIR") || return 1
   # Metadata is published last; interrupted writes fail the hashes on the next read.
   write_delegation_state_file manifest "$RESUME_INPUT_MANIFEST" || return 1
   write_delegation_state_file invocation "$invocation" || return 1

@@ -27,7 +27,7 @@ run_task_recorded() { # $1: cli / $2: perspective / $3: status dir
   # rc を必要とする。rc ファイル経由で読ませると、記録に失敗した回に判断材料ごと
   # 消える（記録失敗はワーカーを殺すが、殺す前に判断は済ませたい）。
   LAST_TASK_RC="$rc"
-  mkdir -p "${3}/${1}"
+  (umask 077; mkdir -p "${3}/${1}")
   if ! { printf '%s\n' "$rc" > "${3}/${1}/${2}.rc.tmp" \
          && mv "${3}/${1}/${2}.rc.tmp" "${3}/${1}/${2}.rc"; }; then
     # 記録に失敗してもワーカーは死んでよいが、死ぬ前に名乗る — 回収側は
@@ -83,7 +83,7 @@ run_cli_group() { # $1: cli / $2: status dir
 # 非 0 = その終了コードで失敗 / 不在 = ワーカーが記録前に死んだ）へ 4 つ目の値を
 # 混ぜると、既存の 3 分岐すべてが「この値は何を意味するか」を再解釈することになる。
 record_task_skipped() { # $1: cli / $2: perspective / $3: cause / $4: status dir
-  mkdir -p "${4}/${1}"
+  (umask 077; mkdir -p "${4}/${1}")
   if ! { printf '%s\n' "$3" > "${4}/${1}/${2}.skip.tmp" \
          && mv "${4}/${1}/${2}.skip.tmp" "${4}/${1}/${2}.skip"; }; then
     # 印を書けなければスキップを黙って成立させない。回収側は rc ファイル不在を
@@ -194,7 +194,7 @@ collect_delegated_responses() {
     fi
     [[ -f "$src" ]] || continue
     dir="$(delegate_dir_for "$cli")"
-    if ! mkdir -p "$dir"; then
+    if ! (umask 077; mkdir -p "$dir"); then
       echo "ERROR: cannot create the delegation dir: ${dir}" >&2
       return 1
     fi
@@ -225,27 +225,15 @@ execute_tasks() {
   # ここから下の準備段階の失敗は rc=2 で返す（main がレポート生成を止める根拠）。
   validate_execution_plan || return 2
 
-  mkdir -p "$OUTPUT_DIR"
-  # 実在させた直後に**絶対かつ物理**のパスへ解決する。ここが staging パスの
-  # 正規化の単一地点で、2 つの嘘を同時に潰している:
-  #   1) --output-dir / 設定ファイルは値を無加工で受けるので相対値が入りうる。
-  #      相対のまま implement へ流すと、プロンプトが "(absolute path)" と断言
-  #      しながら相対パスを渡し、受け取ったエージェントは自分の CWD = 作業ツリー
-  #      基準で解決してそこへ書く（本 Issue が塞ごうとした汚染そのもの）。
-  #   2) 既定の OUTPUT_DIR は git rev-parse --show-toplevel（物理）由来、$PWD は
-  #      論理なので、symlink 越しのチェックアウトでは同じ場所を違う綴りで指す。
-  #      揃えておかないと validate_implement_output_boundary が毎回誤発火する
-  #      （旧名 warn_if_staging_outside_sandbox。現存しないので grep しないこと）。
-  if ! OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd -P)"; then
-    echo "ERROR: cannot resolve output dir: ${OUTPUT_DIR}" >&2
-    return 2
-  fi
+  # Authorize the lexical root before mkdir, lock, cleanup or canonicalization.
+  prepare_output_namespace || return 2
   validate_implement_output_boundary || return 2
   validate_output_dir_boundary || return 2
   acquire_output_lock || return 2
   # --fresh must run after the lock and before the unresolved-Critical guard,
   # so leftover reports are no longer the guard's input.
   archive_previous_outputs_if_fresh || return 2
+  validate_output_artifact_paths || return 2
   # Read and compare delegation state before changing any report, response, handoff or cache.
   validate_planned_result_dirs || return 2
   load_delegation_state || return 2
@@ -340,15 +328,9 @@ execute_tasks() {
     # 実行時 fallback を意図的に持たないため、throttle されたタスクは別 CLI で
     # 再実行されず**その観点のカバレッジがゼロ**になる — 同一 CLI への同時 burst を
     # 作らないことが防御になる。CLI が違えばレート制限は独立なので並列のまま。
-    # status dir は実行ごとに一意にする — 固定パスだと同じ OUTPUT_DIR を使う
-    # 並行実行が互いの rc を削除・混同する。一意化は mktemp ではなく自 PID で行う
-    # — orchestrator は mktemp を呼ばない、がこのスクリプトの検査済み契約で
-    # （multi-agent-timeout suite の tmpdir ケースは「mktemp が壊れても落ちるのは
-    # アダプタ側だけ」を固定している）、並行実行は別プロセス = 別 PID なので
-    # 一意性はこれで足りる。同一 PID の残骸（過去のクラッシュ）は先に消す。
-    local status_dir="${OUTPUT_DIR}/.task-rc.$$"
-    rm -rf "$status_dir"
-    if ! mkdir -p "$status_dir"; then
+    # Exclusive private directory; never remove/reuse a predictable residue.
+    local status_dir
+    if ! status_dir="$(umask 077; mktemp -d "${OUTPUT_DIR}/.task-rc.XXXXXX")"; then
       echo "ERROR: cannot create task-status directory: ${status_dir}" >&2
       return 1
     fi
@@ -632,11 +614,12 @@ mark_outputs_discarded() {
     persp="${entry#*:}"
     f="${OUTPUT_DIR}/${cli}/${persp}.md"
     [[ -f "$f" ]] || continue
-    tmp="${f}.discarding.$$"
+    tmp="$(umask 077; mktemp "${OUTPUT_DIR}/${cli}/.discarding.XXXXXX")" || continue
     # 差し替えは ASCII のみのパターンで行う（ロケール依存の text 処理を持ち込まない）。
     if { printf '%s\n\n' "> DISCARDED — the repository changed while this run was in flight. Nothing below was verified against a stable revision; do not read it as a finished ${TASK_TYPE}." \
          && sed 's/^<!-- Status: complete -->$/<!-- Status: discarded -->/' "$f"; } > "$tmp" 2>/dev/null \
-       && mv "$tmp" "$f"; then
+       && output_artifact copy "${cli}/${persp}.md" "${tmp#"$OUTPUT_DIR"/}"; then
+      rm -f "$tmp" 2>/dev/null || true
       continue
     fi
     rm -f "$tmp" 2>/dev/null || true

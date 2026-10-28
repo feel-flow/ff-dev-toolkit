@@ -44,6 +44,9 @@
 #   G32〜G34. 重複キーの正規化（コロン前の空白 / 二重引用符キー / 任意フィールド）→ 赤
 #   G35. 重複キー（単一引用符付きキー）→ 赤
 #   G36. created と updated が同日 → 緑（前後関係の検査が等号を弾かないこと）
+#   G37. sed の区切り文字・改行・GNU sed の e コマンドに見える名前のルート → 緑で、名前の中の
+#        コマンドが実行されない（実体側の相対パスは共有 lib がパラメータ展開で剥がす。
+#        旧形の sed プログラムへ戻すと sentinel が作られて赤 — 2026-10-28 WSL で実測）
 #
 # 変異はすべて ASCII 行への perl / ファイル操作で行う（多バイト文字クラス不使用）。
 # 書き込み不可の環境（read-only チェックアウト等）では skip して成功扱いにする。
@@ -350,6 +353,31 @@ if [ "$rc" -eq 0 ]; then
 else
   bad "G18 書き込み不可の TMPDIR で rc=${rc}（here-doc / here-string が一時ファイルを要求している可能性）"
   sed 's/^/    /' "$TMP/out.log" | tail -6 >&2
+fi
+
+echo "== G37. sed のプログラムに見える名前のルート =="
+# 実体側の対象一覧（共有 lib の ff_docs_actual_targets）はルートを含むパスを扱う。名前が sed の
+# プログラムに入ると、区切り文字と改行で e コマンドを足せる。sentinel は e が cwd に作る
+ODD="$TMP/odd/n||
+e touch sed-e-sentinel
+#"
+if mkdir -p "$ODD" "$TMP/odd-cwd" 2>/dev/null; then
+  cp -R "$REPO_ROOT/docs" "$ODD/docs"
+  rc=0
+  (cd "$TMP/odd-cwd" && FF_DOCS_REPO_ROOT="$ODD" bash "$TARGET") > "$TMP/out.log" 2>&1 || rc=$?
+  if [ -n "$(find "$TMP/odd-cwd" -mindepth 1 -print)" ]; then
+    bad "G37 ルートの名前が sed の e コマンドとして実行されました"
+  elif [ "$rc" -ne 0 ] || ! grep -q '実体側 [0-9][0-9]* 件を導出' "$TMP/out.log"; then
+    bad "G37 rc=${rc}（緑かつ実体側の導出まで到達することを期待）"
+    sed 's/^/    /' "$TMP/out.log" | grep '✗' | head -6 >&2
+  else
+    ok "G37 sed のプログラムに見える名前のルート: 緑で、名前の中のコマンドは実行されない"
+  fi
+else
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) echo "  ○ skip: G37 このファイルシステムでは名前を作れません（Windows の Git Bash）" ;;
+    *) bad "G37 ルートのディレクトリを作れません" ;;
+  esac
 fi
 
 echo "== G14. 検査対象が無いツリー =="

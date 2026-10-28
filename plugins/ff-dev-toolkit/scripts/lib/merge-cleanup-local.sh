@@ -313,11 +313,13 @@ else
         # 利用者に存在しない未マージコミットを探させないことが目的で、削除しない点は同じ。
         echo "  ⚠️ $branch は MERGED PR の head 名として一覧に載っていますが、一覧側の OID が null で照合材料がありません。"
         echo "     未マージの可能性ではなく OID 照合が成立しないため、削除をスキップします。"
-        echo "     マージ済みであることを PR ページで確認できた場合のみ、手動で 'git branch -D $branch' してください。"
+        echo "     マージ済みであることを PR ページで確認できた場合のみ、手動で次を実行してください:"
+        echo "       $(ff_shell_argv git branch -D "$branch")"
         FAILED_ITEMS+=("$branch: [gone] だが MERGED 一覧側の OID が null で照合材料が無い（要手動確認）")
       else
         echo "  ⚠️ $branch はマージ済み PR の head と OID 一致しません（未マージの固有コミットの可能性）。"
-        echo "     削除をスキップします。内容確認のうえ手動で 'git branch -D $branch' してください。"
+        echo "     削除をスキップします。内容確認のうえ手動で次を実行してください:"
+        echo "       $(ff_shell_argv git branch -D "$branch")"
         FAILED_ITEMS+=("$branch: [gone] だが MERGED PR と OID 不一致（要手動確認）")
       fi
     else
@@ -753,7 +755,7 @@ else
         if PROTECT_HIT="$(matched_extra_protect_pattern "$rbranch")"; then
           echo "  ⚠️ skip (設定保護パターン '${PROTECT_HIT}' に一致): $rbranch"
           echo "     このブランチはマージ済みで他の全ガードを通過しています。長命ブランチでなければ手動で削除できます:"
-          echo "       git push origin --force-with-lease=refs/heads/$rbranch:$roid :refs/heads/$rbranch"
+          echo "       $(ff_shell_argv git push origin "--force-with-lease=refs/heads/$rbranch:$roid" ":refs/heads/$rbranch")"
           echo "     恒久対応は FF_MERGE_CLEANUP_PROTECT_BRANCHES の見直し（既定 'release/*'、'none' で追加保護なし。develop/main/master/staging/* は設定でも外れません）"
           SKIPPED_LEFTOVERS+=("$rbranch: 設定保護パターン '${PROTECT_HIT}' に一致（マージ済み・手動削除コマンドは実行ログ参照）")
           continue
@@ -842,7 +844,7 @@ else
               # 「MERGED 済み PR の head」であることが確認済み。無条件の削除ではなく、
               # その OID を lease に載せた形を案内する（再試行までの間に push が
               # 入っていれば、この形なら拒否されて保護される）。
-              FAILED_ITEMS+=("$rbranch: リモート削除失敗（headRefOid が無く Step 4 はスキップ / 取り残し検証での削除も失敗: $(last_push_error_head)）— 'git push origin --force-with-lease=refs/heads/$rbranch:$roid :refs/heads/$rbranch' で再試行し merge-cleanup を再実行")
+              FAILED_ITEMS+=("$rbranch: リモート削除失敗（headRefOid が無く Step 4 はスキップ / 取り残し検証での削除も失敗: $(last_push_error_head)）— 再試行して merge-cleanup を再実行。再試行のコマンド: $(ff_shell_argv git push origin "--force-with-lease=refs/heads/$rbranch:$roid" ":refs/heads/$rbranch")")
             else
               FAILED_ITEMS+=("$rbranch: リモート削除失敗（$(last_push_error_head)）")
             fi

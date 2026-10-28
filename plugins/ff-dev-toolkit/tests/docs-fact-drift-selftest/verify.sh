@@ -76,6 +76,10 @@
 #        一致が cwd のファイル名へ化けて、正しい記載が赤になる
 #   G36. 同一行の複数一致・先頭 0 のある値も全件を文字列比較する → 赤
 #   G37. claim 本文の境界を直接照合（FM / 図内の見出し / CRLF / 空入力 / 不在）
+#   G38. 単引用・空白・$(...)・; を含む名前のルート → 緑で、名前の中のコマンドが実行されない
+#        （導出値の計算はルートを引数のデータとして渡し、eval しない）
+#   G39. sed の区切り文字・改行・GNU sed の e コマンドに見える名前のルート → 緑で、名前の中の
+#        コマンドが実行されない（docs 走査の相対パスはパラメータ展開で剥がし、sed プログラムへ入れない）
 #   G11. docs/MASTER.md が無いツリー → 行頭 `○ skip` で緑
 #
 # 「1 一致に数値が 2 つ以上」の claim 定義誤りは fixture から到達できない（claim の
@@ -83,6 +87,7 @@
 # 歯止めとしてゲート側に残してある検査で、ここでは測らない。
 #
 # 空振り検出: G7（正準表現全消去）/ G19（導出元消失）の理由付き赤と G37 の入力不在を実測。
+# 空振り検出: G38 は導出値の計算を eval へ、G39 は docs 走査の相対パス計算を sed プログラムへ戻した旧形で、それぞれ sentinel が作られて赤（2026-10-28 WSL で実測: 66 件中 2 件失敗）。
 # 変異はすべて ASCII 行への perl / ファイル操作で行う。
 set -euo pipefail
 
@@ -744,6 +749,42 @@ else
   bad "G20 書き込み不可の TMPDIR で rc=${rc}（here-doc / here-string が一時ファイルを要求している可能性）"
   sed 's/^/    /' "$TMP/out.log" | tail -6 >&2
 fi
+
+# 名前の付いたルートへ seed を写して本体を回し、緑・照合まで到達・sentinel 無しを見る。
+# $1=ケース名 $2=ルートのディレクトリ名。sentinel は名前の中のコマンドが作る（実行されたら赤）
+run_odd_root() {
+  local name="$1" dir="$2" rc=0 odd
+  rm -rf "$TMP/odd" "$TMP/odd-cwd"
+  mkdir -p "$TMP/odd" "$TMP/odd-cwd"
+  odd="$TMP/odd/$dir"
+  if ! mkdir -p "$odd" 2>/dev/null; then
+    case "$(uname -s)" in
+      MINGW*|MSYS*|CYGWIN*) echo "  ○ skip: $name: このファイルシステムでは名前を作れません（Windows の Git Bash）"; return ;;
+    esac
+    bad "$name: ルートのディレクトリを作れません"
+    return
+  fi
+  cp -R "$TMP/seed/." "$odd/"
+  # e コマンドの相対パスと $(touch "$F_SENT") の両方の sentinel を、検査後に探せる場所へ置く
+  (cd "$TMP/odd-cwd" && F_SENT="$TMP/odd-cwd/sentinel" FF_DOCS_REPO_ROOT="$odd" bash "$TARGET") > "$TMP/out.log" 2>&1 || rc=$?
+  if [ -n "$(find "$TMP/odd-cwd" -mindepth 1 -print)" ]; then
+    bad "$name: ルートの名前がコマンドとして実行されました（sentinel: $(ls "$TMP/odd-cwd")）"
+  elif [ "$rc" -ne 0 ] || ! grep -q '走査対象 [0-9][0-9]* 文書' "$TMP/out.log"; then
+    bad "$name: rc=${rc}（緑かつ claim の照合まで到達することを期待）"
+    grep '✗' "$TMP/out.log" | sed 's/^/    /' | head -6 >&2
+  else
+    ok "$name: 緑で、名前の中のコマンドは実行されない"
+  fi
+}
+
+echo "== G38. シェルの構文に見える名前のルート =="
+# shellcheck disable=SC2016 # $(...) は名前の一部（展開しない）
+run_odd_root "G38 単引用・空白・\$(...)・; を含むルート" 'odd r'"'"'$(touch "$F_SENT");'"'"'x'
+
+echo "== G39. sed のプログラムに見える名前のルート =="
+run_odd_root "G39 区切り文字・改行・e コマンドを含むルート" "n||
+e touch sed-e-sentinel
+#"
 
 echo "== G11. 検査対象が無いツリー =="
 rm -rf "$TMP/root"

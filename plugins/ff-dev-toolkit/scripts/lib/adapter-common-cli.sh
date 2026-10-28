@@ -84,15 +84,20 @@ run_with_timeout() {
   local timeout_seconds="$1"
   shift
 
+  if [[ -z "${_FF_REASON_PRIVATE_DIR:-}" ]] || ! _ff_reason_parent_is_safe "$_FF_REASON_PRIVATE_DIR"; then
+    echo "ERROR: run_with_timeout: cannot allocate a private directory for command metadata." >&2
+    record_timeout_reason orchestrator-error
+    return "$ORCHESTRATOR_ERROR_EXIT_CODE"
+  fi
   record_timeout_reason command
 
   local out_file marker
-  if ! out_file="$(mktemp)"; then
+  if ! out_file="$(mktemp "${_FF_REASON_PRIVATE_DIR}/command.XXXXXX")"; then
     echo "ERROR: run_with_timeout: cannot create a temp file for command output." >&2
     record_timeout_reason orchestrator-error
     return "$ORCHESTRATOR_ERROR_EXIT_CODE"
   fi
-  if ! marker="$(mktemp)"; then
+  if ! marker="$(mktemp "${_FF_REASON_PRIVATE_DIR}/deadline.XXXXXX")"; then
     echo "ERROR: run_with_timeout: cannot create a temp file for the timeout marker." >&2
     rm -f "$out_file"
     record_timeout_reason orchestrator-error

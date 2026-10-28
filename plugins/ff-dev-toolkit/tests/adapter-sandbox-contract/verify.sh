@@ -47,6 +47,7 @@
 # 空振り検出: 子プロセスが残らない通常回は 1 回で削除し、対象が既に無い回は削除を呼ばず成功扱い、検査途中の終了は末尾到達ガードが赤になる。
 # 空振り検出: 対の selftest は guard の削除/後置・物理化/CDPATH中和の除去・prefix/同一/ルート境界・TMPDIR/default の除去・空 Git root の成功化の12変異を赤にし、入力不在/空/読取不可とケース集合0件も赤にする（2026-10-24 macOS実測）。
 
+# 空振り検出: Claude adapter を変更前へ戻す対照は review/explore/inline の tools・MCP 限定の欠落を3件検出して rc=1。通常対照は rc=0（2026-10-28、TMPDIR と Git root を分離して実測）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -778,12 +779,31 @@ else
   dump_argv
 fi
 
+for task in review explore; do
+  run_adapter claude-code "$task"
+  if argv_has_pair --allowed-tools 'Read,Grep,Glob' \
+     && argv_has_pair --tools 'Read,Grep,Glob' && argv_has --strict-mcp-config; then
+    ok "claude-code/$task: Bash と継承 MCP を公開せず読み取り tools だけを利用可能にする"
+  else
+    bad "claude-code/$task: 読み取り tools の限定または継承 MCP の除外が無い"
+    dump_argv
+  fi
+done
 run_adapter claude-code implement inline
-if argv_has_pair --allowed-tools 'Read,Grep,Glob,Bash(git diff*)' \
+if argv_has_pair --allowed-tools 'Read,Grep,Glob' \
+   && argv_has_pair --tools 'Read,Grep,Glob' && argv_has --strict-mcp-config \
    && ! argv_has_pair --allowed-tools 'Read,Grep,Glob,Edit,Write,Bash'; then
-  ok "claude-code/implement inline: Edit / Write / 任意 Bash を許可しない"
+  ok "claude-code/implement inline: Edit / Write / Bash / 継承 MCP を公開しない"
 else
-  bad "claude-code/implement inline: 書き込み tool が有効なまま"
+  bad "claude-code/implement inline: 読み取り専用の tool 集合になっていない"
+  dump_argv
+fi
+run_adapter claude-code implement
+if argv_has_pair --allowed-tools 'Read,Grep,Glob,Edit,Write,Bash' \
+   && ! argv_has --tools && ! argv_has --strict-mcp-config; then
+  ok "claude-code/implement staged: 従来の実装 tools を保つ"
+else
+  bad "claude-code/implement staged: 通常実装の権限を読み取り専用へ狭めている"
   dump_argv
 fi
 
@@ -1049,7 +1069,12 @@ if command -v grok >/dev/null 2>&1; then
   if help_unusable "grok-cli" "$WORK/grok-help.txt"; then
     :
   else
+    # grok 1.0.70 は標準出力が TTY でなくても --help に SGR を付ける
+    # （2026-10-28、この環境で grok --help をファイルへ受けて実測。`--sandbox` が
+    # 太字だと下の行頭照合が外れ、フラグがあるのに「ブロックが見つからない」になる）。
+    # codex 側と同じく色を外してから見る。色を残したまま緑にはしない。
     grok_probe="$(awk '
+      { gsub(/\033\[[0-9;]*m/, "") }
       /^[[:space:]]*(-[A-Za-z], )?--sandbox[ =<]/ { inblock = 1; block = 1 }
       inblock && /\[possible values:/ { values = 1; exit }
       inblock && seen && /^[[:space:]]*-[A-Za-z-]/ { exit }

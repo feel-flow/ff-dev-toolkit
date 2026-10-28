@@ -120,7 +120,11 @@ ff_docs_actual_targets() {
     norm="$norm$pat
 "
   done < <(printf '%s\n' "$excl")
-  find "$docs_root" -name '*.md' -type f | sed -e "s|^$docs_root/||" | LC_ALL=C sort | {
+  # 相対パスはパラメータ展開で剥がす。docs_root を sed のプログラムへ入れると、区切り文字・改行を
+  # 含む名前がプログラムを書き換え、GNU sed の e コマンドでシェル実行まで届く。列挙は NUL 区切り
+  find "$docs_root" -name '*.md' -type f -print0 | while IFS= read -r -d '' rel; do
+    printf '%s\n' "${rel#"$docs_root"/}"
+  done | LC_ALL=C sort | {
     while IFS= read -r rel; do
       matched=0
       while IFS= read -r pat; do

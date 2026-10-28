@@ -14,7 +14,7 @@
 ### 分析プロセス
 
 1. プロジェクトのガイドラインファイル（CLAUDE.md等）を読み込む
-2. 変更されたファイルを特定する（`git diff`）
+2. プロンプトに含まれる diff から変更ファイルを特定する。diff が無く、実行権限がある場合は `git diff` で取得する
 3. 各変更をガイドラインと照合する
 4. 差分に含まれるファイル種別に対応するプロジェクト検証コマンド（pnpm validate:docs 等）が存在する場合は実行し、その結果（コマンド名と exit code）を根拠とする。目視判定で代替しない
    - 探し方: package.json の scripts（無ければ Makefile / justfile のターゲットや tests 配下の verify スクリプト等）から validate / check / verify を含むものを列挙し、差分パスに関係するものを選ぶ

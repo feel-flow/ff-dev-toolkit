@@ -46,9 +46,9 @@ previous_report_has_critical_marker() { # <report-file>
 # 呼ばれる（標準出力が戻り値なので、そうとしか呼べない）。コマンド置換はサブシェルなので、
 # そこで代入した変数は呼び出し側へ届かない — アダプタ側の run_with_timeout が失敗理由を
 # ファイルで運んでいるのと同じ理由で、ここも同じ形にする。
-# 実行ごとのトークン。理由ファイルは PID で名前を作るので、クラッシュした前回の残骸と
-# PID が再利用された回、あるいは書き込めない既存ファイルを指した回に、**古い 1 行を今回の
-# 理由として読む**余地がある。内容へトークンを前置し、読む側は一致しない行を捨てる
+# 実行ごとのトークン。既定は私有namespaceを使うが、テストの明示pathに前回の残骸がある回や
+# 書き込めない既存ファイルを指した回も、古い1行を今回の理由として読まない。
+# 内容へトークンを前置し、読む側は一致しない行を捨てる
 # （捨てた回は一般案内へ倒れる — 誤った原因を名乗るより無害）。
 REVIEW_SERIES_REASON_TOKEN="$$-$(date -u +%s 2>/dev/null || echo 0)"
 
@@ -58,7 +58,8 @@ review_series_reason_file() {
     printf '%s\n' "$FF_MULTI_AGENT_REVIEW_SERIES_REASON_FILE"
     return 0
   fi
-  printf '%s\n' "${TMPDIR:-/tmp}/ff-review-series-reason.$$"
+  [[ -n "${_FF_REASON_PRIVATE_DIR:-}" ]] || return 0
+  printf '%s' "${_FF_REASON_PRIVATE_DIR}/review-series"
 }
 
 review_series_failure_reason() { # stdout: 今回の実行が書いた失敗理由（無ければ空）
@@ -66,10 +67,11 @@ review_series_failure_reason() { # stdout: 今回の実行が書いた失敗理�
   f="$(review_series_reason_file)"
   # 書く側がリンクを掴まない以上、リンクが在る回の中身は自分が書いたものではない
   # （トークン照合でも落ちるが、他人のファイルを読むこと自体をここで止める）。
-  if [[ -L "$f" ]]; then
+  if _ff_reason_refusal "$f" >/dev/null; then
     return 0
   fi
-  [[ -r "$f" ]] || return 0
+  [[ -f "$f" && -r "$f" ]] || return 0
+  _ff_reason_parent_is_safe "$(dirname "$f")" || return 0
   line="$(head -n 1 "$f" 2>/dev/null || true)"
   # トークンが一致しない = 今回の実行が書いたものではない（残骸・書き込み失敗）。
   [[ "$line" == "${REVIEW_SERIES_REASON_TOKEN}:"* ]] || return 0

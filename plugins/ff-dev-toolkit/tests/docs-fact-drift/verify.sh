@@ -91,9 +91,11 @@ MCP_INDEX="$ROOT_PLUGIN/mcp/src/index.ts"
 ACE_SIZE_TS="$ROOT_PLUGIN/docs-template/scripts/ace/check-category-size.ts"
 ACE_REPORT_TS="$ROOT_PLUGIN/docs-template/scripts/ace/ace-refine-report.ts"
 
-derive() { # $1=説明 $2=コマンド文字列（数値を stdout へ）
+derive() { # $1=説明 $2=導出関数の名前（数値を stdout へ）
+  # 導出は関数で書き、ルート由来のパスは引数のデータとして渡す。パスを埋め込んだコマンド文字列を
+  # eval すると、ルートの名前に含まれる単引用が引用を閉じ、残りがシェルの構文として実行される
   local label="$1" out
-  out="$(eval "$2" 2>/dev/null || true)"
+  out="$("$2" 2>/dev/null || true)"
   case "$out" in
     ''|*[!0-9]*) echo "" ; return ;;   # 数値以外（空・複数行・失敗）は導出失敗
   esac
@@ -105,16 +107,30 @@ derive() { # $1=説明 $2=コマンド文字列（数値を stdout へ）
   printf '%s\n' "$out"
 }
 
-D_PLUGINS="$(derive plugins "jq '.plugins | length' '$MARKETPLACE'")"
-D_SKILLS="$(derive skills "find '$ROOT/plugins' -mindepth 4 -maxdepth 4 -name SKILL.md -type f | wc -l | tr -d ' '")"
-D_FF_SKILLS="$(derive ff_skills "find '$ROOT_PLUGIN/skills' -mindepth 2 -maxdepth 2 -name SKILL.md -type f | wc -l | tr -d ' '")"
-D_SUITES="$(derive suites "find '$ROOT_TESTS' -mindepth 2 -maxdepth 2 -name verify.sh -type f | wc -l | tr -d ' '")"
-D_MCP_TOOLS="$(derive mcp_tools "grep -c '^server.registerTool(' '$MCP_INDEX' | tr -d ' '")"
-D_INITIAL_SET="$(derive initial_set "awk '/^### 2\./ { s=1; next } s && /^\`\`\`/ { if (f) exit; f=1; next } f' '$INIT_DOCS_SKILL' | grep -oE '[A-Za-z_]+\.md' | LC_ALL=C sort -u | wc -l | tr -d ' '")"
-D_ACE_WARN="$(derive ace_warn "grep -oE 'DEFAULT_WARN_ENTRIES_PER_CATEGORY = [0-9]+' '$ACE_SIZE_TS' | grep -oE '[0-9]+' | head -1")"
-D_ACE_BLOCK="$(derive ace_block "grep -oE 'DEFAULT_MAX_ENTRIES_PER_CATEGORY = [0-9]+' '$ACE_SIZE_TS' | grep -oE '[0-9]+' | head -1")"
-D_ENTRY_LINES="$(derive entry_lines "grep -oE 'DEFAULT_MAX_ENTRY_LINES = [0-9]+' '$ACE_SIZE_TS' | grep -oE '[0-9]+' | head -1")"
-D_PROMOTE="$(derive promote "grep -oE 'DEFAULT_PROMOTE_HELPFUL_MIN = [0-9]+' '$ACE_REPORT_TS' | grep -oE '[0-9]+' | head -1")"
+d_plugins() { jq '.plugins | length' "$MARKETPLACE"; }
+# ファイル数は NUL 区切りで数える（改行を含むパスを 1 件として数える。wc -l は改行の数を数える）
+count_files() { find "$@" -print0 | tr -dc '\000' | wc -c | tr -d ' '; }
+d_skills() { count_files "$ROOT/plugins" -mindepth 4 -maxdepth 4 -name SKILL.md -type f; }
+d_ff_skills() { count_files "$ROOT_PLUGIN/skills" -mindepth 2 -maxdepth 2 -name SKILL.md -type f; }
+d_suites() { count_files "$ROOT_TESTS" -mindepth 2 -maxdepth 2 -name verify.sh -type f; }
+d_mcp_tools() { grep -c '^server.registerTool(' "$MCP_INDEX" | tr -d ' '; }
+d_initial_set() { awk '/^### 2\./ { s=1; next } s && /^```/ { if (f) exit; f=1; next } f' "$INIT_DOCS_SKILL" | grep -oE '[A-Za-z_]+\.md' | LC_ALL=C sort -u | wc -l | tr -d ' '; }
+d_ts_const() { grep -oE "$1 = [0-9]+" "$2" | grep -oE '[0-9]+' | head -1; }
+d_ace_warn() { d_ts_const DEFAULT_WARN_ENTRIES_PER_CATEGORY "$ACE_SIZE_TS"; }
+d_ace_block() { d_ts_const DEFAULT_MAX_ENTRIES_PER_CATEGORY "$ACE_SIZE_TS"; }
+d_entry_lines() { d_ts_const DEFAULT_MAX_ENTRY_LINES "$ACE_SIZE_TS"; }
+d_promote() { d_ts_const DEFAULT_PROMOTE_HELPFUL_MIN "$ACE_REPORT_TS"; }
+
+D_PLUGINS="$(derive plugins d_plugins)"
+D_SKILLS="$(derive skills d_skills)"
+D_FF_SKILLS="$(derive ff_skills d_ff_skills)"
+D_SUITES="$(derive suites d_suites)"
+D_MCP_TOOLS="$(derive mcp_tools d_mcp_tools)"
+D_INITIAL_SET="$(derive initial_set d_initial_set)"
+D_ACE_WARN="$(derive ace_warn d_ace_warn)"
+D_ACE_BLOCK="$(derive ace_block d_ace_block)"
+D_ENTRY_LINES="$(derive entry_lines d_entry_lines)"
+D_PROMOTE="$(derive promote d_promote)"
 
 echo "== A. 期待値の導出 =="
 for pair in \

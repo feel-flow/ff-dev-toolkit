@@ -30,6 +30,10 @@
 # 空振り検出: 展開先の不在ガード除去・明示対象を元argv集合へ戻す2変異は各rc=1、正常対照rc=0（2026-10-26 mutation-harness実測。削除済み追跡ファイルはstage前rc=2、末尾/.も実ファイル集合で照合）。
 # 変異検出: knowledge-commit.sh の hook の場所の判定を `/` 始まりだけへ戻すと 14b が赤（MSYS でも C:/hk をルートへ連結し、hook を検出せず保留を作る）。実機の MSYS / Cygwin では C:/hk が本物のドライブを指すので 14b は理由付きの skip（2026-10-26 WSL 実測。Issue `#2367`）。
 
+# 空振り検出: literal pathspec 制御を変更前へ戻すと実在の :(glob)** から未選択ファイルが混入し rc=1、通常対照 rc=0（2026-10-28）。
+# 空振り検出: global literal を使う版へ戻すと hook の環境照合が rc=1、icase の集合ガードを外しても rc=1。通常対照 rc=0（2026-10-28、pre-commit / post-index-change を実測）。
+# 空振り検出: 共通 lib の空集合・空 path・icase で0件一致は rc=2、通常 file は rc=0、全ケースで index の同一性を確認（2026-10-28 実測）。
+# 空振り検出: KC_OUTPUTを旧兄弟leafのKC_TMP.outへ戻す独立変異は、合成canaryのbytes不変照合が1件赤（rc=1）。同じ出力部分の無変異対照は2/0、suite全体は169件pass（2026-10-28実測、Issue `#2429`）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -545,6 +549,19 @@ if [ ! -f "$KC" ]; then
   bad "共通の書き込み口が不在: $KC"
 else
   KC_TMP="$(mktemp -d "${TMPDIR:-/tmp}/knowledge-commit.XXXXXX")"
+  [ -d "$KC_TMP" ] && [ ! -L "$KC_TMP" ] || {
+    echo '✗ 共通の書き込み口の私有一時ディレクトリを作れません' >&2
+    exit 1
+  }
+  KC_OUTPUT="$KC_TMP/suite.out"
+  # 旧形式の予測可能な兄弟leafを先に置く。suiteのstdout/stderrは確保済みdirectoryの
+  # 内側に閉じ、このリンクも指し先の合成canaryも触らない（Issue `#2429`）。
+  printf '%s\n' 'knowledge-suite-sibling-canary' >"$KC_TMP/sibling-canary"
+  if ! ln -s "$KC_TMP/sibling-canary" "$KC_TMP.out"; then
+    echo '✗ suite出力の兄弟leafリンクを検査するfixtureを作れません' >&2
+    rm -rf "$KC_TMP"
+    exit 1
+  fi
   (
     # fixture の identity を呼び出し元へ漏らさない。実行者のグローバル設定も継承させない
     # shellcheck source=../lib/git-fixture.sh
@@ -1125,6 +1142,72 @@ HOOK
     declare -F run_knowledge_layout_cases >/dev/null || exit 1
     run_knowledge_layout_cases || exit 1
 
+    # 特殊名も filesystem の literal。Git magic として別ファイルへ広げない。
+    for pathspec_env in clean glob icase literal; do
+    for selected in ':(glob)**' 'notes[ab].md'; do
+      case "${OSTYPE:-}" in
+        msys* | cygwin*)
+          if [[ "$selected" == ':(glob)**' ]]; then
+            echo "  ○ skip: Windows で作成できない colon/star 名のケース（bracket 名の検査は続ける）"
+            continue
+          fi ;;
+      esac
+      F="$KC_TMP/literal-$RANDOM"
+      new_repo "$F" "Knowledge Test" "knowledge-test@example.com"
+      cd "$F" || exit 1
+      printf '%s\n' old >"$selected"
+      printf '%s\n' neighbour >notesa.md
+      git --literal-pathspecs add -- "$selected" notesa.md
+      git commit -qm 'literal fixture'
+      printf '%s\n' selected >"$selected"
+      printf '%s\n' unrelated >>unrelated.txt
+      printf '%s\n' neighbour-change >>notesa.md
+      git add -- unrelated.txt
+      cp "$SCRIPT_DIR/fixtures/literal-hook.py" .git/hooks/pre-commit
+      cp "$SCRIPT_DIR/fixtures/literal-hook.py" .git/hooks/post-index-change
+      chmod +x .git/hooks/pre-commit .git/hooks/post-index-change
+      (
+        unset GIT_GLOB_PATHSPECS GIT_ICASE_PATHSPECS GIT_LITERAL_PATHSPECS
+        case "$pathspec_env" in
+          glob) export GIT_GLOB_PATHSPECS=1 ;;
+          icase) export GIT_ICASE_PATHSPECS=1 ;;
+          literal) export GIT_LITERAL_PATHSPECS=1 ;;
+        esac
+        kc add --source obs --id OBS-literal --summary literal -- "$selected" >/dev/null
+        FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 kc commit >/dev/null
+      ) || exit 1
+      python3 "$SCRIPT_DIR/fixtures/literal-hook.py" assert "$F" "$selected" "$pathspec_env" || exit 1
+      actual="$(git diff-tree --no-commit-id --name-only -r HEAD)"
+      if [[ "$actual" == "$selected" ]] \
+        && ! git diff --cached --quiet -- unrelated.txt \
+        && ! git diff --quiet -- notesa.md; then
+        echo "  ✓ literal path $selected ($pathspec_env) だけを commit し、無関係な index/working tree を保持"
+      else
+        echo "  ✗ literal path の対象集合が広がった: $selected / $actual" >&2
+        exit 1
+      fi
+    done
+    done
+
+    # 大小文字の別 index entry は case-insensitive FS でも作れ、icase の拡大を測れる。
+    F="$KC_TMP/icase-ambiguous"
+    new_repo "$F" "Knowledge Test" "knowledge-test@example.com"
+    cd "$F" || exit 1
+    printf '%s\n' old >case.md
+    git add -- case.md
+    blob="$(git hash-object case.md)"
+    git update-index --add --cacheinfo "100644,$blob,CASE.md"
+    git commit -qm 'case index fixture'
+    printf '%s\n' changed >case.md
+    before_index="$(git ls-files --stage)"
+    rc=0; out="$(GIT_ICASE_PATHSPECS=1 kc add --source obs --id OBS-ambiguous --summary ambiguous -- case.md 2>&1)" || rc=$?
+    if [[ "$rc" -eq 1 && "$out" == *"Git の icase 設定で literal 対象が空または拡大します"* && "$(git ls-files --stage)" == "$before_index" ]] \
+      && [[ "$(kc status)" == *"KNOWLEDGE_PENDING=0"* ]]; then
+      echo "  ✓ icase が選択集合を拡大する入力は index/pending を変えず拒否"
+    else
+      echo "  ✗ icase の曖昧な index を受理した（rc=${rc}）: $out" >&2; exit 1
+    fi
+
     # 7. 合成 identity（テスト fixture の既定 identity）では commit しない。保留は残す
     F="$KC_TMP/fixture-id"
     new_repo "$F"
@@ -1145,13 +1228,19 @@ HOOK
     else
       echo "  ✗ 抜け道の変数が効かない（rc=${rc}）" >&2; exit 1
     fi
-  ) >"$KC_TMP.out" 2>&1 && kc_rc=0 || kc_rc=$?
-  cat "$KC_TMP.out"
-  PASS=$((PASS + $(grep -c '  ✓' "$KC_TMP.out" || true)))
+  ) >"$KC_OUTPUT" 2>&1 && kc_rc=0 || kc_rc=$?
+  cat "$KC_OUTPUT"
+  PASS=$((PASS + $(grep -c '  ✓' "$KC_OUTPUT" || true)))
   if [ "$kc_rc" -ne 0 ]; then
     bad "共通の書き込み口の振る舞いが期待と違う（rc=${kc_rc}）"
   fi
-  rm -rf "$KC_TMP" "$KC_TMP.out"
+  if [ -L "$KC_TMP.out" ] && cmp -s "$KC_TMP/sibling-canary" <(printf '%s\n' 'knowledge-suite-sibling-canary'); then
+    ok 'suite出力は私有directory内に閉じ、旧兄弟leafのリンク先を変更しない'
+  else
+    bad 'suite出力が旧兄弟leafまたは合成canaryを変更した'
+  fi
+  rm -f "$KC_TMP.out"
+  rm -rf "$KC_TMP"
 fi
 
 echo "== ACE サイクル手順書の「4. コミット」が書き込み口を指す（Issue \`#1789\`） =="

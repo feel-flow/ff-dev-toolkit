@@ -483,6 +483,9 @@ else
 fi
 
 echo "-- release: 本実行（準備 → 同期 → タグ → Release → footer → 収束） --"
+# ファイル内容は公開可能でも、非公開 SSOT の自由文の件名は別の入力。
+printf '%s\n' 'public content for metadata regression' >>"$SSOT/plugins/ff-dev-toolkit/README.md"
+commit_push "fix: PRIVATE-SYNC-SUBJECT-ONLY"
 run_orch --summary "デモ"
 if [[ "$RC" -eq 0 ]] && has "RELEASE_RESULT=released" && has "RELEASE_VERSION=0.32.0"; then
   ok "本実行が released / v0.32.0 で完了する"
@@ -523,6 +526,11 @@ else
   bad "タグ / Release が期待どおりでない"; dump
 fi
 pub_syncs="$(git -C "$PUB_ORIGIN" log --format=%s main | grep -c "^sync: ${SSOT_NAME} " || true)"
+if git -C "$PUB_ORIGIN" log --format=%B main | grep -Fq 'PRIVATE-SYNC-SUBJECT-ONLY'; then
+  bad "非公開 SSOT の件名が公開 commit 本文へ転記された"
+else
+  ok "公開 commit の provenance を保ち、非公開 SSOT の件名は本文へ転記しない"
+fi
 if [[ "$pub_syncs" -eq 3 && "$(git -C "$PUB_ORIGIN" log -1 --format=%s main)" == "sync: ${SSOT_NAME} $(git -C "$SSOT" rev-parse --short HEAD) を反映" ]]; then
   ok "footer 追従の後にもう 1 周同期して収束する（公開側の最新 sync commit = SSOT HEAD）"
 else

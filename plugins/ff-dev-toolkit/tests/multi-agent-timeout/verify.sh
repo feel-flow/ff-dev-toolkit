@@ -28,6 +28,7 @@
 # ネットワークを伴わずに orchestrator の分岐だけを動かす。
 #
 # 書き込み不可の環境（read-only チェックアウト等）では skip して成功扱いにする。
+# 空振り検出: private-reasons-casesは無変異1/0。旧共有PIDパス・staging後の再確認除去・namespace fallback除去・理由writer fallback除去・私有祖先で走査終了・旧一律祖先拒否・空ケースの7変異は、syntax0の隔離コピーで全てrc1（2026-10-28実測）。command substitution・読取可能FIFO/symlink差替拒否・私有祖先の内外・sticky境界・mktemp失敗時の分類と後始末を同一経路で検査する。
 
 set -euo pipefail
 
@@ -1689,13 +1690,12 @@ else
 fi
 
 # --- ケース2c: 一時ファイルが作れない環境 ---
-# アダプタは run_with_timeout より先に stderr 用の mktemp を行う。ここが素の 1 で
-# 死ぬと、orchestrator 起因の失敗が「CLI が status 1 で終了」として記録され、
-# 成果物も残らない（125 の処理に到達できない）。
+# 固定差分・結果の安全な保存にも排他一時領域を使う。これを確保できない回は
+# CLI起動より前のorchestrator準備失敗として停止し、前回の成果物を今回の結果としない。
 #
 # 不正な TMPDIR では再現しない: macOS の BSD mktemp は TMPDIR が使えないと実 temp へ
 # 落ちるだけで失敗しない。ホスト差に依らせないため mktemp 自体を stub で失敗させる
-# （orchestrator は mktemp を呼ばないので、落ちるのはアダプタ側だけ）。
+# （orchestratorの準備段階で止まり、実CLIへ到達しないことも検査する）。
 echo ok > "$TMP/codex-mode"
 echo fail > "$TMP/mktemp-mode"
 rm -f "$TMP/invoked-"*
@@ -1711,10 +1711,11 @@ if [[ "$RC" -ne 0 ]]; then
 else
   bad "tmpdir: 一時ファイルが作れないのに 0 終了した"
 fi
-if [[ -f "$RESULT_FILE" ]] && grep -q 'orchestrator' "$RESULT_FILE"; then
-  ok "tmpdir: orchestrator 起因として成果物に記録される（CLI の失敗に化けない）"
+if ! compgen -G "$TMP/invoked-*" >/dev/null \
+  && grep -E 'mktemp|capture this run.s diff|private directory' "$TMP/run.log" >/dev/null; then
+  ok "tmpdir: 一時領域の準備失敗を診断し、CLIを起動せず停止する"
 else
-  bad "tmpdir: orchestrator 起因の失敗が成果物に残らない or CLI の失敗として記録された"
+  bad "tmpdir: 安全な一時領域を確保できない回にCLIを起動したか、準備失敗の診断が無い"
 fi
 
 # --- ケース2d: 再実行コマンドが「何を見るか」を決めるフラグを引き継ぐ ---
@@ -2373,9 +2374,9 @@ run_stale_case() { # $1: ケース名 / $2: broken|normal|subshell|rodir / stdou
 
 STALE_BROKEN="$(run_stale_case broken broken)"
 if [[ "$STALE_BROKEN" != *"STUB-NOT-ON-PATH"* && "$STALE_BROKEN" == *"$STALE_NOTE"* \
-  && "$STALE_BROKEN" == *'recorded reason: `command`'* && "$STALE_BROKEN" == *"could not be updated"* \
+  && "$STALE_BROKEN" == *'recorded reason: none'* && "$STALE_BROKEN" == *"could not be updated"* \
   && "$STALE_BROKEN" == *"could not determine how many hard links"* ]]; then
-  ok "stale-note: 記録が拒否された回（stat 不在）は分類が古い可能性を成果物に書き、拒否理由も写す"
+  ok "stale-note: stat不在時は読戻しも拒否し、未確認の分類と拒否理由を成果物へ記録する"
 else
   bad "stale-note: 記録が拒否されたのに成果物が古い分類を断定したまま（注記なし / 拒否理由なし）"
   printf '%s\n' "$STALE_BROKEN" | sed 's/^/    | /' >&2
@@ -2542,6 +2543,13 @@ for key in $ADAPTER_KEYS; do
 done
 if [[ "$static_bp_ok" -eq 1 ]]; then
   ok "build_prompt: 4 アダプタすべてが if ! prompt= 形で wrap している"
+fi
+
+# shellcheck source=private-reasons-cases.sh
+private_reasons_collected=0
+source "$SCRIPT_DIR/private-reasons-cases.sh"
+if [[ "$private_reasons_collected" -ne 1 ]]; then
+  bad 'private reasons: case collection was absent or empty'
 fi
 
 echo ""

@@ -295,6 +295,11 @@ abs_lib="$self_dir/lib/abs-path.sh"
 assert_bundled_shebang_lf "$abs_lib"
 # shellcheck source=lib/abs-path.sh
 . "$abs_lib"
+literal_lib="$self_dir/lib/git-literal-pathspec.sh"
+[[ -f "$literal_lib" && ! -L "$literal_lib" ]] || die_env "literal Git lib が無いか symlink です: $literal_lib"
+assert_bundled_shebang_lf "$literal_lib"
+# shellcheck source=lib/git-literal-pathspec.sh
+. "$literal_lib"
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || die_env "git リポジトリの中で実行してください（cwd: ${PWD}）"
 # git が返した綴りのまま控える。渡されたパスがリポジトリ内かは、同じく git の出力どうしで比べる（add）
@@ -578,7 +583,7 @@ case "$cmd" in
     for p in "${rel_paths[@]}"; do
       if [[ -d "$repo_root/$p" ]]; then
         history_list="$(mktemp "${TMPDIR:-/tmp}/ff-knowledge-paths.XXXXXX")" || die_env "履歴の対象一覧を作れません"
-        if ! git -C "$repo_root" ls-files -c -o --exclude-standard -z -- "$p" >"$history_list"; then
+        if ! ff_git_literal "$repo_root" ls-files -c -o --exclude-standard -z -- "$p" >"$history_list"; then
           rm -f -- "$history_list"
           die_env "履歴の対象一覧を取得できません: $p"
         fi
@@ -617,9 +622,9 @@ case "$cmd" in
       history_prefix="$(git -C "${history_selected%/*}" rev-parse --show-prefix)" || die_env "履歴のリポジトリ位置を確認できません"
       history_rel="${history_prefix}${history_selected##*/}"
       history_changed=0; history_rc=0
-      git -C "$repo_root" diff --quiet HEAD -- "$history_rel" || history_rc=$?
+      ff_git_literal "$repo_root" diff --quiet HEAD -- "$history_rel" || history_rc=$?
       case "$history_rc" in 0) ;; 1) history_changed=1 ;; *) die_env "履歴の差分を確認できません: $history_rel" ;; esac
-      history_rc=0; git -C "$repo_root" ls-files --error-unmatch -- "$history_rel" >/dev/null 2>&1 || history_rc=$?
+      history_rc=0; ff_git_literal "$repo_root" ls-files --error-unmatch -- "$history_rel" >/dev/null 2>&1 || history_rc=$?
       case "$history_rc" in 0) ;; 1) history_changed=1 ;; *) die_env "履歴の追跡状態を確認できません: $history_rel" ;; esac
       if [[ "$history_changed" -eq 1 ]]; then
         history_explicit=0
@@ -652,7 +657,7 @@ case "$cmd" in
     compose_message "$prospective" "${prospective_type:-knowledge}" "$prospective_issue"
     commit_msg_dry_run "$msg_subject" "$msg_body" \
       "件名の Issue/type を解決できないか、候補を hook が拒否しました。保留記録は作っていません（discard は不要。finish.sh の --claim 経由では文書と claim の stage は残る）。規約を確認し add --type <type> で再実行するか、書いたパスへ固定した git commit -m <規約どおりの件名> -- <書いたパス> で手でコミットしてください" "$prospective_issue"
-    git -C "$repo_root" add -- "${rel_paths[@]}" || die_stop "stage できません: ${rel_paths[*]}"
+    ff_git_literal "$repo_root" add -- "${rel_paths[@]}" || die_stop "stage できません: ${rel_paths[*]}"
     if [[ ! -s "$pending" ]]; then
       printf 'M\t%s\t%s\t%s\n' "$(current_branch)" "$(git -C "$repo_root" rev-parse HEAD)" "$(date +%s)" >"$pending" \
         || die_stop "保留記録へ書けません: $pending"
@@ -769,7 +774,7 @@ case "$cmd" in
     ff_commit_identity_check "$repo_root" || exit 1
     msg_args=(-m "$subject")
     [[ -z "$body" ]] || msg_args+=(-m "$body")
-    if ! git -C "$repo_root" commit "${msg_args[@]}" -- "${commit_paths[@]}"; then
+    if ! ff_git_literal "$repo_root" commit "${msg_args[@]}" -- "${commit_paths[@]}"; then
       die_stop "commit に失敗しました（保留記録は残してあります。原因を直して commit を再実行してください）"
     fi
     sha="$(git -C "$repo_root" rev-parse HEAD)" || die_stop "commit 後の HEAD を解決できません"

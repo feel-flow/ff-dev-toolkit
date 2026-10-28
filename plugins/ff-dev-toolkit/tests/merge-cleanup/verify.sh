@@ -149,6 +149,12 @@
 #      (46.9 / 公開 ff-dev-toolkit#137) 通常実行の削除前の照合も dry-run と同じ判定関数を
 #      通る — 判定を常時 match にした mutant を通常実行で走らせると、消えた ref へ削除
 #      push する（原本はしない）ことで実測する
+#  40. (47.x) 復旧コマンドのブランチ名・refspec は 1 語ずつ引用する。' ` $ ; を含む ref 名で、
+#      OID 欠損の案内と失敗行 / OID null と OID 不一致の [gone] / 設定保護パターンの取り残し /
+#      headRefOid 無しの削除失敗行の 6 か所の案内を git を argv 記録だけにするスタブの下で実行し、
+#      名前が 1 語のリテラルで渡り sentinel が作られないことを見る。旧形（名前を裸または単引用の
+#      中へ埋め込む）では 6 か所すべてが赤になる（2026-10-28 WSL で実測: 設定保護パターンの裸の行は
+#      argv が名前の途中で切れて食い違い、他の 5 か所は案内の行の形ごと見つからない）
 #
 # あわせて静的検査として、bash 3.2 で変数名にマルチバイト文字が取り込まれる書き方
 # （"$VAR" の直後に全角文字を直付けする形）が merge-cleanup.sh と本 suite 自身に無いことを
@@ -269,6 +275,7 @@ mbcs_assert_clean() {
 mbcs_assert_clean "$TARGET" "merge-cleanup.sh"
 mbcs_assert_clean "$SCRIPT_DIR/verify.sh" "本 suite (tests/merge-cleanup/verify.sh)"
 MC_PARTS=(
+  "$PLUGIN_ROOT/scripts/lib/shell-quote.sh"
   "$PLUGIN_ROOT/scripts/lib/merge-cleanup-pre.sh"
   "$PLUGIN_ROOT/scripts/lib/merge-cleanup-remote.sh"
   "$PLUGIN_ROOT/scripts/lib/merge-cleanup-local.sh"
@@ -311,6 +318,8 @@ refuse_cleanup_unreadable() { # <mode> <needle>
   git -C "$dir/repo" commit -qm keep
   git -C "$dir/repo" switch -qc keep-me
   before="$(git -C "$dir/repo" rev-parse HEAD)"
+  # 先に読む共有 helper は揃え、壊すのは merge-cleanup-pre.sh だけにする（missing は lib を空のまま）
+  [ "$mode" = missing ] || cp "$PLUGIN_ROOT/scripts/lib/shell-quote.sh" "$dir/lib/shell-quote.sh"
   case "$mode" in
     missing) ;;
     empty) : > "$dir/lib/merge-cleanup-pre.sh" ;;
@@ -1125,6 +1134,8 @@ case "\$args" in
   "pr view 64 --json"*)   cat "$MOCK/pr_view_64.json" ;;
   "pr view 65 --json"*)   cat "$MOCK/pr_view_65.json" ;;
   "pr view 99 --json"*)   cat "$MOCK/pr_view_99.json" ;;
+  "pr view 90 --json"*)   cat "$MOCK/pr_view_90.json" ;;
+  "pr view 91 --json"*)   cat "$MOCK/pr_view_91.json" ;;
   *"--state merged"*)
     # 実物の gh と同じく --limit を尊重する（#835 の照合上限が実際に gh へ渡り、
     # 打ち切りが起きることを検証できるようにするため）
@@ -1197,6 +1208,11 @@ fi
 # 15j: 混在ケースで Step 6 の削除 push が一般エラーで失敗する（stale info ではない）。
 if [[ "\$*" == push\ --force-with-lease=refs/heads/feature/\#44-null-oid-failure:* ]]; then
   echo "simulated transport failure for the leftover deletion" >&2
+  exit 1
+fi
+# 47: 復旧コマンドの引用。取り残し検証での削除を一般エラーで失敗させる（フラグはケースの直前に作り直後に消す）
+if [ -f "$TMP/f25-push-fail.enabled" ] && [[ "\$*" == push\ --force-with-lease=refs/heads/q/f25-e* ]]; then
+  echo "simulated transport failure for the quoting case" >&2
   exit 1
 fi
 # 15k: 混在ケースで、Step 6 の削除 push の時点には ref が消えている。
@@ -2610,6 +2626,138 @@ if [ "$EXIT_PROTECT_CLASS" -eq 1 ] \
 else
   bad "文字クラス入り保護パターンの扱いが期待どおりでない (exit=$EXIT_PROTECT_CLASS)"
 fi
+
+# ---- 47. 復旧コマンドのブランチ名・refspec を引用する ---------------------------
+#
+# 削除しなかった・できなかったブランチには、利用者が貼り付けて実行する復旧コマンドを添える。
+# ブランチ名は PR や他人の push から来る値で、git の ref 名は ' ` $ ; ( ) を含められる。
+# 案内するコマンドを実際に bash で実行し（git は argv を記録するだけのスタブ）、ブランチ名が
+# 1 語のリテラルとして渡り、名前の中のコマンドが実行されない（sentinel が無い）ことを見る。
+# 経路は 5 つ: OID 欠損の案内と失敗行（Step 4）/ OID null の [gone] / OID 不一致の [gone]
+# （Step 5）/ 設定保護パターンの取り残し / headRefOid 無しの削除失敗行（Step 6）。
+# 旧形（ブランチ名を裸または単引用の中へ埋め込む）では、どの経路も argv が名前と一致せず赤。
+
+echo ""
+echo "== 47. 復旧コマンドのブランチ名・refspec の引用 =="
+
+# shellcheck disable=SC2016 # $(...) と `...` は名前の一部（展開しない）
+F25_TAIL='-'"'"'$(touch${IFS}f25-sent)'"'"'`true`;x'
+F25_A="q/f25-a${F25_TAIL}"
+F25_B="q/f25-b${F25_TAIL}"
+F25_C="q/f25-c${F25_TAIL}"
+F25_D="q/f25-d${F25_TAIL}"
+F25_E="q/f25-e${F25_TAIL}"
+for f25_name in "$F25_A" "$F25_B" "$F25_C" "$F25_D" "$F25_E"; do
+  git check-ref-format "refs/heads/$f25_name" || bad "fixture 前提: $f25_name は git の ref 名として不正"
+done
+f25_commit() { # <ブランチ名> → stdout に OID
+  git switch -q -c "$1" develop
+  printf '%s\n' "$1" > f25.txt
+  git add f25.txt
+  git commit -qm "commit for the quoting case"
+  git rev-parse HEAD
+  git switch -q develop
+}
+OID_F25_A="$(f25_commit "$F25_A")"
+OID_F25_B="$(f25_commit "$F25_B")"
+OID_F25_C="$(f25_commit "$F25_C")"
+OID_F25_D="$(f25_commit "$F25_D")"
+OID_F25_E="$(f25_commit "$F25_E")"
+# A: origin にだけ在り、PR の headRefOid が null（Step 4 は削除せず案内する）。MERGED 一覧には無い
+SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin "$OID_F25_A:refs/heads/$F25_A"
+git branch -q -D "$F25_A"
+# B / C: upstream を消した [gone]。B は MERGED 一覧側の OID が null、C は一覧に無い
+for f25_name in "$F25_B" "$F25_C"; do
+  SKIP_SIMPLE_GIT_HOOKS=1 git push -qu origin "$f25_name"
+  SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin --delete "$f25_name"
+done
+# D: origin の取り残し（MERGED 一覧と (名前, OID) 一致）。設定保護パターンで止める
+SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin "$OID_F25_D:refs/heads/$F25_D"
+git branch -q -D "$F25_D"
+git branch -q -D "$F25_E"
+jq --arg b "$F25_B" --arg d "$F25_D" --arg od "$OID_F25_D" --arg e "$F25_E" --arg oe "$OID_F25_E" \
+  '. + [{headRefName: $b, headRefOid: null, isCrossRepository: false},
+        {headRefName: $d, headRefOid: $od, isCrossRepository: false},
+        {headRefName: $e, headRefOid: $oe, isCrossRepository: false}]' \
+  "$MOCK/pr_list_merged.json" > "$MOCK/pr_list_merged.f25" && mv "$MOCK/pr_list_merged.f25" "$MOCK/pr_list_merged.json"
+for f25_pr in 90:"$F25_A" 91:"$F25_E"; do
+  jq -n --arg h "${f25_pr#*:}" '{state: "MERGED", headRefName: $h, headRefOid: null, baseRefName: "develop",
+    title: "headRefOid is null (quoting case)", isCrossRepository: false}' > "$MOCK/pr_view_${f25_pr%%:*}.json"
+done
+
+set +e
+FF_MERGE_CLEANUP_PROTECT_BRANCHES='release/*:q/f25-d*' \
+  PATH="$MOCK:$PATH" bash "$TARGET" 90 > "$TMP/run-f25.log" 2>&1
+EXIT_F25=$?
+# E: Step 6 で削除を試みて失敗させる。取り残しとして拾われないよう run の直前に push する
+SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin "$OID_F25_E:refs/heads/$F25_E"
+: > "$TMP/f25-push-fail.enabled"
+PATH="$MOCK:$PATH" bash "$TARGET" 91 > "$TMP/run-f25e.log" 2>&1
+EXIT_F25E=$?
+rm -f "$TMP/f25-push-fail.enabled"
+set -e
+
+# 案内されたコマンドを、git を argv の記録だけにするスタブの下で実行する
+F25_STUB="$TMP/f25-stub"
+mkdir -p "$F25_STUB/bin" "$F25_STUB/cwd"
+cat > "$F25_STUB/bin/git" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\0' "$@" > "$F25_ARGV"
+STUB
+chmod +x "$F25_STUB/bin/git"
+# 案内の形は 2 つ: 字下げした行にコマンドだけを置く形（前置きは空）と、失敗の要約行の末尾に
+# 「…のコマンド: 」の後ろへ置く形
+f25_check() { # <ケース名> <ログ> <行を選ぶ固定文字列> <前置き（空 = 字下げしたコマンドの行）> <期待する argv...>
+  local name="$1" log="$2" pick="$3" lead="$4" line="" cmd=""
+  shift 4
+  if [ -z "$lead" ]; then
+    line="$(grep -F -- "$pick" "$log" | grep -E '^ +git ' | head -1 || true)"
+    cmd="${line#"${line%%[! ]*}"}"
+  else
+    line="$(grep -F -- "$pick" "$log" | grep -F -- "$lead" | head -1 || true)"
+    cmd="${line#*"$lead"}"
+  fi
+  if [ -z "$line" ] || [ -z "$cmd" ]; then
+    bad "$name: 案内のコマンドがログにありません（前置き: ${lead:-字下げした git の行}）"
+    grep -F -- "$pick" "$log" | sed 's/^/    | /' | head -6 >&2 || true
+    return
+  fi
+  rm -f "$F25_STUB/argv" "$F25_STUB/cwd/f25-sent"
+  (cd "$F25_STUB/cwd" && F25_ARGV="$F25_STUB/argv" PATH="$F25_STUB/bin:$PATH" bash -c "$cmd") >/dev/null 2>&1 || true
+  if [ -e "$F25_STUB/cwd/f25-sent" ]; then
+    bad "$name: ブランチ名の中のコマンドが実行されました: ${cmd}"
+  elif [ -f "$F25_STUB/argv" ] && cmp -s "$F25_STUB/argv" <(printf '%s\0' "$@"); then
+    ok "$name: 案内のコマンドはブランチ名を 1 語のリテラルとして渡す"
+  else
+    bad "$name: 案内のコマンドの argv がブランチ名と一致しません: ${cmd}"
+    printf '    | 実際: %s\n' "$(tr '\000' '|' < "$F25_STUB/argv" 2>/dev/null)" >&2
+    printf '    | 期待: %s\n' "$(printf '%s|' "$@")" >&2
+  fi
+}
+f25_check "47.1 OID 欠損の削除案内（Step 4）" "$TMP/run-f25.log" "q/f25-a-" "" \
+  push origin "--force-with-lease=refs/heads/$F25_A:$OID_F25_A" ":refs/heads/$F25_A"
+f25_check "47.2 OID 欠損の失敗行（Step 8）" "$TMP/run-f25.log" "  - $F25_A: headRefOid を取得できず" "削除のコマンド: " \
+  push origin "--force-with-lease=refs/heads/$F25_A:$OID_F25_A" ":refs/heads/$F25_A"
+f25_check "47.3 MERGED 一覧側の OID が null の [gone]（Step 5）" "$TMP/run-f25.log" "q/f25-b-" "" \
+  branch -D "$F25_B"
+f25_check "47.4 OID 不一致の [gone]（Step 5）" "$TMP/run-f25.log" "q/f25-c-" "" \
+  branch -D "$F25_C"
+f25_check "47.5 設定保護パターンの取り残し（Step 6）" "$TMP/run-f25.log" "q/f25-d-" "" \
+  push origin "--force-with-lease=refs/heads/$F25_D:$OID_F25_D" ":refs/heads/$F25_D"
+f25_check "47.6 headRefOid 無しの削除失敗行（Step 6 / Step 8）" "$TMP/run-f25e.log" "  - $F25_E: リモート削除失敗" "再試行のコマンド: " \
+  push origin "--force-with-lease=refs/heads/$F25_E:$OID_F25_E" ":refs/heads/$F25_E"
+if [ "$EXIT_F25" -eq 2 ] && [ "$EXIT_F25E" -eq 2 ]; then
+  ok "47.7 引用のケースは削除しなかった項目を PARTIAL（exit 2）として報告する"
+else
+  bad "47.7 引用のケースの終了コードが期待と違う (exit=$EXIT_F25 / $EXIT_F25E)"
+fi
+# 後続のケースへ漏らさない（origin・ローカルに残した ref を消す）
+for f25_name in "$F25_A" "$F25_D" "$F25_E"; do
+  SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin --delete "$f25_name" 2>/dev/null || true
+done
+for f25_name in "$F25_B" "$F25_C"; do
+  git branch -q -D "$f25_name" 2>/dev/null || true
+done
 
 # ---- 43. (Issue 914) マージ済みエージェント worktree の自動処理 ------------------
 #

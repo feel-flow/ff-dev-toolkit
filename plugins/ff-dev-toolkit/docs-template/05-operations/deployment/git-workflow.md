@@ -1100,7 +1100,7 @@ merge 対象は取得済みのホストを含むリポジトリ URL を引用し
 
 #### gh 不在時の MCP merge
 
-Closes / Refs とも最初から subject / body 原文を両方保持し、`finish.sh precheck <PR> --subject "$MERGE_SUBJECT" --body "$MERGE_BODY" --github-input /absolute/index.json` に渡す（件名は空不可、本文の明示空文字は可）。gh 経路の生成 block 原文要求は維持する。MCP 経路だけは、同じ最終 precheck の `TARGET_REPO` / 入力 PR / `headRefOid` と元の subject / body を、既存 `merge_pull_request` の `repository_full_name` / `pr_number` / `expected_head_sha` / `commit_title` / `commit_message` に直接渡し、`merge_method="squash"` を明示する。origin の完全 URL の host・port と MCP 接続先の一致が確認できなければ停止する（owner/repo だけでは host を表せない）。生成 shell の parse/eval/unquote と tool default/null からの再構成は禁止。Closes の原文が未指定なら、最初の precheck より前に fresh PR title と番号から `<title> (#<PR>)` を件名、fresh PR body 全文を本文として一度だけ確定する。既に明示した原文は変更せず、Refs は2a/2bを通す意図した原文を両方指定する。body が null / 欠落なら空文字へ補わず、明示原文が無ければ停止する。以後は同じ原文を保持し、再取得した PR title/body や tool default/null から merge 引数を作り直さない。Refs の 2a/2b・snapshot・鮮度を迂回しない。checks → 全 thread pages → 別取得 after-threads PR の最終 head を freshness の `--remote-head` と expected SHA に揃える。必須 raw / 能力不足は operation / field / page を示して停止する。
+Closes / Refs とも最初から subject / body 原文を両方保持し、`finish.sh precheck <PR> --subject "$MERGE_SUBJECT" --body "$MERGE_BODY" --github-input /absolute/index.json` に渡す（件名は空不可、本文の明示空文字は可）。gh 経路の生成 block 原文要求は維持する。MCP 経路だけは、同じ最終 precheck の `TARGET_REPO` / 入力 PR / `headRefOid` と元の subject / body を、既存 `merge_pull_request` の `repository_full_name` / `pr_number` / `expected_head_sha` / `commit_title` / `commit_message` に直接渡し、`merge_method` は同じ最終 precheck の `MERGE_METHOD`（`--merge-method` 省略時は `"squash"`）を明示する。origin の完全 URL の host・port と MCP 接続先の一致が確認できなければ停止する（owner/repo だけでは host を表せない）。生成 shell の parse/eval/unquote と tool default/null からの再構成は禁止。Closes の原文が未指定なら、最初の precheck より前に fresh PR title と番号から `<title> (#<PR>)` を件名、fresh PR body 全文を本文として一度だけ確定する。既に明示した原文は変更せず、Refs は2a/2bを通す意図した原文を両方指定する。body が null / 欠落なら空文字へ補わず、明示原文が無ければ停止する。以後は同じ原文を保持し、再取得した PR title/body や tool default/null から merge 引数を作り直さない。Refs の 2a/2b・snapshot・鮮度を迂回しない。checks → 全 thread pages → 別取得 after-threads PR の最終 head を freshness の `--remote-head` と expected SHA に揃える。必須 raw / 能力不足は operation / field / page を示して停止する。
 
 merge 後の fresh PR で `merged=true` と結果 SHA、Issue の Closes=CLOSED / Refs=OPEN を後読し、不一致は復旧・再後読する。MCP merge に削除引数は無い。**merge 成功と fresh merged read-back 後だけ**、同一 repository の head と確認して、merge 前に実体を固定した canonical `scripts/lib/finish-delete-merged-head.sh` を consumer root / head branch / expected OID の3引数で呼ぶ（helper 自身は fork / merge 状態を判定しない）。fork / 不明 / 別 OID は保全し、一致だけ lease 削除、不在は成功とする。一般 ref-delete API や生成 shell 尾部の切出しで置換しない。helper / Git 不足なら削除未実施とし、merge / delete / cleanup は別状態で報告する。値の取得形・write / read-back は plugin 正本の `/close-issue` と [MCP merge 契約](../../../skills/close-issue/references/merge-gate.md#mcp-merge)を読む。MCP-only live 完走を未実施のまま成功と報告しない。
 
@@ -1158,7 +1158,7 @@ gh issue view "${ISSUE_NUM}" --json state
 
 **マージの原則**:
 
-- Squash merge推奨（履歴を整理）
+- Squash merge推奨（履歴を整理）。develop の履歴を保つ main への release など merge commit が規約の回は、`finish.sh precheck` の全実行へ `--merge-method merge` を足し、生成コマンドの方式を手で書き換えない
 - `--delete-branch` でリモートブランチを自動削除
 - `Refs` 運用では `--subject` を明示し、`gh issue view --json state` で結果を実測する
 

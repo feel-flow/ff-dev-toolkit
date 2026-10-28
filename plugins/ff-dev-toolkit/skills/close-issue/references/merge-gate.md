@@ -19,9 +19,9 @@ MCP: 取得値: MCP の同じ PR の title/body/全 commits/closingIssuesReferen
 | origin | 対応 |
 | --- | --- |
 | `title` のみ（`KEYWORD_GATE=conflict-title`） | `gh pr edit "${PR_NUMBER}" --title "<Issue 参照を含まない件名>"` で改題し、**手順 1 から再実行する**（script は rc 1 で止まる） |
-| `commit:<sha>` / `commit-body:<sha>` を含む（`conflict-commit`） | コミットは書き換えられない。2a では止めず、マージ時に `--subject` / `--body` を明示して 2b の結果をマージの条件にする。`KEYWORD_SUGGEST` は改題案または本文の書き換え案 |
+| `commit:<sha>` / `commit-body:<sha>` を含む（`conflict-commit`） | コミットは書き換えられない。2a では止めず、マージ時に `--subject` / `--body` を明示して 2b の結果をマージの条件にする。`KEYWORD_SUGGEST` は改題案または本文の書き換え案。**`--merge-method merge` の回だけは 2a で止める**（下の「マージ方式の明示」） |
 
-<!--20fa0af72bb9582a-->
+<!--b03324af0bdbc3a5-->
 MCP: 取得値: MCP のPR title/headRefOid。形式: 新 title 原文の構造化引数。渡し先: update_pull_request.title → fresh GET → precheck。不足時: MCP 必須不足は operation / field / page を示して停止。
 
 **2a の抵触で無条件に停止しない**のはこのためで、script は `NON_TITLE_CONFLICTS`（title 以外の抵触数）で分岐する。`KEYWORD_INSPECTED` は実際に検査した行数で、完了報告へ転記する（上流の commits が切り詰められていれば script が検査不成立で止まる）。
@@ -29,6 +29,16 @@ MCP: 取得値: MCP のPR title/headRefOid。形式: 新 title 原文の構造�
 #### 2b. 実際に渡す squash メッセージの検査（マージの条件）
 
 `--subject` と `--body` を両方明示した squash merge のメッセージは**その 2 つだけで決まる**（コミットメッセージは畳み込まれない。実測で確認済み）。片方でも省略すると、リポジトリ設定（`squash_merge_commit_title` / `squash_merge_commit_message`）に応じて PR タイトルやコミットメッセージが供給源になる。だから Refs 運用では抵触の有無に関わらず両方明示が既定で、`--subject` / `--body` を渡さなければ script は `MERGE_MESSAGE_GATE=required` で止まる。検査を通った文字列は script が `MERGE_COMMAND` へ引用して載せる — **文字列を打ち直さずそのまま手順 7 へ持ち越す**（`--subject` のコピペこそが実際の再発経路。人が打ち直した時点で、そこが検査とマージの間の継ぎ目になり 2b は何も保証しなくなる）。
+
+<a id="merge-method"></a>
+
+#### マージ方式の明示（`--merge-method squash|merge`）
+
+既定は squash で、省略した呼び出しは従来どおり `--squash` を生成する。develop の履歴を残して main へ release するなど、導入先の規約が merge commit を求める回は、**手順 1 と手順 7 の precheck の全実行へ** `--merge-method merge` を足す（途中で方式を変えない）。生成コマンドは `--squash` の代わりに `--merge` を載せ、照合済み先端の `--match-head-commit`、2b が検査した `--subject` / `--body`、`--delete-branch` / separate-push の条件はそのまま保つ。出力の `MERGE_METHOD=squash|merge` で実際の方式を確かめ、生成コマンドの方式だけを手で書き換えない（方式を直すときは precheck から回し直す）。
+
+値は `squash` / `merge` の 2 つだけで、`rebase`（件名・本文を運べない）・大文字・空値・2 回目の指定（同じ値でも）は、PR を読む前に rc 2 で拒否する。
+
+merge commit 方式では各コミットがそのまま base へ載る。Refs 運用の Issue をコミットの closing keyword が閉じる（`KEYWORD_GATE=conflict-commit`）回は、merge commit の件名・本文をどう明示しても閉じる経路が残るため、2b を通っても `PRECHECK=blocked`（rc 1）で止まる。方式を squash へ戻すか、Issue 参照を含まないコミットへ積み直してから再実行する。抵触が無い回も、Refs 運用では `--subject` / `--body` の両方明示（2b）が必須のまま。
 
 ### 2c. 返信の無いレビュースレッド（自動レビュー bot の inline を含む）
 
@@ -107,14 +117,14 @@ MCP: 取得値: MCP の同じ PR の title/body/全 commits/closingIssuesReferen
 
 #### merge コマンドの生成
 
-script が `MERGE_COMMAND_BEGIN` 〜 `MERGE_COMMAND_END` に出す。merge 対象は取得済みのホストを含むリポジトリ URL を引用した `--repo` へ固定し、先端は直前に照合した `REMOTE_HEAD`、件名・本文は 2b が検査した文字列を単引用で包む（`printf '%q'` は非 UTF-8 ロケールで日本語を壊すので使わない）。
+script が `MERGE_COMMAND_BEGIN` 〜 `MERGE_COMMAND_END` に出す。方式は `MERGE_METHOD`（[マージ方式の明示](#merge-method)）。merge 対象は取得済みのホストを含むリポジトリ URL を引用した `--repo` へ固定し、先端は直前に照合した `REMOTE_HEAD`、件名・本文は 2b が検査した文字列を単引用で包む（`printf '%q'` は非 UTF-8 ロケールで日本語を壊すので使わない）。
 
 `--delete-branch` は base / head が別 worktree に保持されていない回だけ付く。保持されている回は付けず、merge 成功時だけ実行する head 削除本文を `&&` で繋ぐ（`DELETE_BRANCH_MODE=separate-push`・`BASE_HELD_BY` / `HEAD_HELD_BY`・`HEAD_DELETE=lease`。fork は `skipped-fork` で削除を生成しない）。削除は生成元 consumer の exact ref を照会し、不在は成功・別 OID は保全・一致だけ lease 付き削除、拒否後も再照会する。`HEAD_DELETE_RESULT` と非 0 の読み方は [Git Workflow](../../../docs-template/05-operations/deployment/git-workflow.md#ステップ8-マージmerge) に従う。
 
 gh 経路の生成コマンドは書き写さず、そのまま実行する。MCP 経路だけは下の「MCP merge」の6引数への直接対応を使う。削除を別行にすると merge 失敗後にも未マージの head を削除できる。取得済み URL の `--repo` により、実行時の cwd・`GH_REPO`・`GH_HOST`・既定ホストから対象を選び直さない。gh v2.102.0 は明示した `--repo` の下でローカルの切替・削除を行わず、その後始末は `/merge-cleanup` へ委譲する。保持 worktree の separate-push 経路は互換性と明示的な OID lease のために維持する。
 
 <!--4c815179839a3a80-->
-MCP: 取得値: MCP の同じ最終 headRefOid と元 subject/body。形式: 既存 merge_pull_request の6引数。渡し先: TARGET_REPO/PR/head/squash/元subject/元body を直接渡し fresh merged/state 後読。shell parse 禁止。不足時: MCP 必須不足は operation / field / page を示して停止。
+MCP: 取得値: MCP の同じ最終 headRefOid と元 subject/body。形式: 既存 merge_pull_request の6引数。渡し先: TARGET_REPO/PR/head/MERGE_METHOD/元subject/元body を直接渡し fresh merged/state 後読。shell parse 禁止。不足時: MCP 必須不足は operation / field / page を示して停止。
 
 #### 完了報告の定型文
 
@@ -182,14 +192,14 @@ Issue 本文・完了コメントや merge の writer は追加しない。外�
 `command -v gh` が不成立で MCP を使う回も、Closes / Refs とも最初から空でない `MERGE_SUBJECT` と、空文字も可の `MERGE_BODY` 原文を保持し、`finish.sh precheck <PR> --subject "$MERGE_SUBJECT" --body "$MERGE_BODY" --github-input /absolute/index.json` に渡す（body は明示した空文字も可）。gh 経路は生成 block 原文実行のまま。MCP は生成 shell の parse/eval/unquote と件数・tool default/null からの再構成を禁止し、同じ最終 precheck の元値を既存 `merge_pull_request` に直接渡す。Closes の原文が未指定なら、最初の precheck より前に fresh PR title と番号から `<title> (#<PR>)` を件名、fresh PR body 全文を本文として一度だけ確定する。既に明示した原文は変更せず、Refs は2a/2bを通す意図した原文を両方指定する。body が null / 欠落なら空文字へ補わず、明示原文が無ければ停止する。以後は同じ原文を保持し、再取得した PR title/body や tool default/null から merge 引数を作り直さない。Refs の 2a/2b、snapshot、鮮度の停止条件は保持する。
 
 <!--c33108ed26604e1a-->
-MCP: 取得値: MCP の同じ最終 headRefOid と元 subject/body。形式: 既存 merge_pull_request の6引数。渡し先: TARGET_REPO/PR/head/squash/元subject/元body を直接渡し fresh merged/state 後読。shell parse 禁止。不足時: MCP 必須不足は operation / field / page を示して停止。
+MCP: 取得値: MCP の同じ最終 headRefOid と元 subject/body。形式: 既存 merge_pull_request の6引数。渡し先: TARGET_REPO/PR/head/MERGE_METHOD/元subject/元body を直接渡し fresh merged/state 後読。shell parse 禁止。不足時: MCP 必須不足は operation / field / page を示して停止。
 
 | 既存 tool 引数 | 渡す元値 |
 | --- | --- |
 | `repository_full_name` | 同じ `TARGET_REPO`。origin の完全 URL の host・port と MCP 接続先の一致を別途確認する。owner/repo だけでは host を表せず、確認不能なら停止 |
 | `pr_number` | 同じ入力 PR 番号 |
 | `expected_head_sha` | checks → 全 thread pages → 別取得した `after-threads` PR の最終 `headRefOid`。snapshot / freshness の `--remote-head` と同じ実値 |
-| `merge_method` | 明示値 `squash` |
+| `merge_method` | 同じ最終 precheck の `MERGE_METHOD`（`--merge-method` 省略時は `squash`）。tool default に任せない |
 | `commit_title` | precheck へ渡した元の `MERGE_SUBJECT` |
 | `commit_message` | precheck へ渡した元の `MERGE_BODY`（空文字・引用符・改行・末尾 LF を保持） |
 

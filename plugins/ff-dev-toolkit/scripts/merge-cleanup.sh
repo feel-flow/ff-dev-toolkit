@@ -948,7 +948,9 @@ fi
 # 入口はここ（削除より前）で 1 回だけ source する。順序は分割前の Step 順。
 # 読めないときは exit 1 で止まる（PARTIAL の 2 ではない）。この時点では何も削除していない。
 _mc_dir="${BASH_SOURCE[0]%/*}/lib"
+# shell-quote.sh は復旧コマンドの案内を組み立てる共有 helper（各 Step が使うので最初に読む）
 MC_PARTS=(
+  "${_mc_dir}/shell-quote.sh"
   "${_mc_dir}/merge-cleanup-pre.sh"
   "${_mc_dir}/merge-cleanup-remote.sh"
   "${_mc_dir}/merge-cleanup-local.sh"

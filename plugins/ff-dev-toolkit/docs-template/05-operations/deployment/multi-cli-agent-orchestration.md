@@ -130,6 +130,22 @@ ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF
 | Timeout    | 900s             | 600s              | 900s                |
 | Diff 含む  | Yes              | No                | Optional            |
 
+### 出力先の認可と既存成果物
+
+既定値とproject設定の出力先はリポジトリ内に限り、暗黙のリンク、親への遡及、Git管理領域とその祖先を作成・cleanup・退避より前に拒否する。review/exploreの外部出力には操作者による明示的な `--output-dir` 選択が必要である。checkout自体の正当なリンク経路は利用できる。
+
+出力rootは私有の専用領域で、リポジトリと出力先の組に結び付いた所有markerを持つ。空の領域は自動初期化するが、旧形式の非空領域は採用しない。拒否された既存成果物は保持し、必要な結果を手動退避するか、新しい空の `--output-dir` を選ぶ。`--fresh` と `--archive-only` もこの確認を省略せず、未知のentryを含む場合は移動前に停止する。通常実行では非対象CLIや利用者のメモを削除しない。
+
+私有祖先に保護された内側のgroup書込bitは、外部から到達できる共有書込祖先と区別する。出力用のdirectoryは呼出元のumaskによらず私有権限で作る。保護されていない共有書込祖先は対象pathを示して拒否するため、出力rootを選び直す場合もその祖先を含めて確認する。既存の祖先directoryの権限は自動変更しない。空の出力rootは所有者を確認して私有領域として初期化する。
+
+macOSの標準 `/var` 別名は、`/private/var` と同じ実体である場合だけ正規化し、TMPDIR変更後も維持する。別名の下の出力suffixにあるリンクは許可しない。証跡の `.evidence/<ID>/report.md` は元のpathへ保持し、退避前に形式と安全性を検査する。未知の保存entryは他の成果物を移す前に停止する。
+
+hookのレーン制御directoryは退避後も元の場所へ残す。安全な `.done.*` 完了記録だけなら退避を進め、活動中レーン・処理途中のclaim・不正な記録は移動前に拒否する。完了記録の保持により、遅れて届く同じ終了通知が別の未採用レーンを解放することを防ぐ。
+
+固定差分・marker・resume cacheは私有directory内の排他的な一時ファイルから原子的に公開し、子のsymlinkを辿らない。診断理由のmarkerもコマンド置換前に確保した私有一時directoryで共有し、FIFOなどの非通常ファイルを読み書きして待ち続けない。
+
+固定差分は生成処理の成功後だけ公開する。採用中claimの間もreviewの凍結を維持し、中断workspaceの安全を確認できない場合はpathを示して点検を案内する。mktempが利用できない場合も、排他的に確保できる私有領域があれば診断理由を維持し、確保できなければコマンド起動前に停止する。
+
 ### Implement の書き込み境界
 
 orchestrator は CLI を対象リポジトリの物理ルートから起動し、そのルート配下の
@@ -149,6 +165,12 @@ staging 一箇所に閉じる（`-C/--cd` を持たない旧版は、黙って�
 アダプタ直叩きの `--inline-output` は別で、Codex /
 Grok を read-only、Claude Code を読み取り tools、Copilot を
 write / shell deny へ狭め、作業ツリーへ書かない契約を機械的に裏付ける（Issue #398）。
+
+Claude の review / explore / inline-output は `Read,Grep,Glob` だけを
+`--tools` で公開し、`--strict-mcp-config` で継承 MCP を除外する。`--allowed-tools` は
+自動許可の指定なので、それだけを読み取り専用の境界としない。差分は親がプロンプトへ
+渡すため、子の Bash（`git diff --output` 等）は不要である。host delegation に渡す
+読み取り tool 集合にも Bash を含めない。host 側の実行制限はそのホストの責務である。
 
 ## 設定 (agent-config.yaml)
 

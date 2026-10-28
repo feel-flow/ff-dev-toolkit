@@ -249,13 +249,16 @@ elif [ "$PR_HEAD_OID_OK" != "1" ]; then
       # 同名ブランチの再利用ごと消してしまう。人間が OID を照合したうえで、
       # 照合した OID を lease に載せる形だけを案内する。
       echo "   復旧手順: 1) 上の OID が PR #$PR_NUM の head であることを PR ページ / コミット履歴で確認する"
-      echo "             2) 確認できたら: git push origin --force-with-lease=refs/heads/$PR_HEAD:${PR_HEAD_REMOTE_OID} :refs/heads/$PR_HEAD"
+      # ブランチ名は PR 由来なので、案内するコマンドは引数ごとに引用して組み立てる（貼り付けても構文にならない）
+      PR_HEAD_DELETE_CMD="$(ff_shell_argv git push origin "--force-with-lease=refs/heads/$PR_HEAD:${PR_HEAD_REMOTE_OID}" ":refs/heads/$PR_HEAD")"
+      echo "             2) 確認できたら次を実行する:"
+      echo "                $PR_HEAD_DELETE_CMD"
       echo "             3) 確認できなければ削除しない（別の作業が push している可能性がある）"
       echo "             4) 削除できたら merge-cleanup を再実行してローカル資産を掃除する"
       # ここでは FAILED_ITEMS へ積まない。Step 6 の取り残し掃除が同じブランチを
       # （一覧側の正常な OID をアンカーに）消せる場合があり、その場合は実際の失敗が
       # 起きていないため。消せなかった場合だけ Step 8 の冒頭で失敗として積む。
-      PR_OID_PENDING_FAILURE="$PR_HEAD: headRefOid を取得できずリモート削除未実施 — origin の現 OID ${PR_HEAD_REMOTE_OID} が PR #$PR_NUM の head だと確認できた場合のみ 'git push origin --force-with-lease=refs/heads/$PR_HEAD:${PR_HEAD_REMOTE_OID} :refs/heads/$PR_HEAD' で削除し merge-cleanup を再実行（確認できない場合は削除しない）"
+      PR_OID_PENDING_FAILURE="$PR_HEAD: headRefOid を取得できずリモート削除未実施 — origin の現 OID ${PR_HEAD_REMOTE_OID} が PR #$PR_NUM の head だと確認できた場合のみ削除し merge-cleanup を再実行（確認できない場合は削除しない）。削除のコマンド: $PR_HEAD_DELETE_CMD"
       ;;
     2)
       # ref が無い = 削除すべきものが無い。失敗ではないので積まない
