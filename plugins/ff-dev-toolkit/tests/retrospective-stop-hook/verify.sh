@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: context/stopそれぞれで送信境界の正本参照削除・同一private限定削除・hook空・hook不在は全8変異がrc=1。正常全件は155件pass（2026-10-29 macOS実測）。未設定/ask/auto/空/未知値でも外部公開の承認境界を注入する。
 # Runtime contract for retrospective prompt/Stop hooks (Issues #583 / #616).
 #
 # 変異検出（事前注入のスキル経路）:
@@ -121,6 +122,15 @@ run_hook() {
   ERR="$(cat "$errfile" 2>/dev/null || true)"
   REASON="$(printf '%s' "$OUT" | jq -r '.reason // empty' 2>/dev/null || true)"
   rm -f "$errfile"
+}
+
+# Both hook branches must point to the shared payload boundary, even when auto is selected.
+assert_payload_approval() {
+  local payload="$1" label="$2"
+  case "$payload" in
+    *'外部公開の承認境界（全モード共通） before every issue write; external, public, or unverified destinations require payload approval as defined there.'*) ok "$label: 外部公開の承認境界を注入" ;;
+    *) bad "$label: 外部公開の承認境界が欠落" ;;
+  esac
 }
 
 run_context_hook() {
@@ -509,20 +519,20 @@ for _ctx_case in unset missing; do
   fi
 done
 
-# Issue #1451: 事前注入も Stop と同じ起票境界を持つ（既定は承認と起票の規定を指し、
-# 承認文言は RETROSPECTIVE_FILING=ask のときだけ）。
+# 事前注入も Stop と同じ送信境界を持つ。環境変数は外部公開の承認境界を解除しない。
 run_context_hook
 DEFAULT_CONTEXT="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
 if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
   && printf '%s' "$DEFAULT_CONTEXT" | grep -F 'RETROSPECTIVE_FILING is not ask' >/dev/null \
   && printf '%s' "$DEFAULT_CONTEXT" | grep -F '承認と起票' >/dev/null \
-  && printf '%s' "$DEFAULT_CONTEXT" | grep -F 'without waiting for approval' >/dev/null \
+  && printf '%s' "$DEFAULT_CONTEXT" | grep -F 'automatic filing is limited to the same verified private repository' >/dev/null \
   && printf '%s' "$DEFAULT_CONTEXT" | grep -F 'do not edit files' >/dev/null \
   && ! printf '%s' "$DEFAULT_CONTEXT" | grep -F 'without user approval' >/dev/null; then
-  ok "既定の事前注入は承認待ちを注入せずスキルの起票規定を指す"
+  ok "既定の事前注入は同一 private の自動起票と正本を指す"
 else
   bad "既定の事前注入の起票境界が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
 fi
+assert_payload_approval "$DEFAULT_CONTEXT" '事前注入の既定'
 
 RC=0
 OUT="$(printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"作業を完了して"}' | env -u RETROSPECTIVE_MODE RETROSPECTIVE_FILING=" Ask " /bin/bash "$CONTEXT_TARGET" 2>"$TEST_TMP/context-stderr")" || RC=$?
@@ -537,6 +547,18 @@ if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
 else
   bad "FILING=ask の事前注入契約が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
 fi
+assert_payload_approval "$FILING_CONTEXT" '事前注入の ask'
+
+for _filing_value in auto '' unknown; do
+  RC=0
+  OUT="$(printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"作業を完了して"}' | env -u RETROSPECTIVE_MODE RETROSPECTIVE_FILING="$_filing_value" /bin/bash "$CONTEXT_TARGET" 2>"$TEST_TMP/context-stderr")" || RC=$?
+  _filing_payload="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
+  if [ "$RC" -eq 0 ] && [ ! -s "$TEST_TMP/context-stderr" ]; then
+    assert_payload_approval "$_filing_payload" "事前注入の FILING=[$_filing_value]"
+  else
+    bad "事前注入の FILING=[$_filing_value] が失敗"
+  fi
+done
 
 # MODE と FILING の相互作用は Stop 側だけでなく事前注入側にも置く（TESTING.md の
 # 「MODE=off は FILING=ask より優先して両 hook を止める」を両 hook で固定する）。
@@ -585,13 +607,14 @@ if printf '%s' "$REASON" | grep -F 'ff-dev-toolkit:retrospective' >/dev/null \
   && printf '%s' "$REASON" | grep -F 'read-only' >/dev/null \
   && printf '%s' "$REASON" | grep -F 'RETROSPECTIVE_FILING is not ask' >/dev/null \
   && printf '%s' "$REASON" | grep -F '承認と起票' >/dev/null \
-  && printf '%s' "$REASON" | grep -F 'without waiting for approval' >/dev/null \
+  && printf '%s' "$REASON" | grep -F 'automatic filing is limited to the same verified private repository' >/dev/null \
   && printf '%s' "$REASON" | grep -F 'do not edit files' >/dev/null \
   && ! printf '%s' "$REASON" | grep -F 'without user approval' >/dev/null; then
   ok "継続理由がスキル・未完了境界・read-only 境界・既定の自動起票を含む"
 else
   bad "継続理由の必須境界が不足: $OUT"
 fi
+assert_payload_approval "$REASON" 'Stop の既定'
 
 # Issue #1451: 起票の承認待ちは RETROSPECTIVE_FILING=ask の保険だけ。既定の注入文は
 # スキルの規定（承認と起票）を指し、承認文言は ask のときだけ現れる。ask の判定は
@@ -613,12 +636,13 @@ run_stop_hook_filing "$FIRST_INPUT" ask
 if [ "$RC" -eq 0 ] && [ -z "$ERR" ] && printf '%s' "$OUT" | jq -e '.decision == "block"' >/dev/null 2>&1 \
   && printf '%s' "$REASON" | grep -F 'RETROSPECTIVE_FILING=ask' >/dev/null \
   && printf '%s' "$REASON" | grep -F 'without user approval' >/dev/null \
-  && ! printf '%s' "$REASON" | grep -F 'without waiting for approval' >/dev/null \
+  && ! printf '%s' "$REASON" | grep -F 'automatic filing is limited to the same verified private repository' >/dev/null \
   && ! printf '%s' "$REASON" | grep -F 'RETROSPECTIVE_FILING is not ask' >/dev/null; then
   ok "RETROSPECTIVE_FILING=ask は Stop の継続理由に承認待ちを注入"
 else
   bad "FILING=ask の Stop 出力契約が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
 fi
+assert_payload_approval "$REASON" 'Stop の ask'
 
 FILING_ALIASES_OK=1
 for filing_alias in ASK " Ask "; do
@@ -631,6 +655,15 @@ run_stop_hook_filing "$FIRST_INPUT" "auto"
 if [ "$RC" -ne 0 ] || [ -n "$ERR" ] || printf '%s' "$REASON" | grep -F 'without user approval' >/dev/null; then
   FILING_ALIASES_OK=0
 fi
+assert_payload_approval "$REASON" 'Stop の auto'
+for _filing_value in '' unknown; do
+  run_stop_hook_filing "$FIRST_INPUT" "$_filing_value"
+  if [ "$RC" -eq 0 ] && [ -z "$ERR" ]; then
+    assert_payload_approval "$REASON" "Stop の FILING=[$_filing_value]"
+  else
+    bad "Stop の FILING=[$_filing_value] が失敗"
+  fi
+done
 if [ "$FILING_ALIASES_OK" -eq 1 ]; then
   ok "FILING の ask 判定は大文字小文字と空白を無視し、それ以外の値は既定（自動起票）"
 else

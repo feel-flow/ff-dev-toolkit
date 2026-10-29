@@ -74,7 +74,7 @@ fi
    FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/ace-abstraction-report.ts" docs/08-knowledge/PLAYBOOK.md
    ```
 
-   **(4)「組にできなかった候補対」は 0 が正常**（0 以外はレポートのバグとして報告）。legacy（旧テーブル形式）の候補は R3-b へ回す。日本語だけで共通する組は機械シグナルに出ないので、手順 2 は省かない。
+   **(4)「組にできなかった候補対」は 0 が正常**（0 以外はレポートのバグとして報告。冒頭に「不完全」があれば計算予算か保持の上限で打ち切った分なので 0 以外でもバグではなく、組を全件と扱わない）。legacy（旧テーブル形式）の候補は R3-b へ回す。日本語だけで共通する組は機械シグナルに出ないので、手順 2 は省かない。
 
 2. **近似重複・抽象度統合の抽出（LLM 判断）**: 1b の組を優先し索引タイトルで補って、**本文まで読んで**「アクションが同一か」「抽象度を 1 段上げれば同一か」で判定し、上げた主張から元のアクションを再導出できなければ棄却する（[PLAYBOOK.md](../../docs-template/08-knowledge/PLAYBOOK.md)「抽象度の下限と棄却基準（ff-dev-toolkit ADR-047）」）。
 3. カテゴリ指定があれば候補を絞る。

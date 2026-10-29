@@ -11,10 +11,18 @@ Issue #157 で追加した、Markdown 内の実行可能なシェル例を fixtu
   exit code を実測する意味検査
 
 汎用の Markdown シェル静的解析は行いません。placeholder を含まず、単独実行できると
-確認した次の2フェンスだけを対象にします。
+確認したフェンスを対象にします。主要な対象は次のとおりです。
 
 1. `automated-code-review.md` の「レビュー厳格度の調整」
 2. `multi-cli-review-orchestration.md` の「Husky pre-push フックとの統合」
+
+`safe-guide-cases.py` は `TROUBLESHOOTING.md` の暗号化キー診断と
+`REVIEW_AGENT_CREATION_GUIDE.md` の Copilot 権限例も実行します。
+Node.js / Python 3 を使い、合成キーの正規 Base64・32 bytes の確認、欠落・不正形式・
+長さ違いの拒否、`bash -x` を含む出力の秘密非表示を検証します。
+Copilot は合成CLIで argv と標準入力を記録し、write/shell/temp の deny、
+権限helpの失敗・フラグ不在・deny優先順位不明時にレビューが未起動であることを確認します。
+文書・見出し・フェンス・コマンド行の欠落は skip せず失敗します。
 
 ## 検証ケース
 

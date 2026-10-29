@@ -281,16 +281,15 @@ if [ "${MODE}" != "search" ] && [ "${#KEYWORDS[@]}" -gt 0 ]; then
 fi
 
 # ── 一時領域（read-only 契約: ここ以外へ書かない） ──────────────────────────
-if ! TMP="$(mktemp -d "${TMPDIR:-/tmp}/knowledge-lookup.XXXXXX" 2>&1)" || [ ! -d "${TMP}" ]; then
-  printf '一時ディレクトリを作成できません: %s\n' "${TMP}" >&2
-  exit 2
-fi
-trap 'rm -rf "${TMP}"' EXIT
-# All derived text is private before the first source snapshot is created.
 knowledge_reader="${BASH_SOURCE[0]%/*}/lib/knowledge-read-boundary.sh"
 [ -f "$knowledge_reader" ] && [ ! -L "$knowledge_reader" ] || exit 2
 . "$knowledge_reader"
-ff_knowledge_private_fresh_directory "$TMP" || exit 2
+# All derived text is private before the first source snapshot is created.
+if ! TMP="$(ff_knowledge_job_directory knowledge-lookup)" || [ ! -d "${TMP}" ]; then
+  printf '一時ディレクトリを作成できません（上の knowledge-read: 行が理由）\n' >&2
+  exit 2
+fi
+trap 'rm -rf "${TMP}"' EXIT
 if [ -z "$ROOT" ]; then ROOT="$(ff_knowledge_project_context)" || exit 2
 else ROOT="$(ff_knowledge_canonical_dir "$ROOT")" || exit 2
 fi

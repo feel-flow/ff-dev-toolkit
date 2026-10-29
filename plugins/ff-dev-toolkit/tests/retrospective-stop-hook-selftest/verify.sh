@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: 同一private限定の全repo化と、context/stop両方の外部公開境界削除は狙った診断で赤。正常対照155件と全83変異の検出をmacOSで実測（2026-10-29）。
 # 空振り検出: 最初の perl のアンカーを存在しない文字列へ変えると未到達の診断で rc=1、無害なコメント追加へ変えると従来の検出力不足の診断で rc=1。現行 81 変異は全件検出（2026-09-28 実測）。
 # 空振り検出: 2 段変異 3 ケースの各段を存在しないアンカーへ変えると、全 6 通りで段名付き未到達診断・非 0。各無変異対照は 0（2026-09-28 実測）。
 # Mutation self-test for retrospective prompt/Stop hooks (Issues #583 / #616).
@@ -8,11 +9,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONSUMER="$PLUGIN_ROOT/tests/retrospective-stop-hook/verify.sh"
-EXPECTED_CONSUMER_CHECKS=149
+EXPECTED_CONSUMER_CHECKS=159
 # 壁時計が戻る回の再現（4 件。Issue `#2020`）は、時間切れを rc 1 で返す /bin/bash 4 未満では consumer が skip する
-# 149 / 145 は Grok transcript の検査 18 件を加えたあとの実測（2026-10-18）
+# 同一 private と外部公開の承認境界を測る10件を含む。Bash 4未満は時間切れ4件を除く。
 if [ "$(/bin/bash -c 'printf "%s" "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0)" -lt 4 ]; then
-  EXPECTED_CONSUMER_CHECKS=145
+  EXPECTED_CONSUMER_CHECKS=155
 fi
 
 command -v perl >/dev/null 2>&1 || { echo "○ skip: perl が無いため retrospective Stop hook self-test をスキップ"; exit 0; }
@@ -205,7 +206,7 @@ expect_occurrences() { # <ファイル> <固定文字列> <期待数>
 }
 
 # Register isolated mutations, then run only the owning consumer group. The full
-# baseline still checks all 131 shell and 7 Node cases; all 81 original mutations
+# baseline still checks all shell and Node cases; all original mutations
 # retain their expected diagnostics. On the expected failure the selected group may
 # stop early: unrelated remaining checks cannot add evidence for that mutation.
 # A copied baseline keeps fixtures isolated, and ordered spool collection keeps output
@@ -739,12 +740,21 @@ ROOT="$(make_fixture filing-ask-strict)"
 perl -0pi -e 's/\[Aa\]\[Ss\]\[Kk\]\)\n    FILING_CLAUSE/ask)\n    FILING_CLAUSE/' "$ROOT/hooks/retrospective-stop.sh"
 check_mutation "FILING の ask 別名判定の厳密化" "FILING の値の判定が不正" "$ROOT" stop
 
-# 既定分岐の「承認を待たない」文言が承認待ちへ退化する変異。既定モードの positive grep が赤になること。
-# 同じ句は hook 冒頭のコメントにもあるため /g で全出現を置換する（先頭 1 件だけだとコメントが
-# 変わって注入文は無傷のまま、変異が空振りする）。
+# 同一 private に限定した既定起票が全repoへ広がる変異。既定分岐の正の針で赤になること。
 ROOT="$(make_fixture filing-default-approval)"
-perl -0pi -e 's/without waiting for approval/after asking the user for approval/g' "$ROOT/hooks/retrospective-stop.sh"
-check_mutation "既定の起票文言が承認待ちへ退化" "継続理由の必須境界が不足" "$ROOT" stop
+expect_occurrences "$ROOT/hooks/retrospective-stop.sh" 'automatic filing is limited to the same verified private repository' 1
+perl -0pi -e 's/automatic filing is limited to the same verified private repository/automatic filing is allowed to any repository/' "$ROOT/hooks/retrospective-stop.sh"
+check_mutation "既定の起票先が全repoへ拡張" "継続理由の必須境界が不足" "$ROOT" stop
+
+ROOT="$(make_fixture context-payload-boundary)"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" 'FILING_CLAUSE="$FILING_CLAUSE Apply the skill section 外部公開の承認境界' 1
+perl -0pi -e 's/^FILING_CLAUSE=.*外部公開.*$//m' "$ROOT/hooks/retrospective-context.sh"
+check_mutation "事前注入の外部公開境界を削除" "事前注入の既定: 外部公開の承認境界が欠落" "$ROOT" context-path
+
+ROOT="$(make_fixture stop-payload-boundary)"
+expect_occurrences "$ROOT/hooks/retrospective-stop.sh" 'FILING_CLAUSE="$FILING_CLAUSE Apply the skill section 外部公開の承認境界' 1
+perl -0pi -e 's/^FILING_CLAUSE=.*外部公開.*$//m' "$ROOT/hooks/retrospective-stop.sh"
+check_mutation "Stopの外部公開境界を削除" "Stop の既定: 外部公開の承認境界が欠落" "$ROOT" stop
 
 # A selected group must be green on the pristine baseline before its mutations run.
 # The full baseline alone cannot expose setup inherited from a preceding group.
@@ -909,7 +919,7 @@ if [ "$JOB_N" -gt "$RETRO_JOBS" ] && [ "$_retro_waits" -eq 0 ]; then
 fi
 
 # 件数は名前付き定数で持つ（このファイルは EXPECTED_CONSUMER_CHECKS で既にその慣習）。
-EXPECTED_MUTATIONS=81
+EXPECTED_MUTATIONS=83
 if [ "$MUTATIONS" -ne "$EXPECTED_MUTATIONS" ]; then
   echo "✗ mutation 実行数が不正: ${MUTATIONS}（期待 ${EXPECTED_MUTATIONS}）" >&2
   exit 1

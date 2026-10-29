@@ -55,7 +55,10 @@
 #                           the start root while CLIs run cannot break the finish
 #   --require-prior-review <json>  Verify prior review before execution
 #   --continue-review <json>  Explicit partial revalidation of a successful review
-#   --output-dir <dir>      Output directory (auto-detected by task type)
+#   --output-dir <dir>      Output directory (auto-detected by task type). Without it and
+#                           without a project-config output_dir, a built-in default dir left
+#                           unmarked by a pre-boundary version is moved unread into the new
+#                           private root as .prev-<timestamp>-legacy/
 #   --base <branch>         Base branch for diff (default: auto-detect from origin/HEAD, fallback: develop).
 #                           A bare branch name resolves to whichever of the local ref and
 #                           origin/<branch> is not stale, without fetching: when the local ref is a

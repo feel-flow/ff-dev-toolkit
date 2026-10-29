@@ -210,6 +210,84 @@ test('unchanged artifacts do not attribute another task HEAD as a new saved comm
   assert.equal(result.status, 'synced'); assert.equal(result.commit, null);
   assert.equal(result.history, 'unchanged'); assert.equal(result.pushed, false); assert.equal(f.comments.length, 0);
 });
+// Inherited Git pathspec settings reach the runtime and its hooks through process.env.
+const setEnv = (name, value) => { if (value === undefined) delete process.env[name]; else process.env[name] = value; };
+function withEnv(t, name, value) {
+  const previous = process.env[name];
+  setEnv(name, value);
+  t.after(() => setEnv(name, previous));
+}
+const lines = output => output.split('\0').filter(Boolean).sort();
+test('glob characters in artifact names stage only the selected files and hooks keep the caller Git environment', t => {
+  withEnv(t, 'GIT_LITERAL_PATHSPECS', undefined);
+  for (const inherited of [undefined, '1', '0', '']) {
+    const f = historyFixture(t);
+    setEnv('GIT_LITERAL_PATHSPECS', inherited);
+    const selected = ['output/n[o]te.md', 'output/q?.md', 'output/st*r.md'];
+    for (const file of [...selected, 'output/note.md', 'output/qa.md', 'output/star.md']) fs.writeFileSync(path.join(f.root, file), file);
+    fs.writeFileSync(path.join(f.root, '.git/hooks/pre-commit'), '#!/bin/sh\nprintf "%s" "${GIT_LITERAL_PATHSPECS-unset}" > .git/asdd-hook-env\n', { mode: 0o755 });
+    const result = recordWork(f.root, { ...f.record, files: selected }, { command: f.command, apply: true });
+    assert.equal(result.status, 'synced', result.error);
+    assert.deepEqual(lines(f.git(['ls-tree', '-r', '-z', '--name-only', 'HEAD'])), selected);
+    assert.equal(f.git(['diff', '--cached', '--name-only']), '');
+    assert.deepEqual(lines(f.git(['ls-files', '-o', '--exclude-standard', '-z', 'output'])), ['output/note.md', 'output/notice.md', 'output/qa.md', 'output/star.md']);
+    assert.equal(fs.readFileSync(path.join(f.root, '.git/asdd-hook-env'), 'utf8'), inherited ?? 'unset');
+  }
+});
+test('icase widening of literal artifact names is refused before any Issue or index change', t => {
+  const f = historyFixture(t);
+  // A tracked case variant absent from the working tree: icase pathspecs select it on any filesystem.
+  const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: f.root, input: 'Other case', encoding: 'utf8' }).trim();
+  f.git(['update-index', '--add', '--cacheinfo', `100644,${blob},OUTPUT/NOTICE.MD`]);
+  f.git(['commit', '-m', 'Case variant']); f.git(['push', 'origin', 'main']);
+  const head = f.git(['rev-parse', 'HEAD']);
+  withEnv(t, 'GIT_ICASE_PATHSPECS', '1');
+  assert.throws(() => recordWork(f.root, f.record, { command: f.command, apply: true }), /outside the artifacts; unset GIT_ICASE_PATHSPECS/);
+  assert.equal(f.issues.length, 0);
+  assert.equal(f.git(['diff', '--cached', '--name-only']), ''); assert.equal(f.git(['rev-parse', 'HEAD']), head);
+});
+test('user staging is never committed and only the files an add widened are reset', t => {
+  const f = historyFixture(t);
+  const head = f.git(['rev-parse', 'HEAD']);
+  // A user's staging is never adopted or discarded.
+  fs.writeFileSync(path.join(f.root, 'staged.txt'), 'Staged'); f.git(['add', 'staged.txt']);
+  assert.throws(() => recordWork(f.root, f.record, { command: f.command, apply: true }), /Staged changes/);
+  assert.equal(f.git(['diff', '--cached', '--name-only']), 'staged.txt');
+  f.git(['reset', '-q']);
+  // Staging that appears while the Issue is written is refused and kept as it is.
+  fs.writeFileSync(path.join(f.root, 'unrelated.txt'), 'Concurrent');
+  const concurrent = (cmd, args, input) => {
+    const output = f.command(cmd, args, input);
+    if (cmd === 'gh' && args[1] === 'create') f.git(['add', 'unrelated.txt']);
+    return output;
+  };
+  const raced = recordWork(f.root, f.record, { command: concurrent, apply: true });
+  assert.equal(raced.status, 'unsynced'); assert.match(raced.error, /Staged changes/);
+  assert.equal(f.git(['diff', '--cached', '--name-only']), 'unrelated.txt'); assert.equal(f.git(['rev-parse', 'HEAD']), head);
+  f.git(['reset', '-q']);
+  // Files an add widens beyond the selection are reset; the selected artifact stays staged for retry.
+  fs.writeFileSync(path.join(f.root, 'output/extra.md'), 'Not selected');
+  const widened = (cmd, args, input) => {
+    const output = f.command(cmd, args, input);
+    if (cmd === 'git' && args[0] === 'add') f.git(['add', '--', 'output/extra.md']);
+    return output;
+  };
+  const rolledBack = recordWork(f.root, f.record, { command: widened, apply: true });
+  assert.equal(rolledBack.status, 'unsynced'); assert.match(rolledBack.error, /Unexpected staged files/);
+  assert.equal(f.git(['diff', '--cached', '--name-only']), 'output/notice.md'); assert.equal(f.git(['rev-parse', 'HEAD']), head);
+  // A failed reset keeps the refusal reason, and the leftover entry stops the next save.
+  const stuck = (cmd, args, input) => {
+    if (cmd === 'git' && args[0] === 'reset') throw Object.assign(new Error('index.lock'), { status: 128 });
+    return widened(cmd, args, input);
+  };
+  assert.match(recordWork(f.root, f.record, { command: stuck, apply: true }).error, /could not be unstaged/);
+  assert.throws(() => recordWork(f.root, f.record, { command: f.command, apply: true }), /Staged changes/);
+  assert.equal(f.git(['rev-parse', 'HEAD']), head);
+  f.git(['reset', '-q', '--', 'output/extra.md']);
+  const retry = recordWork(f.root, f.record, { command: f.command, apply: true });
+  assert.equal(retry.status, 'synced', retry.error);
+  assert.deepEqual(f.git(['diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD']).split('\n'), ['output/notice.md']);
+});
 test('a message-rewriting hook leaves an accurately reported unsynced commit', t => {
   const f = historyFixture(t);
   fs.writeFileSync(path.join(f.root, '.git/hooks/commit-msg'), '#!/bin/sh\nprintf "Team formatted message\\n" > "$1"\n', { mode: 0o755 });

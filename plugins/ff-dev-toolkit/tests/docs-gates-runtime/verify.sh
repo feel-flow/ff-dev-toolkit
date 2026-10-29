@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: 鍵診断文書の不在・空・見出し変更、Copilot表行/markerの欠落・空フェンスはsafe-guide-casesで各赤（2026-10-29 macOS実測）。秘密表示・非正規Base64許可・全ツール許可・shell deny削除・権限確認迂回の各変異も赤。
 # 空振り検出: docs-gates の正本参照検査ブロックを削除すると、無変異の対照は緑のまま drop-reference が赤（2026-09-28 実測）。
 # 空振り検出: 両入口を持つ正常な偽rootは緑、CLAUDE.mdを改名した写しは隔離先コマンド契約の欠落を名指しして赤（2026-10-24、無変異suite295件pass）。
 # 空振り検出（Issue `#2119`、2026-10-13 実測）: シムの grok 導入実体の探索を無効化すると grok の 3 ケース（新しい版の選択・grok だけで解決・既定 $HOME/.grok）が赤、Claude の採用条件を「grok が在れば常に Claude」へ変えると同版 Codex 優先のケースが赤。無変異は緑。
@@ -688,6 +689,13 @@ run_root_guard_cases
 # shellcheck source=consumer-command-smoke.sh
 . "$SCRIPT_DIR/consumer-command-smoke.sh"
 run_consumer_command_smoke
+
+# Execute the actual key diagnostic and Copilot examples with synthetic inputs.
+if python3 "$SCRIPT_DIR/safe-guide-cases.py" "$DOCS"; then
+  ok "秘密値を出さない暗号化診断とCopilot read-only例の実行"
+else
+  bad "暗号化診断またはCopilot read-only例が不正・欠落"
+fi
 
 # shellcheck source=shim-cache-selection-cases.sh
 . "$SCRIPT_DIR/shim-cache-selection-cases.sh"

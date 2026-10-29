@@ -157,7 +157,7 @@ MCP: 取得値: MCP の repo nameWithOwner と対象 branch の classic protecti
 
 **文字列パッチと commit の突き合わせ（必須）**: PLAYBOOK・文書への追記を script で当てる場合は [Markdown 文字列パッチ規律](../../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従い、`add` の前に `git status --short` で意図したファイルのみが変わっていることを述語で突き合わせる。書き込み口は `add` 時の blob hash を記録し、その後に同じファイルへ入った別の編集を commit へ吸い込まない。
 
-**送信範囲ガード**（`finish.sh knowledge-commit push` と `pr` の両方が、ブランチ作成・push より前に行う）: fetch 後の `origin/<default-branch>..HEAD` が knowledge コミット 1 つだけでなければ rc 2（`KNOWLEDGE_PUSH=scope-mismatch` / `KNOWLEDGE_PR=scope-mismatch`）で止め、無関係な未 push コミットを一緒に送らない。
+**送信範囲ガード**（`finish.sh knowledge-commit push` と `pr` の両方が、ブランチ作成・push より前に行う）: fetch 後の `origin/<default-branch>..HEAD` が knowledge コミット 1 つだけでなければ rc 2（`KNOWLEDGE_PUSH=scope-mismatch` / `KNOWLEDGE_PR=scope-mismatch`）で止め、無関係な未 push コミットを一緒に送らない。コミットの中身は `commit` 側が読み戻す: 記録外のパスが入っていたら（commit 前フックが一時索引へ足した場合など）そのコミットを取り消して `KNOWLEDGE_COMMIT=scope-mismatch` の exit 1 で止まり、保留記録を残す。push へ進まず、フックの設定を直すか記録外のパスを退避（`git stash push --include-untracked -- <記録外のパス>`。未追跡のファイルも退避できる）してから `commit` を再実行する。
 
 **直 push の実測ガード**（`finish.sh knowledge-commit push` が行う）: コミット先ブランチを `git symbolic-ref -q --short HEAD` で実測し、detached HEAD なら refspec を `HEAD:<default-branch>` にする（merge-cleanup の退避などで detached のまま `git push origin <branch>` を打つと、ローカル branch ref が送られ「Everything up-to-date」で成功に見えたまま届かない）。push 出力はファイルへ落として `-> <default-branch>` を照合する（パイプで tee へ流すと終了コードが失われ、rejected 出力を成功と誤読する）。push 後は `gh run list --branch <default-branch> --limit 5 --json status,conclusion,workflowName,headSha` で今 push した SHA の run を見る（直 push は PR 画面に出ないため）。`in_progress` / `queued` は完了を待って再確認し、`failure` なら revert ではなく ACE コミットを前進で直して push し直す。一覧が空の CI 無しリポジトリはそのまま進んでよい。
 

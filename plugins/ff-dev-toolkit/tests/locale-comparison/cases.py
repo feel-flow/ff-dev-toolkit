@@ -12,15 +12,20 @@ import unittest
 
 PLUGIN = Path(sys.argv.pop(1)).resolve()
 REPO = PLUGIN.parent.parent if PLUGIN.parent.name == "plugins" else PLUGIN
-AVAILABLE = subprocess.run(["locale", "-a"], capture_output=True, text=True, check=True, encoding='utf-8').stdout.splitlines()
+def codeset_key(name):
+    """glibc lists en_US.utf8 for en_US.UTF-8 (macOS keeps the spelling), so compare normalized codesets."""
+    return name.lower().replace("-", "")
+
+
+AVAILABLE = {codeset_key(name) for name in subprocess.run(["locale", "-a"], capture_output=True, text=True, check=True, encoding='utf-8').stdout.splitlines()}
 LOCALES = [("C", {"LANG": "C"})]
 for name in ("en_US.UTF-8", "ja_JP.UTF-8"):
-    if name in AVAILABLE:
+    if codeset_key(name) in AVAILABLE:
         LOCALES.append((name, {"LANG": name}))
-if "en_US.UTF-8" in AVAILABLE:
+if codeset_key("en_US.UTF-8") in AVAILABLE:
     LOCALES.append(("inherited-LC_ALL", {"LANG": "ja_JP.UTF-8", "LC_ALL": "en_US.UTF-8"}))
 for name in ("en_US.UTF-8", "ja_JP.UTF-8"):
-    if name not in AVAILABLE:
+    if codeset_key(name) not in AVAILABLE:
         print(f"  ○ skip: locale-comparison の {name} は locale -a に無い（C の実関数検証は実行）")
 
 

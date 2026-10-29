@@ -285,6 +285,26 @@ function pendingHistory(record, event, command, defaultBranch) {
     }
   }
 }
+// Read an inherited Git boolean environment value with Git's own rules (yes/on/0/empty...).
+const gitEnvBool = (command, name) => command('git', ['-c', `ff.asddEnv=${process.env[name] ?? ''}`, 'config', '--type=bool', '--get', 'ff.asddEnv']) === 'true';
+// Artifact names are checked as literal paths, but Git reads operands as pathspecs.
+// Quote each operand instead of exporting GIT_LITERAL_PATHSPECS, which hooks inherit.
+// Under an inherited literal setting the magic prefix itself would be read literally.
+function literalPathspec(command) {
+  const inherited = gitEnvBool(command, 'GIT_LITERAL_PATHSPECS');
+  return file => inherited ? file : `:(literal)${file}`;
+}
+function literalSelection(files, command) {
+  const spec = literalPathspec(command), specs = files.map(spec);
+  // GIT_ICASE_PATHSPECS still widens literal operands; refuse before the index changes.
+  const listed = command('git', ['ls-files', '-c', '-o', '--exclude-standard', '-z', '--', ...specs]).split('\0').filter(Boolean);
+  const extra = listed.filter(file => !files.includes(file)).length;
+  if (extra) {
+    const hint = gitEnvBool(command, 'GIT_ICASE_PATHSPECS') ? '; unset GIT_ICASE_PATHSPECS and retry' : '';
+    throw new Error(`Git pathspec selects ${extra} file(s) outside the artifacts${hint}`);
+  }
+  return { spec, specs };
+}
 function preflight(root, record, github, command) {
   if (!github.recordIssues) throw new Error('Issue recording is disabled');
   const fileHashes = {};
@@ -314,6 +334,7 @@ function preflight(root, record, github, command) {
       }
     }
     pendingHistory(record, event, command, repo.defaultBranchRef?.name ?? branch);
+    literalSelection(record.files, command); // Read-only: refuse before any Issue write.
   }
   return event;
 }
@@ -356,9 +377,19 @@ export function recordWork(root, record, { apply = false, command = (cmd, args, 
       // Include only explicitly selected paths; never stage the whole working tree.
       progress.staging = Object.fromEntries(record.files.map(file => [file, command('git', ['hash-object', '--', file])]));
       saveState(root, state); // Recognize our own index entries after a failed commit hook.
-      command('git', ['add', '--', ...record.files]);
-      const staged = command('git', ['diff', '--cached', '--name-only', '-z']).split('\0').filter(Boolean);
-      if (staged.some(file => !record.files.includes(file))) throw new Error('Unexpected staged files; do not commit unrelated work');
+      const { spec, specs } = literalSelection(record.files, command);
+      const listStaged = () => command('git', ['diff', '--cached', '--name-only', '-z']).split('\0').filter(Boolean);
+      // Staging can change while the Issue is written; never commit what someone else staged.
+      if (listStaged().some(file => !record.files.includes(file))) throw new Error('Staged changes already exist; preserve them before recording');
+      command('git', ['add', '--', ...specs]);
+      const unexpected = listStaged().filter(file => !record.files.includes(file));
+      if (unexpected.length) {
+        // Undo only what this add widened; keep our own receipt for the retry.
+        try { command('git', ['reset', '-q', '--', ...unexpected.map(spec)]); }
+        catch { throw new Error(`Unexpected staged files (${unexpected.length}) could not be unstaged; unstage them before retrying`); }
+        throw new Error('Unexpected staged files; do not commit unrelated work');
+      }
+      const staged = listStaged();
       if (staged.length) {
         command('git', ['commit', '-m', `chore: #${issue.number} ${record.title.replace(/[\r\n]/g, ' ')}`, '-m', `ASDD event ${event}`]);
         progress.commit = command('git', ['rev-parse', 'HEAD']);

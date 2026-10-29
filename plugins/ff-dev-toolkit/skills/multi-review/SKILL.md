@@ -1,6 +1,6 @@
 ---
 name: multi-review
-description: セルフレビューに、環境確認済みの別CLIを1本加える。一時的な利用不可は当回だけ単一で完了。cross_review=offで単一固定。
+description: セルフレビューと別CLIの追加レビュー。Claude Code / Codex / grokはネイティブサブエージェントへ既定で委譲。cross_review=offで追加CLIを省略。
 ---
 
 # /multi-review — 複数AIクロスモデルレビュー
@@ -44,21 +44,22 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
 
 ## 前提
 
-- AI CLI が 1 つ以上と Mike Farah `yq` v4（distro の `yq` は別実装のことがある）
-- Toolkit のレビューエージェント経路は `git diff <base>...HEAD` を見るので**コミット済みの変更**しか対象にならない
+- 外部 CLI 経路は AI CLI と Mike Farah `yq` v4 が必要。ネイティブ経路は不要
+- 対象はコミット済みの PR 差分（固定した base SHA / head SHA）
 
 ## 引数
 
-`$ARGUMENTS` は `multi-review.sh` へ渡す。意味は `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --help` と [Perspective フィルタと単一 CLI 縮退](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#perspective-フィルタと単一-cli-縮退) が正本。`--staged` は `--base` / `MULTI_AGENT_BASE_BRANCH` と排他。AC は `--description '<AC 本文>'` で事前投入する（レビュー CLI は read-only で `gh` を呼べない）。
-
-<!--04f8b39c515cbe1c-->
-分類: 非操作: read-only の説明。MCP取得ACは親が --description へ渡し reviewer write 禁止
+外部 CLI 経路の `$ARGUMENTS` は `multi-review.sh` へ渡す。意味は同梱 `--help` と [Perspective フィルタ](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#perspective-フィルタと単一-cli-縮退) が正本。`--staged` は `--base` / `MULTI_AGENT_BASE_BRANCH` と排他。AC は `--description '<AC 本文>'` で親が渡す。
 
 ## 手順
 
 ### 0. 前提（PR 作成後に実行する）と担当の確定
 
-本スキルは **PR 作成後**に実行する（[Git Workflow ステップ6](../../docs-template/05-operations/deployment/git-workflow.md#ステップ6-セルフレビューpr作成後重要)）。担当は [レビュー担当の選択と利用制限時の継続](../../docs-template/05-operations/deployment/self-review.md#レビュー担当の選択と利用制限時の継続)（正本）に従い、本書は複製しない。主担当は実装ホスト（保存pairから推測しない）。環境チェック:
+本スキルは **PR 作成後**に実行する。担当は [レビュー担当の選択と利用制限時の継続](../../docs-template/05-operations/deployment/self-review.md#レビュー担当の選択と利用制限時の継続)（正本）に従い、本書は複製しない。主担当は実装ホスト（保存pairから推測しない）。
+
+**Claude Code / Codex / grok は最初に [主担当ホストのネイティブセルフレビュー](../../docs-template/05-operations/deployment/self-review.md#主担当ホストのネイティブセルフレビュー)で経路を選ぶ。** ネイティブ利用時は固定対象・観点・read-only 制約をホストの起動ツールへ渡し、親が対象 SHA・完了状態を照合する。手順 1・2 のシェル起動を前提にしない。追加 CLI は次の環境チェックと正本で選び、明示した別 CLI だけを実行する。ネイティブ利用不可・明示 CLI 指定も同節に従う。
+
+外部 CLI の環境チェック（実行不能は正本どおり未確認）:
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --print-reviewers
@@ -68,17 +69,13 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ### 0b. 変更クラス別のレーン数（経路）
 
-判定は決定木の根が持つ。PR の差分で次を実行し `REVIEW_ROUTE` / `REVIEW_LANES` / `REVIEW_REPORT_LINE` と専用セキュリティゲート（`REVIEW_SECURITY_GATE`）を読む:
+外部 CLI のレーン計画で実行し、経路・専用セキュリティゲートを読む。ネイティブ経路は手順0の正本で判定する:
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/review-route.sh" --git --base <base>
 ```
 
-| 経路 | 根の `DT_REASON` | レーン | 完了報告 |
-|---|---|---|---|
-| `fast` | `docs-only` / `small-diff`（10 行以下） | 親が diff を直読し、Codex を 1 レーンだけ起動（Claude の 4 観点は起動しない） | `REVIEW_REPORT_LINE` |
-| `full` | `contract-change:<path>` / `implementation` | 5 レーン（Codex 1 + Claude 4 観点） | `REVIEW_REPORT_LINE` |
-| `none` | `no-files` / Jev の閾値未満・失敗 / 判定不能 | ホストが判定する | `REVIEW_REPORT_LINE` + 判定理由 1 行 |
+レーン構成は [正本](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#モード)を参照。ネイティブレビューや追加 CLI 単独実行を、このプランで再起動しない。
 
 - 手順 1・2 に `--route <REVIEW_ROUTE の値>` を付ける。`fast` / `full` では `--mode` / `--cli` / `--perspective` を併用しない（exit 2）
 - 契約針の差し替えが中心の PR は、変異ハーネスの結果表を PR 本文へ載せる（[Git Workflow ステップ5](../../docs-template/05-operations/deployment/git-workflow.md#ステップ5-pull-request作成)）
@@ -101,7 +98,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 **900秒/CLI**（`--timeout`）。作業を起動前に列挙し、起動と同じメッセージで着手。尽きたら[長時間ゲートの進捗表示](../../docs-template/05-operations/deployment/git-workflow.md#長時間ゲートの進捗表示)に従う。
 
-**レビュー起動から全 CLI が終端（応答・失敗・タイムアウトのいずれか）に達するまで、オーケストレータ側で作業ツリーを変更しないこと**。変化を検知すると結果は DISCARDED になるが、戻した変更・gitignore 済みパスは見えず、凍結の代わりになる機構ではない。サブエージェント（Review Toolkit 等）経路も同じで、そちらは結果を DISCARDED にする機構が無いので hook `guard-review-in-flight.sh` がレーンを開き、終端まで編集と git 書き込みを deny する（`fast` は Claude のレーンを開かない）。worktree 隔離の起動既定: その規定（隔離時の凍結の扱いを含む）は [Git Workflow ステップ6](../../docs-template/05-operations/deployment/git-workflow.md#ステップ6-セルフレビューpr作成後重要) を正本とする（本書は再掲しない）。隔離は、外部 CLI を同一ツリーで実行する本スキルの経路には適用されず、こちらの凍結はそのまま守る。解放イベントを取りこぼしても、開始済みレーンは `FF_REVIEW_SUBAGENT_LOCK_MAX_AGE_SECONDS`（既定 14400 秒）、未開始のレーンは `FF_REVIEW_SUBAGENT_LOCK_PENDING_SECONDS`（既定 1800 秒）を過ぎると自動回収され、systemMessage で通知される。
+**レビュー起動から全 CLI が終端（応答・失敗・タイムアウトのいずれか）に達するまで、オーケストレータ側で作業ツリーを変更しないこと**。変化を検知すると結果は DISCARDED になるが、戻した変更・gitignore 済みパスは見えず、凍結の代わりになる機構ではない。サブエージェント経路では、そちらは結果を DISCARDED にする機構が無い。名簿内の Review Toolkit 等は `guard-review-in-flight.sh` がレーンを開く。ネイティブ直接委譲の凍結・巡管理は手順0の正本に従う。worktree 隔離の起動既定: その規定（隔離時の凍結の扱いを含む）は [Git Workflow ステップ6](../../docs-template/05-operations/deployment/git-workflow.md#ステップ6-セルフレビューpr作成後重要) を正本とする（本書は再掲しない）。隔離は、外部 CLI を同一ツリーで実行する本スキルの経路には適用されず、こちらの凍結はそのまま守る。解放イベントを取りこぼしても、開始済みレーンは `FF_REVIEW_SUBAGENT_LOCK_MAX_AGE_SECONDS`（既定 14400 秒）、未開始のレーンは `FF_REVIEW_SUBAGENT_LOCK_PENDING_SECONDS`（既定 1800 秒）を過ぎると自動回収され、systemMessage で通知される。
 
 ### 2a. ホスト自身のレーンのホスト委譲
 

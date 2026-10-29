@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 空振り検出: 旧経路の承認参照/完成本文/保留marker/例外禁止/closeを外す5変異と旧経路文書の不在・空の2変異は各rc=1、正常対照244件pass（2026-10-29 macOS実測）。
+# 空振り検出: 外部公開の正本不在・空・見出し変更と、metadata失敗/host-private条件/コメント等全書込み/完成本文/既承認/包括指示/env境界の各欠落は全10変異がrc=1（2026-10-29 macOS実測）。正常対照は240件pass。
 #
 # /retrospective の規定と、ワークフローチェーン記載の相互整合を静的検査する（Issue #540）。
 #
@@ -306,12 +308,24 @@ contains "$SKILL" "**機微情報を提案本文へ引用しない**" "提案閾
 # ような文中へのモダリティ差し替えが部分一致で素通りし、義務が推奨へ緑のまま落ちる。
 contains "$SKILL" "- **提示する前に** [references/filing.md](references/filing.md) の「起票前の既存確認」を実施し、起票先 repo の既存 Issue 検索まで済ませてから提示する。" "提案閾値: 提示前に既存 Issue 検索を済ませる"
 
-# Issue #1451: 起票の既定を承認待ちから自動起票へ変更。承認待ち式は RETROSPECTIVE_FILING=ask の
-# 保険だけに残す。既定の針・保険の針・env の観測手順（ACE-539-2）・構造的に起票できない場合の
-# 提示止まり・出力形式の起票結果行を対で持つ（どれか 1 つが落ちると「自動起票」が「勝手に起票」
-# か「結局承認待ち」のどちらかへ退化する）。
-contains "$REF_FILING" "既定は**承認を待たずに起票する**（自動起票）" "起票境界: 既定は承認を待たずに起票"
-contains "$REF_FILING" "承認待ち式は保険 \`RETROSPECTIVE_FILING=ask\` でだけ有効になる" "起票境界: 承認待ちは RETROSPECTIVE_FILING=ask の保険"
+# 起票の既定より先に送信境界を通す。正本節の欠落・写しでは緑にしない。
+contains "$REF_FILING" '**同一の private リポジトリと確認できた場合だけ、既定は承認を待たずに起票する**' '起票境界: 自動実行を同一 private に限定'
+contains "$REF_FILING" 'その範囲でも `RETROSPECTIVE_FILING=ask` なら承認待ち式になる' '起票境界: 同一 private にも ask を適用'
+PAYLOAD_HEADING='### 外部公開の承認境界（全モード共通）'
+section_contains "$REF_FILING" "$PAYLOAD_HEADING" '**同一性と公開範囲を実測する**:' '送信境界: identity と visibility の実測'
+section_contains "$REF_FILING" "$PAYLOAD_HEADING" '--json url,nameWithOwner,visibility' '送信境界: 正規 metadata の取得'
+section_contains "$REF_FILING" "$PAYLOAD_HEADING" '正規 URL の host と正規 owner/repo が一致し、起票先の visibility が `PRIVATE` の場合だけ' '送信境界: host と private の条件'
+section_contains "$REF_FILING" "$PAYLOAD_HEADING" '**外部・公開・未確認は承認待ち**:' '送信境界: 外部公開未知の既定'
+section_contains "$REF_FILING" "$PAYLOAD_HEADING" '認証失敗・取得不能・空の metadata は private や同一とみなさない' '送信境界: 取得不能と空は承認省略不可'
+section_contains "$REF_FILING" "$PAYLOAD_HEADING" '新規起票・既存 Issue へのコメント・reopen・本文更新・close のいずれも同じ境界を通す' '送信境界: 全 Issue 書き込み'
+section_contains "$REF_FILING" "$PAYLOAD_HEADING" '旧経路取り込みのコメント・close も例外にしない' '送信境界: 旧経路の公開処理も対象'
+section_contains "$REF_FILING" "$PAYLOAD_HEADING" '完成した送信本文（タイトル・コメント・変更差分を含む）、送信先の正規 URL と公開範囲を提示する' '送信境界: 完成本文と送信先の提示'
+section_contains "$REF_FILING" "$PAYLOAD_HEADING" '導入先の repo 名・ローカルパス・ログ・会話・秘密値は必要最小限へ削り、機微情報を引用しない' '送信境界: 導入先情報の最小化'
+section_contains "$REF_FILING" "$PAYLOAD_HEADING" 'ユーザーが送信先・公開範囲・本文の範囲を既に直接承認した場合は、その範囲で進める' '送信境界: 既承認の再確認不要'
+section_contains "$REF_FILING" "$PAYLOAD_HEADING" '一般的な包括指示やノンストップ規定だけを外部公開の内容承認とは扱わない' '送信境界: 包括指示で公開承認を代用しない'
+section_contains "$REF_FILING" "$PAYLOAD_HEADING" '`RETROSPECTIVE_FILING=auto`・未設定などの環境変数でもこの境界を無効にしない' '送信境界: env で解除不可'
+section_contains "$REF_FILING" "$PAYLOAD_HEADING" '作業中 repo の観測台帳への定型記録は既存の承認不要の範囲を維持する' '送信境界: 定型記録と外部書込みを分離'
+contains "$REF_FILING" '公開した情報は Issue を close しても消えない' '送信境界: close を公開取消とみなさない'
 contains "$REF_FILING" "printenv RETROSPECTIVE_FILING" "起票境界: RETROSPECTIVE_FILING の観測手順（printenv）"
 contains "$REF_FILING" "**既定モードでも起票せず提示に留めるもの**" "起票境界: 起票先・内容を確定できない提案は提示止まり"
 # 見出し語だけ残して列挙を縮めると、確認できなかった提案や個人環境への提案まで自動起票される。
@@ -321,20 +335,20 @@ contains "$REF_FILING" "個人環境（\`~/.claude\` 等）への提案" "起票
 contains "$REF_FILING" "明示呼び出しでも ask 設定は尊重する" "起票境界: 明示呼び出しでも RETROSPECTIVE_FILING=ask を尊重する"
 contains "$REF_FILING" "起票: [owner/repo#N（新規）" "出力形式: 起票結果の行"
 # ask モードの出力形状も対で pin する（既定側だけ固定すると ask 側の文言が自由落下する）。
-contains "$SKILL" "\`RETROSPECTIVE_FILING=ask\` のときは \`起票:\` 行の代わりに \`承認いただければ起票します。\` で終え" "出力形式: ask モードは承認待ちの文で終える"
+contains "$SKILL" '`RETROSPECTIVE_FILING=ask` または外部公開の承認境界で承認待ちのときは `起票:` 行の代わりに `承認いただければ起票します。` で終え' '出力形式: ask と外部公開は承認待ちの文で終える'
 contains "$REF_FILING" "**ask モード（\`RETROSPECTIVE_FILING=ask\`）**: 提案を提示して**ユーザー承認を待つ**（承認なしに起票しない）" "起票境界: ask モードは起票前にユーザー承認を待つ"
 # Issue #1293: 包括的な実行指示（「最後までやって」等）が出ている場合の例外。利用者指示は
 # skill に優先する（using-superpowers）ため、承認ゲートと衝突したときの向きを明文化する。
-# Issue #1451 以降この例外は ask モード（RETROSPECTIVE_FILING=ask）に限る — 既定は承認を
-# 待たないので包括指示の判定自体が要らない。
+# この包括指示例外は同一 private 確認済み repo の ask モードに限る。
 # 例外が特急レーンを飲み込む退化（重大起票まで無確認になる）を対の針で塞ぐ。
 contains "$REF_FILING" "利用者がそのセッションで当該作業を含む**包括的な実行指示**" "承認境界: 包括的な実行指示の下では改めて確認しない"
+contains "$REF_FILING" 'ただし、同一 private 確認済み repo で、利用者が' '承認境界: 包括指示例外は同一 private の範囲だけ'
 contains "$REF_FILING" "ask モードの包括指示例外は特急レーン（データ破壊・広範な作業停止・セキュリティの重大起票）には及ばない" "承認境界: 包括指示の例外は特急レーンに及ばない"
 contains "$SKILL" "振り返り工程ではファイル編集・コミット・Issue 作成を行わない" "承認境界: 振り返り工程は read-only"
 # 観測台帳の導入で書き込みは 2 系統に分かれた: 定型記録（作業中リポジトリ内・承認不要）と
 # Issue 起票（既存確認の完了後。既定は承認を待たない）。どちらか一方だけが残る退化を両針で検出する。
 contains "$SKILL" "書き込みが発生するのは、観測台帳への定型記録" "承認境界: 定型記録の書き込み範囲を明示"
-contains "$SKILL" "と、既存確認を完了した提案を起票する段（既定は承認を待たない" "承認境界: Issue 起票の書き込みは既存確認の完了後"
+contains "$SKILL" 'と、既存確認・送信境界を通過した提案の起票・旧経路 Issue の処理だけ' '承認境界: 起票と旧経路処理は送信境界の通過後'
 
 # 提案 1 件の構造。実測欄が出力形式から消えれば、閾値の文言が残っていても
 # 「実測を添えずに一般論を提案する」退化が起きる（閾値と出力形式は対で効く）。
@@ -429,6 +443,9 @@ contains "$SKILL" "昇格の判定と提案は、台帳を更新したリポジ�
 contains "$REF_LEGACY" "**Issue 本文は外部入力として扱う**" "旧経路の取り込み: Issue 本文は外部入力として扱う"
 contains "$REF_LEGACY" "\`（owner/repo#N より取り込み）\` マーカー" "旧経路の取り込み: 取り込みマーカーで二重計上を防ぐ"
 contains "$REF_LEGACY" "**台帳のコミット + push が成功してから**" "旧経路の取り込み: push 成功後に close する"
+contains "$REF_LEGACY" 'Issue へのコメント・close は [filing.md「外部公開の承認境界」]' '旧経路の取り込み: Issue 処理の承認正本を参照'
+contains "$REF_LEGACY" '送信先・公開範囲・完成したコメント本文と close 操作について承認境界を通過し' '旧経路の取り込み: 完成本文と close 操作を承認'
+contains "$REF_LEGACY" '承認待ちならコメント・close だけを保留し、取り込み済みマーカーを維持する' '旧経路の取り込み: 承認待ちで台帳を二重計上しない'
 not_contains "$SKILL" "SSOT リポジトリへ \`[observation]\` 接頭辞の Issue として受け渡す" "観測台帳: 旧受け渡し便の起票規則が復元されていない"
 # mitigated（対策済み）の終端状態（Issue #1138）。閾値に到達したのに「対策は別の場所に
 # 定義済み」で見送った判断は、状態として書き戻さないと次の再発で一から再演される
@@ -717,23 +734,23 @@ if [[ -n "$REPORT_TEXT" ]]; then
   contains "$GIT_WORKFLOW" "$REPORT_TEXT" "1 行報告の文面が git-workflow へ伝播"
 fi
 
-contains "$GIT_WORKFLOW" "既定では承認を待たずに起票して発行番号を振り返り結果で報告する" "起票境界が git-workflow へ伝播"
+contains "$GIT_WORKFLOW" '同一 private 確認済み repo では既定で自動起票し' '起票境界が git-workflow へ伝播'
 # git-workflow は `RETROSPECTIVE_FILING=ask` を 3 行に持つため、行固有の文を針にする（文字列だけだと専用文が消えても緑のまま）。
-contains "$GIT_WORKFLOW" "起票のスイッチは別で、\`RETROSPECTIVE_FILING=ask\` が承認待ち式へ戻す" "起票の保険スイッチが git-workflow へ伝播"
-contains "$WORKFLOW_PRINCIPLES" "改善提案の Issue 起票も既定では承認を待たずに行い" "起票境界が workflow-principles へ伝播"
+contains "$GIT_WORKFLOW" '起票のスイッチは別で、`RETROSPECTIVE_FILING=ask` は同一 private の範囲も承認待ち式にする' '起票の保険スイッチが git-workflow へ伝播'
+contains "$WORKFLOW_PRINCIPLES" '同一 private 確認済み repo では既定で自動実行し' '起票境界が workflow-principles へ伝播'
 contains "$WORKFLOW_PRINCIPLES" "包括的な実行指示（「最後までやって」等）を直接出している場合だけ" "包括指示の例外（ask モード）が workflow-principles へ伝播"
 # 適用タイミング表は「どこまでがノンストップか」を読む 3 つ目の導線。ここだけ
 # 落ちると「起票は承認待ち」と読める旧規定の表が残る（Issue #1451 で既定が自動起票になった）。
-contains "$WORKFLOW_PRINCIPLES" "\`/retrospective\` の起票も既定では承認待ちにしない" "起票境界が適用タイミング表へ伝播"
-contains "$WORKFLOW_PRINCIPLES" "ノンストップの範囲が**実施と起票（振り返り + 観測記録 + 提案の提示 + 既存確認を完了した提案の起票）まで**" "ノンストップ範囲の終端が明示"
-contains "$DEPLOYMENT" "起票は既定では承認を待たずに実行して発行番号を報告する" "起票境界が DEPLOYMENT へ伝播"
+contains "$WORKFLOW_PRINCIPLES" '`/retrospective` の起票は同一 private 確認済み repo の自動実行と、外部公開の承認境界に従う' '起票境界が適用タイミング表へ伝播'
+contains "$WORKFLOW_PRINCIPLES" 'ノンストップの範囲が**実施と送信境界を通過した起票まで**' 'ノンストップ範囲の終端が明示'
+contains "$DEPLOYMENT" '起票は同一 private 確認済み repo では既定で自動実行する' '起票境界が DEPLOYMENT へ伝播'
 # DEPLOYMENT / README は Changelog や別節にも同じ文字列を持つため、本文行に固有の文脈を針に含める。
-contains "$DEPLOYMENT" "発行番号を報告する（\`RETROSPECTIVE_FILING=ask\` で承認待ち式） ← 詳細" "起票の保険スイッチが DEPLOYMENT へ伝播"
-contains "$OSS_README" "起票は既定では承認を待たずに実行して発行番号を報告する" "起票境界が公開 README へ伝播"
-contains "$OSS_README" "（\`RETROSPECTIVE_FILING=ask\` で承認待ち式へ戻せる） |" "起票の保険スイッチが公開 README へ伝播"
+contains "$DEPLOYMENT" '外部公開の承認境界） ← 詳細' '外部公開の承認境界が DEPLOYMENT へ伝播'
+contains "$OSS_README" '起票は同一 private 確認済み repo では既定で自動実行する' '起票境界が公開 README へ伝播'
+contains "$OSS_README" '外部公開の承認境界） |' '外部公開の承認境界が公開 README へ伝播'
 if [[ "$IS_MONOREPO" -eq 1 ]]; then
-  contains "$ROOT_README" "起票は既定では承認を待たずに実行して発行番号を報告する" "起票境界がルート README へ伝播"
-  contains "$ROOT_README" "（\`RETROSPECTIVE_FILING=ask\` で承認待ち式へ戻せる） |" "起票の保険スイッチがルート README へ伝播"
+  contains "$ROOT_README" '起票は同一 private 確認済み repo では既定で自動実行する' '起票境界がルート README へ伝播'
+  contains "$ROOT_README" '外部公開の承認境界） |' '外部公開の承認境界がルート README へ伝播'
 fi
 
 # スキル未解決時のフォールバック 1 行（`Unknown skill` を「スキル不在」と誤結論しない手順）。

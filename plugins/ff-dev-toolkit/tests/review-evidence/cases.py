@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -23,6 +24,10 @@ class Evidence(unittest.TestCase):
                 os.environ.pop(name)
         os.environ.update(GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_NOSYSTEM='1')
         self.tmp = Path(tempfile.mkdtemp())
+        # Installed plugins/stubs must be outside the reviewed repository, but their
+        # parent is still private: a predictable sibling of self.tmp can be pre-created.
+        self.external = Path(tempfile.mkdtemp(prefix='evidence-external-'))
+        self.addCleanup(shutil.rmtree, self.external, True)
         self.before = os.getcwd()
         os.chdir(self.tmp)
         self.git('init', '-q', '-b', 'develop')
@@ -83,7 +88,7 @@ class Evidence(unittest.TestCase):
     def plugin_copy(self, name):
         """The installed layout a review run reads, outside the repo and the output dir."""
         source = SCRIPT.parents[1]
-        base = self.tmp.parent / ('evidence-roots-' + self.tmp.name)
+        base = self.external / 'plugins'
         if not base.exists():
             base.mkdir()
             self.addCleanup(shutil.rmtree, base, True)
@@ -95,10 +100,102 @@ class Evidence(unittest.TestCase):
         shutil.copy2(source / 'tests/lib/review-round-counter.sh', root / 'tests/lib')
         return root
 
+    def test_installed_fixture_ignores_precreated_shared_siblings(self):
+        # A private directory models a shared /tmp without touching another user's files.
+        with tempfile.TemporaryDirectory(prefix='evidence-shared-') as shared:
+            shared = Path(shared)
+            repository = shared / 'repo'
+            repository.mkdir()
+            legacy = shared / ('evidence-roots-' + repository.name)
+            legacy_script = legacy / 'installed/scripts/multi-review.sh'
+            legacy_script.parent.mkdir(parents=True)
+            legacy_script.write_bytes(b'exit 91')
+            legacy_stub = shared / ('evidence-stub-' + repository.name + '-precreated')
+            legacy_stub.mkdir()
+            sentinel = legacy_stub / 'sentinel'
+            sentinel.write_bytes(b'UNCHANGED')
+            original = self.tmp
+            try:
+                self.tmp = repository
+                root = self.plugin_copy('installed')
+                stub_bin, _, _ = self.stub('precreated')
+            finally:
+                self.tmp = original
+            self.assertEqual(sha256(root / 'scripts/multi-review.sh'),
+                             sha256(SCRIPT.parent / 'multi-review.sh'))
+            self.assertEqual(root.parent, self.external / 'plugins')
+            self.assertEqual(stub_bin.parent.parent, self.external)
+            self.assertNotEqual(self.external.parent, repository)
+            self.assertEqual(self.external.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(legacy_script.read_bytes(), b'exit 91')
+            self.assertEqual(sentinel.read_bytes(), b'UNCHANGED')
+
+    def test_shell_fixtures_ignore_precreated_shared_paths(self):
+        sources = SCRIPT.parents[1] / 'tests'
+        fields = {
+            'RUN_GATE_RECORD': 'ff-run-all-gate-record',
+            '_reg_fx': 'ff-registration-probe',
+            '_pred_fx': 'ff-skip-predicate-probe',
+            '_probe_fx': 'ff-miss-probe-registration',
+            '_fast_fx': 'ff-fast-integration',
+            '_selfmut_fx': 'ff-run-all-selfmut',
+            '_mkchk_lx': 'ff-mkchk-layout',
+            '_mkchk_fx': 'ff-mktemp-template-check',
+            '_ff_missing_nm': 'ff-run-all-verify-missing-node_modules',
+            '_ff_ready_mcp': 'ff-run-all-verify-ready-mcp',
+            '_ff_partial_mcp': 'ff-run-all-verify-partial-mcp',
+            '_fu_fx': 'ff-followup-unlisted-probe',
+            '_dg_fx': 'ff-run-all-dirty-guard',
+            '_mg_fx': 'ff-run-all-mcp-deps-guard',
+            '_nt_fx': 'ff-node-test-guard',
+        }
+        self.assertEqual(len(fields), 15, 'fixture path collection is empty/incomplete')
+        for suite, start, root_var, variables, names in (
+                ('run-all', 'if _ff_tmp_probe=', 'RUN_WORK', list(fields), list(fields.values())),
+                ('review-wrapper-shim', '_ff_mktemp_out=', 'WORK', [],
+                 ['ff-review-wrapper-shim-no-grok'])):
+            with self.subTest(suite=suite), tempfile.TemporaryDirectory(prefix='fixture-shared-') as shared:
+                self.assertGreater(len(names), 0, 'precreated path collection is empty')
+                source = (sources / suite / 'verify.sh').read_text(encoding='utf-8')
+                begin = source.index(start)
+                bootstrap = source[begin:source.index(chr(10) + 'PASS=0', begin)]
+                assignments = []
+                for variable in variables:
+                    matches = [line.strip() for line in source.splitlines()
+                               if line.strip().startswith(variable + '="')
+                               and not line.strip().startswith(variable + '="$(')]
+                    self.assertEqual(len(matches), 1, 'fixture assignment missing/ambiguous: ' + variable)
+                    assignments.append(matches[0])
+                # New predictable shared paths must not silently fall outside the collection.
+                self.assertIsNone(re.search(r'^[^#]*\$\{TMPDIR:-/tmp\}/[^\n]*\$\$',
+                                            source, re.MULTILINE), 'predictable shared fixture path')
+                checks = ['[ -d "$GROK_HOME" ]', 'case "$GROK_HOME" in "$WORK"/*) ;; *) exit 91 ;; esac']
+                if variables:
+                    checks = []
+                    for variable in variables:
+                        checks.append('case "$' + variable + '" in "$' + root_var + '"/*) ;; *) exit 91 ;; esac')
+                script = chr(10).join([
+                    'set -euo pipefail',
+                    'TMPDIR=' + shlex.quote(shared),
+                    'SUITE_NAME=privacy-probe',
+                    'for name in ' + ' '.join(names) + '; do',
+                    '  mkdir "$TMPDIR/$name.$$"',
+                    '  printf UNCHANGED > "$TMPDIR/$name.$$/sentinel"',
+                    'done',
+                    bootstrap, *assignments, *checks,
+                    'for name in ' + ' '.join(names) + '; do',
+                    '  [ "$(cat "$TMPDIR/$name.$$/sentinel")" = UNCHANGED ]',
+                    'done',
+                    'FF_REACHED_END=1',
+                ])
+                result = subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(len(list(Path(shared).glob('*/sentinel'))), len(names))
+
     def stub(self, name, delete=None, rewrite=None):
         """codex stub: counts review calls (`codex exec`). On the first one, before printing its
         findings, it removes `delete` or overwrites the file `rewrite` in place."""
-        stub = self.tmp.parent / ('evidence-stub-' + self.tmp.name + '-' + name)
+        stub = self.external / ('stub-' + name)
         stub.mkdir()
         self.addCleanup(shutil.rmtree, stub, True)
         count, marker = stub / 'review-calls', stub / 'root-changed'
@@ -221,10 +318,10 @@ class Evidence(unittest.TestCase):
         stub_bin, count, _ = self.stub('retained-cache')
         result = self.review(root, stub_bin)
         self.assertEqual(result.returncode, 0, result.stderr[-4000:])
-        baseline = self.tmp.parent / ('evidence-baseline-' + self.tmp.name)
+        baseline = self.external / 'baseline'
         shutil.copytree(self.output, baseline)
         self.addCleanup(shutil.rmtree, baseline, True)
-        victim_dir = self.tmp.parent / ('evidence-victim-' + self.tmp.name)
+        victim_dir = self.external / 'victim'
         victim_dir.mkdir(mode=0o700)
         self.addCleanup(shutil.rmtree, victim_dir, True)
         victim = victim_dir / 'canary'
@@ -389,7 +486,7 @@ class Evidence(unittest.TestCase):
         Path('file.txt').write_text('content')
         self.git('add', 'file.txt')
         self.git('commit', '-qm', 'real diff')
-        stub = self.tmp.parent / ('evidence-stub-' + self.tmp.name)
+        stub = self.external / 'integration-stub'
         stub.mkdir()
         try:
             cli = stub / 'codex'

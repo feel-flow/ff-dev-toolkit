@@ -52,6 +52,6 @@ if [ "$(uname -s)" = Darwin ]; then
     fi
   fi
 else
-  echo "  ○ skip: Mac sandbox-execのtempfile作成拒否はこのOSで未実測"
+  echo "  ○ skip: Darwin でだけ成立する検査のため未実行（sandbox-exec の tempfile 作成拒否）"
 fi
 consumer_resource_case

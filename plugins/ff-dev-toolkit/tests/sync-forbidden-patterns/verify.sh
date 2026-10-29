@@ -231,8 +231,40 @@ expect_hit "内容の混入をファイルと行で名指しして非 0 にす�
 # --- 4. ファイル名への混入を名指しする（変異） --------------------------------
 mkdir -p "$TMP/name/${retired_path}"
 printf '%s\n' 'safe' > "$TMP/name/${retired_path}/x.txt"
-expect_hit "ファイル名の混入をパスで名指しして非 0 にする" "$retired_path" \
+expect_hit "ファイル名の混入を件数で報告して非 0 にする（名前は出さない）" "件（名前は表示しません" \
   run_check --scan-dir "$TMP/name"
+
+# --- 4b. 秘密を含む行・ファイル名を検出しても、診断へ秘密を再表示しない（F05） ----
+# 合成値は実行時に組み立て、本ファイルに検出対象のリテラルを置かない。
+canary_token="$(printf '%s%s' 'ghp_' 'SYNTHETICcanaryF05')"
+mkdir -p "$TMP/secret-content" "$TMP/secret-name"
+printf '%s\n' 'safe line' "token = ${canary_token} # SYNTHETIC-LINE-F05" > "$TMP/secret-content/conf.md"
+printf '%s\n' 'safe' > "$TMP/secret-name/${canary_token}.md"
+for secret_case in secret-content secret-name; do
+  set +e
+  secret_out="$(run_check --scan-dir "$TMP/$secret_case" 2>&1)"
+  secret_rc=$?
+  set -e
+  case "$secret_case" in secret-content) want="conf.md:2" ;; *) want="1 件（名前は表示しません" ;; esac
+  if [[ "$secret_rc" -ne 0 && "$secret_out" == *"$want"* && "$secret_out" != *SYNTHETIC* ]]; then
+    ok "秘密の検出（${secret_case}）は非 0 で位置・件数だけを出し、一致行やファイル名を再表示しない"
+  else
+    bad "秘密の検出（${secret_case}）の診断（rc=${secret_rc}、SYNTHETIC の有無: $([[ "$secret_out" == *SYNTHETIC* ]] && echo あり || echo なし)）"
+  fi
+done
+# 内容の一致位置のファイル名自体が秘密に一致する場合は、位置も伏せる。
+printf '%s\n' "${canary_token}" > "$TMP/secret-name/${canary_token}.md"
+set +e
+secret_out="$(run_check --scan-dir "$TMP/secret-name" 2>&1)"; secret_rc=$?
+set -e
+if [[ "$secret_rc" -ne 0 && "$secret_out" == *"位置を表示しません"* && "$secret_out" != *SYNTHETIC* ]]; then ok "ファイル名も一致する内容違反は位置を伏せる"; else bad "ファイル名も一致する内容違反の位置が漏れる（rc=${secret_rc}）"; fi
+# 本文に「:数字:」を含む一致行でも、位置は最初の「path:line」だけを取り、本文を位置に含めない
+mkdir -p "$TMP/secret-colon"
+printf '%s\n' 'safe' "SYNTHETIC-PASSWORD-F05 at 10:30:00 note:99: ${canary_token}" > "$TMP/secret-colon/log.md"
+set +e
+secret_out="$(run_check --scan-dir "$TMP/secret-colon" 2>&1)"; secret_rc=$?
+set -e
+if [[ "$secret_rc" -ne 0 && "$secret_out" == *"log.md:2"* && "$secret_out" != *SYNTHETIC* && "$secret_out" != *"10:30"* ]]; then ok "本文の「:数字:」を位置に含めない"; else bad "本文の「:数字:」で一致行の本文が位置へ混入する（rc=${secret_rc}）"; fi
 
 # --- 5. 配列を更新すると新しいパターンが使われる（二重定義しないことの実測） --
 sentinel="ff476sentinelforbidden"

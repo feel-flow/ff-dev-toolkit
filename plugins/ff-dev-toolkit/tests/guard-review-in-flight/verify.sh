@@ -2008,6 +2008,47 @@ case "$REASON" in
   *'判定できません'*) ok "(k) 判定不能の理由文がその旨を出す" ;;
   *) bad "(k) 判定不能の理由文が無い: [$REASON]" ;;
 esac
+# (k-F19) 継承した変数の値を、ファイル名の中の `$NAME` として読まない。値（合成の canary）は作業ツリー内を
+# 指すので、展開すれば「ツリー内へ書き込みます: <値>」として理由文へ写る形。どの経路も拒否は保ち、値を出さない
+F19_ENV="SYNTHETIC_SECRET_CANARY_F19=${REPO}/SYNTHETIC-F19-VALUE TMPDIR=${TEST_OUT}"
+printf 'require("fs").writeFileSync("$SYNTHETIC_SECRET_CANARY_F19/x", "y")\n' > "$REPO/f19-write.js"
+f19_case() { # <command> <label> <deny|silent>
+  run_hook "$(bash_json_at "$1" "$REPO")" "$F19_ENV"
+  if [ "$3" = deny ]; then assert_deny "(k-F19) $2"; else assert_silent "(k-F19) $2"; fi
+  case "${REASON}${MESSAGE}${OUT}" in
+    *SYNTHETIC-F19-VALUE*) bad "(k-F19) $2: 継承変数の値が出力へ写った" ;;
+    *) ok "(k-F19) $2: 継承変数の値を出さない" ;;
+  esac
+}
+f19_case "echo x > '\$SYNTHETIC_SECRET_CANARY_F19/x'" "単一引用符の operand は文字どおりのファイル名" deny
+f19_case 'echo x > "$SYNTHETIC_SECRET_CANARY_F19/x"' "許可外の継承変数は展開せず判定不能" deny
+f19_case 'echo x > \$SYNTHETIC_SECRET_CANARY_F19/x' "エスケープした \$ は展開しない" deny
+f19_case "X='\$SYNTHETIC_SECRET_CANARY_F19'; echo y > \"\$X/x\"" "単一引用符の代入は値を文字どおりに記録する" deny
+f19_case "python3 -c 'open(\"\$SYNTHETIC_SECRET_CANARY_F19/x\", \"w\")'" "Python の文字列リテラルは文字どおり" deny
+f19_case 'node f19-write.js' "JavaScript ファイルの書き込み先リテラルは文字どおり" deny
+f19_case 'node --check f19-write.js' "node --check は実行しない構文検査" silent
+F19_ENV="SYNTHETIC_SECRET_CANARY_F19=${REPO}/SYNTHETIC-F19-VALUE TMPDIR=${TEST_OUT}"
+f19_case 'echo x > "$TMPDIR/ff-f19-outside.txt"' "許可したパス系の変数（TMPDIR）は従来どおり展開する" silent
+# 文字どおりに扱う経路が退行して許可変数（ツリー外を指す TMPDIR）を展開すると、ツリー外の書き込みに見えて通る形
+f19_case "echo x > '\$TMPDIR/x'" "単一引用符の \$TMPDIR は文字どおり（ツリー内として拒否）" deny
+f19_case "X='\$TMPDIR'; echo y > \"\$X/x\"" "単一引用符の代入の \$TMPDIR は文字どおり" deny
+f19_case "python3 -c 'open(\"\$TMPDIR/x\", \"w\")'" "単一引用符の -c 本文の \$TMPDIR は文字どおり" deny
+f19_case "python3 -c \"open('\$TMPDIR/ff-f19-x', 'w')\"" "二重引用符の -c 本文はシェルが展開するので展開して判定する" silent
+f19_case "$(printf 'python3 - <<%sPY%s\nopen("$TMPDIR/x", "w")\nPY\n' "'" "'")" "区切りを引用した heredoc の本文は文字どおり" deny
+f19_case "$(printf 'python3 - <<PY\nopen("$TMPDIR/ff-f19-y", "w")\nPY\n')" "引用しない heredoc の本文はシェルが展開するので展開して判定する" silent
+# 前置代入つきのコマンドや混在の語を、単一引用符の代入・語と取り違えない（区間の判定を飛ばさない）
+f19_case "X='1' echo hi > README.md" "単一引用符の前置代入があっても書き込みを判定する" deny
+f19_case "python3 <<< 'open(\"\$TMPDIR/x\", \"w\")'" "単一引用符の here-string 本文は文字どおり" deny
+f19_case "awk 'BEGIN { print \"x\" > \"\$TMPDIR/x\" }'" "単一引用符の awk プログラムは文字どおり" deny
+f19_case "$(printf "LANG='C' python3 - <<%sPY%s\nopen(\"README.md\", \"w\")\nPY\n" "'" "'")" "前置代入つきの heredoc プログラムも判定する" deny
+f19_case "echo x > '/'\"\${PWD:-/tmp}\"'/README.md'" "単一引用符で始まり終わる混在の語は文字どおり扱いにしない" deny
+run_hook "$(jq -n --arg d "$REPO" '{tool_name: "Write", tool_input: {file_path: "$TMPDIR/new.txt", content: "x"}, cwd: $d, hook_event_name: "PreToolUse"}')" "$F19_ENV"
+assert_deny "(k-F19) Write の file_path の \$TMPDIR は文字どおり（ツリー内として拒否）"
+# Edit / Write のファイルパスも文字どおり（シェルの展開をしない）
+run_hook "$(jq -n --arg d "$REPO" '{tool_name: "Write", tool_input: {file_path: "$SYNTHETIC_SECRET_CANARY_F19/new.txt", content: "x"}, cwd: $d, hook_event_name: "PreToolUse"}')" "$F19_ENV"
+assert_deny "(k-F19) Write の file_path の \$ は文字どおり（ツリー内として拒否）"
+case "${REASON}${OUT}" in *SYNTHETIC-F19-VALUE*) bad "(k-F19) Write の拒否理由へ継承変数の値が写った" ;; *) ok "(k-F19) Write の拒否理由へ継承変数の値を出さない" ;; esac
+rm -f "$REPO/f19-write.js"
 k_deny 'python3 "$SCRIPT"' "script パスが変数なら判定不能"
 k_deny 'tee $(mktemp -p .)' "コマンド置換の書き込み先は判定不能"
 k_deny "python3 missing.py" "読めない script は判定不能"

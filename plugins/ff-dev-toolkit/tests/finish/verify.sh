@@ -52,6 +52,7 @@
 # 変異検出: shebang 行の CR で止まる exit 2 を exit 0 にすると (S1) が赤、成功時の exit 0 を exit 2 にすると LF の写しを止めて (S2) が赤になる（2026-10-19 実測）。
 # 空振り検出: finish.sh と knowledge-commit.sh の assert_bundled_shebang_lf で、shebang 行の CR の exit 2 を return 0 にすると (S7 / S8) が赤になる（2026-10-21 実測。S7 は rc 2 のまま exec まで進み、stderr に /usr/bin/env の ‘bash\r’（バックスラッシュと r）と「version claim を再生成できません」が出る。S8 は source して syntax error を出し rc 0 になる）。
 # 空振り検出: kc_restore_default の開始 branch ガードを外すと H14（別 worktree 保持）と H14b/chore の成功・push 失敗・upstream 不一致・PR 作成失敗の4件が赤、復帰処理を return 0 で無効化すると H8 と H14b/default の3失敗経路および H14c が赤になる。H14b の行列を空にすると7件の実行数照合が赤になる（2026-10-22 実測。各 fault の到達・PR 呼出数・remote ref も照合し、針が当たらない stub を緑にしない）。
+# 変異検出: knowledge-commit.sh の commit で混入コミットの自動の取り消しを外すと H12b が赤（混入したコミットが HEAD に残り、続く push が origin へ送る）（2026-10-29 実測。Issue `#2494`）。
 # 空振り検出: default 開始の branch -f を実 Git の develop.lock で失敗させる H14c は、kc_restore_default の失敗時 return 1 を return 0 へ倒すと赤になる（2026-10-22 実測。PR 作成後の rc 1・failed・残存 ref・復帰案内と local/remote の知見 SHA を照合する）。
 #
 # 実 gh・ネットワーク・課金は伴わない。一時ディレクトリを作れない環境は skip ではなく
@@ -1658,6 +1659,30 @@ if [ "$RC" -eq 2 ] && has_line "$OUT" "KNOWLEDGE_PR=scope-mismatch" && has_text 
 else
   bad "H16: PR 経由の送信範囲ガードが違う（rc=${RC}）: ${OUT} / ${ERR}"
 fi
+g -C "$KW" reset -q --hard origin/develop >/dev/null 2>&1
+# H12b: commit 前フックが記録外のファイルを足すと、commit はそのコミットを取り消して scope-mismatch で止まる。
+# 混入したコミットはブランチに残らないので、続けて push を呼んでも送るものが無く、origin は動かない（Issue `#2494`）
+H12B_HOOK="$(git -C "$KW" rev-parse --absolute-git-dir)/hooks/pre-commit"
+mkdir -p "${H12B_HOOK%/*}" && printf '%s\n' '#!/bin/sh' 'git add -- leak.txt' >"$H12B_HOOK" && chmod +x "$H12B_HOOK"
+printf 'secret\n' >"$KW/leak.txt"
+printf -- '- obs4b\n' >>"$KW/docs/08-knowledge/OBSERVATIONS.md"
+H12B_HEAD="$(git -C "$KW" rev-parse HEAD)"
+run_finish "$KW" knowledge-commit add --source obs --id OBS-4b --summary "要約4b" -- docs/08-knowledge/OBSERVATIONS.md
+run_finish "$KW" knowledge-commit commit
+H12B_COMMIT_RC="$RC" H12B_COMMIT_OUT="$OUT"
+ORIGIN_DEV_BEFORE="$(git -C "$TMP/origin.git" rev-parse develop)"
+run_finish "$KW" knowledge-commit push
+if [ "$H12B_COMMIT_RC" -eq 1 ] && has_line "$H12B_COMMIT_OUT" "KNOWLEDGE_COMMIT=scope-mismatch" \
+  && [ "$(git -C "$KW" rev-parse HEAD)" = "$H12B_HEAD" ] \
+  && [ "$RC" -ne 0 ] && ! has_line "$OUT" "KNOWLEDGE_PUSH=ok" \
+  && [ "$(git -C "$TMP/origin.git" rev-parse develop)" = "$ORIGIN_DEV_BEFORE" ] \
+  && [[ $'\n'"$(git -C "$TMP/origin.git" log --format= --name-only develop)"$'\n' != *$'\n'leak.txt$'\n'* ]]; then
+  ok "H12b: 記録外のパスが入ったコミットは commit が取り消すので、続けて push しても混入したコミットは origin へ届かない"
+else
+  bad "H12b: 混入したコミットが残るか push される（commit rc=${H12B_COMMIT_RC} push rc=${RC}）: ${H12B_COMMIT_OUT} / ${OUT} / ${ERR}"
+fi
+rm -f "$H12B_HOOK" "$KW/leak.txt"
+run_finish "$KW" knowledge-commit discard
 g -C "$KW" reset -q --hard origin/develop >/dev/null 2>&1
 # probe は gh を任意依存にする（無ければ API を呼ばず unknown。既定を試して拒否時に PR 経由へ）
 RC=0; OUT="$( cd "$KW" && PATH="$NOGH_BIN" bash "$FINISH" knowledge-commit probe 2>"$TMP/err" )" || RC=$?

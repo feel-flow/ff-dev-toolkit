@@ -90,6 +90,16 @@ export const DEFAULT_MAX_GROUPS = 40;
 export const DEFAULT_MAX_CANDIDATES = 60;
 /** レポートへ載せる「組にできなかった候補対」の既定上限（`--max-ungrouped-pairs` で変更可） */
 export const DEFAULT_MAX_UNGROUPED_PAIRS = 40;
+/**
+ * 統合候補の計算予算（`--max-search-work` で変更可）。対の照合と極大クリーク列挙で調べた
+ * キー・頂点・隣接の延べ数を数える。極大クリークの個数は頂点数に対して指数的に増えうるので、
+ * 表示の打ち切り（`--max-groups`）では計算を止められない。予算に達したら列挙を打ち切り、
+ * レポートに不完全と明示する。2026-10-29 の live PLAYBOOK（1197 件）は打ち切らずに約 238 万で
+ * 完走し、その約 21 倍に置いた。対の照合（多項式）も同じ予算を消費するので、エントリ数の増加でも予算へ近づく。
+ */
+export const DEFAULT_MAX_SEARCH_WORK = 50_000_000;
+/** 列挙で保持する組（極大クリーク）の上限。表示件数とは別に、保持そのものを止める */
+export const DEFAULT_MAX_RETAINED_GROUPS = 10_000;
 
 /** エントリ見出し行（ID 捕捉）。源は check-category-size の entryHeadingSource */
 const ENTRY_HEADING_LINE = new RegExp(entryHeadingSource("capture-id") + "(.*)$", "mu");
@@ -170,8 +180,19 @@ export type UngroupedPair = Readonly<{
   readonly crossCategory: boolean;
 }>;
 
+/**
+ * 計算予算（search-work）または保持する組の上限（retained-groups）に達して列挙を打ち切ったときの理由。
+ * null は全件を列挙できたこと。打ち切っても終了コードは 0 のまま（ゲートではない）で、不完全はレポートで示す。
+ */
+export type MergeCandidateTruncation = Readonly<{
+  readonly reason: "search-work" | "retained-groups";
+  readonly limit: number;
+}> | null;
+
 export type MergeCandidateAnalysis = Readonly<{
   readonly groups: readonly MergeCandidateGroup[];
+  /** 打ち切った場合、組・対・件数はいずれも途中までの値（不完全） */
+  readonly truncated: MergeCandidateTruncation;
   readonly ungroupedPairs: readonly UngroupedPair[];
   /** 閾値を満たした候補対の総数（組へ入ったものも入らなかったものも含む） */
   readonly qualifyingPairs: number;
@@ -213,6 +234,7 @@ export type AbstractionReport = Readonly<{
   readonly qualifyingPairs: number;
   readonly pairedEntries: number;
   readonly ungroupedEntries: number;
+  readonly truncated: MergeCandidateTruncation;
 }>;
 
 /** エントリセグメントを「見出し直後のメタ行ブロック」と「本文」へ切る。 */
@@ -466,6 +488,8 @@ export function parseAbstractionEntries(
 export type MergeCandidateOptions = Readonly<{
   readonly minSharedKeys?: number | undefined;
   readonly minJaccard?: number | undefined;
+  readonly maxSearchWork?: number | undefined;
+  readonly maxRetainedGroups?: number | undefined;
 }>;
 
 type Pairing = Readonly<{
@@ -509,6 +533,18 @@ export function analyzeMergeCandidates(
 ): MergeCandidateAnalysis {
   const minShared = options.minSharedKeys ?? MIN_SHARED_KEYS;
   const minJaccard = options.minJaccard ?? MIN_JACCARD;
+  const maxSearchWork = options.maxSearchWork ?? DEFAULT_MAX_SEARCH_WORK;
+  const maxRetainedGroups = options.maxRetainedGroups ?? DEFAULT_MAX_RETAINED_GROUPS;
+  let truncated: MergeCandidateTruncation = null;
+  let work = 0;
+  // 予算は対の照合とクリーク列挙で共有する。超えたら以後の展開をすべて止める。
+  const spend = (units: number): boolean => {
+    work += units;
+    if (truncated === null && work > maxSearchWork) {
+      truncated = { reason: "search-work", limit: maxSearchWork };
+    }
+    return truncated === null;
+  };
   // 組生成の母集団は compact のみ（legacy は R3-b へ回す。ADR-047 決定 4）。
   const indices = entries
     .map((entry, index) => ({ entry, index }))
@@ -519,7 +555,7 @@ export function analyzeMergeCandidates(
   );
   const pairings: Pairing[] = [];
 
-  for (let i = 0; i < indices.length; i += 1) {
+  for (let i = 0; i < indices.length && truncated === null; i += 1) {
     const indexA = indices[i];
     const setA = keySets.get(indexA) as Set<string>;
     if (setA.size === 0) {
@@ -528,6 +564,9 @@ export function analyzeMergeCandidates(
     for (let j = i + 1; j < indices.length; j += 1) {
       const indexB = indices[j];
       const setB = keySets.get(indexB) as Set<string>;
+      if (!spend(1 + setA.size)) {
+        break;
+      }
       if (setB.size === 0) {
         continue;
       }
@@ -535,7 +574,8 @@ export function analyzeMergeCandidates(
       if (shared.length < minShared) {
         continue;
       }
-      const jaccard = shared.length / new Set([...setA, ...setB]).size;
+      // 和集合は作らず件数で求める（大きな相手の集合を予算外で走査しない）。
+      const jaccard = shared.length / (setA.size + setB.size - shared.length);
       if (jaccard < minJaccard) {
         continue;
       }
@@ -563,12 +603,20 @@ export function analyzeMergeCandidates(
   }
 
   // Bron–Kerbosch（ピボットあり）で極大クリークを列挙する。頂点は候補対を持つ
-  // エントリだけ（live 実測で 3 桁）なので、この規模では素朴な実装で十分速い。
+  // エントリだけ（live 実測で 3 桁）なので通常は素朴な実装で十分速いが、極大クリークの
+  // 個数は入力次第で指数的に増えるため、計算と保持の両方を予算で止める。
   const cliques: number[][] = [];
   const neighborsOf = (vertex: number): Set<number> => adjacency.get(vertex) ?? new Set<number>();
   const expand = (clique: number[], candidates: Set<number>, excluded: Set<number>): void => {
+    if (!spend(1 + candidates.size + excluded.size)) {
+      return;
+    }
     if (candidates.size === 0 && excluded.size === 0) {
       if (clique.length >= 2) {
+        if (cliques.length >= maxRetainedGroups) {
+          truncated = { reason: "retained-groups", limit: maxRetainedGroups };
+          return;
+        }
         cliques.push([...clique].sort((left, right) => left - right));
       }
       return;
@@ -577,6 +625,9 @@ export function analyzeMergeCandidates(
     let pivot = -1;
     let pivotDegree = -1;
     for (const vertex of [...candidates, ...excluded].sort((left, right) => left - right)) {
+      if (!spend(neighborsOf(vertex).size)) {
+        return;
+      }
       const degree = [...neighborsOf(vertex)].filter((other) => candidates.has(other)).length;
       if (degree > pivotDegree) {
         pivot = vertex;
@@ -588,6 +639,9 @@ export function analyzeMergeCandidates(
       .filter((vertex) => !pivotNeighbors.has(vertex))
       .sort((left, right) => left - right);
     for (const vertex of branchOn) {
+      if (truncated !== null || !spend(candidates.size + excluded.size)) {
+        return;
+      }
       const neighbors = neighborsOf(vertex);
       expand(
         [...clique, vertex],
@@ -598,7 +652,9 @@ export function analyzeMergeCandidates(
       excluded.add(vertex);
     }
   };
-  expand([], new Set([...adjacency.keys()].sort((left, right) => left - right)), new Set());
+  if (truncated === null) {
+    expand([], new Set([...adjacency.keys()].sort((left, right) => left - right)), new Set());
+  }
 
   const toMember = (index: number): MergeCandidateMember => ({
     id: entries[index].id,
@@ -647,7 +703,8 @@ export function analyzeMergeCandidates(
       memberKey(left).localeCompare(memberKey(right)),
   );
 
-  // 極大クリークはすべての候補対を覆うため、ここは構造的に 0 件になる。0 件であること
+  // 打ち切りが無ければ（truncated === null）極大クリークはすべての候補対を覆うため、ここは構造的に
+  // 0 件になる。打ち切った回は覆われなかった対もここへ入るので、0 以外でも退行とは限らない。0 件であること
   // 自体が「検出した対を 1 つも捨てていない」ことの監査になるので、集計は残して出す
   // （実装が退行して対を落とすようになったら、この数が 0 でなくなって表に出る）。
   const coveredPairs = new Set<string>();
@@ -679,6 +736,7 @@ export function analyzeMergeCandidates(
 
   return {
     groups,
+    truncated,
     ungroupedPairs,
     qualifyingPairs: pairings.length,
     pairedEntries: pairedIndices.size,
@@ -743,6 +801,7 @@ export function buildAbstractionReport(
     qualifyingPairs: analysis.qualifyingPairs,
     pairedEntries: analysis.pairedEntries,
     ungroupedEntries: analysis.ungroupedEntries,
+    truncated: analysis.truncated,
   };
 }
 
@@ -782,6 +841,16 @@ export function formatAbstractionReport(
     `候補対: ${String(report.qualifyingPairs)} 対 / ${String(report.pairedEntries)} 件（うち組にできなかった対 ${String(report.ungroupedPairs.length)} 対・どの組にも入らなかったエントリ ${String(report.ungroupedEntries)} 件）`,
   );
   lines.push("");
+  if (report.truncated !== null) {
+    const budget =
+      report.truncated.reason === "search-work"
+        ? `計算予算 ${String(report.truncated.limit)}（\`--max-search-work\` で変更可）`
+        : `保持する組の上限 ${String(report.truncated.limit)}（\`--max-search-work\` では変わりません。/ace-refine で整理して組を減らしてください）`;
+    lines.push(
+      `> **不完全**: ${budget}に達したため統合候補の列挙を打ち切りました。組・候補対・件数は途中までの値で、「組にできなかった候補対」も打ち切りの分を含みます。`,
+    );
+    lines.push("");
+  }
   lines.push(
     "> 候補は判定結果ではありません。最終判定は `/ace-curate` の新規性バー（抽象度の下限）と",
   );
@@ -898,12 +967,19 @@ export function formatAbstractionReport(
 }
 
 export type ParsedArgs =
-  | Readonly<{ readonly ok: true; readonly playbookPath: string; readonly json: boolean } & FormatOptions>
+  | Readonly<
+      {
+        readonly ok: true;
+        readonly playbookPath: string;
+        readonly json: boolean;
+        readonly maxSearchWork: number | undefined;
+      } & FormatOptions
+    >
   | Readonly<{ readonly ok: false; readonly message: string }>;
 
 /**
  * `<playbook>` に加えて `--json` / `--max-groups=N` / `--max-candidates=N` /
- * `--max-ungrouped-pairs=N` を受ける。
+ * `--max-ungrouped-pairs=N` / `--max-search-work=N` を受ける。表示の上限と計算予算は別の口。
  */
 export function parseArgs(argv: readonly string[]): ParsedArgs {
   let playbookPath: string | undefined;
@@ -911,6 +987,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   let maxGroups: number | undefined;
   let maxCandidates: number | undefined;
   let maxUngroupedPairs: number | undefined;
+  let maxSearchWork: number | undefined;
 
   const readCount = (raw: string): number | undefined => {
     if (!/^[0-9]+$/u.test(raw)) {
@@ -952,6 +1029,14 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       maxUngroupedPairs = value;
       continue;
     }
+    if (arg.startsWith("--max-search-work=")) {
+      const value = readCount(arg.slice("--max-search-work=".length));
+      if (value === undefined) {
+        return { ok: false, message: `--max-search-work は 1 以上の整数で指定してください: ${arg}` };
+      }
+      maxSearchWork = value;
+      continue;
+    }
     if (arg.startsWith("-")) {
       return { ok: false, message: `不明なオプションです: ${arg}` };
     }
@@ -964,11 +1049,11 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   if (playbookPath === undefined) {
     return { ok: false, message: "PLAYBOOK のパスが指定されていません" };
   }
-  return { ok: true, playbookPath, json, maxGroups, maxCandidates, maxUngroupedPairs };
+  return { ok: true, playbookPath, json, maxGroups, maxCandidates, maxUngroupedPairs, maxSearchWork };
 }
 
 const USAGE =
-  "Usage: npx --yes tsx docs-template/scripts/ace/ace-abstraction-report.ts <path/to/PLAYBOOK.md> [--json] [--max-groups=N] [--max-candidates=N] [--max-ungrouped-pairs=N]";
+  "Usage: npx --yes tsx docs-template/scripts/ace/ace-abstraction-report.ts <path/to/PLAYBOOK.md> [--json] [--max-groups=N] [--max-candidates=N] [--max-ungrouped-pairs=N] [--max-search-work=N]";
 
 /**
  * テスト用の注入ポイント。既定は実ファイル読み込み（ace-reuse-report の MainDeps と同じ作法）。
@@ -1020,7 +1105,7 @@ export function main(
       );
       return EXIT_USAGE_ERROR;
     }
-    const analysis = analyzeMergeCandidates(entries);
+    const analysis = analyzeMergeCandidates(entries, { maxSearchWork: parsed.maxSearchWork });
     const report = buildAbstractionReport(entries, analysis);
     if (parsed.json) {
       console.log(JSON.stringify(report, null, 2));

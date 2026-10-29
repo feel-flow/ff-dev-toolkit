@@ -26,12 +26,11 @@ case "$CANDIDATE" in *[!$' \t\r\n']*) ;; *) echo 'usage: --candidate <nonempty t
 MODE="${FF_JEV_MODE:-off}"
 case "$MODE" in on|off) ;; *) echo 'triage: FF_JEV_MODE must be on or off' >&2; exit 64 ;; esac
 command -v jq >/dev/null 2>&1 || { echo 'triage: jq is required' >&2; exit 69; }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/jev-triage.XXXXXX")" || exit 11
-trap 'rm -rf "$WORK"' EXIT
 READER="$SCRIPT_DIR/../lib/knowledge-read-boundary.sh"
 [ -f "$READER" ] && [ ! -L "$READER" ] || exit 2
 . "$READER"
-ff_knowledge_private_fresh_directory "$WORK" || exit 2
+WORK="$(ff_knowledge_job_directory jev-triage)" || exit 2
+trap 'rm -rf "$WORK"' EXIT
 REGISTRY="$SCRIPT_DIR/triage-registry.jq"
 [ -r "$REGISTRY" ] || { echo 'triage: registry helper missing' >&2; exit 2; }
 ROOT="$(ff_knowledge_project_context)" || exit 2

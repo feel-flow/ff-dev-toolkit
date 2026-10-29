@@ -5,7 +5,7 @@
 ff_git_literal() {
   local repo="$1"; shift
   local -a options=() paths=() specs=() selected=() directories=()
-  local literal icase p absolute parent prefix relative listing actual allowed count i bad
+  local literal icase p absolute parent prefix relative listing actual allowed count i bad top=""
   while [[ $# -gt 0 && "$1" != -- ]]; do options+=("$1"); shift; done
   if [[ $# -eq 0 || ${#options[@]} -eq 0 ]]; then
     echo '✗ literal Git 操作のコマンドまたは path 区切りがありません' >&2; return 2
@@ -17,7 +17,21 @@ ff_git_literal() {
   icase="$(git -C "$repo" -c "ff.knowledgeIcase=${GIT_ICASE_PATHSPECS:-0}" config --type=bool --get ff.knowledgeIcase)" || return 2
   for p in "${paths[@]}"; do
     [[ -n "$p" ]] || { echo '✗ literal Git 操作の対象パスが空です' >&2; return 2; }
-    if [[ "$literal" == true ]]; then specs+=("$p"); else specs+=(":(literal)$p"); fi
+    if [[ "$literal" == true ]]; then specs+=("$p"); continue; fi
+    # 絶対パスはリポジトリのルートからの相対へ直してから literal にする。Windows の Git Bash は
+    # `/c/…` で始まる引数だけを `C:/…` へ変換し、`:(literal)/c/…` はそのまま git.exe へ渡して
+    # 解決できない（Issue `#2449`）。ルートの外・親が無いパスは従来の形のまま git に判定させる。
+    # GIT_DIR / GIT_WORK_TREE を export した環境では作業ツリーの外でも同じ toplevel が返るので、
+    # 親が作業ツリーの内側であることも確かめる（外のパスをルート直下の同名ファイルへ付け替えない）
+    if ff_path_is_absolute "$p" && [[ -d "${p%/*}/" ]]; then
+      [[ -n "$top" ]] || top="$(git -C "$repo" rev-parse --show-toplevel)" || return 2
+      if [[ "$(git -C "${p%/*}/" rev-parse --is-inside-work-tree 2>/dev/null)" == true ]] \
+        && [[ "$(git -C "${p%/*}/" rev-parse --show-toplevel 2>/dev/null)" == "$top" ]] \
+        && prefix="$(git -C "${p%/*}/" rev-parse --show-prefix)"; then
+        specs+=(":(top,literal)${prefix}${p##*/}"); continue
+      fi
+    fi
+    specs+=(":(literal)$p")
   done
   if [[ "$icase" == true ]]; then
     # Git の global icase は個別 literal にも作用する。別の case 名まで

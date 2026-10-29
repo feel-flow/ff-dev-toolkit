@@ -36,6 +36,7 @@
 # 空振り検出: Windows表記の隔離対照11/0に対しhost変換バイパスは4/7、UNC先頭//消去は10/1で各rc1（2026-10-28実測。実WindowsのACL/UNC接続を検証したとは扱わない）。
 # 空振り検出: Git管理領域の物理同一性対照7/0、判定バイパスは大文字.GIT経由の通常/fresh/archive-onlyを含む2/5。初期化中のpeer marker+lane受理は1/0、受理分岐を戻すと0/1（2026-10-28隔離fixture実測）。
 # 空振り検出: umask002/producerの隔離対照10/0。private anchorで祖先検査を打切る変異9/1、旧diff pipeline8/2、status/quarantine mkdirの077撤去7/3、archive/state mkdirの077撤去8/2。旧strict祖先判定と空のcase関数も各rc1（2026-10-28実測）。
+# 空振り検出: Issue `#2514` のlegacy-root対照15/0（suite 155/0）。設定の出所判定を外すと既定パスを名指すproject設定、復元時・退避後のclaim解除を外すと復元と既定root回復の各1件が赤（2026-10-30）。BSD statを%Lpへ戻すとsticky stat/実/tmpの2件が赤、暗黙既定の退避呼出を外すと既定root回復とmarker付きroot拒否の2件が赤、組み込み既定との一致判定を外すとproject設定output_dir、名前の許可表を外すと許可外の名前、lock名の判定・失敗時の復元・追跡ファイルの判定を外すと各対照がそれぞれ1件赤（各rc1、2026-10-30 macOS実測）。
 
 set -euo pipefail
 
@@ -1183,6 +1184,15 @@ case "${OSTYPE:-}" in
   darwin*) [[ $((PASS + FAIL - NATIVE_ALIAS_BEFORE)) -ge 2 ]] || { bad 'native alias assertion collection empty'; exit 1; } ;;
   *) [[ $((PASS + FAIL - NATIVE_ALIAS_BEFORE)) -ge 1 ]] || { bad 'native alias host decision missing'; exit 1; } ;;
 esac
+
+LEGACY_ROOT_CASES="$SCRIPT_DIR/legacy-root-cases.sh"
+[[ ! -L "$LEGACY_ROOT_CASES" && -s "$LEGACY_ROOT_CASES" && -r "$LEGACY_ROOT_CASES" ]] || { bad 'legacy root cases missing/unreadable/empty'; exit 1; }
+# shellcheck source=legacy-root-cases.sh
+. "$LEGACY_ROOT_CASES"
+[[ "$(type -t run_legacy_root_cases)" == function ]] || { bad 'legacy root function missing'; exit 1; }
+LEGACY_ROOT_BEFORE=$((PASS + FAIL))
+run_legacy_root_cases
+[[ $((PASS + FAIL - LEGACY_ROOT_BEFORE)) -ge 15 ]] || { bad 'legacy root assertion collection empty'; exit 1; }
 
 echo "== 結果 =="
 echo "PASS: $PASS"

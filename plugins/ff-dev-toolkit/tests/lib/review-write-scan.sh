@@ -175,10 +175,14 @@ ws_trim() { # <s>
 }
 
 # ---- 変数 -------------------------------------------------------------------------
-# コマンド内の単純代入（`O=/path` / `D="$(mktemp -d)"`）と hook 環境の変数だけを展開する。
+# コマンド内の単純代入（`O=/path` / `D="$(mktemp -d)"`）と、hook 環境のうち秘密を持たない
+# パス系の変数（WS_ENV_PATH_VARS）だけを展開する。それ以外の継承変数は値を読まずに判定不能へ倒す —
+# 任意の変数を読むと、ファイル名に書かれた `$TOKEN` の値が拒否理由（WRITE_REASON）へ写る。
+# `\$NAME` はシェルでもリテラルなので展開しない。
 # それ以外の `$…`（コマンド置換・`${X:-y}` 等）は判定不能。`$(mktemp …)` の代入は一時領域
 # （ツリー外）として扱う — 走行中の規定が勧める「`mktemp -d` へ下書き」を止めないため。
 # ただしテンプレートにディレクトリが付く形（`mktemp -d ./x.XXXXXX`）はその配置先で判定する。
+WS_ENV_PATH_VARS=" HOME TMPDIR TMP TEMP USER LOGNAME CLAUDE_PROJECT_DIR RUNNER_TEMP XDG_RUNTIME_DIR XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME "
 expand_vars() { # <文字列> → 展開後を stdout。解決できなければ 1
   local s="$1" out="" name val rest
   while :; do
@@ -188,6 +192,9 @@ expand_vars() { # <文字列> → 展開後を stdout。解決できなければ
     esac
     out="${out}${s%%\$*}"
     s="${s#*\$}"
+    case "$out" in
+      *\\) out="${out%\\}\$"; continue ;;
+    esac
     case "$s" in
       '('* | '') return 1 ;;
       '{'*)
@@ -212,6 +219,10 @@ expand_vars() { # <文字列> → 展開後を stdout。解決できなければ
       val="$WRITE_BASE"
     fi
     if [ -z "$val" ]; then
+      case "$WS_ENV_PATH_VARS" in
+        *" ${name} "*) : ;;
+        *) return 1 ;;
+      esac
       if printenv "$name" >/dev/null 2>&1; then val="$(printenv "$name")"; else return 1; fi
     fi
     out="${out}${val}"
@@ -230,8 +241,16 @@ record_assignment() { # <区間> → 単純代入なら VAR_TABLE へ積む（�
   name="${seg%%=*}"
   case "$name" in *[!A-Za-z0-9_]*) return 1 ;; esac
   value="${seg#*=}"
+  # 単一引用符 1 語だけの値（`X='v'`）は展開されないので、値をそのまま記録する（後の `$NAME` 参照でも
+  # 再展開しない）。`X='v' cmd … 'w'` のような前置代入つきのコマンドや混在の語は対象外 — ここで 0 を返すと
+  # 区間の書き込み判定（scan_segment）が丸ごと飛ぶ。
+  if ws_single_quoted_word "$value"; then
+    VAR_TABLE="${VAR_TABLE}
+${name}=$(unquote1 "$value")"
+    return 0
+  fi
   case "$value" in
-    \"*\" | \'*\') value="$(unquote1 "$value")" ;;
+    \"*\") value="$(unquote1 "$value")" ;;
   esac
   case "$value" in
     '$(mktemp'*')')
@@ -260,20 +279,39 @@ ${name}=${value}"
 }
 
 # ---- パス --------------------------------------------------------------------------
+# 語全体が 1 つの単一引用符だけでできているか（`'a$b'`。`'a'"$b"'c'` のような混在は含めない）
+ws_single_quoted_word() { # <token>
+  local inner
+  case "$1" in \'*\') : ;; *) return 1 ;; esac
+  inner="${1#\'}"
+  inner="${inner%\'}"
+  case "$inner" in *\'*) return 1 ;; esac
+  return 0
+}
+# WS_LITERAL_PATHS=1 の間はパスを文字どおりに扱う（Edit / Write のファイルパスや、JavaScript /
+# Python / awk の文字列リテラル。`$` も `~` もシェルの展開ではない）。単一引用符の語も同じ。
+WS_LITERAL_PATHS=0
 resolve_target() { # <path token> → RESOLVED（物理パス）。判定不能は 1 + RESOLVE_WHY
-  local t d rest leaf pd ws_drive
+  local t d rest leaf pd ws_drive literal="${WS_LITERAL_PATHS:-0}"
   t="$(unquote1 "$1")"
   RESOLVED=""
   RESOLVE_WHY=""
-  case "$t" in
-    *'$('* | *'`'*) RESOLVE_WHY="コマンド置換"; return 1 ;;
-    *'$'*) t="$(expand_vars "$t")" || { RESOLVE_WHY="変数展開"; return 1; } ;;
-  esac
+  ws_single_quoted_word "$1" && literal=1
+  if [ "$literal" -ne 1 ]; then
+    case "$t" in
+      *'$('* | *'`'*) RESOLVE_WHY="コマンド置換"; return 1 ;;
+      *'$'*) t="$(expand_vars "$t")" || { RESOLVE_WHY="変数展開"; return 1; } ;;
+    esac
+  fi
   case "$t" in
     '') RESOLVE_WHY="空のパス"; return 1 ;;
-    '~' | '~/'*) t="${HOME}${t#\~}" ;;
-    '~'*) RESOLVE_WHY="~user 形式"; return 1 ;;
   esac
+  if [ "$literal" -ne 1 ]; then
+    case "$t" in
+      '~' | '~/'*) t="${HOME}${t#\~}" ;;
+      '~'*) RESOLVE_WHY="~user 形式"; return 1 ;;
+    esac
+  fi
   # Windows のドライブ付き絶対パス（`C:\x` / `C:/x`。Git Bash / Cygwin のときだけ扱う。Issue `#2018`）。
   # Claude Code は Windows でツール入力をこの形で渡し、Git Bash の cd もそのまま受け付ける。区切りを
   # / へ寄せて絶対パスとして扱い、下の祖先探索はドライブの根（`C:/`）で止める。物理化は従来どおり
@@ -683,7 +721,14 @@ ws_judge_program() {
         rest="$after"
         continue
       fi
-      judge_target "$lit" "${hb} プログラムの ${marker}（${src}）" && return 0
+      # 本文がシェルの展開を受けずにインタプリタへ届く場合（ファイル・単一引用符の -c / -e・区切りを
+      # 引用した heredoc）は、言語の文字列リテラルの `$` を文字どおりのファイル名として判定する。
+      # 二重引用符の -c "…" や引用しない heredoc はシェルが先に `$VAR` を展開するので、従来どおり展開する
+      WS_LITERAL_PATHS="${WS_PROG_LITERAL:-0}"
+      judge_target "$lit" "${hb} プログラムの ${marker}（${src}）"
+      rc=$?
+      WS_LITERAL_PATHS=0
+      [ "$rc" -eq 0 ] && return 0
       rest="$after"
     done
   done <<EOF
@@ -693,7 +738,7 @@ EOF
 }
 # インタプリタ区間: 本文を取り、判定する。<basename> <生の区間> <深さ> <args...>
 judge_interpreter() {
-  local hb="$1" raw="$2" depth="$3" a prog="" src="" valued script lang has_heredoc=0 stdin_file="" skip=0 nonopt=0 srcpath=""
+  local hb="$1" raw="$2" depth="$3" a prog="" src="" valued script lang has_heredoc=0 stdin_file="" skip=0 nonopt=0 srcpath="" prog_literal=0 heredoc_unquoted=0 judged
   shift 3
   lang="$hb"
   case "$hb" in
@@ -707,10 +752,10 @@ judge_interpreter() {
     shift
     if [ "$skip" -eq 1 ]; then skip=0; continue; fi
     case "$a" in
-      '<<<') [ "$1" != "--ff-end--" ] && { prog="$(unquote1 "$1")"; src="here-string"; skip=1; } ;;
-      '<<<'*) prog="$(unquote1 "${a#<<<}")"; src="here-string" ;;
-      '<<' | '<<-') has_heredoc=1; skip=1 ;;
-      '<<'*) has_heredoc=1 ;;
+      '<<<') [ "$1" != "--ff-end--" ] && { prog="$(unquote1 "$1")"; src="here-string"; skip=1; ws_single_quoted_word "$1" && prog_literal=1; } ;;
+      '<<<'*) prog="$(unquote1 "${a#<<<}")"; src="here-string"; ws_single_quoted_word "${a#<<<}" && prog_literal=1 ;;
+      '<<' | '<<-') has_heredoc=1; skip=1; ws_quoted_delim "$1" || heredoc_unquoted=1 ;;
+      '<<'*) has_heredoc=1; ws_quoted_delim "${a#<<}" || heredoc_unquoted=1 ;;
       '<') [ "$1" != "--ff-end--" ] && { stdin_file="$1"; skip=1; } ;;
       '<'*) stdin_file="${a#<}" ;;
       *) set -- "$@" "$a" ;;
@@ -727,7 +772,7 @@ judge_interpreter() {
           prog="$(ws_trim "$prog")"
           case "$prog" in
             \"*) prog="${prog#\"}"; prog="${prog%\"*}" ;;
-            \'*) prog="${prog#\'}"; prog="${prog%\'*}" ;;
+            \'*) prog="${prog#\'}"; prog="${prog%\'*}"; prog_literal=1 ;;
             *) prog="${prog%% *}" ;;
           esac
           src="inline"
@@ -754,7 +799,7 @@ judge_interpreter() {
     done
     case "$prog" in
       \"*) prog="${prog#\"}"; prog="${prog%%\"*}" ;;
-      \'*) prog="${prog#\'}"; prog="${prog%%\'*}" ;;
+      \'*) prog="${prog#\'}"; prog="${prog%%\'*}"; prog_literal=1 ;;
       *) prog="${prog%% *}" ;;
     esac
     [ -n "$prog" ] || return 1
@@ -784,8 +829,8 @@ judge_interpreter() {
       case "$lang:$a" in
         python*:-m) undeterminable "モジュール実行（${hb} -m）は本文を取れない"; return $? ;;
         *:--version | *:-V | *:--help | *:-h | *:-version) return 1 ;;
-        # `bash -n <file>` は構文検査だけで何も実行しない（本文を読まない）
-        sh:-n) return 1 ;;
+        # `bash -n <file>` / `node --check <file>` は構文検査だけで何も実行しない（本文を読まない）
+        sh:-n | node:--check | node:-c) return 1 ;;
       esac
     done
     collect_nonopts "$valued" "$@"
@@ -818,11 +863,24 @@ judge_interpreter() {
   case "$prog" in
     '$'* | '`'*) undeterminable "${hb} の本文が変数展開・コマンド置換（${src}）"; return $? ;;
   esac
+  case "$src" in
+    file) prog_literal=1 ;;
+    heredoc) [ "$heredoc_unquoted" -eq 1 ] || prog_literal=1 ;;
+  esac
+  WS_PROG_LITERAL="$prog_literal"
   if [ "$src" = "file" ]; then
     ws_judge_file_program "$hb" "$lang" "$prog" "$srcpath" "$depth"
-    return $?
+  else
+    ws_judge_program "$hb" "$lang" "$prog" "$src" "$depth"
   fi
-  ws_judge_program "$hb" "$lang" "$prog" "$src" "$depth"
+  judged=$?
+  WS_PROG_LITERAL=0
+  return "$judged"
+}
+# heredoc の区切り語が引用されているか（`'PY'` / `"PY"` / `\PY`。本文はシェルの展開を受けない）
+ws_quoted_delim() { # <区切り語>
+  case "$1" in *\'* | *\"* | *\\*) return 0 ;; esac
+  return 1
 }
 
 # ---- 実行ファイルの種別 ----------------------------------------------------------------

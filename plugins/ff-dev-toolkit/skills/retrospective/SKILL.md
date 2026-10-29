@@ -13,7 +13,7 @@ GitHub MCP の raw-file 入力は[共通契約](../ace-curate/references/curate.
 
 `features.retrospective=false` のとき、ワークフローからの自動実行・起動の催促・「対象外」などの定型報告を行わない。ユーザーがこの振り返りを明示依頼した場合だけ、設定を変えず単発実行する。以下の「毎回」は設定なし、または自動振り返りを選んだ場合に限る。
 
-セッションの Problem と Keep を観測台帳へ記録する。起票は閾値到達の再発に限る。台帳の定型コミットは同梱 `scripts/finish.sh knowledge-commit` が行う。
+観測記録と定型コミットは下の「観測の記録」「書き込み」に従う。
 
 ## プラグインルートの固定（必須）
 
@@ -52,8 +52,8 @@ fi
 
 ## 実行ポリシー
 
-- **毎回実施・問いかけなし**: チェーン末尾に到達したら確認せずそのまま実施する（起票も既定では確認を挟まない）
-- **read-only**: 振り返り工程ではファイル編集・コミット・Issue 作成を行わない。書き込みが発生するのは、観測台帳への定型記録（作成・追記・Count 更新・完了移行・[旧経路取り込み](references/legacy-intake.md)）と、既存確認を完了した提案を起票する段（既定は承認を待たない。`RETROSPECTIVE_FILING=ask` のみ承認後）だけ
+- **毎回実施・問いかけなし**: チェーン末尾に到達したら確認せずそのまま実施する。起票は [filing.md「承認と起票」](references/filing.md#承認と起票) と「外部公開の承認境界」に従う
+- **read-only**: 振り返り工程ではファイル編集・コミット・Issue 作成を行わない。書き込みが発生するのは、観測台帳への定型記録と、既存確認・送信境界を通過した提案の起票・旧経路 Issue の処理だけ。承認は [filing.md「外部公開の承認境界」](references/filing.md#外部公開の承認境界全モード共通) に従う
 - **冒頭で入口規範の逆戻りを検査する**: `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/workflow-doctor.sh" --root "$(git rev-parse --show-toplevel)" --offline` の FAIL はチェックリスト 4 の観測
 
 ### 条件付きで読む references
@@ -167,4 +167,4 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ## 出力形式（提案がある場合）
 
-書式（6 欄 + `起票:` 行。最大 3 件）は [references/filing.md](references/filing.md)「出力形式」。`RETROSPECTIVE_FILING=ask` のときは `起票:` 行の代わりに `承認いただければ起票します。` で終え、承認後に結果を報告する。記録だけなら [filing.md の記録報告](references/filing.md#記録だけの報告)に従う。
+書式（6 欄 + `起票:` 行。最大 3 件）は [references/filing.md](references/filing.md)「出力形式」。`RETROSPECTIVE_FILING=ask` または外部公開の承認境界で承認待ちのときは `起票:` 行の代わりに `承認いただければ起票します。` で終え、承認後に結果を報告する。記録だけなら [filing.md の記録報告](references/filing.md#記録だけの報告)に従う。

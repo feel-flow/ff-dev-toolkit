@@ -524,7 +524,12 @@ case "$tool" in
         && [ "$(type -t resolve_target 2>/dev/null)" = "function" ] \
         && [ "$(type -t target_in_tree 2>/dev/null)" = "function" ]; then
         ff_write_scan_init "$ROOT_PHYS" "$(phys_dir "$CWD")" "$OUTPUT_DIR_NAME" "$PROTECT_TREES"
-        if resolve_target "$edit_path"; then
+        # ツールの file_path は文字どおりのパス（`$` や `~` をシェルとして展開しない）
+        WS_LITERAL_PATHS=1
+        resolve_target "$edit_path"
+        edit_resolve_rc=$?
+        WS_LITERAL_PATHS=0
+        if [ "$edit_resolve_rc" -eq 0 ]; then
           target_in_tree "$RESOLVED"
           edit_tit_rc=$?
           if [ "$edit_tit_rc" -eq 1 ]; then

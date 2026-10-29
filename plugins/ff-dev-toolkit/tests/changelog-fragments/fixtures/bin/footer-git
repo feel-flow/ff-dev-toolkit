@@ -3,6 +3,8 @@ args=("$@")
 if [[ "$*" == *"ls-remote --get-url"* && "$*" == *"https://github.com/feel-flow/ff-dev-toolkit.git"* ]]; then
   # 実 git は test 用 insteadOf（bare へ向く）を適用するため、helper の rewrite 検査には公開 URL をそのまま返す
   [[ "${FAKE_FOOTER_INSTEADOF_REWRITE:-0}" == 1 ]] && { echo "git@github.com:feel-flow/ff-dev-toolkit.git"; exit 0; }
+  # 認証情報を埋め込んだ rewrite（合成値）。診断へ出ないことを検査する
+  [[ "${FAKE_FOOTER_INSTEADOF_REWRITE:-0}" == 2 ]] && { echo "https://x-access-token:SYNTHETIC-CANARY-F24@github.com/feel-flow/ff-dev-toolkit.git?access_token=SYNTHETIC-QUERY-F24"; exit 0; }
   echo "https://github.com/feel-flow/ff-dev-toolkit.git"; exit 0
 fi
 if [[ -n "${FF_CHANGELOG_TEST_REMOTE:-}" && "$*" == *"ls-remote --refs --tags"* ]]; then

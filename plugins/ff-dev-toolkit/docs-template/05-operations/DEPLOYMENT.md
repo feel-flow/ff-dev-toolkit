@@ -1,11 +1,11 @@
 ---
 title: "DEPLOYMENT"
-version: "1.7.1"
+version: "1.8.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-10-17"
-changeImpact: "low"
+updated: "2026-10-29"
+changeImpact: "medium"
 ---
 
 # DEPLOYMENT.md - デプロイメント・運用ガイド
@@ -91,7 +91,7 @@ Git Flowベースで、**テスト・セルフレビュー（PR 作成後・マ�
 9. **クリーンアップ** - ブランチ削除、`git fetch --prune`
 10. **ナレッジ体系化** - マージ後・cleanup 後 ← 詳細: `deployment/knowledge-management.md` | ACE Playbook: `deployment/ace-cycle.md`
 
-ステップ 10 の後、チェーン末尾として `/retrospective`（セッション振り返り）を毎回実行する。実測した手戻り・無駄時間・Keep・過剰動作を観測台帳へ記録し、閾値到達の再発からプロセス/ツール改善を最大 3 件提案し、起票は既定では承認を待たずに実行して発行番号を報告する（`RETROSPECTIVE_FILING=ask` で承認待ち式） ← 詳細: `deployment/git-workflow.md` の「チェーン末尾: セッション振り返り」
+ステップ 10 の後、チェーン末尾として `/retrospective`（セッション振り返り）を毎回実行する。実測した手戻り・無駄時間・Keep・過剰動作を観測台帳へ記録し、閾値到達の再発からプロセス/ツール改善を最大 3 件提案し、起票は同一 private 確認済み repo では既定で自動実行する（`RETROSPECTIVE_FILING=ask` で承認待ち式）。外部・公開・未確認の送り先は完成本文・送信先・公開範囲の承認後に書き込む（外部公開の承認境界） ← 詳細: `deployment/git-workflow.md` の「チェーン末尾: セッション振り返り」
 
 対応ホストでは `UserPromptSubmit` hook が応答前に注入し、`Stop` hook は実行漏れ時だけ自動継続する。ただし Codex の非対話単発実行（codex exec — hook 入力に `model` があり `permission_mode` が `bypassPermissions`）には注入されない（レビュー等のツール的起動の stdout を振り返り出力が奪わないため。判別できない入力へは従来どおり注入する）。入れ子で起動された非対話の `claude -p` は hook 入力に print/headless 相当のフィールドが無く判別できないため、**起動側のスクリプトが子プロセスの環境へ `RETROSPECTIVE_MODE=off` を載せて**抑止する。`RETROSPECTIVE_MODE=ask` で実施前確認、`off` で自動発火を無効にできる。
 
@@ -306,6 +306,12 @@ PRマージ後のブランチ切り替え忘れを防ぐため、セッション
 ## Changelog
 
 - 2026-09-08 追記: プラグイン変数がない直接利用でも取得できる公開配布元を明記（ai-spec-driven-development#525）。
+
+### [1.8.0] - 2026-10-29
+
+#### 変更
+
+- 振り返りの起票は同一 private 確認済み repo の自動実行に限定し、外部・公開・未確認の送り先では完成した送信内容の承認を得る。正本はスキルの「外部公開の承認境界」。
 
 ### [1.7.1] - 2026-10-17
 

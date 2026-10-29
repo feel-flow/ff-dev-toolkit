@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: review-evidenceの合成共有TMPDIRで実bootstrapを使いGROK_HOMEの実在・私有WORK境界・旧名sentinel不変を照合する。旧共有名/代入削除/入力空の各変異は赤（2026-10-29 macOS実測）。
 # 空振り検出: scripts/shim/sidecarリンクの実main配置は拒否され、外部sentinelは不変。旧setupでは拒否検査が赤。関数終端はbrace/subshell双方を照合する。
 # 空振り検出: headless の計画時代替名簿から error-handler-hunt を外すと、security だけ除外した Grok 限定 dry-run が rc=0 へ倒れ1件赤。対照は302件pass（2026-10-27 Linux、実測）。名簿の明示除外後の成功も実オーケストレータと実perspective集合で測る。
 # 空振り検出: 公開可能な開発元表示を消す/裸の参照へ戻す/番号case集合を空にする/コメント抽出0行の各変異は各1件赤（bash-n rc0）。source template不在はrc1。開発元表示の無変異は公開同期検査rc0（2026-10-23 macOS実測）。
@@ -81,9 +82,6 @@
 #   増分検査 + 未 source cases の照合）を 1 件足して 274。別 suite 化しなかった理由は ADR-052。
 
 set -euo pipefail
-# grok の導入実体（GROK_HOME/installed-plugins）もシムの解決候補（Issue `#2119`）。走行ホストの
-# ~/.grok を拾わないよう、空の置き場へ固定する（各ケースは CODEX_HOME / CLAUDE_CONFIG_DIR だけを差し替える）
-export GROK_HOME="${TMPDIR:-/tmp}/ff-review-wrapper-shim-no-grok-$$"  # 作らない（存在しない置き場 = 候補なし）
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
@@ -178,6 +176,11 @@ ff_cleanup() {
   exit "$ff_rc"
 }
 trap ff_cleanup EXIT
+
+# grok の導入実体も解決候補なので、共有領域の未作成パスを渡さない。
+# WORK は mktemp が排他的に確保した私有 root。空の実体をその配下に作る。
+export GROK_HOME="$WORK/no-grok"
+mkdir -m 700 "$GROK_HOME"
 
 PASS=0
 FAIL=0

@@ -204,11 +204,8 @@ if [ "$HOST_STATE" = "skip-notification" ]; then
   exit 0
 fi
 
-# Issue #1451: issue filing is governed by the skill section 承認と起票. The default
-# files proposals that passed the pre-filing checks without waiting for approval;
-# RETROSPECTIVE_FILING=ask restores the approval wait; every other value (unset,
-# empty, or anything else) is the default. The injected text says which of the
-# two branches is active so the agent does not have to observe the environment.
+# The skill sections 承認と起票 and 外部公開の承認境界 govern filing. The
+# environment branch never waives that destination/payload approval boundary.
 FILING="${RETROSPECTIVE_FILING:-}"
 FILING="${FILING//[[:space:]]/}"
 case "$FILING" in
@@ -216,9 +213,10 @@ case "$FILING" in
     FILING_CLAUSE='RETROSPECTIVE_FILING=ask: apart from the observation-ledger recording defined by the skill, do not edit files, create issues, or post issue comments without user approval.'
     ;;
   *)
-    FILING_CLAUSE='Apart from the observation-ledger recording defined by the skill, do not edit files. Issue filing follows the skill section 承認と起票 (RETROSPECTIVE_FILING is not ask): file the proposals that passed the pre-filing checks without waiting for approval, and report the issue numbers in the retrospective result.'
+    FILING_CLAUSE='Apart from the observation-ledger recording defined by the skill, do not edit files. Issue filing follows the skill section 承認と起票 (RETROSPECTIVE_FILING is not ask): automatic filing is limited to the same verified private repository, and report the issue numbers in the retrospective result.'
     ;;
 esac
+FILING_CLAUSE="$FILING_CLAUSE Apply the skill section 外部公開の承認境界（全モード共通） before every issue write; external, public, or unverified destinations require payload approval as defined there."
 
 # A subagent without the Skill tool has to find SKILL.md itself, and
 # the injected text never said where it is (measured 5 times in a consumer project:

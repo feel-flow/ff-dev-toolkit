@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: review-evidenceの合成共有TMPDIRで全15fixture代入の私有root境界と旧名sentinel不変を照合する。旧予測可能名への変異・入力空は赤、代入不在/0件も赤（2026-10-29 macOS実測）。
 # 空振り検出: bash-hook-batchの実登録12本は通常rc0。新guard登録だけの削除と子の引数集合0件は、いずれも登録集合assertでrc1になる（2026-10-22 macOS実測、構文rc0。期待リストの厳密一致は維持）。
 # 空振り検出: case26の実処理を抽出した対照で、負荷診断と有効宣言1件は成功、有効宣言0件と取得rc7は赤。未filterの反復・0件許容・終了コード消失の変異は全て検出。case47-Jは厳密な起動時負荷prefixだけを除き、他の警告・モード・summaryを維持し、filter除去変異を検出（2026-10-26 macOS実測）。
 # 空振り検出: case30の実normalizerは起動時負荷警告・startup-load診断・既知の失敗時負荷案内だけを除き、他の警告とsuite出力・集計を保持する。各filterの独立除去3変異、入力の空集合、処理のno-op化はいずれも合成対照を赤にする（2026-10-28 macOS実測）。
@@ -151,15 +152,23 @@ done
 # rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
 # 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
 if _ff_tmp_probe="$(mktemp -d "${TMPDIR:-/tmp}/run-all-preflight.XXXXXX" 2>&1)" && [ -d "$_ff_tmp_probe" ]; then
-  rmdir "$_ff_tmp_probe" || {
-    echo "✗ run-all self-test: 一時領域 probe を後片付けできません: $_ff_tmp_probe" >&2
-    exit 1
-  }
+  RUN_WORK="$_ff_tmp_probe"
 else
   echo "○ skip: 一時ディレクトリを作成できないため run-all self-test をスキップ（検査は1件も実行されていません）"
   printf '  mktemp: %s\n' "$_ff_tmp_probe"
   exit 0
 fi
+
+# 共有 TMPDIR の予測可能な名前は使わず、全 fixture を私有 root の下へ置く。
+# set -u による途中死も成功へ変えない（他 suite と同じ終端契約）。
+FF_REACHED_END=0
+ff_cleanup() {
+  ff_rc=$?
+  rm -rf "$RUN_WORK"
+  if [ "$FF_REACHED_END" != "1" ] && [ "$ff_rc" -eq 0 ]; then ff_rc=1; fi
+  exit "$ff_rc"
+}
+trap ff_cleanup EXIT
 
 PASS=0
 FAIL=0
@@ -172,7 +181,7 @@ RUN_RC=0
 # ランナーの記録先を本 suite 専用の使い捨てへ逃がす。run_runner は疑似 suite を**わざと赤くする**
 # 呼び出しを含むので、隔離しないと本リポジトリの実測記録が明示引数の赤い実行の記録
 # （`STATUS=fail`）で潰れる（マージ直前の鮮度照合が判定不能になる）。末尾で消す。
-RUN_GATE_RECORD="${TMPDIR:-/tmp}/ff-run-all-gate-record.$$"
+RUN_GATE_RECORD="$RUN_WORK/ff-run-all-gate-record"
 rm -f "$RUN_GATE_RECORD"
 
 # ランナーを引数付きで実行し、出力と終了コードを記録する。
@@ -509,7 +518,7 @@ esac
 # 未登録の suite を検出できること。実体側に 1 本足して照合を回す（run-all.sh 本体は触らない —
 # 走査先は $SCRIPT_DIR なので、複製した木で試す）。複製先は tests/ の外: tests/ 直下に置くと
 # 本体の登録検査自身がそれを未登録 suite として拾う（検査対象を作ることで検査を壊す形）。
-_reg_fx="${TMPDIR:-/tmp}/ff-registration-probe.$$"
+_reg_fx="$RUN_WORK/ff-registration-probe"
 rm -rf "$_reg_fx"
 mkdir -p "$_reg_fx/unregistered-probe"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$_reg_fx/unregistered-probe/verify.sh"
@@ -619,7 +628,7 @@ expect_src '空振り検出を宣言した suite が MISS_PROBE_BASELINE に残�
 # 二重引用符しか拾わない述語は、単一引用符・printf で skip を出す suite を導出から落とし、
 # 名簿に載っていなくても緑のまま通す（静的側だけが緩い非対称）。逆に「出力文であること」を
 # 落とすと、アサート行の期待値文字列まで skip 経路と誤認して必須へ引き上げる。
-_pred_fx="${TMPDIR:-/tmp}/ff-skip-predicate-probe.$$"
+_pred_fx="$RUN_WORK/ff-skip-predicate-probe"
 rm -rf "$_pred_fx"
 mkdir -p "$_pred_fx"
 cp "$_ra_src" "$_pred_fx/run-all.sh"
@@ -696,7 +705,7 @@ if ! _probe_decl_raw="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_AL
 _probe_decl="$(printf '%s\n' "$_probe_decl_raw" | grep -E '^[A-Za-z0-9._-]+:[01]:[01]:[01]:[01]:[01]$' || true)"
 _probe_decl_n="$(printf '%s\n' "$_probe_decl" | grep -c .)"
 _probe_undeclared_n="$(printf '%s\n' "$_probe_decl" | grep -c ':0$')"
-_probe_fx="${TMPDIR:-/tmp}/ff-miss-probe-registration.$$"
+_probe_fx="$RUN_WORK/ff-miss-probe-registration"
 _probe_victim="miss-probe-victim"
 _probe_stub() { # <dir> <yes> <no> <probe> <skip> : 複製木の stub を書く（宣言はヘッダに置く）
   {
@@ -1426,7 +1435,7 @@ echo "== case 26: 既定一覧の統合動作とモード行列（複製木へ�
 # 全経路が既定一覧の形で結合される。**既定一覧でしか観測できないモード解決（ADR-034 の既定反転・
 # FF_RUN_ALL_FULL・FF_RUN_ALL_FAST=0・矛盾指定・不正値）もここで実測する** — 明示引数の実行は
 # モードに依らず名指しを走らせるため、そちらでは差が出ない。
-_fast_fx="${TMPDIR:-/tmp}/ff-fast-integration.$$"
+_fast_fx="$RUN_WORK/ff-fast-integration"
 rm -rf "$_fast_fx"
 mkdir -p "$_fast_fx"
 cp "$TESTS_DIR/run-all.sh" "$_fast_fx/run-all.sh"
@@ -1672,7 +1681,7 @@ echo "== case 29: 走行中にランナー自身が書き換えられた実行�
 # 固定する。疑似 suite が複製ランナーの**末尾へ追記**するので既存バイトのオフセットは動かず、実行は
 # 壊れずに最後まで到達する = 検査の対象そのものを決定論的に作れる。
 # 書き換えるのは複製だけで、実作業ツリーの run-all.sh には触れない。
-_selfmut_fx="${TMPDIR:-/tmp}/ff-run-all-selfmut.$$"
+_selfmut_fx="$RUN_WORK/ff-run-all-selfmut"
 rm -rf "$_selfmut_fx"
 mkdir -p "$_selfmut_fx/selfmut-mutator" "$_selfmut_fx/selfmut-quiet" "$_selfmut_fx/selfmut-samesize"
 cp "$RUNNER" "$_selfmut_fx/run-all.sh"
@@ -2135,7 +2144,7 @@ fi
 # 配置判定の回帰ケース。上の分岐は通常の checkout では 1 つしか踏まれないため、合成ツリーで
 # 5 通りすべての判定を固定する。これが無いと、配布先での未展開 glob による中断や、標識が
 # 片方だけ立った回の誤った成功判定が再発しても検出できない（Codex 指摘）。
-_mkchk_lx="${TMPDIR:-/tmp}/ff-mkchk-layout.$$"
+_mkchk_lx="$RUN_WORK/ff-mkchk-layout"
 rm -rf "$_mkchk_lx"
 # 合成ツリーを 1 つ作る。$1 = 名前 / $2 = oss を置くか / $3 = 兄弟プラグインを置くか /
 # $4 = root scripts/ を置くか。プラグイン実体は .claude-plugin/plugin.json の実在で数えるので、
@@ -2182,7 +2191,7 @@ rm -rf "$_mkchk_lx"
 
 # 検出器そのものが効くことを変異 fixture で実測する（構造検査が空振りしていないこと）。この
 # verify.sh の複製から成功経路の -d 検査だけを落とし、複製を走査して赤くなることを見る。
-_mkchk_fx="${TMPDIR:-/tmp}/ff-mktemp-template-check.$$"
+_mkchk_fx="$RUN_WORK/ff-mktemp-template-check"
 rm -rf "$_mkchk_fx"
 mkdir -p "$_mkchk_fx"
 cp "$SCRIPT_DIR/verify.sh" "$_mkchk_fx/control.sh"
@@ -2210,8 +2219,8 @@ echo "== case 37: node_modules 不在の案内は mcp/node_modules の実在だ�
 # 実リポジトリの plugins/ff-dev-toolkit/mcp は動かさず、テスト専用の上書き FF_RUN_ALL_MCP_DIR で
 # ランナーの判定対象を差し替える（他suiteと並列実行しても共有資源を壊さない）。判定は消費側と
 # 同じ 1 点（<mcp>/node_modules/.bin/esbuild が実行可能か）。
-_ff_missing_nm="${TMPDIR:-/tmp}/ff-run-all-verify-missing-node_modules.$$"
-_ff_ready_mcp="${TMPDIR:-/tmp}/ff-run-all-verify-ready-mcp.$$"
+_ff_missing_nm="$RUN_WORK/ff-run-all-verify-missing-node_modules"
+_ff_ready_mcp="$RUN_WORK/ff-run-all-verify-ready-mcp"
 rm -rf "$_ff_missing_nm" "$_ff_ready_mcp"
 mkdir -p "$_ff_ready_mcp/node_modules/.bin"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$_ff_ready_mcp/node_modules/.bin/esbuild"
@@ -2243,7 +2252,7 @@ expect_has '^○ 案内: 同梱 MCP の依存が揃っていないため' "node_
 # package.json も置く（＝起動ガードの述語を**両方**満たす状態）。これで本ケースは「明示引数の実行では
 # ガードが発火しない」ことの実測も兼ねる — ガードの発火条件から USING_DEFAULT_SCRIPTS を落とす変異を
 # 入れると、ここが rc=3 で赤くなる。置かないと `-f package.json` で先に落ちて連言が無検査になる。
-_ff_partial_mcp="${TMPDIR:-/tmp}/ff-run-all-verify-partial-mcp.$$"
+_ff_partial_mcp="$RUN_WORK/ff-run-all-verify-partial-mcp"
 rm -rf "$_ff_partial_mcp"
 mkdir -p "$_ff_partial_mcp/node_modules"
 : > "$_ff_partial_mcp/package.json"
@@ -2265,7 +2274,7 @@ echo "== case 38: 登録のみで他の随伴先に触れていない suite は�
 # unlisted-required-probe は skip 経路を持つのに REQUIRED_SUITES へは触れていない —
 # 「SCRIPTS 配列（追随先 #1）へは登録したが他の追随先には一切触れていない」という
 # AC2 の Given そのものを表す。
-_fu_fx="${TMPDIR:-/tmp}/ff-followup-unlisted-probe.$$"
+_fu_fx="$RUN_WORK/ff-followup-unlisted-probe"
 rm -rf "$_fu_fx"
 mkdir -p "$_fu_fx/normal-probe" "$_fu_fx/unlisted-required-probe"
 cat > "$_fu_fx/normal-probe/verify.sh" <<'PROBE'
@@ -2363,7 +2372,7 @@ echo "== case 39: dirty tree では既定一覧を起動せず、鮮度記録も
 if ! command -v git >/dev/null 2>&1; then
   echo "  ○ skip: git が無いため dirty tree 起動ガードの実測をスキップ（case 39 の検査は 1 件も実行していません）"
 else
-_dg_fx="${TMPDIR:-/tmp}/ff-run-all-dirty-guard.$$"
+_dg_fx="$RUN_WORK/ff-run-all-dirty-guard"
 rm -rf "$_dg_fx"
 mkdir -p "$_dg_fx/repo/tests/dirty-guard-probe" "$_dg_fx/repo/tests/dirty-guard-required-probe" "$_dg_fx/repo/scripts"
 _dg_rec="$_dg_fx/gate-record"   # 記録先はリポジトリの外（記録の生成自体が木を汚さないように）
@@ -2671,7 +2680,7 @@ echo "== case 41: 同梱 MCP の依存が無い既定一覧は「環境の未整
 if ! command -v git >/dev/null 2>&1; then
   echo "  ○ skip: git が無いため MCP 依存ガードの実測をスキップ（case 41 の検査は 1 件も実行していません）"
 else
-_mg_fx="${TMPDIR:-/tmp}/ff-run-all-mcp-deps-guard.$$"
+_mg_fx="$RUN_WORK/ff-run-all-mcp-deps-guard"
 rm -rf "$_mg_fx"
 mkdir -p "$_mg_fx/repo/tests/mcp-guard-probe" "$_mg_fx/repo/tests/mcp-guard-required-probe" "$_mg_fx/repo/scripts" "$_mg_fx/mcp"
 # macOS の /var → /private/var を npm の lock 生成前に正規化する。
@@ -3366,7 +3375,7 @@ if [ "$NT_SELFTEST_OK" -eq 1 ]; then
     if ! command -v git >/dev/null 2>&1; then
       echo "  ○ skip: git が無いため横断検査の hits / fail-closed 経路をスキップ（この検査は 1 件も実行していません）"
     else
-      _nt_fx="${TMPDIR:-/tmp}/ff-node-test-guard.$$"
+      _nt_fx="$RUN_WORK/ff-node-test-guard"
       rm -rf "$_nt_fx"; mkdir -p "$_nt_fx"
       printf '%s\n' '#!/usr/bin/env bash' "$NT_PROBE_BAD" > "$_nt_fx/violate.sh"
       _nt_git() { git -c commit.gpgsign=false -c user.email=t@example.invalid -c user.name=T -c init.defaultBranch=main "$@"; }
@@ -4091,4 +4100,5 @@ if [ "$FAIL" -gt 0 ]; then
 fi
 
 echo "✓ run-all verify: 全 $PASS 件 pass"
+FF_REACHED_END=1
 exit 0

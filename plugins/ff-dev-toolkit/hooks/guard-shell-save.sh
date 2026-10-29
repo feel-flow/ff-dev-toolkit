@@ -223,18 +223,28 @@ read_before_image() {
   [ -f "$read_lib" ] && [ -r "$read_lib" ] && [ ! -L "$read_lib" ] || return 2
   # shellcheck disable=SC1090
   . "$read_lib" 2>/dev/null || return 2
-  hook_project_root="$(ff_knowledge_project_context 2>/dev/null)" || return 2
-  ff_knowledge_storage "$hook_project_root" dir 2>/dev/null || return 2
-  HOOK_READ_WORK="$(mktemp -d "${TMPDIR:-/tmp}/ff-shell-read.XXXXXX" 2>/dev/null)" || return 2
+  hook_project_root="$(ff_knowledge_project_context)" || return 2
+  ff_knowledge_storage "$hook_project_root" dir || return 2
+  HOOK_READ_WORK="$(ff_knowledge_job_directory ff-shell-read)" || return 2
   trap 'if [ -d "$HOOK_READ_WORK" ] && [ ! -L "$HOOK_READ_WORK" ] && [ -O "$HOOK_READ_WORK" ]; then rm -rf -- "$HOOK_READ_WORK"; fi' EXIT
-  ff_knowledge_private_fresh_directory "$HOOK_READ_WORK" 2>/dev/null || return 2
-  hook_before="$(ff_knowledge_snapshot "$file_path" "$hook_project_root" "$HOOK_READ_WORK" 2>/dev/null)" || return 2
+  hook_before="$(ff_knowledge_snapshot "$file_path" "$hook_project_root" "$HOOK_READ_WORK")" || return 2
   IFS= read -r -d '' before < "$hook_before" || true
 }
+# 境界の診断（knowledge-read: 行。止めた場所・SID・TMPDIR の案内）は deny の理由へ載せる。
+# 境界は paths と SID だけを出し、ファイルの中身は出さない。
+read_diagnosis=""
 if [ -e "$file_path" ] || [ -L "$file_path" ]; then
-  if ! read_before_image; then
+  read_errors="$(mktemp "${TMPDIR:-/tmp}/ff-shell-read-err.XXXXXX" 2>/dev/null)" || read_errors=/dev/null
+  read_rc=0; read_before_image 2>"$read_errors" || read_rc=$?
+  if [ "$read_errors" != /dev/null ]; then
+    while IFS= read -r read_line; do
+      case "$read_line" in 'knowledge-read: '*) read_diagnosis="${read_diagnosis:+${read_diagnosis} / }${read_line}" ;; esac
+    done < "$read_errors"
+    rm -f -- "$read_errors"
+  fi
+  if [ "$read_rc" -ne 0 ]; then
     if [ "$tool_name" = Write ]; then before=""; before_readable=0
-    else deny_unavailable "対象の読取りroot・通常型・権限・上限を検証できません"
+    else deny_unavailable "対象の読取りroot・通常型・権限・上限を検証できません${read_diagnosis:+。境界の診断: ${read_diagnosis}}"
     fi
   fi
 fi

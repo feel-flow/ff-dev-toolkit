@@ -33,6 +33,7 @@
 # 空振り検出: literal pathspec 制御を変更前へ戻すと実在の :(glob)** から未選択ファイルが混入し rc=1、通常対照 rc=0（2026-10-28）。
 # 空振り検出: global literal を使う版へ戻すと hook の環境照合が rc=1、icase の集合ガードを外しても rc=1。通常対照 rc=0（2026-10-28、pre-commit / post-index-change を実測）。
 # 空振り検出: 共通 lib の空集合・空 path・icase で0件一致は rc=2、通常 file は rc=0、全ケースで index の同一性を確認（2026-10-28 実測）。
+# 変異検出: commit の読み戻しの停止を外すと 19 が赤（記録外のパスを含むコミットが rc=0）、自動の取り消しを外すと 19 が赤（HEAD が混入コミットのまま）、取り消しの前提（HEAD がこのコミット）の照合を外すと 19b が赤（post-commit が積んだコミットを巻き戻す）、知見のコミットの特定（commit 前の HEAD を親に持つもの）を外して HEAD を照合すると 19b が赤（名指しが post-commit のコミットになる）、Categories の折り返し幅を無効にすると 20 が赤（最長 147 字）、重複除去を外すと 20 が赤、lib の絶対パスの相対化を外すと 21 が赤（`:(literal)/…` を渡す）、`top` の初期化を外すと bash 4 以降で 21 が赤（set -u の unbound）、作業ツリー内の確認を外すと 21b が赤（外のパスがルート直下の同名ファイルへ付け替わる）（2026-10-29 実測。Issue `#2494` / `#2213` / `#2449`）。
 # 空振り検出: KC_OUTPUTを旧兄弟leafのKC_TMP.outへ戻す独立変異は、合成canaryのbytes不変照合が1件赤（rc=1）。同じ出力部分の無変異対照は2/0、suite全体は169件pass（2026-10-28実測、Issue `#2429`）。
 set -euo pipefail
 
@@ -1207,6 +1208,132 @@ HOOK
     else
       echo "  ✗ icase の曖昧な index を受理した（rc=${rc}）: $out" >&2; exit 1
     fi
+
+    # 19. commit 前フックが記録外のファイルを一時索引へ足しても（lint-staged のある導入先で実測。Issue `#2494`）、
+    #     できたコミットを読み戻して取り消し（HEAD を commit 前へ戻す）、exit 1 で止まる。混入したコミットは
+    #     ブランチに残らないので後から push しても送られない。索引と作業ツリーは commit 前のまま、保留記録も残す
+    F="$KC_TMP/scope-leak"
+    new_repo "$F" "Knowledge Test" "knowledge-test@example.com"
+    cd "$F" || exit 1
+    printf '%s\n' '#!/bin/sh' 'for f in unrelated.txt secret.txt; do [ -e "$f" ] && git add -- "$f"; done' 'exit 0' >.git/hooks/pre-commit
+    chmod +x .git/hooks/pre-commit
+    printf '%s\n' 'unstaged secret' >>unrelated.txt
+    printf '%s\n' 'untracked secret' >secret.txt
+    printf '%s\n' '- obs' >>docs/08-knowledge/OBSERVATIONS.md
+    kc add --source obs --id OBS-19 --summary "要約S" -- docs/08-knowledge/OBSERVATIONS.md >/dev/null
+    head_before="$(git rev-parse HEAD)"
+    rc=0; out="$(FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 kc commit 2>&1)" || rc=$?
+    if [ "$rc" -eq 1 ] && [[ "$out" == *"KNOWLEDGE_COMMIT=scope-mismatch"* ]] && [[ "$out" == *"unrelated.txt"* ]] && [[ "$out" == *"secret.txt"* ]] \
+      && [[ "$out" == *"取り消しました"* ]] && [ -z "$(git ls-files -- secret.txt)" ] && [ -f secret.txt ] && [[ "$out" != *"KNOWLEDGE_ENTRIES="* ]] \
+      && [ "$(git rev-parse HEAD)" = "$head_before" ] \
+      && [ "$(git diff --cached --name-only)" = "docs/08-knowledge/OBSERVATIONS.md" ] \
+      && ! git diff --quiet -- unrelated.txt && [[ "$(kc status)" == *"KNOWLEDGE_PENDING=1"* ]]; then
+      echo "  ✓ 記録外のパスが入ったコミットは取り消して exit 1（scope-mismatch・パスを名指し）。HEAD・索引・作業ツリーは commit 前のまま、保留記録を残す"
+    else
+      echo "  ✗ 記録外のパスの混入でコミットを取り消して止まらない（rc=${rc} HEAD=$(git rev-parse --short HEAD) staged=$(git diff --cached --name-only | tr '\n' ' ')）: $out" >&2; exit 1
+    fi
+    # 案内どおりに記録外のパス（追跡済みの変更と未追跡のファイル）を退避すれば、フックが残っていても同じ保留から
+    # 記録したパスだけを commit できる
+    git stash push -q --include-untracked -- unrelated.txt secret.txt || exit 1
+    rc=0; out="$(FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 kc commit 2>&1)" || rc=$?
+    git stash pop -q || exit 1
+    if [ "$rc" -eq 0 ] && [ "$(git diff-tree --no-commit-id --name-only -r HEAD)" = "docs/08-knowledge/OBSERVATIONS.md" ] \
+      && [ "$(git rev-parse HEAD^)" = "$head_before" ] && ! git diff --quiet -- unrelated.txt && [ -f secret.txt ]; then
+      echo "  ✓ 案内の退避（git stash push --include-untracked -- <記録外のパス>）の後は、残した保留から記録したパスだけを commit できる"
+    else
+      echo "  ✗ 退避後の再 commit が記録したパスだけにならない（rc=${rc}）: $out" >&2; exit 1
+    fi
+
+    # 19b. HEAD がこのコミットから動いた（post-commit フックが別のコミットを積んだ等）ときも、照合するのは知見の
+    #      コミット（commit 前の HEAD を親に持つもの）。混入していれば自動で取り消さず（積まれたコミットを巻き戻さない）、
+    #      知見のコミットを名指しして push しないよう案内し、exit 1 で止まる
+    F="$KC_TMP/scope-leak-moved"
+    new_repo "$F" "Knowledge Test" "knowledge-test@example.com"
+    cd "$F" || exit 1
+    printf '%s\n' '#!/bin/sh' 'git add -- unrelated.txt' >.git/hooks/pre-commit
+    printf '%s\n' '#!/bin/sh' '[ -n "$KC_TEST_IN_HOOK" ] && exit 0' \
+      'KC_TEST_IN_HOOK=1 git commit -q --no-verify --allow-empty -m "post-commit extra"' >.git/hooks/post-commit
+    chmod +x .git/hooks/pre-commit .git/hooks/post-commit
+    printf '%s\n' 'unstaged secret' >>unrelated.txt
+    printf '%s\n' '- obs' >>docs/08-knowledge/OBSERVATIONS.md
+    kc add --source obs --id OBS-19b --summary "要約M" -- docs/08-knowledge/OBSERVATIONS.md >/dev/null
+    head_before="$(git rev-parse HEAD)"
+    rc=0; out="$(FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 kc commit 2>&1)" || rc=$?
+    if [ "$rc" -eq 1 ] && [[ "$out" == *"KNOWLEDGE_COMMIT=scope-mismatch"* ]] && [[ "$out" == *"自動では取り消せませんでした"* ]] \
+      && [ "$(git log -1 --format=%s)" = "post-commit extra" ] && [ "$(git rev-parse HEAD~2)" = "$head_before" ] \
+      && [[ "$out" == *"$(git rev-parse HEAD~1)"* ]] && [[ "$out" != *"$(git rev-parse HEAD)"* ]] \
+      && [[ "$(kc status)" == *"KNOWLEDGE_PENDING=1"* ]]; then
+      echo "  ✓ HEAD がコミットから動いていれば自動で取り消さず、push しないよう案内して exit 1（保留記録は残す）"
+    else
+      echo "  ✗ HEAD が動いた後の扱いが違う（rc=${rc}）: $out" >&2; exit 1
+    fi
+
+    # 20. カテゴリは重複を除き、commitlint の footer-max-line-length（100 字）に収まる幅で折り返す（Issue `#2213`）。
+    #     1 行目は `Categories: ` で始める（ace-reuse-report.ts がキュレーションの目印として読む）
+    F="$KC_TMP/categories-wrap"
+    new_repo "$F" "Knowledge Test" "knowledge-test@example.com"
+    cd "$F" || exit 1
+    cats=(architecture-data-integrity security-compliance architecture-monitoring architecture-reliability-batch domain testing-mocks-vitest)
+    i=0
+    for c in "${cats[@]}" domain "security-compliance, architecture-monitoring"; do
+      i=$((i + 1)); printf '%s\n' "- ace$i" >>docs/08-knowledge/PLAYBOOK.md
+      kc add --source ace --id "ACE-20-$i" --summary "要約$i" --category "$c" -- docs/08-knowledge/PLAYBOOK.md >/dev/null || exit 1
+    done
+    FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 kc commit >/dev/null || exit 1
+    cat_block="$(git log -1 --format=%b | awk '/^Categories:/{f=1} f')"
+    longest="$(printf '%s\n' "$cat_block" | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')"
+    joined="$(printf '%s\n' "$cat_block" | sed 's/^Categories://' | tr '\n' ' ' | tr -s ' ' | sed 's/^ //; s/ $//')"
+    if [ "$longest" -le 100 ] && [ "$(printf '%s\n' "$cat_block" | wc -l | tr -d ' ')" -ge 2 ] \
+      && [[ "$cat_block" == "Categories: architecture-data-integrity, "* ]] \
+      && [ "$joined" = "architecture-data-integrity, security-compliance, architecture-monitoring, architecture-reliability-batch, domain, testing-mocks-vitest" ]; then
+      echo "  ✓ 多数のカテゴリは重複を除いて 100 字以内に折り返し、1 行目は Categories: で始まる"
+    else
+      echo "  ✗ Categories の折り返し・重複除去が期待と違う（最長 ${longest} 字）: ${cat_block}" >&2; exit 1
+    fi
+
+    # 21. 絶対パスはルートからの相対へ直してから literal にする（Issue `#2449`）。Windows の Git Bash は `/c/…` で
+    #     始まる引数だけを `C:/…` へ変換するので、`:(literal)/c/…` を git.exe へ渡すと解決できない。ここでは git へ
+    #     渡る argv を記録して、絶対パスが `:(top,literal)<相対>` で渡ること・リポジトリ外は従来どおり拒否されることを見る
+    F="$KC_TMP/literal-abs"
+    new_repo "$F" "Knowledge Test" "knowledge-test@example.com"
+    cd "$F" || exit 1
+    mkdir -p "$KC_TMP/argv-bin" && real_git="$(command -v git)" || exit 1
+    printf '%s\n' '#!/bin/sh' "printf '%s\\n' \"\$*\" >>\"$KC_TMP/argv.log\"" "exec \"$real_git\" \"\$@\"" >"$KC_TMP/argv-bin/git"
+    chmod +x "$KC_TMP/argv-bin/git"
+    printf '%s\n' '- abs' >>'docs/08-knowledge/playbook/a.md'
+    rc=0; ( . "$PLUGIN_ROOT/scripts/lib/abs-path.sh" && . "$PLUGIN_ROOT/scripts/lib/git-literal-pathspec.sh" \
+      && PATH="$KC_TMP/argv-bin:$PATH" ff_git_literal "$F" add -- "$PWD/docs/08-knowledge/playbook/a.md" ) || rc=$?
+    rc2=0; ( . "$PLUGIN_ROOT/scripts/lib/abs-path.sh" && . "$PLUGIN_ROOT/scripts/lib/git-literal-pathspec.sh" \
+      && ff_git_literal "$F" add -- "$KC_TMP/outside.md" ) >/dev/null 2>&1 || rc2=$?
+    if [ "$rc" -eq 0 ] && grep -qF -- 'add -- :(top,literal)docs/08-knowledge/playbook/a.md' "$KC_TMP/argv.log" \
+      && ! grep -qF -- ':(literal)/' "$KC_TMP/argv.log" \
+      && [ "$(git diff --cached --name-only)" = "docs/08-knowledge/playbook/a.md" ] && [ "$rc2" -ne 0 ]; then
+      echo "  ✓ 絶対パスは :(top,literal)<ルートからの相対> で git へ渡し（MSYS の変換対象外の :(literal)/c/… を作らない）、リポジトリ外は拒否のまま"
+    else
+      echo "  ✗ 絶対パスの literal 化が期待と違う（rc=${rc} outside rc=${rc2}）: $(cat "$KC_TMP/argv.log" 2>/dev/null)" >&2; exit 1
+    fi
+    # 21b. GIT_DIR / GIT_WORK_TREE を export した環境では、作業ツリーの外のディレクトリでも同じ toplevel が返る。
+    #      外の絶対パスをルート直下の同名ファイルへ付け替えて stage せず、従来どおり git の「リポジトリ外」で拒否させる。
+    #      同じ環境でも作業ツリーの内側の絶対パスは :(top,literal)<相対> へ直す（陽性対照）
+    git reset -q
+    mkdir -p "$KC_TMP/outside-wt"
+    printf '%s\n' 'outside' >"$KC_TMP/outside-wt/same.md"
+    printf '%s\n' 'inside' >"$F/same.md"
+    : >"$KC_TMP/argv.log"
+    rc=0; err="$( ( export GIT_DIR="$F/.git" GIT_WORK_TREE="$F"
+      . "$PLUGIN_ROOT/scripts/lib/abs-path.sh" && . "$PLUGIN_ROOT/scripts/lib/git-literal-pathspec.sh" \
+        && ff_git_literal "$F" add -- "$KC_TMP/outside-wt/same.md" ) 2>&1 >/dev/null )" || rc=$?
+    rc2=0; ( export GIT_DIR="$F/.git" GIT_WORK_TREE="$F"
+      . "$PLUGIN_ROOT/scripts/lib/abs-path.sh" && . "$PLUGIN_ROOT/scripts/lib/git-literal-pathspec.sh" \
+        && PATH="$KC_TMP/argv-bin:$PATH" ff_git_literal "$F" add -- "$F/docs/08-knowledge/playbook/a.md" ) >/dev/null 2>&1 || rc2=$?
+    if [ "$rc" -ne 0 ] && [[ "$err" == *"outside repository"* ]] && [[ "$(git diff --cached --name-only)" != *"same.md"* ]] \
+      && [ "$rc2" -eq 0 ] && grep -qF -- 'add -- :(top,literal)docs/08-knowledge/playbook/a.md' "$KC_TMP/argv.log"; then
+      echo "  ✓ GIT_WORK_TREE を export した環境でも、作業ツリーの外の絶対パスは付け替えずリポジトリ外として拒否し、内側は :(top,literal) へ直す"
+    else
+      echo "  ✗ GIT_WORK_TREE 下の絶対パスの扱いが違う（outside rc=${rc} inside rc=${rc2} staged=$(git diff --cached --name-only | tr '\n' ' ')）: ${err}" >&2; exit 1
+    fi
+    git reset -q
+    rm -f "$F/same.md"
 
     # 7. 合成 identity（テスト fixture の既定 identity）では commit しない。保留は残す
     F="$KC_TMP/fixture-id"

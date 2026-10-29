@@ -558,9 +558,22 @@
 1. **即座の対応**:
 
    ```bash
-   # 暗号化キーの確認
-   echo $ENCRYPTION_KEY | base64 -d | hexdump -C
+   # 環境に設定済みのキーを、値を出力せず検証する（下の実装は AES-256 用）。
+   node -e '
+   const key = process.env.ENCRYPTION_KEY;
+   const valid = typeof key === "string" && /^[A-Za-z0-9+/]{43}=$/.test(key)
+     && Buffer.from(key, "base64").length === 32
+     && Buffer.from(key, "base64").toString("base64") === key;
+   if (!valid) {
+     console.error("暗号化キー: Base64 形式または32 bytesの長さが不正です");
+     process.exit(1);
+   }
+   console.log("暗号化キー: Base64 形式・32 bytesを確認しました");
+   '
    ```
+
+   `ENCRYPTION_KEY` は秘密管理機構から環境へ設定済みのものを使用する。
+   診断コマンドへ値の代入・展開を書かず、鍵の生値・復号結果・ハッシュを端末やログへ出さない。
 
 2. **アプリケーション側の対応**:
 

@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   CANDIDATE_SCORE_THRESHOLD,
+  DEFAULT_MAX_RETAINED_GROUPS,
   MIN_JACCARD,
   MIN_SHARED_KEYS,
   type AbstractionEntry,
@@ -907,9 +908,11 @@ describe("main", () => {
       "qualifyingPairs",
       "strongCandidates",
       "totalEntries",
+      "truncated",
       "ungroupedEntries",
       "ungroupedPairs",
     ]);
+    expect(parsed.truncated).toBeNull();
 
     const entries = parse(PLAYBOOK_FIXTURE);
     expect(parsed.totalEntries).toBe(entries.length);
@@ -1097,5 +1100,110 @@ describe("main", () => {
     const { rc } = withCapturedLog(() => main([playbook]));
     expect(rc).toBe(0);
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+/**
+ * k 部 × 各 3 頂点の完全多部グラフ（部の間はすべて候補対、部の中は対なし）。極大クリークは
+ * 各部から 1 頂点ずつ選ぶ 3^k 個あり、頂点数に対して指数的に増える。
+ */
+function multipartiteEntries(parts: number): AbstractionEntry[] {
+  const keys = new Map<string, string[]>();
+  const vertex = (part: number, member: number): string => `ACE-9${String(part)}${String(member)}-1`;
+  for (let part = 0; part < parts; part += 1) {
+    for (let member = 0; member < 3; member += 1) keys.set(vertex(part, member), []);
+  }
+  for (let left = 0; left < parts; left += 1) {
+    for (let right = left + 1; right < parts; right += 1) {
+      for (let a = 0; a < 3; a += 1) {
+        for (let b = 0; b < 3; b += 1) {
+          for (const suffix of ["x", "y"]) {
+            const key = `edge-${String(left)}${String(a)}-${String(right)}${String(b)}-${suffix}`;
+            keys.get(vertex(left, a))?.push(key);
+            keys.get(vertex(right, b))?.push(key);
+          }
+        }
+      }
+    }
+  }
+  return [...keys.entries()].map(([id, entryKeys]) => makeEntry(id, entryKeys));
+}
+
+describe("統合候補の計算予算", () => {
+  const dense = { minJaccard: 0 };
+
+  it("規模の小さい入力は密でも予算に届かず、全組（3^4 = 81）を列挙する", () => {
+    const analysis = analyzeMergeCandidates(multipartiteEntries(4), dense);
+    expect(analysis.truncated).toBeNull();
+    expect(analysis.groups.length).toBe(81);
+    expect(analysis.ungroupedPairs.length).toBe(0);
+    expect(analyzeMergeCandidates(TRIANGLE_ENTRIES).truncated).toBeNull();
+  });
+
+  it("保持の上限に達したら列挙を止め、不完全と理由を明示する", () => {
+    const entries = multipartiteEntries(6);
+    const analysis = analyzeMergeCandidates(entries, { ...dense, maxRetainedGroups: 50 });
+    expect(analysis.truncated).toEqual({ reason: "retained-groups", limit: 50 });
+    expect(analysis.groups.length).toBe(50);
+    // 打ち切った分は「組にできなかった候補対」へ入る（0 以外でも退行ではない）。
+    expect(analysis.ungroupedPairs.length).toBeGreaterThan(0);
+    const text = formatAbstractionReport(buildAbstractionReport(entries, analysis));
+    expect(text).toContain("保持する組の上限 50");
+    expect(text).not.toContain("計算予算 ");
+  });
+
+  it("対の照合で走査するキーは計算予算に数える", () => {
+    const big = Array.from({ length: 50_000 }, (_, index) => `wide-key-${String(index)}`);
+    const small = Array.from({ length: 10 }, (_, index) => makeEntry(`ACE-97${String(index)}-1`, [`own-${String(index)}-a`, `own-${String(index)}-b`]));
+    // 先頭の大きな集合は相手ごとに走査されるので、その分で予算に届く。
+    expect(analyzeMergeCandidates([makeEntry("ACE-980-1", big), ...small], { maxSearchWork: 200 }).truncated).toEqual({ reason: "search-work", limit: 200 });
+    // 末尾に置くと、走査されるのは小さい側のキーだけなので同じ予算で完走する。
+    expect(analyzeMergeCandidates([...small, makeEntry("ACE-980-1", big)], { maxSearchWork: 200 }).truncated).toBeNull();
+  });
+
+  it("計算予算に達したら対の照合・クリーク列挙のどちらでも止める", () => {
+    const entries = multipartiteEntries(6);
+    const search = analyzeMergeCandidates(entries, { ...dense, maxSearchWork: 20_000 });
+    expect(search.truncated).toEqual({ reason: "search-work", limit: 20_000 });
+    expect(search.groups.length).toBeLessThan(729);
+    const pairing = analyzeMergeCandidates(entries, { ...dense, maxSearchWork: 10 });
+    expect(pairing.truncated).toEqual({ reason: "search-work", limit: 10 });
+    expect(pairing.groups.length).toBe(0);
+  });
+
+  it("既定の予算でも指数個の組を全件は保持しない", () => {
+    // 3^10 = 59049 個の極大クリーク。打ち切らなければ保持の既定上限を超える。
+    const analysis = analyzeMergeCandidates(multipartiteEntries(10), dense);
+    expect(analysis.truncated).not.toBeNull();
+    expect(analysis.groups.length).toBeLessThanOrEqual(DEFAULT_MAX_RETAINED_GROUPS);
+  });
+
+  it("表示の上限や JSON 出力では予算を迂回できず、打ち切りはレポートに残る", () => {
+    const analysis = analyzeMergeCandidates(multipartiteEntries(6), { ...dense, maxSearchWork: 20_000 });
+    const report = buildAbstractionReport(multipartiteEntries(6), analysis);
+    expect(report.truncated).toEqual({ reason: "search-work", limit: 20_000 });
+    expect(formatAbstractionReport(report, { maxGroups: 1 })).toContain("**不完全**");
+    expect(JSON.parse(JSON.stringify(report)).truncated.reason).toBe("search-work");
+    expect(formatAbstractionReport(buildAbstractionReport(TRIANGLE_ENTRIES, analyzeMergeCandidates(TRIANGLE_ENTRIES)))).not.toContain("不完全");
+  });
+
+  it("CLI の --max-search-work は表示オプションと独立に効く", () => {
+    expect(parseArgs(["p.md", "--max-search-work=5", "--max-groups=1"])).toMatchObject({ ok: true, maxSearchWork: 5, maxGroups: 1 });
+    expect(parseArgs(["p.md", "--max-search-work=0"]).ok).toBe(false);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-abstraction-budget-"));
+    const playbook = path.join(dir, "PLAYBOOK.md");
+    fs.writeFileSync(playbook, PLAYBOOK_FIXTURE);
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((value) => String(value)).join(" "));
+    };
+    try {
+      expect(main([playbook, "--json", "--max-groups=1", "--max-search-work=1"])).toBe(0);
+    } finally {
+      console.log = originalLog;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    expect((JSON.parse(logs.join("\n")) as { truncated: unknown }).truncated).toEqual({ reason: "search-work", limit: 1 });
   });
 });

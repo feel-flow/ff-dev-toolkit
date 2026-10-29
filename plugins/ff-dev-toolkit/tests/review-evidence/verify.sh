@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: 私有fixtureの旧パス化（evidence/run-all/shim）・GROK_HOME不在・shell入力空の6変異は全て赤。先取りした旧名のsentinelは正常対照2testで不変（2026-10-29 macOS実測）。shell入力不在も読取失敗で赤、cases入力の不在/空とprivacy test名の脱落は起動前に拒否する。
 # 空振り検出: retained-cacheの正常対照2testは通過。保存木の退避除外を外すと旧report参照がFileNotFound、保存木検査を空にするとunsafe6組と下限が7failure、入力case集合を空にすると下限1failure（全変異syntax0、2026-10-28実測）。UUID reportの保持と未知名・親/leafリンク・directory/FIFO・hardlinkの移動前拒否を実producer/archiverで測る。
 # 空振り検出: evidence/schema/plan/task/report/required perspectives 不在は赤（cases.py で実測）。stub が root を消さなかった回（消去の印が無い）も赤。
 #   test_continued_host_delegation_adopts_all_from_the_advertised_command を単独実行し、
@@ -22,4 +23,12 @@ set -euo pipefail
 PLUGIN_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$PLUGIN_ROOT/tests/lib/git-fixture.sh"
 command -v python3 >/dev/null || { echo 'ERROR: python3 required' >&2; exit 1; }
-python3 "$PLUGIN_ROOT/tests/review-evidence/cases.py"
+CASES="$PLUGIN_ROOT/tests/review-evidence/cases.py"
+[ -r "$CASES" ] && [ -s "$CASES" ] || { echo 'ERROR: evidence cases missing/unreadable/empty' >&2; exit 1; }
+for _privacy_case in test_installed_fixture_ignores_precreated_shared_siblings test_shell_fixtures_ignore_precreated_shared_paths; do
+  grep -F "    def ${_privacy_case}(self):" "$CASES" >/dev/null || {
+    echo "ERROR: privacy regression case missing: $_privacy_case" >&2
+    exit 1
+  }
+done
+python3 "$CASES"

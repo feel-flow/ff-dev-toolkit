@@ -3,6 +3,10 @@
 # Callers supply independent authority and a private job workspace. This library
 # never treats a discovered path as a grant and never prints source bytes.
 ff_knowledge_acl_resource="${BASH_SOURCE[0]%/*}/knowledge-read-acl.ps1"
+case "$ff_knowledge_acl_resource" in /*) ;; *) ff_knowledge_acl_resource="$PWD/$ff_knowledge_acl_resource" ;; esac # a later cd keeps it
+# Process starts cost about 0.1 s each on Git Bash, so the platform is read once
+# and per-path tools run once per chain, not once per ancestor.
+ff_knowledge_os="$(uname -s 2>/dev/null)" || ff_knowledge_os=""
 
 ff_knowledge_refuse() { printf 'knowledge-read: %s\n' "$1" >&2; return 2; }
 
@@ -16,8 +20,9 @@ ff_knowledge_clean_path() {
 ff_knowledge_canonical_dir() {
   local directory="$1" resolved
   ff_knowledge_clean_path "$directory" || { ff_knowledge_refuse invalid-path; return 2; }
-  case "$(uname -s 2>/dev/null)" in
-    MSYS*|MINGW*|CYGWIN*) directory="$(cygpath -u "$directory" 2>/dev/null)" || { ff_knowledge_refuse read-unverifiable; return 2; } ;;
+  # Windows names cannot hold : or \, so only a native spelling needs cygpath.
+  case "$ff_knowledge_os:$directory" in
+    MSYS*:*[:\\]*|MINGW*:*[:\\]*|CYGWIN*:*[:\\]*) directory="$(cygpath -u "$directory" 2>/dev/null)" || { ff_knowledge_refuse read-unverifiable; return 2; } ;;
   esac
   resolved="$(CDPATH= cd -P -- "$directory" 2>/dev/null && pwd -P && printf '.')" || { ff_knowledge_refuse unresolvable-input; return 2; }
   resolved="${resolved%.}"; resolved="${resolved%$'\n'}"
@@ -28,8 +33,8 @@ ff_knowledge_canonical_dir() {
 ff_knowledge_canonical_file() { # <literal file>
   local file="$1" parent leaf link count=0
   ff_knowledge_clean_path "$file" || { ff_knowledge_refuse invalid-path; return 2; }
-  case "$(uname -s 2>/dev/null)" in
-    MSYS*|MINGW*|CYGWIN*) file="$(cygpath -u "$file" 2>/dev/null)" || { ff_knowledge_refuse read-unverifiable; return 2; } ;;
+  case "$ff_knowledge_os:$file" in
+    MSYS*:*[:\\]*|MINGW*:*[:\\]*|CYGWIN*:*[:\\]*) file="$(cygpath -u "$file" 2>/dev/null)" || { ff_knowledge_refuse read-unverifiable; return 2; } ;;
   esac
   case "$file" in /*) ;; *) file="$PWD/$file" ;; esac
   while :; do
@@ -49,10 +54,29 @@ ff_knowledge_canonical_file() { # <literal file>
 }
 
 ff_knowledge_meta() { # dev:ino:bytes:mtime:ctime:mode:uid:nlink (all numeric)
-  local value separators dev inode bytes modified changed mode owner links
+  local value
   value="$(LC_ALL=C stat -c '%d:%i:%s:%Y:%Z:%a:%u:%h' -- "$1" 2>/dev/null)" \
     || value="$(LC_ALL=C stat -f '%d:%i:%z:%m:%c:%Lp:%u:%l' -- "$1" 2>/dev/null)" \
     || { ff_knowledge_refuse metadata-unavailable; return 2; }
+  ff_knowledge_meta_valid "$value" || return 2
+  printf '%s\n' "$value"
+}
+
+ff_knowledge_meta_chain() { # <paths...>; one stat per chain, else ff_knowledge_meta_count=0
+  local output line count=0
+  ff_knowledge_meta_count=0; ff_knowledge_metas=()
+  # GNU stat -f reads the file system, not the file, so each dialect keeps its own flag.
+  if [[ "$ff_knowledge_os" == Darwin ]]; then
+    output="$(LC_ALL=C stat -f '%d:%i:%z:%m:%c:%Lp:%u:%l' -- "$@" 2>/dev/null)" || return 0
+  else
+    output="$(LC_ALL=C stat -c '%d:%i:%s:%Y:%Z:%a:%u:%h' -- "$@" 2>/dev/null)" || return 0
+  fi
+  while IFS= read -r line; do ff_knowledge_metas[count]="$line"; count=$((count + 1)); done <<< "$output"
+  [[ "$count" -ne $# ]] || ff_knowledge_meta_count="$count"
+}
+
+ff_knowledge_meta_valid() { # <dev:ino:bytes:mtime:ctime:mode:uid:nlink>
+  local value="$1" separators dev inode bytes modified changed mode owner links
   separators="${value//[0-9]/}"
   [[ "$separators" == ':::::::' ]] || { ff_knowledge_refuse metadata-unavailable; return 2; }
   IFS=: read -r dev inode bytes modified changed mode owner links <<< "$value"
@@ -60,7 +84,6 @@ ff_knowledge_meta() { # dev:ino:bytes:mtime:ctime:mode:uid:nlink (all numeric)
     [[ -n "$separators" ]] || { ff_knowledge_refuse metadata-unavailable; return 2; }
   done
   case "$mode" in *[!0-7]*) ff_knowledge_refuse metadata-unavailable; return 2 ;; esac
-  printf '%s\n' "$value"
 }
 
 ff_knowledge_darwin_acl() { # <canonical path> -> 0/1 (additional allow)
@@ -85,47 +108,148 @@ ff_knowledge_darwin_acl() { # <canonical path> -> 0/1 (additional allow)
   printf '%s\n' "$result"
 }
 
+# Locate the helper from the Windows directory itself: Git Bash may pass the
+# variable only as SYSTEMROOT, and Bash names are case-sensitive.
+ff_knowledge_acl_command() { # sets ff_knowledge_acl_program / ff_knowledge_acl_native
+  local system
+  [[ -f "$ff_knowledge_acl_resource" && ! -L "$ff_knowledge_acl_resource" ]] || return 2
+  [[ "${ff_knowledge_acl_for:-}" != "$ff_knowledge_acl_resource" ]] || return 0
+  command -v cygpath >/dev/null 2>&1 || return 2
+  system="$(cygpath -W 2>/dev/null)" && [[ "$system" == /* ]] || return 2
+  ff_knowledge_acl_program="$system/System32/WindowsPowerShell/v1.0/powershell.exe"
+  [[ -f "$ff_knowledge_acl_program" ]] || return 2
+  ff_knowledge_acl_native="$(cygpath -am "$ff_knowledge_acl_resource")" || return 2
+  ff_knowledge_acl_for="$ff_knowledge_acl_resource"
+}
+
+# Starting powershell.exe takes seconds, so one helper per shell answers every
+# request; each request still inspects its whole chain afresh. eval keeps coproc
+# and {fd} redirections away from the Bash 3.2 parser; the duplicated
+# descriptors stay open in subshells, unlike the coproc's own, which are closed.
+# disown keeps a caller's bare wait from waiting on the helper.
+ff_knowledge_acl_service_start() {
+  [[ -z "${ff_knowledge_acl_state:-}" ]] || return 0
+  ff_knowledge_acl_state=off
+  ff_knowledge_acl_command || return 0
+  eval 'coproc ff_knowledge_acl_service { MSYS2_ARG_CONV_EXCL="*" exec "$ff_knowledge_acl_program" -NoProfile -NonInteractive -File "$ff_knowledge_acl_native" 2>/dev/null; }' 2>/dev/null || return 0
+  eval 'exec {ff_knowledge_acl_in}<&"${ff_knowledge_acl_service[0]}" {ff_knowledge_acl_out}>&"${ff_knowledge_acl_service[1]}"' 2>/dev/null || return 0
+  eval 'ff_knowledge_acl_pid="$ff_knowledge_acl_service_PID"'
+  case "${ff_knowledge_acl_service[0]:-}:${ff_knowledge_acl_service[1]:-}" in
+    *[!0-9:]*|:*|*:) ;; # never let an empty number close the shell's own stdin / stdout
+    *) eval "exec ${ff_knowledge_acl_service[0]}<&- ${ff_knowledge_acl_service[1]}>&-" 2>/dev/null ;;
+  esac
+  disown "$ff_knowledge_acl_pid" 2>/dev/null
+  ff_knowledge_acl_state=on
+}
+
+# Killing the helper also tells the parent shell, which checks it before writing,
+# that a reply abandoned in a subshell will not answer its next request.
+ff_knowledge_acl_service_stop() {
+  [[ "${ff_knowledge_acl_state:-}" == on ]] || return 0
+  kill "${ff_knowledge_acl_pid:-}" 2>/dev/null
+  eval 'exec {ff_knowledge_acl_in}<&- {ff_knowledge_acl_out}>&-' 2>/dev/null
+  ff_knowledge_acl_state=off
+}
+
+ff_knowledge_acl_explain() { # <refused verdict> <native paths...>; names the place, never file bytes
+  local position owned danger owner writer path temporary reason=""
+  case "$1" in E\|*) printf 'knowledge-read: 判定できない: %s\n' "${1#E|}" >&2; return 0 ;; esac
+  IFS='|' read -r position owned danger owner writer <<< "$1"
+  shift
+  case "$position" in ''|*[!0-9]*) return 0 ;; esac
+  [[ "$position" -lt $# ]] || return 0
+  path="${@:$((position + 1)):1}"
+  [[ "$owned" != 0 ]] || reason="所有者が本人・管理者・SYSTEM のどれでもない（${owner:-SID 不明}）"
+  [[ "$danger" != 1 ]] || reason="${reason:+${reason}、}本人・管理者・SYSTEM 以外が書き込める（${writer:-SID 不明}）"
+  printf 'knowledge-read: 止めた場所: %s — %s\n' "$path" "${reason:-ACL を照合できない}" >&2
+  temporary="$(cygpath -am "${TMPDIR:-/tmp}" 2>/dev/null)" || temporary=""
+  case "$temporary/" in
+    "${path%/}/"*) printf 'knowledge-read: 作業用の一時フォルダー（TMPDIR）の祖先です。TMPDIR を、祖先の ACL がこの検査を通るフォルダーへ向けると置き場を変えられます（境界は自動では緩めません）\n' >&2 ;;
+  esac
+}
+
 ff_knowledge_windows_acl() { # <inspect|private-staging> <canonical paths...>
-  local operation="$1" system program resource file converted input output index=0 line cr=$'\r'
+  local operation="$1" file converted request="" tag output="" line index=0 count=0 cr=$'\r' answered=0 deadline left
+  local native=()
   shift
   [[ $# -gt 0 ]] || { ff_knowledge_refuse read-unverifiable; return 2; }
-  command -v cygpath >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1 \
-    || { ff_knowledge_refuse read-unverifiable; return 2; }
-  [[ -n "${SystemRoot:-}" && -f "$ff_knowledge_acl_resource" && ! -L "$ff_knowledge_acl_resource" ]] \
-    || { ff_knowledge_refuse read-unverifiable; return 2; }
-  system="$(cygpath -u "$SystemRoot")" || { ff_knowledge_refuse read-unverifiable; return 2; }
-  program="$system/System32/WindowsPowerShell/v1.0/powershell.exe"
-  resource="$(cygpath -am "$ff_knowledge_acl_resource")" || { ff_knowledge_refuse read-unverifiable; return 2; }
-  [[ -f "$program" ]] || { ff_knowledge_refuse read-unverifiable; return 2; }
-  input="$operation"
-  for file in "$@"; do
-    converted="$(cygpath -am "$file")" || { ff_knowledge_refuse read-unverifiable; return 2; }
-    ff_knowledge_clean_path "$converted" || { ff_knowledge_refuse invalid-path; return 2; }
-    input="$input"$'\n'"$converted"
-  done
-  output="$(set -o pipefail; printf '%s\n' "$input" | MSYS2_ARG_CONV_EXCL='*' timeout --foreground 10 "$program" -NoProfile -NonInteractive -File "$resource" 2>/dev/null)" \
-    || { ff_knowledge_refuse read-unverifiable; return 2; }
-  output="${output//"$cr"/}"
+  ff_knowledge_acl_command || { ff_knowledge_refuse read-unverifiable; return 2; }
+  converted="$(cygpath -am "$@")" || { ff_knowledge_refuse read-unverifiable; return 2; }
+  while IFS= read -r file; do
+    ff_knowledge_clean_path "$file" || { ff_knowledge_refuse invalid-path; return 2; }
+    native[count]="$file"; count=$((count + 1)); request="$request$file"$'\n'
+  done <<< "$converted"
+  [[ "$count" -eq $# ]] || { ff_knowledge_refuse read-unverifiable; return 2; }
+  ff_knowledge_acl_serial=$((${ff_knowledge_acl_serial:-0} + 1))
+  tag="${BASHPID:-$$}-$ff_knowledge_acl_serial-$RANDOM$RANDOM"
+  request="$operation $tag"$'\n'"$request."$'\n'
+  # A dead helper sends this call to its own process; the subshell takes the
+  # SIGPIPE of one that dies between the check and the write. One deadline
+  # bounds the whole reply, as timeout(1) bounds the one-shot process.
+  if [[ "${ff_knowledge_acl_state:-}" == on ]] && kill -0 "${ff_knowledge_acl_pid:-}" 2>/dev/null \
+    && ( printf '%s' "$request" >&"$ff_knowledge_acl_out" ) 2>/dev/null; then
+    # Every reply line carries its request's tag, so lines of an abandoned or a
+    # concurrent request are never read as this request's verdicts.
+    deadline=$((SECONDS + 10))
+    while left=$((deadline - SECONDS)); [[ "$left" -gt 0 ]] && IFS= read -r -t "$left" -u "$ff_knowledge_acl_in" line; do
+      line="${line%"$cr"}"
+      case "$line" in
+        ".$tag") answered=1; break ;;
+        "$tag|"*) output="$output${line#"$tag|"}"$'\n' ;;
+      esac
+    done
+    [[ "$answered" -eq 1 ]] || { ff_knowledge_acl_service_stop; ff_knowledge_refuse read-unverifiable; return 2; }
+  else
+    command -v timeout >/dev/null 2>&1 || { ff_knowledge_refuse read-unverifiable; return 2; }
+    converted="$(set -o pipefail; printf '%s' "$request" | MSYS2_ARG_CONV_EXCL='*' timeout --foreground 10 "$ff_knowledge_acl_program" -NoProfile -NonInteractive -File "$ff_knowledge_acl_native" 2>/dev/null)" \
+      || { ff_knowledge_refuse read-unverifiable; return 2; }
+    while IFS= read -r line; do
+      line="${line%"$cr"}"
+      case "$answered:$line" in
+        "0:.$tag") answered=1 ;;
+        "0:$tag|"*) output="$output${line#"$tag|"}"$'\n' ;;
+        *) ff_knowledge_refuse read-unverifiable; return 2 ;;
+      esac
+    done <<< "$converted"
+    [[ "$answered" -eq 1 ]] || { ff_knowledge_refuse read-unverifiable; return 2; }
+  fi
+  output="${output%$'\n'}"
   while IFS= read -r line; do
-    [[ "$line" == "$index|1|0" ]] || { ff_knowledge_refuse read-unverifiable; return 2; }
+    if [[ "$line" != "$index|1|0" ]]; then
+      printf 'knowledge-read: %s\n' read-unverifiable >&2 # the code line stays first for callers
+      ff_knowledge_acl_explain "$line" "${native[@]}"
+      return 2
+    fi
     index=$((index + 1))
   done <<< "$output"
   [[ "$index" -eq $# ]] || { ff_knowledge_refuse read-unverifiable; return 2; }
 }
 
 ff_knowledge_storage() { # <canonical path> <file|dir>
-  local cursor="$1" kind="$2" first=1 unsafe=0 meta dev inode bytes modified changed mode owner links bits allow parent platform
-  local native_paths=()
-  platform="$(uname -s 2>/dev/null)" || { ff_knowledge_refuse read-unverifiable; return 2; }
+  local cursor="$1" kind="$2" first=1 unsafe=0 meta dev inode bytes modified changed mode owner links bits allow parent platform position=0
+  local native_paths=() chain=()
+  platform="$ff_knowledge_os"
   case "$platform" in Darwin|Linux|MSYS*|MINGW*|CYGWIN*) ;; *) ff_knowledge_refuse read-unverifiable; return 2 ;; esac
   while :; do
+    chain+=("$cursor")
+    [[ "$cursor" != / ]] || break
+    parent="${cursor%/*}"; [[ -n "$parent" ]] || parent=/
+    [[ "$parent" != "$cursor" ]] || break # a relative spelling never reaches /; refused below
+    cursor="$parent"
+  done
+  ff_knowledge_meta_chain "${chain[@]}"
+  for cursor in "${chain[@]}"; do
     [[ ! -L "$cursor" ]] || { ff_knowledge_refuse nonregular-input; return 2; }
     if [[ "$first" -eq 1 && "$kind" == file ]]; then
       [[ -f "$cursor" ]] || { ff_knowledge_refuse nonregular-input; return 2; }
     else
       [[ -d "$cursor" ]] || { ff_knowledge_refuse nonregular-input; return 2; }
     fi
-    meta="$(ff_knowledge_meta "$cursor")" || return 2
+    if [[ "$ff_knowledge_meta_count" -gt 0 ]]; then
+      meta="${ff_knowledge_metas[position]}"; ff_knowledge_meta_valid "$meta" || return 2
+    else
+      meta="$(ff_knowledge_meta "$cursor")" || return 2
+    fi
     IFS=: read -r dev inode bytes modified changed mode owner links <<< "$meta"
     if [[ "$first" -eq 1 && "$kind" == file && "$links" != 1 ]]; then ff_knowledge_refuse hardlinked-input; return 2; fi
     case "$platform" in Darwin|Linux)
@@ -143,10 +267,9 @@ ff_knowledge_storage() { # <canonical path> <file|dir>
         if [[ -d "$cursor" && "$owner" == "$EUID" && $((bits & 8#077)) -eq 0 && "$allow" == 0 ]]; then unsafe=0; fi
         ;;
     esac
-    [[ "$cursor" != / ]] || break
-    parent="${cursor%/*}"; [[ -n "$parent" ]] || parent=/
-    cursor="$parent"; first=0
+    first=0; position=$((position + 1))
   done
+  [[ "$cursor" == / ]] || { ff_knowledge_refuse invalid-path; return 2; }
   if [[ ${#native_paths[@]} -gt 0 ]]; then ff_knowledge_windows_acl inspect "${native_paths[@]}" || return 2; fi
   [[ "$unsafe" -eq 0 ]] || { ff_knowledge_refuse replaceable-storage; return 2; }
 }
@@ -157,7 +280,7 @@ ff_knowledge_private_fresh_directory() { # Only a newly created, empty owned job
   directory="$(ff_knowledge_canonical_dir "$directory")" || return 2
   parent="${directory%/*}"; [[ -n "$parent" ]] || parent=/
   ff_knowledge_storage "$parent" dir || return 2
-  platform="$(uname -s)" || return 2
+  platform="$ff_knowledge_os"
   case "$platform" in
     Darwin) /bin/chmod 700 "$directory" && /bin/chmod -N "$directory" || { ff_knowledge_refuse read-unverifiable; return 2; } ;;
     MSYS*|MINGW*|CYGWIN*) ff_knowledge_windows_acl private-staging "$directory" || return 2 ;;
@@ -172,6 +295,43 @@ ff_knowledge_private_fresh_directory() { # Only a newly created, empty owned job
       [[ "$owner" == "$EUID" && $((8#$mode & 8#077)) -eq 0 ]] || { ff_knowledge_refuse foreign-workspace; return 2; }
       ;;
   esac
+}
+
+# A caller's job directory, returned in its canonical spelling. On Windows an app
+# or sandbox account may hold write access to the ancestors of TMPDIR; only for
+# that ACL verdict is the toolkit state directory tried instead, under the same
+# checks. The move is announced, and a refusal there names both places.
+ff_knowledge_job_directory() { # <label> -> a new private directory
+  local base="${TMPDIR:-/tmp}" refusal="" fallback job canonical line
+  case "$ff_knowledge_os" in
+    MSYS*|MINGW*|CYGWIN*)
+      if ! refusal="$( { job="$(ff_knowledge_canonical_dir "$base")" && ff_knowledge_storage "$job" dir; } 2>&1 )"; then
+        fallback="${FF_DEV_TOOLKIT_STATE_DIR:-${HOME:-}/.config/ff-dev-toolkit}/tmp"
+        case "$refusal" in *'knowledge-read: 止めた場所: '*) ;; *) printf '%s\n' "$refusal" >&2; return 2 ;; esac
+        if [[ -n "${HOME:-}${FF_DEV_TOOLKIT_STATE_DIR:-}" && "$fallback" == /* ]] && ( umask 077 && mkdir -p -- "$fallback" ) 2>/dev/null; then
+          base="$fallback"
+        else printf '%s\n' "$refusal" >&2; return 2
+        fi
+      else refusal=""
+      fi ;;
+  esac
+  job="$(mktemp -d "$base/$1.XXXXXX")" || { # mktemp names its own cause (full disk, unwritable base)
+    [[ -z "$refusal" ]] || printf '%s\n' "$refusal" >&2
+    ff_knowledge_refuse workspace-unavailable; return 2
+  }
+  if ! ff_knowledge_private_fresh_directory "$job"; then
+    rm -rf -- "$job"
+    [[ -z "$refusal" ]] || printf '%s\n' "$refusal" >&2
+    return 2
+  fi
+  canonical="$(ff_knowledge_canonical_dir "$job")" || { rm -rf -- "$job"; return 2; }
+  if [[ -n "$refusal" ]]; then
+    printf 'knowledge-read: 作業場所を %s の下へ移しました（TMPDIR の祖先が検査を通らないため）\n' "$base" >&2
+    while IFS= read -r line; do
+      case "$line" in 'knowledge-read: 止めた場所: '*) printf '%s\n' "$line" >&2 ;; esac
+    done <<< "$refusal"
+  fi
+  printf '%s\n' "$canonical"
 }
 
 ff_knowledge_project_context() { # Independent cwd/Git context; preserve controls until rejection.
@@ -190,8 +350,8 @@ ff_knowledge_project_context() { # Independent cwd/Git context; preserve control
 ff_knowledge_lexical_path() { # Normalize operator spelling without following repository links.
   local value="$1" part joined=""; local parts=() components=()
   ff_knowledge_clean_path "$value" || return 2
-  case "$(uname -s 2>/dev/null)" in
-    MSYS*|MINGW*|CYGWIN*) value="$(cygpath -u "$value" 2>/dev/null)" || return 2 ;;
+  case "$ff_knowledge_os:$value" in
+    MSYS*:*[:\\]*|MINGW*:*[:\\]*|CYGWIN*:*[:\\]*) value="$(cygpath -u "$value" 2>/dev/null)" || return 2 ;;
   esac
   case "$value" in /*) ;; *) joined="$(ff_knowledge_canonical_dir .)" || return 2; value="$joined/$value"; joined="" ;; esac
   IFS=/ read -r -a parts <<< "$value"
@@ -268,3 +428,6 @@ ff_knowledge_snapshot() ( # <literal file> <independent authority> <private work
   accepted=1
   printf '%s\n' "$stage/input"
 )
+
+# Start the Windows helper in the sourcing shell, so command substitutions share it.
+case "$ff_knowledge_os" in MSYS*|MINGW*|CYGWIN*) ff_knowledge_acl_service_start ;; esac

@@ -200,15 +200,18 @@ describe.skipIf(process.platform === "win32")("protected POSIX knowledge snapsho
     fs.chmodSync(reachable, 0o777); const child = path.join(reachable, "project"); fs.mkdirSync(child, { mode: 0o700 });
     expect(() => new KnowledgeReadBoundary(child)).toThrow("replaceable-storage");
   });
-  it.skipIf(process.platform !== "darwin")("checks actual Darwin read-only/write ACLs without changing the parent", () => {
-    const f = fixture();
-    execFileSync("/bin/chmod", ["+a", "everyone allow read,readattr,readextattr,readsecurity,search", f.project]);
-    const acl = () => execFileSync("/bin/ls", ["-ldeb", "--", f.project], { encoding: "utf8" });
-    const before = acl(); expect(new KnowledgeReadBoundary(f.project).read(f.file)).toBe("# Book" + String.fromCharCode(10));
-    expect(acl()).toBe(before);
-    execFileSync("/bin/chmod", ["+a", "everyone allow write,add_file", f.project]);
-    expect(() => new KnowledgeReadBoundary(f.project)).toThrow("additional-write-grant");
-  });
+  // Register native ACL coverage only where it can run; developer layouts reject every skip.
+  if (process.platform === "darwin") {
+    it("checks actual Darwin read-only/write ACLs without changing the parent", () => {
+      const f = fixture();
+      execFileSync("/bin/chmod", ["+a", "everyone allow read,readattr,readextattr,readsecurity,search", f.project]);
+      const acl = () => execFileSync("/bin/ls", ["-ldeb", "--", f.project], { encoding: "utf8" });
+      const before = acl(); expect(new KnowledgeReadBoundary(f.project).read(f.file)).toBe("# Book" + String.fromCharCode(10));
+      expect(acl()).toBe(before);
+      execFileSync("/bin/chmod", ["+a", "everyone allow write,add_file", f.project]);
+      expect(() => new KnowledgeReadBoundary(f.project)).toThrow("additional-write-grant");
+    });
+  }
 });
 
 describe("ACL capability evidence", () => {

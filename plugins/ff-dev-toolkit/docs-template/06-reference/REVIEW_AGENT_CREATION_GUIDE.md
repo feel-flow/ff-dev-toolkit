@@ -171,8 +171,27 @@ adapter-{cli}.sh <perspective-file> <output-file> [--changed-files <file-list>]
 | ----------- | -------------- | ----------------------------------------------------------- | ---------------------------------------------- |
 | Claude Code | `claude`       | `-p "..." --allowed-tools "Read,Grep,Glob" --tools "Read,Grep,Glob" --strict-mcp-config` | 読み取り tool に限定し、継承 MCP を除外          |
 | Codex CLI   | `codex`        | `exec "..." --sandbox read-only`                            | 読み取り専用サンドボックス                     |
-| Copilot CLI | `copilot`      | `-p "..." --silent --allow-all-tools`                       | `--silent`でstats出力抑制                      |
+| Copilot CLI | `copilot`      | `-p "" --silent --deny-tool write --deny-tool shell --disallow-temp-dir` | 標準入力からpromptを渡し、書込み・shell・tempアクセスを拒否 |
 | Grok CLI    | `grok`         | `-p "..." --sandbox read-only --output-format plain`        | カーネル強制の read-only プロファイル          |
+
+Copilot のレビューは、同梱 `scripts/adapters/copilot-cli-adapter.sh` と同じ deny を使う。
+起動前に権限フラグと、deny が継承済み allow より優先されることを確認し、確認不能なら起動しない。
+次の例へは、レビュー用promptを標準入力から渡す。
+
+<!-- copilot-read-only-example:start -->
+
+```bash
+permission_help="$(copilot help permissions </dev/null)" || exit 1
+if [[ "$permission_help" != *--deny-tool* ]] \
+  || [[ "$permission_help" != *--disallow-temp-dir* ]] \
+  || [[ "$permission_help" != *'Denial rules always take'* ]]; then
+  printf '%s\n' 'Copilot の read-only 権限を確認できません。CLI を更新してください。' >&2
+  exit 1
+fi
+copilot -p "" --silent --deny-tool write --deny-tool shell --disallow-temp-dir
+```
+
+<!-- copilot-read-only-example:end -->
 
 ### アダプター実装の骨格
 
@@ -207,8 +226,10 @@ Output in the standard review format."
 # 3. CLI実行（CLI別に分岐が必要）
 # プロンプトの渡し方は CLI ごとに違う。-p が使えるとは限らないし、意味も同じとは
 # 限らないので、新しい CLI を足すときは必ず --help で確かめること。
-# 例: claude -p "$PROMPT" / grok -p "$PROMPT" / copilot -p "$PROMPT"
+# 例: claude -p "$PROMPT" / grok -p "$PROMPT"
 #     codex exec "$PROMPT"（codex の -p は --profile。プロンプトは positional 引数）
+# Copilot は上の専用例を使い、権限確認・deny を省略しない。-p は空文字で
+# 標準入力から prompt を渡すため、下の汎用起動行と /dev/null をそのまま使わない。
 #
 # ⚠ **stdin を必ず閉じる（`< /dev/null`）。** codex は stdin が TTY でないと
 #   「追加入力」として読みに行き、EOF が来るまで戻らない。stdout には何も出ないので
@@ -590,7 +611,7 @@ ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF
 - [ ] CLIの非インタラクティブ実行フラグを確認（`-p` / `--prompt` 等）
 - [ ] サンドボックス/読み取り専用モードの有無を確認
 - [ ] 出力形式の制御方法を確認（`--output-format` 等）
-- [ ] ツール承認の自動化方法を確認（`--yolo` / `--approval-policy` 等）
+- [ ] 書込み・shellを拒否する権限とdenyの優先順位を確認し、確認不能ならレビューを起動しない（Copilotは上のread-only例を使用。全ツールの自動承認は使わない）
 - [ ] 既知の制限・バグを確認
 
 ### Step 2: アダプター作成

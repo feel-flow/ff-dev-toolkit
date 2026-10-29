@@ -53,6 +53,12 @@
 #   K26. /ace-curate・/ace-refine が knowledge-lookup.sh --resolve-playbook を呼び、検索と解決が同じ配置を返す
 #   K27. 記録段は root の外・ファイル自体の symlink・node_modules/・絶対パスの記載を候補に数えない
 #   K29. ファイル名だけの ACE_PLAYBOOK_PATH でも playbook/ のカテゴリファイルを引き、非 ASCII を含む記録パスを切らない
+#   W1〜W14. 読み取り境界の Windows 経路（windows-acl.sh。Issue `#2461`）: SystemRoot の綴りに依らず ACL の検査まで
+#        進む・常駐対応 shell は helper を 1 回だけ起動し、非対応 shell は要求ごとに起動する・止めた祖先と SID と TMPDIR の案内を出す・TMPDIR の祖先が
+#        ACL の判定で通らなければ状態ディレクトリ配下へ移して移したことを出し、そこも通らなければ両方を名指して止める
+#        （判定以外の拒否では移さない）・別の要求の応答を読み飛ばす・helper の死で shell が落ちない・応答全体の期限・
+#        helper が判定できなかったパスの理由・素の wait が helper を待たない・相対の綴りを止める。
+#        W8〜W9 は Windows の Git Bash でだけ、実 ACL と capability SID の ACE で確かめる
 #   K28. --resolve-playbook の出力契約（unreadable の PATH、相対指定の REL、root 内外は実体で判定、
 #        symlink ファイルは実体が root 内のときだけ REL、キーワード拒否）
 #
@@ -64,6 +70,8 @@
 # 空振り検出: resolve_playbook へ 1 件ずつ当てた 9 変異 — 記録段の削除・記録段で docs-template を一律除外・plugin 同梱テンプレートの除外を外す・曖昧時に先頭を採る・既定パス優先を外す・env 段の削除・env の空白判定を外す・旧 resolve_store へ戻す・記載ファイル相対の解決を外す — がすべて K22〜K26 のいずれかで赤（1〜12 件）、正常対照は 69 件成功（2026-10-18 実測）。
 # 空振り検出: レビュー対応後の 7 変異 — 記録段の symlink 除外・root 前置照合・node_modules 除外を外す、記録 1 件で実在する既定パスを置き換える、--resolve-playbook の絶対パス実体化を外す、symlink ファイルの実体確認を外す — がそれぞれ K25 / K27 / K28 で赤（1〜2 件）、正常対照は 82 件成功（2026-10-18 実測）。awk が読める記載ファイルで失敗する分岐（読み取り失敗の rc=2）は再現手段が無く未検査。
 # 空振り検出: 検索・解決の前に ACE_INDEX を実体化する処理を外すと K28 が 4 件赤、非 ASCII まで含める 2 本目のトークン抽出を外すと K29 が赤（rc=2 / absent）、正常対照は 84 件成功（2026-10-18 実測）。
+# 空振り検出: windows-acl.sh は、隔離コピーへ 1 件ずつ当てた変異 — helper の場所を SystemRoot だけから求める（W1〜W8 ほか 10 件赤）・helper を常駐させない（W2 / W7 / W11）・止めた場所の名指しを外す（W3〜W6 / W8 / W11 / W12）・作業場所の代替を外す（W4 / W5 / W8）・ACL の判定以外の拒否でも代替へ移す（W12）・応答全体の期限を行ごとの 10 秒へ戻す（W10）・helper が判定できなかった理由の名指しを外す（W11 / W12）・helper を disown しない（W13 で素の wait が止まり suite が打ち切られる）・生存確認と subshell を外して死んだ helper へ直接書く（W7） — がすべて赤、正常対照は 13 件成功（2026-10-29 Windows 11 ARM64 の Git Bash 実測）。helper を kill で止める形は MSYS では包み側のプロセスにしか届かず死を作れなかったため、stub の quit 要求で止める。相対の綴りの無限ループへ戻す変異は suite ごと止まるので当てていない（W14 は戻り値と診断で止めたことを見る）。
+# 空振り検出: 起動 shell の常駐機能は reader の状態と独立に probe する。macOS Bash 3.2 の正常対照は10件成功（合成9case＋集合照合）。probe空/未知/失敗・常駐対応の偽宣言・W2/W11のone-shot起動数を1へ戻す・W6/W7の分岐逆転・W11の後続要求削除・case数0・途中return・入力空/不在・完了名だけの14変異は各rc1（2026-10-29実測）。W6/W7は非対応shellで部分skip、W8〜W9の実Windows限定も維持。今回の常駐対応shellと実Windowsの再実測は未実施。
 #
 # 変異検出（2026-09-19 実測。変異は 1 件ずつ当て、前後で対照を取る）:
 #           emit_obs の archived 除外を外すと 2 件赤（K2 と K11 の行数）。emit_obs の Status 抽出を
@@ -868,6 +876,14 @@ if [[ "${same_n}" -eq 5 ]]; then ok "K26: 5 fixture すべてで検索と --reso
 echo ""
 # Default metadata cannot grant an external read. Synthetic inputs only.
 . "$SCRIPT_DIR/privacy.sh"
+
+echo ""
+win_checks_finished=0
+win_runs=0
+. "$SCRIPT_DIR/windows-acl.sh"
+if [[ "$win_checks_finished" -ne 1 || "$win_runs" -lt 9 ]]; then
+  bad 'Windows ACL: cases が空・欠落、または成功終端へ到達していない'
+fi
 
 if [[ "${FAIL}" -eq 0 ]]; then
   echo "✓ knowledge-lookup verify: ${PASS} 件成功"

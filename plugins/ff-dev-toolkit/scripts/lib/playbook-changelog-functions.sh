@@ -13,8 +13,7 @@ fi
 
 _ff_playbook_changelog_job() {
   local job
-  job="$(mktemp -d "${TMPDIR:-/tmp}/playbook-changelog.XXXXXX")" || return 2
-  if ! ff_knowledge_private_fresh_directory "$job"; then rm -rf -- "$job"; return 2; fi
+  job="$(ff_knowledge_job_directory playbook-changelog)" || return 2
   : >"$job/cache"
   printf '%s\n' "$job"
 }

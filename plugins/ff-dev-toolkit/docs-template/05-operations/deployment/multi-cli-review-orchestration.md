@@ -392,13 +392,15 @@ read-only レーンは読み取り境界で許される検証だけを実行す�
 
 ## 前提条件
 
-### 必須
+### 必須（外部 CLI スクリプト経路）
 
 - Bash（**3.2 以上**。stock macOS の `/bin/bash` が 3.2 系であるため、同梱スクリプトは 3.2 互換で書かれている — 連想配列や `${var^^}` は使わない）
 - Git（diffの取得に使用）
 - 1つ以上のAI CLI
 
 ### 対応プラットフォーム
+
+本表は外部 CLI スクリプト経路の前提。Claude Code / Codex / grok の [主担当ホストのネイティブセルフレビュー](./self-review.md#主担当ホストのネイティブセルフレビュー)はホストの起動ツールを使い、Windows でも Bash / WSL を起動条件にしない。各ホストのツール可用性と実機での完走確認は区別する。
 
 | プラットフォーム | 状態 |
 |---|---|
@@ -407,9 +409,9 @@ read-only レーンは読み取り境界で許される検証だけを実行す�
 | Windows（ネイティブ） | **非対応** |
 | Windows（WSL2 / Git Bash） | bash 環境として動作する想定。ただし未検証 |
 
-**Windows がネイティブ非対応なのは、このツールキットが端から端まで bash で書かれているため**。オーケストレータ（`multi-agent.sh`）、各 CLI アダプタ、セットアップ、更新通知フック、スキルが呼び出す実体まで、配布物のシェルスクリプトはすべて `.sh` であり、PowerShell / cmd 版は存在しない。レビューラッパーだけを PowerShell 化しても他が動かないため、部分的な移植は行っていない。
+**外部 CLI スクリプト経路が Windows ネイティブ非対応なのは、bash で書かれているため**。オーケストレータ（`multi-agent.sh`）、各 CLI アダプタ、セットアップ、更新通知フックのシェルスクリプトは `.sh` であり、PowerShell / cmd 版は存在しない。レビューラッパーだけの部分的な移植は行っていない。
 
-Windows で使う場合は bash が動く環境を用意する:
+Windows でこのスクリプト経路を使う場合は bash が動く環境を用意する:
 
 - **WSL2（推奨）** — Linux ディストリビューションを入れ、**その中に** Git・AI CLI・ツールキットを揃える。アダプタは PATH 経由で CLI を起動するので、CLI が Windows 側にしか入っていないと検出されない
 - **Git for Windows の Git Bash** — 軽量だが、AI CLI 側が Windows ネイティブとして振る舞うためパス表記（`C:\...` と `/c/...`）の食い違いが起こりうる
@@ -511,7 +513,7 @@ ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF
 | `distributed` | 各CLIが異なるパースペクティブを担当（デフォルト） |
 | `cross-model` | 全CLIで同じパースペクティブを実行して比較         |
 
-**変更クラス別のレーン数（`--route fast|full|none`）**: `/multi-review` は決定木の根の答え（`scripts/review-route.sh` の `REVIEW_ROUTE`）を `multi-review.sh --route` へ渡し、レーン構成をモードや利用者設定に依らず明示する。`fast`（docs のみ、または 10 行以下）は Codex 1 レーン（`comprehensive-review`）だけ、`full` は 5 レーン（主 `claude-code` の `code-review` / `error-handler-hunt` / `test-analysis` / `comment-analysis` + 副 `codex-cli` の `comprehensive-review`）、`none` はホストが判定する（渡した引数どおり）。`fast` / `full` とレーン構成の明示（`--mode` / `--cli` / `--perspective` / `--exclude-cli` / `--exclude-perspective`）の併用は exit 2。表の正本は multi-review スキルの手順 0b
+**変更クラス別のレーン数（`--route fast|full|none`）**: 外部 CLI プランは決定木の根の答え（`scripts/review-route.sh` の `REVIEW_ROUTE`）を `multi-review.sh --route` へ渡し、レーン構成を明示する。`fast`（docs のみ、または 10 行以下）は親が diff を直読し、Codex 1 レーン（`comprehensive-review`）だけ起動、`full` は 5 レーン（主 `claude-code` の `code-review` / `error-handler-hunt` / `test-analysis` / `comment-analysis` + 副 `codex-cli` の `comprehensive-review`）、`none` はホストが判定する（渡した引数どおり）。`fast` / `full` とレーン構成の明示（`--mode` / `--cli` / `--perspective` / `--exclude-cli` / `--exclude-perspective`）の併用は exit 2。本節は CLI プランの正本であり、主担当ホストのネイティブセルフレビューと追加 CLI 単独実行にはこのレーン構成を強制しない。完了報告は `REVIEW_REPORT_LINE`、`none` では判定理由も残す。
 
 ### よくあるカスタマイズ例
 
@@ -903,7 +905,7 @@ review 専用。**ホスト自身のモデルのレーン 1 本だけ**を **CLI
 | Codex | `--delegate-to-host=codex-cli` | `codex-cli` | `spawn_agent`（`multi_agent` 機能。codex 0.162 で stable・既定 ON） |
 | grok | `--delegate-to-host=grok-cli` | `grok-cli` | `spawn_subagent`（`explore` 型。深さ 1） |
 
-それ以外の値は exit 1 で拒否する。既定（フラグなし）は従来どおり `claude` を spawn するので、指定しなければ何も変わらない。
+それ以外の値は exit 1 で拒否する。**スクリプト直接呼び出し**の既定（フラグなし）は従来どおり CLI を spawn する。Claude Code / Codex / grok で標準セルフレビューを始める際の**スキル側の既定**は [主担当ホストのネイティブセルフレビュー](./self-review.md#主担当ホストのネイティブセルフレビュー)に従い、ホストの起動ツールへ直接渡す。このフラグは必要としない。対象固定・受け渡し・完了判定も同節を正本とする。
 
 ### いつ使うか
 
@@ -920,7 +922,7 @@ You've hit your individual spend limit · your session limit resets 10:10pm (Asi
 
 grok をホストにした場合は別の動機がある: `grok -p`（headless）のレビューレーンが型付き判定行を含む本文を返さず `missing-review-body` で落ちる（OBS-351）。grok セッション内（`GROK_AGENT` が立つ）で grok-cli レーンが失敗すると、`--delegate-to-host=grok-cli` で再実行するコマンドが案内される。
 
-このフラグは**既存の案内（`codex-cli` を substitute として実行し直す / `claude auth login`）を置き換えるものではなく、選択肢を 1 つ足すもの**。
+このフラグは既存の CLI 復旧案内に加える選択肢であり、主担当ホストの標準レビューをスクリプト起動へ戻す条件ではない。
 
 ### 何が変わり、何が変わらないか
 

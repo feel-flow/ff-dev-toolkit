@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: nativeセルフレビュー文書契約は3経路・3host mapping・固定prompt・完了条件・OS/CLI/機械ガードの境界・3入口参照を照合。49変異（見出しだけ/経路反転/host tool欠落・入替/境界欠落/旧unconditional経路復帰/read-only・完了判定反転等）と不在/不可読/空/非fileの4入力を全て赤で拒否（2026-10-29実測）。実ホストの完走は別途PRで実測する。
 # 空振り検出: 明示退避のfocused対照（3hostの通常往復を除く）は最終51/0。同branch照合・全世代request・marker整合・partial lock・report-last・在庫再照合・series照合・復旧command・分類互換を個別に反転すると各4/7/1/18/7/5/2/1/2件赤（2026-10-22）。moduleとcasesの不在/不可読/空、casesの名前だけ/関数名変更は全てrc1で停止し、空集合を緑にしない。syntaxは保存SHA一致の変異sourceで個別rc0を確認。
 # 空振り検出: R1復帰回帰は無変異18/0、元HEAD 69c3eb7dの不変runtimeでは5/9へ赤転（env config/base・Critical案内・detached・空fresh通知）。追加関数の不在と空のassertion集合はそれぞれrc1で停止（2026-10-22 実測）。
 # 空振り検出: R2復帰回帰は22/0、修正前5a90c9a0では19/3へ赤転（非委譲full/fastのfresh案内）。full委譲のtemplate往復とfast拒否templateは保持し、非委譲2routeは案内されたfreshでrequest無しに完了する。追加関数不在・空集合は各rc1（2026-10-22 実測）。
@@ -92,6 +93,12 @@ for f in "$MULTI_AGENT" "$CLAUDE_ADAPTER" "$CODEX_ADAPTER"; do
     exit 1
   }
 done
+
+# 主担当 host の既定は skill 層で選ぶ。script 直接呼出の既定 CLI 契約は変えない。
+NATIVE_CONTRACT="$SCRIPT_DIR/native-self-review-contract.py"
+[[ ! -L "$NATIVE_CONTRACT" && -f "$NATIVE_CONTRACT" && -r "$NATIVE_CONTRACT" && -s "$NATIVE_CONTRACT" ]] || { echo '✗ native self-review contract missing/unreadable/empty' >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo '✗ python3 is required for native self-review contract' >&2; exit 1; }
+python3 "$NATIVE_CONTRACT" --plugin-root "$PLUGIN_ROOT" --self-test
 
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"

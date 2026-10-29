@@ -60,6 +60,9 @@ OUTPUT_DIR=""
 # Whether --output-dir was given, so the retry advice can carry it (the value
 # itself is always set later by apply_task_defaults, so it cannot be inferred).
 OUTPUT_DIR_EXPLICIT=false
+# Config source of an output_dir read from a config file ("" when not from config);
+# only the plugin default may trigger the legacy-root set-aside (Issue `#2514`).
+OUTPUT_DIR_SOURCE=""
 REVIEW_EVIDENCE=false
 REVIEW_EVIDENCE_PRIOR=""
 REVIEW_EVIDENCE_PARENT=""
@@ -712,7 +715,7 @@ load_config() {
       [[ -n "$cfg_val" && -z "$TIMEOUT" ]] && TIMEOUT="$cfg_val"
 
       cfg_val=$(yq -r ".tasks.${TASK_TYPE}.output_dir // \"\"" "$CONFIG_FILE" 2>/dev/null || true)
-      [[ -n "$cfg_val" && -z "$OUTPUT_DIR" ]] && OUTPUT_DIR="${REPO_ROOT}/${cfg_val}"
+      [[ -n "$cfg_val" && -z "$OUTPUT_DIR" ]] && { OUTPUT_DIR="${REPO_ROOT}/${cfg_val}"; OUTPUT_DIR_SOURCE="$CONFIG_SOURCE"; }
     else
       # v1 compatibility
       cfg_val=$(yq -r '.cost_strategy // ""' "$CONFIG_FILE" 2>/dev/null || true)
@@ -725,7 +728,7 @@ load_config() {
       [[ -n "$cfg_val" && -z "$TIMEOUT" ]] && TIMEOUT="$cfg_val"
 
       cfg_val=$(yq -r '.output_dir // ""' "$CONFIG_FILE" 2>/dev/null || true)
-      [[ -n "$cfg_val" && -z "$OUTPUT_DIR" ]] && OUTPUT_DIR="${REPO_ROOT}/${cfg_val}"
+      [[ -n "$cfg_val" && -z "$OUTPUT_DIR" ]] && { OUTPUT_DIR="${REPO_ROOT}/${cfg_val}"; OUTPUT_DIR_SOURCE="$CONFIG_SOURCE"; }
     fi
   else
     if config_is_explicit; then

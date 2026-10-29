@@ -459,6 +459,20 @@ out="$(GH_STUB_FAIL=1 PATH="$TEST_TMP/ghbin:$PATH" "${DOCTOR[@]}" --root "$d" --
 if grep -q $'^SKIP\t11\t.*取得できない' <<<"$out"; then ok "gh の失敗 → SKIP 11（Draft 0 件と断定しない）"; else bad "gh の失敗を 0 件に畳んでいる: $(grep -E $'\t11\t' <<<"$out" | tr '\n' ' ')"; fi
 
 # 6. --root が無い → rc=2（検査不成立）。handoff env は中和済みなので、root ガードではなく引数解決で 2 が出る
+# 認証情報付き origin: 解決に失敗しても診断へ URL を出さない（--github-input の fallback と gh 経路の両方）
+d="$(make_root credorigin "$GOOD_CLAUDE")"
+git -C "$d" init -q
+git -C "$d" remote add origin 'https://x-access-token:SYNTHETIC-CANARY-F30@github.com/o/r.git?token=SYNTHETIC-QUERY-F30'
+printf '[]\n' > "$TEST_TMP/credorigin-index.json"
+for mode in gh file; do
+  if [ "$mode" = file ]; then extra=(--github-input "$TEST_TMP/credorigin-index.json"); else extra=(); fi
+  out="$(PATH="$TEST_TMP/ghbin:$PATH" "${DOCTOR[@]}" --root "$d" --global-claude "$NOGLOBAL" --settings "$d/.claude/settings.json" ${extra[@]+"${extra[@]}"} 2>&1)"
+  if grep -q $'^SKIP\t4\t.*origin の URL は表示しません' <<<"$out" && ! grep -q 'SYNTHETIC-' <<<"$out"; then ok "認証情報付き origin（${mode}）は SKIP 4 で URL を出さない"; else bad "認証情報付き origin（${mode}）の診断: $(grep -E $'\t4\t|SYNTHETIC' <<<"$out" | tr '\n' ' ')"; fi
+done
+git -C "$d" remote set-url origin https://github.com/o/r.git
+out="$(PATH="$TEST_TMP/ghbin:$PATH" "${DOCTOR[@]}" --root "$d" --global-claude "$NOGLOBAL" --settings "$d/.claude/settings.json" 2>&1)"
+if grep -q '@me（o/r）' <<<"$out" && ! grep -q $'^SKIP\t4\t' <<<"$out"; then ok "認証情報なしの origin は従来どおり OWNER/REPO を解決"; else bad "通常 origin の解決が壊れた: $(grep -E $'\t(4|11)\t' <<<"$out" | tr '\n' ' ')"; fi
+
 out="$("${DOCTOR[@]}" --root "$TEST_TMP/does-not-exist" --offline 2>&1)"; rc=$?
 if [ "$rc" -eq 2 ] && grep -q '解決できません' <<<"$out"; then ok "対象を解決できない → rc=2（引数解決の経路）"; else bad "対象が無いのに rc=${rc}（out: $(printf '%s' "$out" | tail -1 | cut -c1-100)）"; fi
 

@@ -17,9 +17,12 @@
 #           stage せずに復帰手段つきで止まる（fetch できなければ判定不能として止まる）。
 #   commit  保留記録を 1 コミットへまとめる（`--force` で上の鮮度検査を省く）。件名はエントリ 1 件なら
 #           `<type>: <ID> <要約>`（従来形）、2 件以上なら `<type>: <ID> / <ID> …` で、
-#           要約は本文へ 1 行ずつ置く。カテゴリは本文の `Categories:` 行へ置く（件名には並べない）。
+#           要約は本文へ 1 行ずつ置く。カテゴリは本文の `Categories:` 行へ置く（件名には並べない。
+#           重複を除き、100 字を超えるときは次の行へ折り返す）。
 #           commit は保留記録のパスへ固定する（`git commit -- <path>…`。索引に載った無関係な
-#           変更を巻き込まない）。push はしない — push と保護ブランチの扱いは呼び出し側の手順が持つ。
+#           変更を巻き込まない）。できたコミットを読み戻し、記録外のパスが入っていたら（commit 前
+#           フックが一時索引へ足した場合など）`KNOWLEDGE_COMMIT=scope-mismatch` を出し、そのコミットを
+#           取り消して（HEAD を commit 前へ戻す）保留記録を残し、exit 1 で止まる。push はしない — push と保護ブランチの扱いは呼び出し側の手順が持つ。
 #           保留記録が無ければ何もせず `KNOWLEDGE_COMMIT=none` を出して 0 で終わる。
 #   status  保留記録を表示する（`KNOWLEDGE_PENDING=<件数>`・記録したブランチと基点・各エントリ）。
 #   discard 保留記録を捨てる（stage 済みの変更は残すので、要らなければ `git restore --staged` で外す）。
@@ -61,7 +64,7 @@
 #
 # 出力（stdout、`KEY=値` は行頭一致）:
 #   add:    KNOWLEDGE_PENDING=<件数>（hook でドライランした回は KNOWLEDGE_SUBJECT=<hook 通過後の件名> も）
-#   commit: KNOWLEDGE_COMMIT=<sha>|none / KNOWLEDGE_SUBJECT=<commit された件名> / KNOWLEDGE_ENTRIES=<件数>
+#   commit: KNOWLEDGE_COMMIT=<sha>|none|scope-mismatch / KNOWLEDGE_SUBJECT=<commit された件名> / KNOWLEDGE_ENTRIES=<件数>
 #   add / commit の hook 拒否: KNOWLEDGE_COMMIT=hook-rejected / KNOWLEDGE_SUBJECT=<件名> / KNOWLEDGE_HOOK=<hook のパス>
 #   status: KNOWLEDGE_PENDING=<件数> / KNOWLEDGE_PENDING_BRANCH= / KNOWLEDGE_PENDING_BASE= と `  <source> <ID> <要約>` 行
 #   discard: KNOWLEDGE_DISCARDED=<件数>
@@ -316,6 +319,8 @@ entry_count() { awk -F '\t' '$1=="E" {n++} END {print n+0}' "$pending"; }
 meta_field() { awk -F '\t' -v i="$1" '$1=="M" { print $i; exit }' "$pending"; }
 current_branch() { git -C "$repo_root" symbolic-ref -q --short HEAD || echo "(detached)"; }
 PENDING_MAX_AGE=43200
+# commitlint の footer-max-line-length の既定値。`Categories:` 行をこの幅で折り返す
+KC_FOOTER_MAX_LINE=100
 # 保留の鮮度（別ブランチ・別の基点・古い保留）。問題があれば理由を stdout へ出す（無ければ空）
 pending_stale_reason() {
   local m_branch m_base m_epoch
@@ -367,7 +372,25 @@ compose_message() {
   # ace → obs の順、同じ source の中は与えた順
   ordered="$(printf '%s\n' "$lines" | awk -F '\t' '$1=="E" && $2=="ace"'; printf '%s\n' "$lines" | awk -F '\t' '$1=="E" && $2=="obs"')"
   msg_count="$(printf '%s\n' "$ordered" | awk -F '\t' '$1=="E" {n++} END {print n+0}')"
-  categories="$(printf '%s\n' "$ordered" | awk -F '\t' '$5 != "" { s = s (s == "" ? "" : ", ") $5 } END { print s }')"
+  # カテゴリは重複を除き、commitlint の footer-max-line-length に収まる幅で折り返す（Issue `#2213`）。
+  # 1 行目は `Categories: ` で始める（ace-reuse-report.ts がキュレーションの目印として読む）
+  categories="$(printf '%s\n' "$ordered" | awk -F '\t' -v max="$KC_FOOTER_MAX_LINE" '
+    $5 != "" {
+      n = split($5, c, ",")
+      for (i = 1; i <= n; i++) {
+        x = c[i]; gsub(/^[[:space:]]+|[[:space:]]+$/, "", x)
+        if (x != "" && !(x in seen)) { seen[x] = 1; o[++k] = x }
+      }
+    }
+    END {
+      line = "Categories:"; head = 1
+      for (i = 1; i <= k; i++) {
+        w = o[i] (i < k ? "," : "")
+        if (!head && length(line) + 1 + length(w) > max) { print line; line = " " w } else { line = line " " w }
+        head = 0
+      }
+      if (k) print line
+    }')"
   if [[ "$msg_count" -eq 1 ]]; then
     msg_subject="$(printf '%s\n' "$ordered" | awk -F '\t' -v t="$t" '{print t ": " $3 " " $4}')"
     msg_body=""
@@ -376,7 +399,7 @@ compose_message() {
     msg_body="$(printf '%s\n' "$ordered" | awk -F '\t' '{print "- " $3 " " $4}')"
   fi
   [[ -z "$issue" ]] || msg_subject="${t}: #${issue} ${msg_subject#*: }"
-  [[ -z "$categories" ]] || msg_body="${msg_body:+$msg_body$'\n\n'}Categories: ${categories}"
+  [[ -z "$categories" ]] || msg_body="${msg_body:+$msg_body$'\n\n'}${categories}"
 }
 
 HOOK_REJECTED_RC=4
@@ -774,10 +797,48 @@ case "$cmd" in
     ff_commit_identity_check "$repo_root" || exit 1
     msg_args=(-m "$subject")
     [[ -z "$body" ]] || msg_args+=(-m "$body")
+    before_head="$(git -C "$repo_root" rev-parse -q --verify HEAD)" || before_head=""
     if ! ff_git_literal "$repo_root" commit "${msg_args[@]}" -- "${commit_paths[@]}"; then
       die_stop "commit に失敗しました（保留記録は残してあります。原因を直して commit を再実行してください）"
     fi
-    sha="$(git -C "$repo_root" rev-parse HEAD)" || die_stop "commit 後の HEAD を解決できません"
+    sha="$(git -C "$repo_root" rev-parse HEAD)" || die_stop "commit 後の HEAD を解決できません。push しないでください"
+    # post-commit フックが別のコミットを積むと HEAD は knowledge コミットではない。commit 前の HEAD を
+    # 親に持つコミット（ancestry-path の先頭）を knowledge コミットとして照合する
+    if [[ -n "$before_head" && "$(git -C "$repo_root" rev-parse -q --verify "${sha}^")" != "$before_head" ]]; then
+      sha="$(git -C "$repo_root" rev-list --reverse --ancestry-path "${before_head}..${sha}" | awk 'NR == 1')"
+      [[ -n "$sha" ]] || die_stop "commit 後の HEAD が commit 前の HEAD（${before_head}）の子孫ではありません。push しないでください。git log ${before_head}..HEAD で確かめてください（保留記録は残してあります）"
+    fi
+    # できたコミットに記録したパス以外が入っていないかを読み戻す。commit 前フックが一時索引へ
+    # 別のファイルを足す導入先がある（Issue `#2494`）。入っていたら（照合できないときも）この
+    # コミットを取り消して止める。混入したコミットがブランチに残らないので、後から push / pr を
+    # 呼んでも送られない。`git commit -- <path>` のフックが足すのは一時索引だけなので、HEAD を
+    # commit 前へ戻しても索引と作業ツリーは変わらない。取り消すのは HEAD がまだこのコミットで、
+    # 親が commit 前の HEAD のときだけ（post-commit フックが積んだ等は手で確かめさせる）
+    undo_commit() { # <理由> <再実行の前にすること>
+      if [[ -n "$before_head" && "$(git -C "$repo_root" rev-parse -q --verify HEAD)" == "$sha" \
+        && "$(git -C "$repo_root" rev-parse -q --verify "${sha}^")" == "$before_head" ]] \
+        && git -C "$repo_root" reset -q --soft "$before_head"; then
+        die_stop "$1 — コミット ${sha} は取り消しました（HEAD を commit 前へ戻した。索引と作業ツリーは変えていない。保留記録は残してあります）。$2"
+      fi
+      die_stop "$1 — コミット ${sha} を自動では取り消せませんでした。push しないでください。git log と git show --stat ${sha} で確かめ、手で取り消してから $2"
+    }
+    tree_list="$(mktemp "${git_dir}/ff-knowledge-tree.XXXXXX")" || undo_commit "コミット ${sha} の中身を照合できません（一時ファイルを作れない）" "原因を直して commit を再実行してください"
+    if ! git -C "$repo_root" diff-tree --no-commit-id --name-only -r --root -z "$sha" >"$tree_list"; then
+      rm -f "$tree_list"
+      undo_commit "コミット ${sha} の中身を照合できません" "原因を直して commit を再実行してください"
+    fi
+    extra=()
+    while IFS= read -r -d '' f; do
+      in_record=0
+      for p in "${commit_paths[@]}"; do [[ "$f" != "$p" ]] || { in_record=1; break; }; done
+      [[ "$in_record" -eq 1 ]] || extra+=("$f")
+    done <"$tree_list"
+    rm -f "$tree_list"
+    if [[ ${#extra[@]} -gt 0 ]]; then
+      echo "KNOWLEDGE_COMMIT=scope-mismatch"
+      undo_commit "コミットに記録外のパスが入りました: ${extra[*]}（commit 前フック — lint-staged など — が索引へ足した可能性が高い）" \
+        "フックの設定を直すか、記録外のパスを退避してから（例: git stash push --include-untracked -- <記録外のパス>。未追跡のファイルも退避できる）commit を再実行してください。フックが記録したパスを書き換えていたら、add からやり直してください"
+    fi
     rm -f "$pending" || die_stop "commit は完了しましたが保留記録を消せません（二重コミットを防ぐため手で消してください）: $pending"
     # hook（prepare-commit-msg 等）が書き換えた後の、実際に commit された件名を出す
     committed_subject="$(git -C "$repo_root" log -1 --format=%s "$sha" 2>/dev/null)" || committed_subject=""

@@ -1,0 +1,9 @@
+import { expect, it } from "vitest";
+
+it("executes a normal test", () => {
+  expect(1 + 1).toBe(2);
+});
+
+it.skip("unexpectedly skips a runnable test", () => {
+  expect(1 + 1).toBe(2);
+});

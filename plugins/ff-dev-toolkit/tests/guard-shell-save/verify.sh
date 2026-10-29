@@ -35,6 +35,7 @@
 # 空振り検出: 保存後の組み立て（Issue `#2357`。2026-10-26 に WSL で実測、変異なしは 74 件緑）。旧実装（`%%` / `#` の切り出し）へ戻す → R5 の 1 件赤、切り出しを 1 文字ずらす → F14・M4 の 2 件赤、二分探索の向きを取り違える → F7・F10 ほか 6 件赤、探索の上限を 1 文字手前に取り違える → F19 の 1 件赤、timeout を 10 秒へ戻す → R4 の 1 件赤。
 # 空振り検出: consumer保存回帰の集合を0件へ替えると、実ケースのfocused集合境界が1件赤・rc=1。正常は4/0、共有検出器への宣言受渡しを外す単独変異は宣言あり危険形だけ1件赤・rc=1（構文はいずれも0、2026-10-22）。
 # 空振り検出: 現行正常対照88/0。認可rootを全filesystemへ広げるとleaf/parentの2針、診断をraw行へ戻すとinternalのJSON/stderrの2針、privacy集合の空化でcensusの1針が赤。3変異とも構文0の後suite rc=1を確認（2026-10-29、私有workspaceと文字列検査追加後に再実測）。
+# 空振り検出: 保存前の読み取りの stderr を 2>/dev/null へ戻す変異で C6b だけが赤（suite rc=1、他 93 件成功。2026-10-29 WSL 実測、Issue `#2461`）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -395,6 +396,12 @@ NULF="$WORK/scripts/nul.sh"
 printf '#!/usr/bin/env bash\n\000PLACEHOLDER\n' > "$NULF"
 run_json "$HOOK" "$(edit_json "$NULF" '#!/usr/bin/env bash' '#!/bin/bash')"
 assert_unavailable "C6: NUL を含み全体を読めない Edit 対象は判定不能の deny"
+# 境界の拒否理由（knowledge-read: 行）を捨てず deny の理由へ載せる。Windows で止めた祖先と SID を
+# 利用者が知る唯一の経路なので、2>/dev/null へ戻すとここが赤になる（Issue `#2461`）
+case "$REASON" in
+  *'境界の診断: knowledge-read: incomplete-input'*) ok "C6b: 判定不能の deny の理由に境界の診断（NUL で読み切れない knowledge-read: incomplete-input）を載せる" ;;
+  *) bad "C6b: 境界の診断が deny の理由に無い: reason=[${REASON}]" ;;
+esac
 NOGATE="$TEST_TMP/nogate"
 make_plugin "$NOGATE" "$LIB_SRC"
 rm -f "$NOGATE/hooks/asdd-hook-gate.sh"

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: skip拒否除去・陰性fixture不在・空化は本suiteでrc=1。Linuxの通常skip混入もrc=1、修正後Linux/Darwinの開発元は1049/1050件passでskipなし（2026-10-29実測）。
 # 空振り検出: allowlist認識器を厳密shape検査へ戻す変異はVite読込み後にinit再実行の針が赤（rc=1）。check-entry-format正常対照110件pass（2026-10-29実測）。
 # 空振り検出: 共通root検査除去・allowlist caller読取bypass・9caller集合空化の3変異はfocused reader検査でrc=1。通常は39件pass、配布3配置は1040/1040/1028pass+導入先のみ12既定skip（2026-10-29実測）。
 #
@@ -13,7 +14,8 @@
 #
 # 導入先の配置（報告: https://github.com/feel-flow/ff-dev-toolkit/issues/121 ）: README の案内どおり scripts/ace/ だけを逐語コピーした配置では、
 # 開発元の見本（docs-template の hook・Playbook・記入例）を読む 3 ファイルが skip へ倒れる。
-# 開発元の 2 配置では skip を 0 件に固定し（skip 条件が開発元でも真になって検査が消える退行を
+# 開発元の 2 配置では skip を 0 件に固定し（実機Darwin ACL検査はDarwinだけで登録する。
+# skip 条件が開発元でも真になって検査が消える退行を
 # 赤にする）、導入先配置は一時ディレクトリへ合成して「失敗 0・skip あり・理由が出力に出る」を
 # 確かめる。合成できない回は検査不成立として赤にする（緑へ倒さない）。
 #
@@ -141,6 +143,33 @@ run_vitest_consumer_layout() {
   printf '%s\n' "$summary" | sed "s/^[[:space:]]*/  ✓ 導入先の配置（skip 理由 ${reasons} 件）: /"
 }
 
+# Exercise the real vitest summary through the same developer-layout gate.
+# A different failure must not masquerade as successful skip rejection.
+run_vitest_skip_probe() {
+  local work output rc
+  if ! work="$(mktemp -d "${TMPDIR:-/tmp}/ace-scripts-skip.XXXXXX" 2>&1)" || [ ! -d "$work" ]; then
+    echo "✗ skip拒否の一時配置を作成できません: ${work}" >&2
+    return 1
+  fi
+  if ! cp "$SCRIPT_DIR/fixtures/unexpected-skip.test.ts.txt" "$work/unexpected-skip.test.ts"; then
+    rm -rf "$work"
+    echo "✗ skip拒否のfixtureを読めません。検査不成立" >&2
+    return 1
+  fi
+  if output="$(run_vitest_dir "skip rejection probe" "$work" 2>&1)"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  rm -rf "$work"
+  if [[ $rc -ne 1 || "$output" != *"✗ 開発元の配置で skip されたテストがあります（配置=skip rejection probe）:"* ]]; then
+    printf '%s\n' "$output"
+    echo "✗ 通常テストのskipを専用の診断で拒否できません（rc=${rc}）" >&2
+    return 1
+  fi
+  echo "  ✓ runnable test skip: rejected by the developer-layout gate"
+}
+
 # Reader wiring and the embedded native ACL resource must survive distribution.
 reader_callers=(check-category-size check-entry-format check-archive-links ace-reuse-report ace-refine-report ace-abstraction-report check-refine-invariants sync-playbook-frontmatter changelog-layout)
 [[ ${#reader_callers[@]} -eq 9 ]] || { echo '✗ knowledge reader caller census is empty/incomplete' >&2; exit 1; }
@@ -170,4 +199,5 @@ echo '  ✓ knowledge reader: 9 callers in both layouts, native ACL resource byt
 run_vitest_dir "docs-template" "$ACE_SCRIPTS_DIR"
 run_vitest_dir "repository mirror" "$ACE_SCRIPTS_MIRROR_DIR"
 run_vitest_consumer_layout
+run_vitest_skip_probe
 echo "✓ ace-scripts vitest: 開発元 2 配置 + 導入先配置 pass"

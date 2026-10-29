@@ -19,8 +19,15 @@
 #
 # 公開関数:
 #   ff_git_fixture_init DIR [NAME] [EMAIL]
-#     DIR を mkdir -p → `git -C DIR init -q` → DIR/.git が DIR 自身の git dir として
-#     解決されることを `rev-parse --absolute-git-dir` で確認してから、identity（既定
+#     DIR を mkdir -p する。DIR/.git が無い新規は `git -C DIR init -q -b master` とし、
+#     初期ブランチ名を master に固定する（利用者の init.defaultBranch には依らない。
+#     未設定の git 2.x の git init と同じ名前なので、後から develop や main を作る既存 suite の
+#     成否は変わらない）。DIR/.git が既にある再初期化は `git -C DIR init -q` のままにする
+#     （clone は成功する。linked worktree の gitfile もこの形で init するが、解決先が
+#     DIR/.git にならないので後段の照合で fail-closed になる）。再初期化に -b を付けると
+#     ignored --initial-branch の警告が出て、HEAD は変わらない。
+#     続けて DIR/.git が DIR 自身の git dir として解決されることを
+#     `rev-parse --absolute-git-dir` で確認してから、identity（既定
 #     fixture / fixture@example.invalid）を DIR のローカル設定へ書く。解決先が DIR/.git
 #     でなければ**何も書かずに非 0**（fail-closed）。
 #   ff_git_fixture_unset_env
@@ -36,6 +43,8 @@
 #   - GIT_CONFIG_GLOBAL / GIT_CONFIG_NOSYSTEM は触らない（suite が意図して隔離に使う）
 #   - unset は source 時に加えて ff_git_fixture_init の冒頭（git init の前）でも行う。source 後に
 #     suite が GIT_DIR 等を再 export しても、init が外側を再初期化する前に中和される
+#   - 新規 fixture の初期ブランチ名は master。ローカルへ init.defaultBranch は書かない。
+#     再初期化は既存の HEAD を変えない
 #   - identity 以外の設定（core.hooksPath 等）はここでは書かない
 #   - `git -c user.name=… commit` の per-command 形は設定を残さないため対象外だが、
 #     経路 1 では `git -C DIR init` が外側を再初期化し続く commit も外側へ入るので、
@@ -60,7 +69,14 @@ ff_git_fixture_init() {
   ff_git_fixture_unset_env
   mkdir -p "$dir" || return 1
   abs="$(cd "$dir" && pwd -P)" || return 1
-  if ! git -C "$abs" init -q; then
+  # 新規だけ -b master。再初期化へ -b を付けると ignored --initial-branch の警告が出るだけで、
+  # HEAD は変わらない。gitfile もこの分岐に入るが、解決先が DIR/.git でなければ後段で fail-closed。
+  if [ -e "$abs/.git" ]; then
+    if ! git -C "$abs" init -q; then
+      echo "✗ git-fixture: git init に失敗（identity は書かない）: $abs" >&2
+      return 1
+    fi
+  elif ! git -C "$abs" init -q -b master; then
     echo "✗ git-fixture: git init に失敗（identity は書かない）: $abs" >&2
     return 1
   fi

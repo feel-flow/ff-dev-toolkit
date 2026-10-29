@@ -10,11 +10,27 @@ ff_review_output_error() {
   return 1
 }
 
+# Commands the user can paste as-is after a refused existing root (Issue `#2514`).
+# Neither suggestion leaves a new unignored path beside the root in the checkout.
+ff_review_output_next_step() { # <refused-output-root> [marked:true|false]
+  if [[ "${2:-false}" == true ]]; then
+    printf '       Next: this root carries the ownership marker and only lost its owner-only mode; restore it, then rerun unchanged: chmod 700 %q\n' "$1" >&2
+    return 0
+  fi
+  echo '       Next (either one; neither reads nor deletes the old results):' >&2
+  echo '         - rerun with a new private directory outside the checkout: --output-dir "$(mktemp -d)/output"' >&2
+  printf '         - or move the old directory out of the checkout (the OS may clean temp later), then rerun unchanged: mv -- %q "$(mktemp -d)/"\n' "$1" >&2
+}
+
 ff_review_output_stat() { # <path> <mode|uid>
   local result gnu bsd
-  case "$2" in mode) gnu=%a; bsd=%Lp ;; uid) gnu=%u; bsd=%u ;; *) return 1 ;; esac
+  # BSD %Lp drops setuid/setgid/sticky; %Mp carries them. Without it the sticky
+  # exemption below never fires on macOS and /private/tmp/... is refused.
+  case "$2" in mode) gnu=%a; bsd=%Mp%Lp ;; uid) gnu=%u; bsd=%u ;; *) return 1 ;; esac
   result="$(stat -c "$gnu" "$1" 2>/dev/null)" || result="$(stat -f "$bsd" "$1" 2>/dev/null)" || return 1
   case "$result" in ''|*[!0-9]*) return 1 ;; esac
+  # One spelling on both stats: 0700 -> 700, 01777 -> 1777.
+  [[ "$2" != mode ]] || result="$(printf '%o' "$((8#$result))")"
   printf '%s\n' "$result"
 }
 
@@ -55,7 +71,9 @@ ff_review_output_ancestors() { # <canonical-path>
     path="$parent"
   done
   [[ -z "$unsafe" ]] || {
-    ff_review_output_error "ancestor is writable by another user: ${unsafe}"; return 1
+    ff_review_output_error "ancestor is writable by another user: ${unsafe}"
+    echo '       Next: choose an --output-dir whose every ancestor other users cannot write or rename, e.g. --output-dir "$(mktemp -d)/output" (a private dir under a sticky temp root).' >&2
+    return 1
   }
 }
 
@@ -210,8 +228,15 @@ ff_review_output_prepare() { # <repo> <requested> <explicit:true|false> <task>
       empty=false; break
     done
     if [[ "$empty" != true ]]; then
-      ff_review_output_private "$path" true || return 1
-      ff_review_output_regular "$marker" || { ff_review_output_error 'nonempty output directory has no matching ownership marker'; return 1; }
+      ff_review_output_private "$path" true || {
+        if [[ -f "$marker" && ! -L "$marker" ]]; then ff_review_output_next_step "$path" true
+        else ff_review_output_next_step "$path"; fi
+        return 1
+      }
+      ff_review_output_regular "$marker" || {
+        ff_review_output_error 'nonempty output directory has no matching ownership marker'
+        ff_review_output_next_step "$path"; return 1
+      }
       ff_review_output_marker_matches "$marker" "$repo" "$path" || { ff_review_output_error 'output ownership marker does not match repository and output root'; return 1; }
     fi
   fi
@@ -220,7 +245,19 @@ ff_review_output_prepare() { # <repo> <requested> <explicit:true|false> <task>
   ff_review_output_ancestors "${parent%/}/placeholder" || return 1
   if [[ "$empty" == true ]]; then
     [[ ! -e "$path" || -O "$path" ]] || return 1
-    (umask 077; mkdir -p "$path") || return 1
+    # One component at a time, never mkdir -p: below a sticky shared parent another
+    # UID can plant a symlink after the scan above, and -p (then chmod) would follow
+    # it. A real directory a same-UID peer created first is accepted.
+    if [[ ! -d "$path" ]]; then
+      cur="${parent%/}"; rest="${path#"$cur"/}"
+      while [[ -n "$rest" ]]; do
+        component="${rest%%/*}"; [[ "$rest" == */* ]] && rest="${rest#*/}" || rest=''
+        cur="${cur}/${component}"
+        (umask 077; mkdir -- "$cur") 2>/dev/null || [[ -d "$cur" && ! -L "$cur" ]] || return 1
+        [[ -d "$cur" && ! -L "$cur" && -O "$cur" ]] || { ff_review_output_error "output path changed while it was created: ${cur}"; return 1; }
+      done
+    fi
+    [[ -d "$path" && ! -L "$path" && -O "$path" ]] || return 1
     chmod 700 "$path" || return 1
     ff_review_output_private "$path" true || return 1
     for entry in "$path"/* "$path"/.[!.]* "$path"/..?*; do
@@ -244,8 +281,99 @@ ff_review_output_prepare() { # <repo> <requested> <explicit:true|false> <task>
   printf '%s\n' "$path"
 }
 
+# A version from before the private boundary (`#2429`) left the built-in default
+# root unmarked (typically mode 755), and prepare refuses it on every run
+# (Issue `#2514`). Only the orchestrator — never a hook, an explicit --output-dir
+# or a project-config output_dir — renames it whole to a sibling, so the next
+# prepare starts a fresh private root. It is never read, chmodded or deleted.
+# Anything else is left in place for prepare to refuse as before: another name,
+# Git metadata, a marked root, a symlink, another owner, tracked content, a root
+# an older run may still be writing (its lock/in-flight names exist), or an
+# unsafe ancestor (refused here, before any move).
+# Prints the sibling path when something was moved, nothing otherwise.
+ff_review_output_set_aside_legacy() { # <repo> <built-in-default-output>
+  local repo name legacy entry found=false tracked ts staging admin
+  name="${2##*/}"
+  case "$name" in .review-results|.explore-results|.implement-results) ;; *) return 0 ;; esac
+  [[ "$2" == "${1%/}/${name}" ]] || return 0
+  repo="$(CDPATH='' cd -P -- "$1" && pwd -P)" || return 1
+  legacy="${repo}/${name}"
+  [[ -d "$legacy" && ! -L "$legacy" && -O "$legacy" ]] || return 0
+  for admin in "$(git -C "$repo" rev-parse --absolute-git-dir 2>/dev/null)" "$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; do
+    [[ -z "$admin" || ! "$legacy" -ef "$admin" ]] || return 0
+  done
+  for entry in .multi-agent-output-owner .multi-agent-run.lock .review-in-flight; do
+    [[ ! -e "${legacy}/${entry}" && ! -L "${legacy}/${entry}" ]] || return 0
+  done
+  for entry in "$legacy"/* "$legacy"/.[!.]* "$legacy"/..?*; do
+    [[ -e "$entry" || -L "$entry" ]] || continue
+    found=true; break
+  done
+  [[ "$found" == true ]] || return 0
+  tracked="$(git -C "$repo" ls-files -- ":(literal)${name}" 2>/dev/null)" || return 0
+  [[ -z "$tracked" ]] || return 0
+  ff_review_output_ancestors "$legacy" || return 1
+  ts="$(date -u +%Y%m%dT%H%M%SZ)" || { ff_review_output_error 'cannot read the clock to name the set-aside directory'; return 1; }
+  staging="${legacy}.legacy-${ts}-$$"
+  [[ ! -e "$staging" && ! -L "$staging" ]] || { ff_review_output_error "set-aside name already exists: ${staging}"; return 1; }
+  # Claim the root with the run-lock name before moving it. A concurrent run (or
+  # an older version still writing) then sees the lock and leaves it alone, and
+  # the checks above are repeated under the claim: a peer may already have put
+  # a new marked (or still empty) root at this name.
+  (umask 077; mkdir -- "${legacy}/.multi-agent-run.lock") 2>/dev/null || return 0
+  found=false
+  for entry in "$legacy"/* "$legacy"/.[!.]* "$legacy"/..?*; do
+    [[ -e "$entry" || -L "$entry" ]] || continue
+    [[ "$entry" == "${legacy}/.multi-agent-run.lock" ]] || { found=true; break; }
+  done
+  if [[ "$found" != true || -e "${legacy}/.multi-agent-output-owner" || -L "${legacy}/.multi-agent-output-owner" ]] \
+     || ! mv -- "$legacy" "$staging" 2>/dev/null; then
+    rmdir -- "${legacy}/.multi-agent-run.lock" 2>/dev/null || true
+    return 0
+  fi
+  printf '%s\n' "$staging"
+}
+
+# Undoes the set-aside when the new root could not be prepared, so the checkout
+# is as it was (its ignore rule covers the original name, not the sibling).
+ff_review_output_restore_legacy() { # <staging> <original>
+  if [[ ! -e "$2" && ! -L "$2" ]] && mv -- "$1" "$2" 2>/dev/null; then
+    rmdir -- "${2}/.multi-agent-run.lock" 2>/dev/null || true
+    echo "       The previous results were put back unread at ${2}; nothing was run." >&2
+    return 0
+  fi
+  echo "⚠️  output boundary: the previous results stay moved aside unread at ${1} (could not put them back at ${2}); they are not from this run. Move them by hand; nothing was run." >&2
+}
+
+# Puts the set-aside legacy root inside the new private root as .prev-<ts>-legacy/
+# (the --fresh archive place, so the consumer's ignore rule for the root covers it).
+ff_review_output_adopt_legacy() { # <staging> <prepared-output>
+  local ts archive
+  ts="${1##*.legacy-}"; ts="${ts%%-*}"
+  archive="${2}/.prev-${ts}-legacy"
+  [[ ! -e "$archive" && ! -L "$archive" ]] || archive="${archive}-$$"
+  if [[ ! -e "$archive" && ! -L "$archive" ]] && mv -- "$1" "$archive" 2>/dev/null; then
+    rmdir -- "${archive}/.multi-agent-run.lock" 2>/dev/null || true
+    echo "🧹 output boundary: a previous version left ${2} without the owner-only marker; moved it unread to ${archive} and started a new private (mode 700) directory. Nothing in it is from this run." >&2
+    return 0
+  fi
+  echo "⚠️  output boundary: previous results were moved aside unread to ${1} but could not be placed under ${2}; they are not from this run. Move or remove them by hand." >&2
+}
+
 prepare_output_namespace() {
-  OUTPUT_DIR="$(ff_review_output_prepare "$REPO_ROOT" "$OUTPUT_DIR" "$OUTPUT_DIR_EXPLICIT" "$TASK_TYPE")" || return 1
+  local legacy='' original="$OUTPUT_DIR"
+  # Only the built-in default: no --output-dir and no output_dir from a config
+  # other than the plugin's own default (a project value is implicit too).
+  if [[ "$OUTPUT_DIR_EXPLICIT" != true && "${OUTPUT_DIR_SOURCE:-plugin default}" == "plugin default" \
+        && "$OUTPUT_DIR" == "$(get_default_output_dir "$TASK_TYPE")" ]]; then
+    legacy="$(ff_review_output_set_aside_legacy "$REPO_ROOT" "$OUTPUT_DIR")" || return 1
+  fi
+  OUTPUT_DIR="$(ff_review_output_prepare "$REPO_ROOT" "$OUTPUT_DIR" "$OUTPUT_DIR_EXPLICIT" "$TASK_TYPE")" || {
+    [[ -z "$legacy" ]] || ff_review_output_restore_legacy "$legacy" "${legacy%.legacy-*}"
+    OUTPUT_DIR="$original"
+    return 1
+  }
+  [[ -z "$legacy" ]] || ff_review_output_adopt_legacy "$legacy" "$OUTPUT_DIR"
 }
 
 validate_output_artifact_paths() {

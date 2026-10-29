@@ -73,7 +73,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 | `/ace-setup` | ACE（Agentic Context Engineering）フレームワークのセットアップ |
 | `/ace-curate` | マージ済み PR からの知見抽出・プレイブック追記 |
 | `/ace-refine` | ACE Playbook の定期整理（stale アーカイブ・長大エントリ圧縮・重複統合）。dry-run → 承認 → 適用の 3 フェーズで原文を保全する |
-| `/retrospective` | ワークフローチェーン末尾（`/merge-cleanup` → `/ace-curate` → `/retrospective`）のセッション振り返り。対応ホストでは UserPromptSubmit で応答前に注入し、Stop hook は実行漏れ時だけ継続する（`RETROSPECTIVE_MODE=ask\|off` で制御）。実測した手戻り・無駄時間・Keep・過剰動作を作業中リポジトリの観測台帳（無ければテンプレートから作成）へ記録し、閾値に到達した再発からプロセス/ツール改善を最大 3 件提案（該当なしなら 1 行報告）。起票は既定では承認を待たずに実行して発行番号を報告する（`RETROSPECTIVE_FILING=ask` で承認待ち式へ戻せる） |
+| `/retrospective` | ワークフローチェーン末尾（`/merge-cleanup` → `/ace-curate` → `/retrospective`）のセッション振り返り。対応ホストでは UserPromptSubmit で応答前に注入し、Stop hook は実行漏れ時だけ継続する（`RETROSPECTIVE_MODE=ask\|off` で制御）。実測した手戻り・無駄時間・Keep・過剰動作を作業中リポジトリの観測台帳（無ければテンプレートから作成）へ記録し、閾値に到達した再発からプロセス/ツール改善を最大 3 件提案（該当なしなら 1 行報告）。起票は同一 private 確認済み repo では既定で自動実行する（`RETROSPECTIVE_FILING=ask` で承認待ち式）。外部・公開・未確認の送り先は完成本文・送信先・公開範囲の承認後に書き込む（外部公開の承認境界） |
 | `/knowledge-lookup` | ACE Playbook と観測台帳（`docs/08-knowledge/OBSERVATIONS.md`）を同じキーワードで 1 回引き、状態（ACE の active / deprecated / archived、台帳の active / promoted / mitigated / archived）で切り分けて返す読み出し器。着手前の参照と `/retrospective` の promoted × open 突き合わせ（`--promoted-open`）に使う。書き込みはしない |
 | `/setup-ai-config` | AI 開発ツール設定の初期化 |
 | `/multi-explore` | マルチAI CLI による並列探索 |
@@ -162,7 +162,7 @@ Windows の Git Bash 上で Claude Code を使っていると、セッション�
 - ASDD 2.0では `hooks` と `retrospective` の両方がtrueの場合だけ動く。設定なしの従来環境では既定は自動実行。`RETROSPECTIVE_MODE=ask` で実施前確認へ切り替える
 - `RETROSPECTIVE_MODE=off` で自動発火を無効にする。`0` / `false` / `no` / `none` / `disabled` も大文字小文字と空白を無視して受け付ける
 - Node.js 22 以上が見つからない場合は応答をブロックせず、手動実行と復旧方法を通知する
-- 改善提案の Issue 起票は既定では承認を待たずに実行し、発行番号を振り返り結果で報告する。`RETROSPECTIVE_FILING=ask` で承認待ち式へ戻せる（`RETROSPECTIVE_MODE` とは独立した起票側のスイッチで、hook は `ask` のときだけ承認文言を注入する）
+- 改善提案の Issue 書き込みは、同一 private 確認済み repo では既定で自動実行し、`RETROSPECTIVE_FILING=ask` で承認待ち式にする（`RETROSPECTIVE_MODE` とは独立）。外部公開の承認境界は全モード共通で、hook・明示呼び出しのどちらでもスキルの正本に従う。
 
 ### 工数の実測記録（wall-clock・指示の読み込みバイト）
 

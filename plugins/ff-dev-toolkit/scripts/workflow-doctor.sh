@@ -509,11 +509,14 @@ else
       fi
     else
       REPO="$(git -C "$ROOT" remote get-url origin 2>/dev/null | sed -E 's#^(https://github.com/|git@github.com:)##; s#\.git$##')"
+      # 認証情報付き・別ホストの origin は sed を素通りするので、OWNER/REPO の形だけを採る。
+      printf '%s' "$REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || REPO=""
     fi
   fi
   if [ -z "$REPO" ]; then
-    raw_url="$(git -C "$ROOT" remote get-url origin 2>/dev/null || echo '(origin なし)')"
-    emit SKIP 4 "対象リポジトリを解決できない（origin=${raw_url}。https://github.com/ と git@github.com: 以外は --repo OWNER/REPO を指定）"; emit SKIP 5 "同左"; emit SKIP 6 "同左"
+    # origin の URL は認証情報（userinfo・query）を含みうるので、有無だけを伝える。
+    if git -C "$ROOT" remote get-url origin >/dev/null 2>&1; then origin_note='origin の URL は表示しません'; else origin_note='origin なし'; fi
+    emit SKIP 4 "対象リポジトリを解決できない（${origin_note}。https://github.com/ と git@github.com: 以外は --repo OWNER/REPO を指定）"; emit SKIP 5 "同左"; emit SKIP 6 "同左"
   else
     if [ -n "$GITHUB_INPUT" ]; then
       labels="$(doctor_file doctor.labels '{"limit":200}' '.[].name' 2>/dev/null)"; lrc=$?

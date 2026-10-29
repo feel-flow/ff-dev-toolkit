@@ -111,6 +111,7 @@
 # 変異検出: 許容表から OS 限定（Windows の Git Bash でだけ成立する検査）の行を消すと (7) の針と release-runtime（OS 限定の skip で止まる）が赤。
 # 変異検出: 許容表から bash 版限定（bash 4 以上でだけ成立する検査）の行を消すと (7) の針と release-runtime（bash 版限定の skip で止まる）が赤（2026-10-07 実測）。
 # 空振り検出: footer 分類器の成功状態照合を削除すると footer-reuse-runtime の empty / identical ケースが赤（2026-09-26 実測 exit 1）。内容証明なしの exit 0 は採用しない。
+# 空振り検出: Bash版限定の実census/containsを隔離実行し、3emitterと表prefix一致はrc0。knowledge不在/空/文言変更/読取不可・全emitter空/不在・余分なemitter、表行欠落/prefix変更/空/不在の11陰性対照は各rc1（2026-10-30実測）。
 # 空振り検出: MSYS 部分 skip の理由文を許容表へ足すと「環境 skip が許容表の要素」が赤（2026-10-19 実測。実ブロックは不一致でなく、理由文を足したブロックは不一致で赤）。
 # 空振り検出: 呼び出し 4 ファイルから ff_skip_msys_case を消すと呼び出し針が赤（0 件を緑へ倒さない。2026-10-19 実測、4 ファイルとも赤。不在ファイルも赤）。
 # 空振り検出: ヘルパの字下げした skip 行を消すと形の針が赤（2026-10-19 実測。理由文が残っていても字下げ行が無いと赤）。
@@ -157,6 +158,7 @@
 
 # 空振り検出: 同期の展開前 tree 種別検査を除く対照は source/destination LICENSE symlink の dry/real を4件検出して rc=1、通常対照 rc=0（2026-10-28、有限の隔離 sentinel のみ）。
 # 空振り検出: 非公開件名の公開 commit 転記を復元すると marker 検査だけが赤（158 pass / 1 fail、rc=1）、通常対照は159 pass / 0 fail、rc=0（2026-10-28、hook 省略の隔離 runtime）。
+# 空振り検出: Darwin 専用 skip の条件付き許可（Issue `#2517`）を無条件にする・Darwin だけへ反転する・節ごと消す 3 変異は、いずれも実挙動 4 通りの照合だけが赤（169 pass / 1 fail、rc=1）、通常対照は 170 pass / 0 fail（2026-10-29 WSL 実測）。差し替えた本体の lib だけで同じ節を消すと実挙動の照合が赤、出し手の行を「○ skip: <fixture 名> — <理由文>」の語順へ変えると出し手の集合照合が赤（各 rc=1）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -504,9 +506,9 @@ contains '| `ff-media-toolkit/tests/render-smoke`: FF_MEDIA_RENDER=1 が未設�
 # どちらもこの針の更新（= レビュー）を経る。grep が失敗して空になった回も一致しないので赤になる
 _os_emitters="$(grep -rlF -- 'Windows の Git Bash でだけ成立する検査のため未実行' "$REPO_ROOT"/plugins/*/tests 2>/dev/null \
   | grep -v '/tests/sync-sha-contract/' | sed "s|^$REPO_ROOT/||" | sort)" || true
-_os_emitters_want="$(printf '%s\n' plugins/ff-dev-toolkit/tests/ace-curate-commit/verify.sh plugins/ff-dev-toolkit/tests/guard-review-in-flight/verify.sh)"
+_os_emitters_want="$(printf '%s\n' plugins/ff-dev-toolkit/tests/ace-curate-commit/verify.sh plugins/ff-dev-toolkit/tests/guard-review-in-flight/verify.sh plugins/ff-dev-toolkit/tests/knowledge-lookup/windows-acl.sh)"
 if [[ "$_os_emitters" == "$_os_emitters_want" ]]; then
-  ok "OS 限定の理由文を出す suite が guard-review-in-flight と ace-curate-commit だけである（表の文言が実出力にある）"
+  ok "OS 限定の理由文を出す suite が guard-review-in-flight・ace-curate-commit・knowledge-lookup だけである（表の文言が実出力にある）"
 else
   bad "OS 限定の理由文を出す suite の集合が想定と違う（文言の変更か使い回し。許容表と SKILL.md の表を見直す）: [${_os_emitters}]"
 fi
@@ -514,17 +516,19 @@ contains '| `guard-review-in-flight`: Windows の Git Bash でだけ成立する
   "手順 0b の許容表に OS 限定（guard-review-in-flight の (w1)〜(w5)）の行がある"
 contains '| `ace-curate-commit`: Windows の Git Bash でだけ成立する検査のため未実行 | OS 限定 |' \
   "手順 0b の許容表に OS 限定（ace-curate-commit の 6b の別名ケース）の行がある"
+contains '| `knowledge-lookup`: Windows の Git Bash でだけ成立する検査のため未実行 | OS 限定 |' \
+  "手順 0b の許容表に OS 限定（knowledge-lookup の W8〜W9）の行がある"
 # bash 版限定の理由文（Issue `#2077`）。OS 限定と同じく、文言を出す suite の集合を完全一致で固定する
 _bash4_emitters="$(grep -rlF -- 'bash 4 以上でだけ成立する検査のため未実行' "$REPO_ROOT"/plugins/*/tests 2>/dev/null \
   | grep -v '/tests/sync-sha-contract/' | sed "s|^$REPO_ROOT/||" | sort)" || true
-_bash4_emitters_want="$(printf '%s\n' plugins/ff-dev-toolkit/tests/retrospective-stop-hook/verify.sh plugins/ff-dev-toolkit/tests/skill-drift-check/verify.sh)"
+_bash4_emitters_want="$(printf '%s\n' plugins/ff-dev-toolkit/tests/knowledge-lookup/windows-acl.sh plugins/ff-dev-toolkit/tests/retrospective-stop-hook/verify.sh plugins/ff-dev-toolkit/tests/skill-drift-check/verify.sh)"
 if [[ "$_bash4_emitters" == "$_bash4_emitters_want" ]]; then
-  ok "bash 版限定の理由文を出す suite が retrospective-stop-hook と skill-drift-check だけである（表の文言が実出力にある）"
+  ok "bash 版限定の理由文を出す suite が knowledge-lookup・retrospective-stop-hook・skill-drift-check だけである（表の文言が実出力にある）"
 else
   bad "bash 版限定の理由文を出す suite の集合が想定と違う（文言の変更か使い回し。許容表と SKILL.md の表を見直す）: [${_bash4_emitters}]"
 fi
-contains '| `retrospective-stop-hook` / `skill-drift-check`: bash 4 以上でだけ成立する検査のため未実行 | bash 版限定 |' \
-  "手順 0b の許容表に bash 版限定（retrospective-stop-hook / skill-drift-check）の行がある"
+contains '| `retrospective-stop-hook` / `skill-drift-check` / `knowledge-lookup`: bash 4 以上でだけ成立する検査のため未実行 | bash 版限定 |' \
+  "手順 0b の許容表に bash 版限定（retrospective-stop-hook / skill-drift-check / knowledge-lookup）の行がある"
 # bwrap 不在の理由文（Issue `#2457`）は Darwin の gate だけが許可する条件付きの OS 限定。Linux では入れれば
 # 実行できる環境 skip なので、部分一致の許容表へ入れると Linux の未導入まで黙って通る。表に無いこと・
 # Darwin 条件・呼び出し・出す suite の集合を固定する
@@ -550,6 +554,45 @@ else
 fi
 contains '| `decision-tree`: bwrap が無いため sandbox 上の経路判定は未検査 | 条件付きの OS 限定 |' \
   "手順 0b の許容表に条件付きの OS 限定（decision-tree の bwrap 不在）の行がある"
+# Darwin 専用の検査（Issue `#2517`）は bwrap と逆向きの条件付き OS 限定: Linux の gate では実行できないので許し、
+# Darwin の gate では実行されるはずなので同じ行を退行として止める。表に無いこと・定数・出す suite の集合と、
+# 判定関数の実挙動（uname を差し替えた 4 通り）を固定する
+if [[ "$_allowed_block" == *'Darwin でだけ成立する'* ]]; then
+  bad "Darwin 専用の skip が許容表の要素になっている（Darwin の gate で回らなくなっても通る）"
+elif [[ -n "$_allowed_block" ]]; then
+  ok "Darwin 専用の skip を許容表の要素にしていない（Darwin 以外だけを許す判定関数で扱う）"
+fi
+release_contains "RELEASE_DARWIN_SKIP_REASON='Darwin でだけ成立する検査のため未実行'" \
+  "Darwin 専用の理由文が判定関数の定数にある"
+_os_verdicts=""
+for _os_case in Linux:darwin Darwin:darwin Linux:bwrap Darwin:bwrap; do
+  case "${_os_case#*:}" in
+    darwin) _os_line='  ○ skip: Darwin でだけ成立する検査のため未実行（native ACL fixture）' ;;
+    *) _os_line='  ○ skip: bwrap が無いため sandbox 上の経路判定は未検査（J0 の静的固定は実施済み）' ;;
+  esac
+  if OS_CASE_HOST="${_os_case%%:*}" bash -c 'uname() { printf "%s\n" "$OS_CASE_HOST"; }; . "$1" && ff_release_os_skip_allowed "$2"' _ \
+      "$(dirname "$RELEASE_SCRIPT")/lib/release-environment-functions.sh" "$_os_line"; then
+    _os_verdicts="${_os_verdicts}${_os_case}=allow "
+  else
+    _os_verdicts="${_os_verdicts}${_os_case}=stop "
+  fi
+done
+if [[ "$_os_verdicts" == 'Linux:darwin=allow Darwin:darwin=stop Linux:bwrap=stop Darwin:bwrap=allow ' ]]; then
+  ok "OS 限定の条件付き許可が、Darwin 専用の skip は Darwin 以外だけ・bwrap 不在は Darwin だけを通す（実挙動 4 通り）"
+else
+  bad "OS 限定の条件付き許可の実挙動が想定と違う: [${_os_verdicts}]"
+fi
+# 判定関数は「○ skip: 」の直後に理由文が続く形だけを許すので、出し手もその形で探す（語順を変えた行を拾わない）
+_darwin_emitters="$(grep -rlF -- '○ skip: Darwin でだけ成立する検査のため未実行' "$REPO_ROOT"/plugins/*/tests 2>/dev/null \
+  | grep -v '/tests/sync-sha-contract/' | sed "s|^$REPO_ROOT/||" | sort)" || true
+_darwin_emitters_want="$(printf '%s\n' plugins/ff-agent-press/tests/cli-guards/local-output.test.mjs plugins/ff-dev-toolkit/tests/guard-exit-code/consumer-resource-cases.sh)"
+if [[ "$_darwin_emitters" == "$_darwin_emitters_want" ]]; then
+  ok "Darwin 専用の理由文を出す suite が ff-agent-press の cli-guards と guard-exit-code だけである（判定関数の文言が実出力にある）"
+else
+  bad "Darwin 専用の理由文を出す suite の集合が想定と違う（文言の変更か使い回し。判定関数と SKILL.md の表を見直す）: [${_darwin_emitters}]"
+fi
+contains '| `ff-agent-press/tests/cli-guards` / `guard-exit-code`: Darwin でだけ成立する検査のため未実行 | 条件付きの OS 限定 |' \
+  "手順 0b の許容表に条件付きの OS 限定（ff-agent-press の Darwin 専用 ACL 検査）の行がある"
 contains '`ff-media-toolkit/tests/typecheck` の `node_modules` 不在' \
   "手順 0b が ff-media の setup 前の typecheck を環境 skip（許容しない）として名指ししている"
 contains '`MSYS では成立しない検査のため未実行` は環境 skip で、許容表には載せない' \

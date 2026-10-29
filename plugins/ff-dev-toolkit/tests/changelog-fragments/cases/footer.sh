@@ -250,6 +250,12 @@ footer_rewrite_out="$(PATH="$FOOTER_FAKE_BIN:$PATH" FAKE_FOOTER_REAL_GIT="$(comm
 footer_rewrite_rc=$?
 set -e
 if [[ "$footer_rewrite_rc" -eq 2 && "$footer_rewrite_out" == *"insteadOf が公開 URL を書き換えています"* ]]; then ok "global insteadOf の書き換えを送信前に検出して停止"; else bad "insteadOf の書き換えを検出できない: rc=$footer_rewrite_rc out=$footer_rewrite_out"; fi
+# 書き換え先に認証情報（userinfo・query）があっても、拒否の診断へ出さない
+set +e
+footer_cred_out="$(PATH="$FOOTER_FAKE_BIN:$PATH" FAKE_FOOTER_REAL_GIT="$(command -v git)" FAKE_FOOTER_INSTEADOF_REWRITE=2 bash "$FOOTER_ROOT/scripts/update-dev-toolkit-changelog-footer.sh" --public-checkout "$FOOTER_PUBLIC" 2>&1)"
+footer_cred_rc=$?
+set -e
+if [[ "$footer_cred_rc" -eq 2 && "$footer_cred_out" == *"表示しません"* && "$footer_cred_out" != *SYNTHETIC-* ]]; then ok "認証情報付きの rewrite は拒否し、URL を診断へ出さない"; else bad "認証情報付き rewrite の診断: rc=${footer_cred_rc}（SYNTHETIC の有無: $([[ "$footer_cred_out" == *SYNTHETIC-* ]] && echo あり || echo なし)）"; fi
 
 write_changelog "$FOOTER_CHANGELOG"
 if footer_lock_change_out="$(PATH="$FOOTER_FAKE_BIN:$TEST_BIN:$PATH" FAKE_FOOTER_REAL_GIT="$(command -v git)" FAKE_RMDIR_FAIL=1 bash "$FOOTER_ROOT/scripts/update-dev-toolkit-changelog-footer.sh" --public-checkout "$FOOTER_PUBLIC" 2>&1)"; then footer_lock_change_rc=0; else footer_lock_change_rc=$?; fi

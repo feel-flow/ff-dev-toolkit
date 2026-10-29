@@ -20,6 +20,10 @@
 #      既定 identity 文字列は lib と本 suite 以外に無い（静的照合）
 #   5. shell・実行可能ファイル・fixtures 内の通常ファイルにシステム git 直書きが無い。
 #      コメント行・Markdown・.probe 報告は除外。対象不在・空集合・読取器異常は赤。
+#   6. 新規 fixture の初期ブランチは、利用者の init.defaultBranch が develop でも master。
+#      ローカルへ init.defaultBranch は書かない。commit のあと develop を追加できる。
+#      再初期化は既存の HEAD を変えず、ignored --initial-branch を出さない。
+#      親シェルの GIT_CONFIG_GLOBAL は残す。
 #   （経路 1 の再現有無は git 版依存のため info 表示のみで、判定に含めない）
 #
 # 一時領域を使うが実 CLI・ネットワーク・課金は伴わない。
@@ -290,6 +294,68 @@ if [ "$rc" -ne 0 ] && [ ! -e "$FX4/.git" ] && grep -qF 'git init に失敗（ide
 else
   bad "git init 失敗分岐が識別できない、または identity を書いた (rc=$rc)"
   sed 's/^/    | /' "$TMP/case-initfail.log" >&2
+fi
+
+# 利用者の init.defaultBranch=develop でも、新規 fixture は master から始まり、
+# commit 後に develop を作れる。設定はサブシェルだけに置き、親へ漏らさない。
+DEV_CFG="$TMP/default-branch.gitconfig"
+printf '[init]\n\tdefaultBranch = develop\n' >"$DEV_CFG"
+parent_global="${GIT_CONFIG_GLOBAL-}"
+FXD="$TMP/fx-default-branch"
+rc=0
+(
+  export GIT_CONFIG_GLOBAL="$DEV_CFG" GIT_CONFIG_NOSYSTEM=1
+  # shellcheck source=../lib/git-fixture.sh
+  . "$LIB"
+  ff_git_fixture_init "$FXD"
+  "$REAL_GIT" -C "$FXD" commit -q --allow-empty -m init
+  "$REAL_GIT" -C "$FXD" branch develop
+) >"$TMP/case-default-branch.log" 2>&1 || rc=$?
+default_rc=0
+if [ -d "$FXD/.git" ]; then
+  "$REAL_GIT" -C "$FXD" config --local --get init.defaultBranch >/dev/null 2>&1 || default_rc=$?
+fi
+if [ "$rc" -eq 0 ] && [ -d "$FXD/.git" ] \
+  && [ "$("$REAL_GIT" -C "$FXD" symbolic-ref --short HEAD)" = master ] \
+  && [ "$default_rc" -eq 1 ] \
+  && "$REAL_GIT" -C "$FXD" show-ref --verify --quiet refs/heads/develop \
+  && ! grep -qF 'ignored --initial-branch' "$TMP/case-default-branch.log" \
+  && [ "${GIT_CONFIG_GLOBAL-}" = "$parent_global" ] \
+  && [ -z "$(outer_identity)" ]; then
+  ok "init.defaultBranch=develop でも新規 fixture は master のまま develop を追加でき、親の GIT_CONFIG_GLOBAL は漏れない"
+else
+  bad "初期ブランチが利用者設定に従った、または develop を追加できない (rc=${rc}, default_rc=${default_rc})"
+  sed 's/^/    | /' "$TMP/case-default-branch.log" >&2
+fi
+
+# 再初期化は -b を付けない。develop へ改名した HEAD と、警告の有無を固定する。
+FXR="$TMP/fx-reinit-branch"
+rc=0
+(
+  export GIT_CONFIG_GLOBAL="$DEV_CFG" GIT_CONFIG_NOSYSTEM=1
+  # shellcheck source=../lib/git-fixture.sh
+  . "$LIB"
+  ff_git_fixture_init "$FXR" first "first@example.invalid"
+  "$REAL_GIT" -C "$FXR" commit -q --allow-empty -m init
+  "$REAL_GIT" -C "$FXR" branch -M develop
+  ff_git_fixture_init "$FXR" second "second@example.invalid"
+) >"$TMP/case-reinit-branch.log" 2>&1 || rc=$?
+re_default_rc=0
+if [ -d "$FXR/.git" ]; then
+  "$REAL_GIT" -C "$FXR" config --local --get init.defaultBranch >/dev/null 2>&1 || re_default_rc=$?
+fi
+if [ "$rc" -eq 0 ] && [ -d "$FXR/.git" ] \
+  && [ "$("$REAL_GIT" -C "$FXR" symbolic-ref --short HEAD)" = develop ] \
+  && [ "$("$REAL_GIT" -C "$FXR" config --local --get user.email)" = second@example.invalid ] \
+  && [ "$("$REAL_GIT" -C "$FXR" config --local --get user.name)" = second ] \
+  && [ "$re_default_rc" -eq 1 ] \
+  && ! "$REAL_GIT" -C "$FXR" show-ref --verify --quiet refs/heads/master \
+  && ! grep -qF 'ignored --initial-branch' "$TMP/case-reinit-branch.log" \
+  && [ "${GIT_CONFIG_GLOBAL-}" = "$parent_global" ]; then
+  ok "再初期化は develop の HEAD を残し、ignored --initial-branch を出さない"
+else
+  bad "再初期化が HEAD を変えた、または警告を出した (rc=${rc}, re_default_rc=${re_default_rc})"
+  sed 's/^/    | /' "$TMP/case-reinit-branch.log" >&2
 fi
 
 # ---- 4. 静的照合: identity 非依存。未移行は allowlist のみ。stale allowlist は赤 ----
