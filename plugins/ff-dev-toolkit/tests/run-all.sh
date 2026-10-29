@@ -1618,7 +1618,6 @@ MISS_PROBE_BASELINE=(
   ace-scripts-mirror
   ace-scripts-typecheck-selftest
   ace-scripts-typecheck
-  ace-scripts-vitest
   adapter-argv-limit
   adapter-base-ref-freshness
   adapter-model-args
@@ -1651,9 +1650,7 @@ MISS_PROBE_BASELINE=(
   mbcs-guard-failclosed
   mcp-dist-gate
   mcp-state-selftest
-  mcp-typecheck-selftest
   mcp-typecheck
-  mcp-vitest
   multi-agent-ignore-paths
   multi-agent-revision-guard
   multi-agent-skip-poisoned-cli
@@ -1673,7 +1670,6 @@ MISS_PROBE_BASELINE=(
   root-instructions-parity
   severity-parser-intersection
   shellcheck
-  skill-count-consistency-selftest
   sweep-orphan-transcripts
   update-check
   validate-docs-placeholders-selftest

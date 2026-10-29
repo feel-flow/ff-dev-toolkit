@@ -618,7 +618,7 @@ case "$cmd" in
       done
       [[ "$history_seen" -eq 0 ]] || continue
       history_books+=("$history_book")
-      if ! history_selected="$(ff_playbook_changelog_select "$history_book")"; then die_env "$history_selected"; fi
+      if ! history_selected="$(ff_playbook_changelog_select "$history_book" "$repo_root")"; then die_env "$history_selected"; fi
       history_prefix="$(git -C "${history_selected%/*}" rev-parse --show-prefix)" || die_env "履歴のリポジトリ位置を確認できません"
       history_rel="${history_prefix}${history_selected##*/}"
       history_changed=0; history_rc=0
@@ -634,7 +634,7 @@ case "$cmd" in
         [[ "$history_explicit" -eq 1 ]] || die_env "変更済み Changelog を明示対象へ追加してください: ${history_rel}（探索だけではstageしません）"
       fi
       playbook_rc=0
-      playbook_out="$(ff_playbook_changelog_helpful_check "$history_book")" || playbook_rc=$?
+      playbook_out="$(ff_playbook_changelog_helpful_check "$history_book" "$repo_root")" || playbook_rc=$?
       if [[ "$playbook_rc" -eq 0 ]]; then continue; fi
       if [[ "$playbook_rc" -eq 1 ]]; then
         echo "✗ Changelog に Helpful +1 を含むのに契約の形で読めない行があります（stage も保留記録も作っていません）:" >&2

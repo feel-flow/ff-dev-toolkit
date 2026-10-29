@@ -70,6 +70,7 @@
  * - allowlist 初期化: npx --yes tsx scripts/ace/check-entry-format.ts --init-allowlist docs/08-knowledge/PLAYBOOK.md
  */
 import * as fs from "node:fs";
+import { KnowledgeReadBoundary, KnowledgeReadError, knowledgeReaderForSelection, knowledgeInputExists } from "./knowledge-read-boundary";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -446,10 +447,17 @@ export function detectLegacyMarkers(body: string): LegacyMarker[] {
 
 /** allowlist ファイルを読む。`#` 始まりのコメント行・空行・前後空白は無視する。 */
 export function parseAllowlist(content: string): string[] {
-  return content
+  const ids = content
     .split("\n")
     .map((line: string) => line.trim())
     .filter((line: string) => line !== "" && !line.startsWith("#"));
+  // Init preserves recognized malformed IDs; the independent shape gate reports
+  // their source heading. This is the recognizer grammar, not canonical SHAPE;
+  // non-heading text is refused, while recognized noncanonical IDs are retained.
+  if (ids.some(id => `### ${id}:`.match(ACE_ENTRY_HEADER_LINE)?.[1] !== id)) {
+    throw new LegacyListInputError('allowlist の ID を認識できません');
+  }
+  return ids;
 }
 
 function resolveAllowlistPath(playbookPath: string): string {
@@ -479,8 +487,9 @@ export class LegacyListInputError extends Error {
   }
 }
 
-function discoverMarkdownFiles(directoryPath: string): string[] {
+function discoverMarkdownFiles(directoryPath: string, reader: KnowledgeReadBoundary): string[] {
   try {
+    reader.directory(directoryPath);
     if (!fs.statSync(directoryPath).isDirectory()) {
       throw new LegacyListInputError(`対象がディレクトリではありません: ${directoryPath}`);
     }
@@ -497,17 +506,17 @@ function discoverMarkdownFiles(directoryPath: string): string[] {
 }
 
 /** ファイル読み込みの失敗を一覧・初期化系の入力エラーとして送出する。 */
-function readFileText(filePath: string): string {
+function readFileText(filePath: string, reader: KnowledgeReadBoundary): string {
   try {
-    return fs.readFileSync(filePath, "utf8");
+    return reader.read(filePath);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     throw new LegacyListInputError(`${filePath}: ${message}`);
   }
 }
 
-function readEntries(filePath: string): readonly PlaybookEntry[] {
-  const content = readFileText(filePath);
+function readEntries(filePath: string, reader: KnowledgeReadBoundary): readonly PlaybookEntry[] {
+  const content = readFileText(filePath, reader);
   const fenceScan = blankFencedCodeBlocks(blankHtmlBlockComments(content));
   if (fenceScan.unclosedFence) {
     throw new LegacyListInputError(
@@ -522,9 +531,10 @@ function readEntries(filePath: string): readonly PlaybookEntry[] {
  * 読み込み失敗、非ディレクトリ、未閉フェンスは `LegacyListInputError` として送出する。
  */
 export function listEntryIds(directoryPath: string): readonly RecognizedAceEntryId[] {
+  const reader = knowledgeReaderForSelection(directoryPath, [], true);
   const ids = new Set<RecognizedAceEntryId>();
-  for (const filePath of discoverMarkdownFiles(directoryPath)) {
-    for (const entry of readEntries(filePath)) {
+  for (const filePath of discoverMarkdownFiles(directoryPath, reader)) {
+    for (const entry of readEntries(filePath, reader)) {
       ids.add(entry.id);
     }
   }
@@ -536,9 +546,10 @@ export function listEntryIds(directoryPath: string): readonly RecognizedAceEntry
  * 読み込み失敗、非ディレクトリ、未閉フェンスは `LegacyListInputError` として送出する。
  */
 export function listLegacyEntryIds(directoryPath: string): readonly RecognizedAceEntryId[] {
+  const reader = knowledgeReaderForSelection(directoryPath, [], true);
   const ids = new Set<RecognizedAceEntryId>();
-  for (const filePath of discoverMarkdownFiles(directoryPath)) {
-    for (const entry of readEntries(filePath)) {
+  for (const filePath of discoverMarkdownFiles(directoryPath, reader)) {
+    for (const entry of readEntries(filePath, reader)) {
       if (detectLegacyMarkers(entry.body).length > 0) {
         ids.add(entry.id);
       }
@@ -557,8 +568,8 @@ export function listLegacyEntryIds(directoryPath: string): readonly RecognizedAc
  * 初期化が数えなかった旧形式エントリをゲートが違反として拒否する（あるいはその逆で、
  * ゲートが見ない ID を allowlist へ書き込む）という**導入直後に必ず踏む**ずれになる。
  */
-function collectPlaybookFiles(playbookPath: string): string[] {
-  const categoryFiles = discoverPlaybookSubfiles(playbookPath);
+function collectPlaybookFiles(playbookPath: string, reader: KnowledgeReadBoundary): string[] {
+  const categoryFiles = discoverPlaybookSubfiles(playbookPath, reader);
   // 索引 PLAYBOOK.md 自身も常に走査する — 件数ゲート・refine・reuse の 3 者は索引の
   // 内容を集計対象に含めるため、索引だけ形式ゲートから外すと「認識して数えるが、
   // どのゲートも形式が不正とは言わない」経路（#339 が閉じる穴そのもの）が部分移行中の
@@ -576,8 +587,8 @@ function collectPlaybookFiles(playbookPath: string): string[] {
  * ID の形状違反（`ACE-337--1` 等）はここでは拒否しない — 認識はされていて境界は
  * 正しく、形状は形式ゲートが allowlist と独立に赤にするため、抜け道にならない。
  */
-function readEntriesForInit(filePath: string): readonly PlaybookEntry[] {
-  const content = readFileText(filePath);
+function readEntriesForInit(filePath: string, reader: KnowledgeReadBoundary): readonly PlaybookEntry[] {
+  const content = readFileText(filePath, reader);
   const cleaned = blankHtmlBlockComments(content);
   const fenceScan = blankFencedCodeBlocks(cleaned);
   if (fenceScan.unclosedFence) {
@@ -600,23 +611,23 @@ function readEntriesForInit(filePath: string): readonly PlaybookEntry[] {
  * 形式ゲートと同じ走査範囲で旧形式 ID のソート済み集合を返す（Issue #839）。
  * 入力が検査可能な形になっていない場合は `LegacyListInputError` を送出する。
  */
-export function collectLegacyIdsForPlaybook(playbookPath: string): readonly RecognizedAceEntryId[] {
+export function collectLegacyIdsForPlaybook(playbookPath: string, reader = knowledgeReaderForSelection(playbookPath)): readonly RecognizedAceEntryId[] {
   const ids = new Set<RecognizedAceEntryId>();
   // playbook/ の列挙失敗（statSync / readdirSync の権限エラー等）も入力エラーとして
   // 正規化する — 通常ゲートと同じ exit 2 に揃え、初期化時だけ未処理例外で落ちる
   // 非対称を作らない（Codex レビュー指摘）。
   let files: string[];
   try {
-    files = collectPlaybookFiles(playbookPath);
+    files = collectPlaybookFiles(playbookPath, reader);
   } catch (error: unknown) {
-    if (error instanceof LegacyListInputError) {
+    if (error instanceof LegacyListInputError || error instanceof KnowledgeReadError) {
       throw error;
     }
     const message = error instanceof Error ? error.message : String(error);
     throw new LegacyListInputError(`playbook/ ディレクトリの走査に失敗しました: ${message}`);
   }
   for (const filePath of files) {
-    for (const entry of readEntriesForInit(filePath)) {
+    for (const entry of readEntriesForInit(filePath, reader)) {
       if (detectLegacyMarkers(entry.body).length > 0) {
         ids.add(entry.id);
       }
@@ -654,7 +665,8 @@ export function formatAllowlistFile(ids: readonly string[]): string {
  * 既存 allowlist は**上書きしない** — 一致なら書かずに成功、相違なら書かずに差分を返す。
  */
 export function initAllowlist(playbookPath: string, allowlistPath: string): AllowlistInitResult {
-  const ids = collectLegacyIdsForPlaybook(playbookPath);
+  const reader = knowledgeReaderForSelection(playbookPath, process.env.ACE_LEGACY_FORMAT_ALLOWLIST?.trim() && knowledgeInputExists(allowlistPath) ? [allowlistPath] : []);
+  const ids = collectLegacyIdsForPlaybook(playbookPath, reader);
   if (ids.length > 0) {
     // 作成は排他フラグ（wx）で行う — existsSync → write の 2 段だと、その間に別プロセスが
     // 作成・更新した allowlist を黙って上書きできる（TOCTOU。Codex レビュー指摘）。
@@ -675,13 +687,13 @@ export function initAllowlist(playbookPath: string, allowlistPath: string): Allo
         throw new LegacyListInputError(`${allowlistPath}: ${message}`);
       }
     }
-  } else if (!fs.existsSync(allowlistPath)) {
+  } else if (!knowledgeInputExists(allowlistPath)) {
     // 旧形式 0 件のプロジェクト（新規導入・正準化済み）には空ファイルすら置かない。
     // 「allowlist 不在 = strict」が正しい既定であり、空ファイルを置くと「allowlist を
     // 運用している」という誤った外観だけが残る。
     return { kind: "skipped-empty" };
   }
-  const existing = new Set(parseAllowlist(readFileText(allowlistPath)));
+  const existing = new Set(parseAllowlist(readFileText(allowlistPath, reader)));
   const computed = new Set<string>(ids);
   const missing = [...computed].filter((id: string) => !existing.has(id)).sort();
   const extra = [...existing].filter((id: string) => !computed.has(id)).sort();
@@ -711,7 +723,7 @@ function runInitAllowlist(argv: readonly string[]): ExitCode {
   try {
     result = initAllowlist(playbookPath, allowlistPath);
   } catch (error: unknown) {
-    if (error instanceof LegacyListInputError) {
+    if (error instanceof LegacyListInputError || error instanceof KnowledgeReadError) {
       console.error(`読み込み失敗: ${error.message}`);
       return EXIT_USAGE_ERROR;
     }
@@ -774,7 +786,7 @@ function runList(argv: readonly string[]): ListExitCode {
       console.log(id);
     }
   } catch (error: unknown) {
-    if (error instanceof LegacyListInputError) {
+    if (error instanceof LegacyListInputError || error instanceof KnowledgeReadError) {
       console.error(`読み込み失敗: ${error.message}`);
       return EXIT_USAGE_ERROR;
     }
@@ -804,9 +816,12 @@ export function main(argv: readonly string[] = process.argv): ExitCode {
   // ファイル不在は「例外なし」= strict として扱う。fail-open にすると、allowlist を
   // 消すだけでゲートが黙って無効化される。
   let allowlist: string[] = [];
-  if (fs.existsSync(allowlistPath)) {
+  let reader: KnowledgeReadBoundary;
+  try { reader = knowledgeReaderForSelection(playbookPath, process.env.ACE_LEGACY_FORMAT_ALLOWLIST?.trim() && knowledgeInputExists(allowlistPath) ? [allowlistPath] : []); }
+  catch (error) { console.error(error instanceof Error ? error.message : String(error)); return EXIT_USAGE_ERROR; }
+  if (knowledgeInputExists(allowlistPath)) {
     try {
-      allowlist = parseAllowlist(fs.readFileSync(allowlistPath, "utf8"));
+      allowlist = parseAllowlist(reader.read(allowlistPath));
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`読み込み失敗: ${allowlistPath}: ${message}`);
@@ -817,7 +832,7 @@ export function main(argv: readonly string[] = process.argv): ExitCode {
 
   let filesToScan: string[];
   try {
-    filesToScan = collectPlaybookFiles(playbookPath);
+    filesToScan = collectPlaybookFiles(playbookPath, reader);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`読み込み失敗: playbook/ の走査に失敗しました: ${message}`);
@@ -852,7 +867,7 @@ export function main(argv: readonly string[] = process.argv): ExitCode {
   for (const filePath of filesToScan) {
     let content: string;
     try {
-      content = fs.readFileSync(filePath, "utf8");
+      content = reader.read(filePath);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`読み込み失敗: ${filePath}: ${message}`);

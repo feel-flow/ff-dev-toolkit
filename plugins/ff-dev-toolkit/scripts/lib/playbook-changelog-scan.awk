@@ -1,4 +1,5 @@
 # POSIX awk. Caller fixes LC_ALL=C for byte comparisons.
+function source_name() { return ENVIRON["FF_READ_KEY"] != "" ? ENVIRON["FF_READ_KEY"] : FILENAME }
 BEGIN { mode=""; section=""; version=0; added=0; helpful=0; bad=0; invalid=0; stopped=0; hint=0 }
 function date_version(line) { return line ~ /^### \[[0-9]+\.[0-9]+\.[0-9]+\] - [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/ }
 function legacy_version(line) { return line ~ /^## v[0-9]+\.[0-9]+\.[0-9]+ \([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\)[ \t]*$/ }
@@ -49,14 +50,14 @@ function comment_padding(size) { return sprintf("%*s", size, "") }
     if (!version) { if (line !~ /^[ \t]*$/ && line !~ /^[ \t]*\[[^]]+\]\([^)]+\)[ \t]*$/) hint=1; next }
     if (section=="helpful") {
       if (helpful_row(line)) helpful++
-      else if (line ~ /Helpful [+]1/) { bad++; print FILENAME ":" NR ": " line }
+      else if (line ~ /Helpful [+]1/) { bad++; print source_name() ":" NR ": " line }
     } else if (section=="added" && line ~ /^- ACE-[^:[:space:]]+: .+/) added++
     next
   }
   if (line ~ /^- 更新:/) {
     normalized=line; sub(/^- 更新: /,"- ",normalized); sub(/ Helpful [+]1/,": Helpful +1",normalized)
     if (helpful_row(normalized)) helpful++
-    else { bad++; print FILENAME ":" NR ": " line }
+    else { bad++; print source_name() ":" NR ": " line }
     next
   }
   if (line ~ /^- 追加:/) {
@@ -66,7 +67,7 @@ function comment_padding(size) { return sprintf("%*s", size, "") }
       if (item !~ /^ACE-[A-Za-z0-9][A-Za-z0-9._-]*（.+）$/) valid=0
     }
     if (valid) added+=count
-    else { invalid++; print FILENAME ":" NR ": " line }
+    else { invalid++; print source_name() ":" NR ": " line }
   }
 }
 END {

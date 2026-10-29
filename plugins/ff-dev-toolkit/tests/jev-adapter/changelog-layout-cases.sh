@@ -41,7 +41,7 @@ run_h23_layout_cases() {
   h23_layout_make unreadable CHANGELOG.md; chmod 000 "$layout_target"
   h23_layout_check unreadable unreadable-file; chmod 644 "$layout_target"
   h23_layout_make symlink CHANGELOG.md; mv "$layout_target" "$layout_case/history.md"
-  ln -s history.md "$layout_target"; h23_layout_check symlink unreadable-file
+  ln -s history.md "$layout_target"; h23_layout_check symlink ok
   h23_layout_make legacy-bundled CHANGELOG.md; h23_layout_legacy
   printf '%s\n' '- 更新: ACE-10-1 / ACE-20-1 Helpful +1（束ね形）' >>"$layout_target"
   h23_layout_check legacy-bundled unreadable-helpful

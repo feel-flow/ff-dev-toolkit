@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { KnowledgeReadBoundary, KnowledgeReadError, knowledgeReaderForSelection } from "./knowledge-read-boundary";
 import * as path from "node:path";
 import { blankCodeRegions, blankHtmlBlockComments } from "./check-category-size";
 
@@ -61,23 +62,20 @@ export function scanChangelog(raw: string): HistoryScan {
 
 export type SelectedChangelog = { path: string; text: string; scan: HistoryScan };
 
-function readCandidate(candidate: string, root: string): string {
-  const stat = fs.lstatSync(candidate);
-  if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o444) === 0) {
-    throw new Error(`Changelog を読める通常ファイルとして扱えません: ${candidate}`);
-  }
-  const relative = path.relative(fs.realpathSync(root), fs.realpathSync(candidate));
+function readCandidate(candidate: string, root: string, reader: KnowledgeReadBoundary): string {
+  const real = reader.authorize(candidate);
+  const relative = path.relative(reader.directory(root), real);
   if (relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) {
-    throw new Error(`Changelog が PLAYBOOK の領域外です: ${candidate}`);
+    throw new KnowledgeReadError('outside-authority');
   }
-  return fs.readFileSync(candidate, "utf8");
+  return reader.read(candidate);
 }
 
-export function selectChangelog(playbookPath: string): SelectedChangelog {
+export function selectChangelog(playbookPath: string, reader = knowledgeReaderForSelection(playbookPath)): SelectedChangelog {
   const mainPath = path.resolve(playbookPath);
   const mainStat = fs.statSync(mainPath);
   if (!mainStat.isFile() || (mainStat.mode & 0o444) === 0) throw new Error(`Changelog を読めません: ${mainPath}`);
-  const text = fs.readFileSync(mainPath, "utf8");
+  const text = reader.read(mainPath);
   const scan = scanChangelog(text);
   if (scan.kind === "found" || scan.hasUnparsedRows) return { path: mainPath, text, scan };
   const root = path.dirname(mainPath);
@@ -89,7 +87,7 @@ export function selectChangelog(playbookPath: string): SelectedChangelog {
   if (present.length > 1) throw new Error(`Changelog の候補が複数あります: ${present.join(" / ")}`);
   if (!present.length) return { path: mainPath, text, scan };
   const candidate = present[0];
-  const candidateText = readCandidate(candidate, root);
+  const candidateText = readCandidate(candidate, root, reader);
   const candidateScan = scanChangelog(candidateText);
   if (candidateScan.kind !== "found") throw new Error(`Changelog の版を読めません: ${candidate}`);
   return { path: candidate, text: candidateText, scan: candidateScan };

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: 外部docs認可除去・extract_section元パス再読の2変異は、実distのbuild成功後にstdio検査でrc=1。通常対照は137件pass（2026-10-29実測、合成資料と再読禁止preloadのみ）。
 #
 # mcp-vitest: 同梱 spec-docs MCP サーバーの vitest スイートを run-all.sh へ配線する。
 #

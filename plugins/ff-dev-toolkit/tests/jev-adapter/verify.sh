@@ -862,7 +862,7 @@ EOF
         elif [ "$RC" -eq 2 ] && grep -Eq '1 件も読めません|版ブロックが 0 件' <<<"$ERR"; then gen_verdict=no-rows
         elif [ "$RC" -eq 2 ] && grep -q '候補が複数' <<<"$ERR"; then gen_verdict=ambiguous-changelog
         elif [ "$RC" -eq 2 ] && grep -q '追加行を読めません' <<<"$ERR"; then gen_verdict=unreadable-format
-        elif [ "$RC" -eq 2 ] && grep -Eq '版を読めません|通常ファイル|領域外|EACCES' <<<"$ERR"; then gen_verdict=unreadable-file
+        elif [ "$RC" -eq 2 ] && grep -Eq '版を読めません|通常ファイル|領域外|EACCES|knowledge-read:' <<<"$ERR"; then gen_verdict=unreadable-file
         else gen_verdict="other(rc=$RC)"; fi
         shell_verdict="$(
           # shellcheck source=../../scripts/lib/playbook-changelog-functions.sh

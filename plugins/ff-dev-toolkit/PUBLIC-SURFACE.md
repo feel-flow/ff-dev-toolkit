@@ -28,8 +28,8 @@
 
 次の 2 つを**両方**満たす名前だけが契約です。
 
-1. **公開されている** — 公開 README、`plugins/ff-dev-toolkit/docs-template/` 配下、`plugins/ff-dev-toolkit/skills/*/SKILL.md` のいずれかに現れる
-2. **配布実行物が読む** — `plugins/ff-dev-toolkit/hooks/`、`plugins/ff-dev-toolkit/scripts/`、`plugins/ff-dev-toolkit/tests/run-all.sh` のいずれかに現れる
+1. **公開されている** — 公開 README、`plugins/ff-dev-toolkit/mcp/README.md`、`plugins/ff-dev-toolkit/docs-template/` 配下、`plugins/ff-dev-toolkit/skills/*/SKILL.md` のいずれかに現れる
+2. **配布実行物が読む** — `plugins/ff-dev-toolkit/hooks/`、`plugins/ff-dev-toolkit/scripts/`、`plugins/ff-dev-toolkit/mcp/src/`、`plugins/ff-dev-toolkit/tests/run-all.sh` のいずれかに現れる
 
 **この連言は機械検査がそのまま実行します** — 4-1 の集合は「1 の集合 ∩ 2 の集合」と一致していなければ赤になります。したがって片方だけのものは内部であり、例外を個別に足すことはできません。
 
@@ -346,6 +346,11 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_PLUGIN_DESC_ROOT`
 - `FF_POLL_INTERVAL`
 - `FF_PROBE_LOCALE_CMD`
+- `FF_KNOWLEDGE_LOOKUP_PRIVACY_ONLY`（knowledge-lookup suite の独立した変異試験専用。run-all 内では拒否）
+- `FF_READ_KEY`（私有snapshot cacheの内部照合と元入力の表示label）
+- `FF_READ_LABELS`（私有snapshotと表示用パスの内部対応）
+- `FF_READ_STAMP`（私有snapshot cacheの内部metadata照合）
+- `FF_TEST_SHELL_CAPTURE`（shell hookの単一置換を私有before/afterで検査する出力先）
 - `FF_PUBLIC_LAYOUT_SUITES`
 - `FF_RUN_ALL`
 - `FF_RUN_PUBLIC_LAYOUT`
@@ -504,6 +509,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
   - `MULTI_AGENT_*`（multi-review / multi-agent の設定）
   - `RETROSPECTIVE_*`（振り返りの起動モード・起票方針）
   - `TYPESAFE_*`（Jev 判定点の API 接続）
+  - `SPEC_DOCS_*`（仕様MCPのproject選択と外部docs許可）
 - **系統外の単独名**: 利用者が設定する値のうち、上の系統に属さないもの
   - `ACE_DEFER_TO_RETRO`
   - `ACE_GARDEN_WALL_PATHS`
@@ -518,6 +524,8 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 
 ### 5-1. 契約
 
+- `SPEC_DOCS_PROJECT_ROOT`
+- `SPEC_DOCS_ALLOWED_DOCS_ROOT`
 - `ACE_DEFER_TO_RETRO`
 - `CODEX_MODEL`
 - `MULTI_AGENT_BASE_BRANCH`

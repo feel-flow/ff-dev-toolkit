@@ -530,8 +530,8 @@ else
   env_universe=""
   universe_rc=0
   env_universe="$(surface_env_universe)" || universe_rc=$?
-  published_env="$(surface_env_scan "$ROOT/oss/ff-dev-toolkit/README.md" "$ROOT/plugins/ff-dev-toolkit/docs-template" "$ROOT/plugins/ff-dev-toolkit/skills")"
-  runtime_env="$(surface_env_scan "$ROOT/plugins/ff-dev-toolkit/hooks" "$ROOT/plugins/ff-dev-toolkit/scripts" "$ROOT/plugins/ff-dev-toolkit/tests/run-all.sh")"
+  published_env="$(surface_env_scan "$ROOT/oss/ff-dev-toolkit/README.md" "$ROOT/plugins/ff-dev-toolkit/docs-template" "$ROOT/plugins/ff-dev-toolkit/skills" "$ROOT/plugins/ff-dev-toolkit/mcp/README.md")"
+  runtime_env="$(surface_env_scan "$ROOT/plugins/ff-dev-toolkit/hooks" "$ROOT/plugins/ff-dev-toolkit/scripts" "$ROOT/plugins/ff-dev-toolkit/tests/run-all.sh" "$ROOT/plugins/ff-dev-toolkit/mcp/src")"
   if [ "$universe_rc" -ne 0 ]; then
     bad "公開対象の一覧（scripts/sync-dev-toolkit-to-public.sh --list-targets）を取得できず FF_* の母集団を導けません（fail-closed）"
   elif [ -z "$env_universe" ]; then
@@ -598,8 +598,8 @@ EOF
     if [ "${#nonff_dirs[@]}" -gt 0 ]; then
       nonff_universe="$(nonff_scan "${nonff_dirs[@]}")" || nonff_scan_rc=$?
     fi
-    nonff_published="$(nonff_scan "$ROOT/oss/ff-dev-toolkit/README.md" "$ROOT/plugins/ff-dev-toolkit/docs-template" "$ROOT/plugins/ff-dev-toolkit/skills")" || nonff_scan_rc=$?
-    nonff_runtime="$(nonff_scan "$ROOT/plugins/ff-dev-toolkit/hooks" "$ROOT/plugins/ff-dev-toolkit/scripts" "$ROOT/plugins/ff-dev-toolkit/tests/run-all.sh")" || nonff_scan_rc=$?
+    nonff_published="$(nonff_scan "$ROOT/oss/ff-dev-toolkit/README.md" "$ROOT/plugins/ff-dev-toolkit/docs-template" "$ROOT/plugins/ff-dev-toolkit/skills" "$ROOT/plugins/ff-dev-toolkit/mcp/README.md")" || nonff_scan_rc=$?
+    nonff_runtime="$(nonff_scan "$ROOT/plugins/ff-dev-toolkit/hooks" "$ROOT/plugins/ff-dev-toolkit/scripts" "$ROOT/plugins/ff-dev-toolkit/tests/run-all.sh" "$ROOT/plugins/ff-dev-toolkit/mcp/src")" || nonff_scan_rc=$?
     if [ "$nonff_scan_rc" -ne 0 ]; then
       bad "非 FF_ の環境変数の走査が失敗しました（rc=${nonff_scan_rc}。検査不成立。fail-closed）"
     elif [ -z "$nonff_universe" ] || [ -z "$nonff_published" ] || [ -z "$nonff_runtime" ]; then

@@ -38,8 +38,8 @@
 #
 # ## 対象と fail-open / fail-closed
 #
-# 対象は `tool_input.file_path` が `.sh` で終わる Write / Edit だけ（場所は問わない — 全件
-# ゲートの横断走査が git 管理下の `*.sh` を全部見るのと同じ集合）。次は**無音で通す**（fail-open）:
+# 対象は `tool_input.file_path` が `.sh` で終わる Write / Edit。既存のbefore-imageの
+# 読取りは、実行cwdから独立に選んだprojectへ束縛する。次は無音で通す:
 #   - 対象外（ツール名が Write / Edit でない・パスが `.sh` で終わらない・パスが空）
 #   - stdin が JSON として読めない（jq rc=5。フィルタは実行時エラーを出さない形にしてあるので、
 #     rc=5 は parse 失敗に限られる）・jq が無い（対象かどうかすら決められない）
@@ -72,7 +72,7 @@
 #   - `FF_SHELL_SAVE_ACK=1`（ホストの env 設定・起動時の export）で、この hook を素通しにする
 # 行単位の除外は各ライブラリの規定に従う（`| grep -q` は同じ論理行の行末へ
 # `# pipefail-safe: <根拠>`）。直すのが正しい形（`${VAR}` 形 / here-string / `rc=$?; exit $rc`）
-# は deny 本文が実値で案内する。
+# は deny 本文の固定例で案内する。対象の全文行や機密値は転載しない。
 #
 # ## 既知の限界（届かない経路。fail-open 側）
 #
@@ -215,21 +215,27 @@ if [ "$asdd_unverifiable" -eq 1 ]; then
   deny_unavailable "ASDD 設定を検証できません（asdd_hook_enabled rc=${asdd_rc}。.asdd/config.json があるのに node が無い・設定を読めない等）"
 fi
 
-# 保存前の内容（無ければ空）。
-# `read -d ''` は NUL で止まるので、読めた長さを実ファイルのバイト数と突き合わせる
-# （食い違い = 全体を読めていない）。
+# 保存前の内容は、認可・型・保護・上限を検査した一度のsnapshotから読む。
 before=""
 before_readable=1
-if [ -e "$file_path" ]; then
-  if [ -f "$file_path" ] && [ -r "$file_path" ]; then
-    IFS= read -r -d '' before < "$file_path" || true
-    size="$(wc -c < "$file_path" 2>/dev/null)" || size=""
-    size="${size//[!0-9]/}"
-    if [ -z "$size" ] || [ "$size" -ne "${#before}" ]; then
-      before_readable=0
+read_before_image() {
+  read_lib="${HOOK_DIR}/../scripts/lib/knowledge-read-boundary.sh"
+  [ -f "$read_lib" ] && [ -r "$read_lib" ] && [ ! -L "$read_lib" ] || return 2
+  # shellcheck disable=SC1090
+  . "$read_lib" 2>/dev/null || return 2
+  hook_project_root="$(ff_knowledge_project_context 2>/dev/null)" || return 2
+  ff_knowledge_storage "$hook_project_root" dir 2>/dev/null || return 2
+  HOOK_READ_WORK="$(mktemp -d "${TMPDIR:-/tmp}/ff-shell-read.XXXXXX" 2>/dev/null)" || return 2
+  trap 'if [ -d "$HOOK_READ_WORK" ] && [ ! -L "$HOOK_READ_WORK" ] && [ -O "$HOOK_READ_WORK" ]; then rm -rf -- "$HOOK_READ_WORK"; fi' EXIT
+  ff_knowledge_private_fresh_directory "$HOOK_READ_WORK" 2>/dev/null || return 2
+  hook_before="$(ff_knowledge_snapshot "$file_path" "$hook_project_root" "$HOOK_READ_WORK" 2>/dev/null)" || return 2
+  IFS= read -r -d '' before < "$hook_before" || true
+}
+if [ -e "$file_path" ] || [ -L "$file_path" ]; then
+  if ! read_before_image; then
+    if [ "$tool_name" = Write ]; then before=""; before_readable=0
+    else deny_unavailable "対象の読取りroot・通常型・権限・上限を検証できません"
     fi
-  else
-    before_readable=0
   fi
 fi
 
@@ -365,9 +371,9 @@ done
 
 [ -n "${mbcs_hits}${pipefail_hits}${exit_hits}" ] || exit 0
 
-# ---- deny 本文（実値で案内する。各検出器とも先頭 3 件まで） ---------------------
+# ---- deny 本文（開始行と固定ruleを案内する。各検出器とも先頭 3 件まで） ---------
 
-first3() { printf '%s\n' "$1" | awk 'NF && n < 3 { print "    | " $0; n++ }'; }
+first3() { printf '%s\n' "$1" | awk -F: -v rule="$2" 'NF && n < 3 { print "    | " $1 ":" rule; n++ }'; }
 
 reason="⚠️ ff-dev-toolkit guard（shell 保存時の静的検査）: 保存しようとしている ${file_path} に、保存前には無かった違反が入ります。保存前に直してください（全件ゲートの横断メタ検査が同じ検出器で赤にします）。"
 if [ -n "$mbcs_hits" ]; then
@@ -375,21 +381,21 @@ if [ -n "$mbcs_hits" ]; then
 
 ■ \$VAR 直後のマルチバイト（tests/lib/mbcs-guard.sh / OBS-042）
 bash 3.2 と一部のロケールは、\$VAR の直後のマルチバイト文字の先頭バイトを変数名に取り込みます（set -u 下では unbound variable で落ち、それ以外では空に展開されます）。変数を \${VAR} 形で書いてください（例: \$rc の直後に全角の閉じ括弧を続けるなら \${rc} と書く）。
-$(first3 "$mbcs_hits")"
+$(first3 "$mbcs_hits" mbcs)"
 fi
 if [ -n "$pipefail_hits" ]; then
   reason="${reason}
 
 ■ pipefail 配下の | grep -q（tests/lib/pipefail-grep-q.sh）
 grep -q は一致した時点で読むのをやめ、上流の printf / echo / cat が EPIPE で死ぬと pipefail が一致を不一致へ反転させます。grep -q <<<\"\$s\"（here-string）/ case / ファイルを直接 grep -q へ渡す形へ書き換えてください。payload が原理的に小さいことが自明な行だけ、その論理行の行末へ「# pipefail-safe: <根拠>」を書いて除外できます。
-$(first3 "$pipefail_hits")"
+$(first3 "$pipefail_hits" pipefail-grep-q)"
 fi
 if [ -n "$exit_hits" ]; then
   reason="${reason}
 
 ■ 終了コードの誤読・握り潰し（tests/lib/exit-code-guard.sh / OBS-003）
 出力整形フィルタ（head / tail / cat / tee / wc 等）で終わるパイプの直後の \$? はフィルタの終了コードです。PIPESTATUS は zsh では機能しません。ゲート起動を ; / || / パイプで終端すると成否が消えます。出力をファイルへ受けてから rc=\$? で受け、exit \$rc まで書いて伝播させてください。
-$(first3 "$exit_hits")"
+$(first3 "$exit_hits" exit-code)"
 fi
 reason="${reason}
 

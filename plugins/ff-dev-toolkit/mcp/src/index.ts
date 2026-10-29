@@ -30,13 +30,14 @@ import fs from 'fs';
 import path from 'path';
 import { EXCERPT_PADDING_CHARS, MAX_CONSECUTIVE_TRANSPORT_ERRORS } from './constants.js';
 import { splitSections, toPosixSeparators } from './utils.js';
-import { buildDocsState, resolveDocsPath, projectRelative, DocsState } from './indexer.js';
+import { buildDocsState, captureDocsAuthority, resolveDocsPath, projectRelative, DocsState } from './indexer.js';
 
 const SERVER_NAME = 'spec-docs';
 const SERVER_VERSION = '1.0.0';
 
 const PROJECT_ROOT = path.resolve(process.env.SPEC_DOCS_PROJECT_ROOT || process.cwd());
 const DOCS_ROOT = path.join(PROJECT_ROOT, 'docs');
+const DOCS_AUTHORITY = captureDocsAuthority(PROJECT_ROOT, process.env.SPEC_DOCS_ALLOWED_DOCS_ROOT);
 
 /** Wrap a plain JS value as an MCP text content result. */
 const jsonResult = (data: unknown) => ({
@@ -57,22 +58,22 @@ type ToolResult = ReturnType<typeof jsonResult> | ReturnType<typeof errorResult>
  */
 const withDocsState = <A>(handler: (state: DocsState, args: A) => ToolResult) => {
   return async (args: A): Promise<ToolResult> => {
-    if (!fs.existsSync(DOCS_ROOT)) {
-      return errorResult({
-        error: 'DOCS_NOT_INITIALIZED',
-        projectRoot: PROJECT_ROOT,
-        hint: 'No docs/ directory under the project root. Run /init-docs first, or set SPEC_DOCS_PROJECT_ROOT to the correct project.',
-      });
-    }
     let state: DocsState;
     try {
-      state = buildDocsState(PROJECT_ROOT);
+      state = buildDocsState(PROJECT_ROOT, DOCS_AUTHORITY);
     } catch (e) {
       return errorResult({
         error: 'INDEX_BUILD_FAILED',
         projectRoot: PROJECT_ROOT,
         cause: (e as Error).message,
         hint: 'Failed to index docs/. Check directory permissions, or SPEC_DOCS_PROJECT_ROOT.',
+      });
+    }
+    if (!state.reader) {
+      return errorResult({
+        error: 'DOCS_NOT_INITIALIZED',
+        projectRoot: PROJECT_ROOT,
+        hint: 'No docs/ directory under the project root. Run /init-docs first, or set SPEC_DOCS_PROJECT_ROOT to the correct project.',
       });
     }
     return handler(state, args);
@@ -123,8 +124,8 @@ server.registerTool(
       heading: z.string().min(1).describe('Exact level-2 heading title'),
     },
   },
-  withDocsState((_state, { file, heading }: { file: string; heading: string }) => {
-    const abs = resolveDocsPath(PROJECT_ROOT, file);
+  withDocsState((state, { file, heading }: { file: string; heading: string }) => {
+    const abs = resolveDocsPath(PROJECT_ROOT, file, state.reader);
     if (!abs) {
       return errorResult({
         error: 'FILE_NOT_ACCESSIBLE',
@@ -134,7 +135,8 @@ server.registerTool(
     }
     let text: string;
     try {
-      text = fs.readFileSync(abs, 'utf-8');
+      if (!state.reader) throw new Error('read-unverifiable');
+      text = state.reader.read(abs);
     } catch (e) {
       return errorResult({ error: 'FILE_READ_FAILED', file, cause: (e as NodeJS.ErrnoException).code ?? (e as Error).message });
     }
@@ -230,7 +232,7 @@ server.registerTool(
 // ---------- Check mode ----------
 if (process.argv.includes('--check')) {
   try {
-    const state = buildDocsState(PROJECT_ROOT);
+    const state = buildDocsState(PROJECT_ROOT, DOCS_AUTHORITY);
     console.error(
       `[${SERVER_NAME}] root=${PROJECT_ROOT} files=${state.mdFiles.length} sections=${state.searchIndex.length} ` +
         `specs=${state.specIndex.specs.length} specErrors=${state.specIndex.errors.length} glossaryTerms=${Object.keys(state.glossary).length}`,

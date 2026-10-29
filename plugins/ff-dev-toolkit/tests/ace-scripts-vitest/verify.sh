@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 空振り検出: allowlist認識器を厳密shape検査へ戻す変異はVite読込み後にinit再実行の針が赤（rc=1）。check-entry-format正常対照110件pass（2026-10-29実測）。
+# 空振り検出: 共通root検査除去・allowlist caller読取bypass・9caller集合空化の3変異はfocused reader検査でrc=1。通常は39件pass、配布3配置は1040/1040/1028pass+導入先のみ12既定skip（2026-10-29実測）。
 #
 # ace-scripts-vitest: docs-template と本体 mirror の ace vitest スイートを run-all.sh へ配線する。
 #
@@ -138,6 +140,32 @@ run_vitest_consumer_layout() {
   fi
   printf '%s\n' "$summary" | sed "s/^[[:space:]]*/  ✓ 導入先の配置（skip 理由 ${reasons} 件）: /"
 }
+
+# Reader wiring and the embedded native ACL resource must survive distribution.
+reader_callers=(check-category-size check-entry-format check-archive-links ace-reuse-report ace-refine-report ace-abstraction-report check-refine-invariants sync-playbook-frontmatter changelog-layout)
+[[ ${#reader_callers[@]} -eq 9 ]] || { echo '✗ knowledge reader caller census is empty/incomplete' >&2; exit 1; }
+for reader_caller in "${reader_callers[@]}"; do
+  for reader_layout in "$ACE_SCRIPTS_DIR" "$ACE_SCRIPTS_MIRROR_DIR"; do
+    [[ -s "$reader_layout/$reader_caller.ts" ]] && grep -q 'knowledgeReaderForSelection' "$reader_layout/$reader_caller.ts" \
+      || { echo "✗ missing knowledge reader caller: $reader_caller" >&2; exit 1; }
+  done
+done
+cmp -s "$ACE_SCRIPTS_DIR/knowledge-read-boundary.ts" "$ACE_SCRIPTS_MIRROR_DIR/knowledge-read-boundary.ts" \
+  || { echo '✗ knowledge reader source/mirror drift' >&2; exit 1; }
+reader_acl_probe="$(mktemp "${TMPDIR:-/tmp}/knowledge-acl-parity.XXXXXX")" || exit 1
+if ! awk '
+  /^export const WINDOWS_KNOWLEDGE_ACL_SOURCE = String.raw`/ { sub(/^export const WINDOWS_KNOWLEDGE_ACL_SOURCE = String.raw`/, ""); on = 1; print; next }
+  on && $0 == "`;" { found = 1; exit }
+  on { print }
+  END { if (!found) exit 2 }
+' "$ACE_SCRIPTS_DIR/knowledge-read-boundary.ts" >"$reader_acl_probe"; then
+  rm -f "$reader_acl_probe"; echo '✗ native ACL resource extraction failed' >&2; exit 1
+fi
+if [[ ! -s "$reader_acl_probe" ]] || ! cmp -s "$reader_acl_probe" "$PLUGIN_ROOT/scripts/lib/knowledge-read-acl.ps1"; then
+  rm -f "$reader_acl_probe"; echo '✗ Node/Bash native ACL resource drift' >&2; exit 1
+fi
+rm -f "$reader_acl_probe"
+echo '  ✓ knowledge reader: 9 callers in both layouts, native ACL resource byte parity'
 
 run_vitest_dir "docs-template" "$ACE_SCRIPTS_DIR"
 run_vitest_dir "repository mirror" "$ACE_SCRIPTS_MIRROR_DIR"

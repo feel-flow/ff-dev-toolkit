@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: MCP README/srcを公開・runtime両集合から外す変異は構文成功後G41が赤（rc=1）。正常対照43件pass、README不在・runtimeファイル空化もG42/G43で赤（2026-10-29実測）。
 #
 # skill-count-consistency/verify.sh 自身の検出力検証（Issue #502）。
 #
@@ -58,6 +59,7 @@
 #   G38. ff-dev-toolkit 節がより浅い見出しで閉じ、その後に表がある → 緑（節の外を読まない）
 #   G39. コードフェンスが閉じていない → フェンスの診断を名指しして赤（fail-closed）
 #   G40. 表見出しの直後に区切り行が無い → 見出し行を名指しして赤
+#   G41〜G43. MCPだけの公開/実行側契約、README不在、実行物が名前だけ残る空入力を測る
 #
 # baseline の内訳は「・区切りの個別列挙（2 件）+ 数値グループ（1 件）」を含み、
 # 実リポジトリの説明文が依存する ・分割の名前数カウントを G1 で常時実測する。
@@ -800,6 +802,23 @@ if [ "$RC" -ne 0 ] && [[ "$OUT" == *"oss README: スキル表の第 1 列を読�
 else
   bad "G40: 区切り行の無い表見出しが名指しの赤になりませんでした（rc=${RC}）: $OUT"
 fi
+
+# MCP documentation and runtime are independent participants in the contract.
+build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3" "$(readme_body 3 "$SKILL_TABLES_3")"
+printf '# skill\n設定例: FF_FIXTURE_CONTRACT=1\n' >"$FIX/plugins/ff-dev-toolkit/skills/alpha/SKILL.md"
+printf '#!/usr/bin/env bash\necho "${FF_FIXTURE_CONTRACT:-}"\n' >"$FIX/plugins/ff-dev-toolkit/scripts/fixture-runtime.sh"
+mkdir -p "$FIX/plugins/ff-dev-toolkit/mcp/src"
+printf '設定: FIXTURE_FAMILY_CONTRACT\n' >"$FIX/plugins/ff-dev-toolkit/mcp/README.md"
+printf '// runtime reads FIXTURE_FAMILY_CONTRACT\n' >"$FIX/plugins/ff-dev-toolkit/mcp/src/index.ts"
+run_target "$FIX"
+[ "$RC" -eq 0 ] && ok 'G41: MCP README/runtimeだけにある契約を認識する' || bad "G41: MCP契約を読めない (rc=$RC): $OUT"
+rm "$FIX/plugins/ff-dev-toolkit/mcp/README.md"
+run_target "$FIX"
+[ "$RC" -ne 0 ] && [[ "$OUT" == *'走査が空振り。fail-closed'* ]] && ok 'G42: MCP README不在は公開文書の空集合として赤' || bad "G42: MCP README欠落の診断不一致 (rc=$RC): $OUT"
+printf '設定: FIXTURE_FAMILY_CONTRACT\n' >"$FIX/plugins/ff-dev-toolkit/mcp/README.md"
+: >"$FIX/plugins/ff-dev-toolkit/mcp/src/index.ts"
+run_target "$FIX"
+[ "$RC" -ne 0 ] && [[ "$OUT" == *FIXTURE_FAMILY_CONTRACT* ]] && ok 'G43: MCP実行物が空ならファイル名だけで契約ありにしない' || bad 'G43: MCP実行物の空振りを緑にした'
 
 echo
 if [ "$FAIL" -gt 0 ]; then

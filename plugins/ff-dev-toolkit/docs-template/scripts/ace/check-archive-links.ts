@@ -20,6 +20,7 @@
  * 実行例: npx --yes tsx scripts/ace/check-archive-links.ts docs/08-knowledge/PLAYBOOK.md
  */
 import * as fs from "node:fs";
+import { KnowledgeReadBoundary, knowledgeReaderForSelection, knowledgeInputExists } from "./knowledge-read-boundary";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -178,15 +179,16 @@ export function findDuplicateAnchors(content: string): string[] {
  * ディレクトリが無い場合は空配列（＝`/ace-refine` 未実行）を返す。
  * **非再帰**で走査する（live 側の discoverPlaybookSubfiles はサブディレクトリを辿るが、退避先は直下だけ）。
  */
-export function discoverArchiveFiles(playbookPath: string): string[] {
+export function discoverArchiveFiles(playbookPath: string, reader = knowledgeReaderForSelection(playbookPath)): string[] {
   const archiveDir = path.join(path.dirname(playbookPath), "playbook", "archive");
-  if (!fs.existsSync(archiveDir) || !fs.statSync(archiveDir).isDirectory()) {
+  if (!knowledgeInputExists(archiveDir)) {
     return [];
   }
+  reader.directory(archiveDir);
   return fs
     .readdirSync(archiveDir)
     .filter((entry: string) => entry.endsWith(".md"))
-    .map((entry: string) => path.join(archiveDir, entry))
+    .map((entry: string) => { const file = path.join(archiveDir, entry); reader.authorize(file); return file; })
     .sort();
 }
 
@@ -212,8 +214,11 @@ export function main(): number {
   }
 
   let archiveFiles: string[];
+  let reader: KnowledgeReadBoundary;
   try {
-    archiveFiles = discoverArchiveFiles(playbookPath);
+    reader = knowledgeReaderForSelection(playbookPath);
+    reader.authorize(playbookPath);
+    archiveFiles = discoverArchiveFiles(playbookPath, reader);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`読み込み失敗: playbook/archive/ の走査に失敗しました: ${message}`);
@@ -234,7 +239,7 @@ export function main(): number {
   for (const filePath of archiveFiles) {
     let content: string;
     try {
-      content = fs.readFileSync(filePath, "utf8");
+      content = reader.read(filePath);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`読み込み失敗: ${filePath}: ${message}`);

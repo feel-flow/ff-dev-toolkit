@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# 空振り検出: 物理identityキー・既定照合列・物理role・論理roleを各1件戻す4変異は構文0の後、別名/除外の針でrc=1。前後privacy51件、既存分を含む全体135件pass（2026-10-29実測）。
+# 空振り検出: 記録候補を論理leafから実体pathnameへ戻す変異は構文0の後、配置/隣接categoryの2針が赤（rc=1）。前後対照privacy40件pass（2026-10-29実測）。
+# 空振り検出: privacy対照29件pass。root包含除去・UTF-8検査no-op・上限倍増・Changelog再読・空privacy集合の5変異は、構文成功後に各対象の針でrc=1（2026-10-29、隔離コピーで前後対照を実測）。
 #
 # scripts/knowledge-lookup.sh（ACE Playbook と観測台帳の統合読み出し器）の振る舞い検査（Issue `#1778`）。
 #
@@ -326,6 +329,15 @@ id_under_group() { # <group label 部分文字列> <ID>
 }
 
 # ── K1 / K2 / K3: 両 store ───────────────────────────────────────────────────
+if [[ "${FF_KNOWLEDGE_LOOKUP_PRIVACY_ONLY:-0}" == 1 ]]; then
+  if [[ "${FF_RUN_ALL_NESTED:-0}" != 0 ]]; then
+    bad 'privacy probe mode cannot replace the registered full suite'
+    finish 1
+  fi
+  . "$SCRIPT_DIR/privacy.sh"
+  printf 'knowledge privacy: %s passed, %s failed\n' "$PASS" "$FAIL"
+  if [[ "$FAIL" -eq 0 ]]; then finish 0; else finish 1; fi
+fi
 ROOT1="${TMP}/both"; make_playbook "${ROOT1}"; make_ledger "${ROOT1}"
 run_lookup "${ROOT1}" --offline hydration
 if [[ "${RC}" -eq 0 ]]; then ok "K1: 両 store で rc=0"; else bad "K1: rc=${RC}（期待 0）"; printf '%s\n' "${OUT}" | sed 's/^/    | /' >&2; fi
@@ -807,7 +819,7 @@ if [[ "${RC}" -eq 0 ]] && [[ "$(kv ACE_PLAYBOOK_REL)" = "docs-template/08-knowle
 run_with_env "${ROOT27}/../outside/PLAYBOOK.md" "${ROOT27}" --resolve-playbook
 if [[ "${RC}" -eq 0 ]] && [[ -z "$(kv ACE_PLAYBOOK_REL)" ]]; then ok "K28: root/../ 経由で外へ出る絶対パスは REL を出さない"; else bad "K28: root の外を REL として返した（$(kv ACE_PLAYBOOK_REL)）"; fi
 run_with_env "${ROOT27}/docs/kb/PLAYBOOK.md" "${ROOT27}" --resolve-playbook
-if [[ "${RC}" -eq 0 ]] && [[ -z "$(kv ACE_PLAYBOOK_REL)" ]]; then ok "K28: root の外を指す symlink ファイルは REL を出さない"; else bad "K28: 外を指す symlink を REL として返した（$(kv ACE_PLAYBOOK_REL)）"; fi
+if [[ "${RC}" -eq 2 && "$(kv ACE_PLAYBOOK_STATE)" = unreadable ]] && [[ -z "$(kv ACE_PLAYBOOK_REL)" ]]; then ok "K28: root 内の引数から外部リンクへ許可を広げず REL も出さない"; else bad "K28: root 内の引数で外部リンクを認可した（rc=${RC}）"; fi
 mkdir -p "${ROOT27}/docs/real"; cp "${TMP}/outside/PLAYBOOK.md" "${ROOT27}/docs/real/PLAYBOOK.md"; ln -s ../real/PLAYBOOK.md "${ROOT27}/docs/kb/IN.md"
 run_with_env "${ROOT27}/docs/kb/IN.md" "${ROOT27}" --resolve-playbook
 if [[ "${RC}" -eq 0 ]] && [[ "$(kv ACE_PLAYBOOK_REL)" = "docs/kb/IN.md" ]]; then ok "K28: root 内を指す symlink ファイルは REL を出す"; else bad "K28: root 内の symlink の REL（$(kv ACE_PLAYBOOK_REL)）"; fi
@@ -854,6 +866,9 @@ done
 if [[ "${same_n}" -eq 5 ]]; then ok "K26: 5 fixture すべてで検索と --resolve-playbook が同じ配置を返す"; fi
 
 echo ""
+# Default metadata cannot grant an external read. Synthetic inputs only.
+. "$SCRIPT_DIR/privacy.sh"
+
 if [[ "${FAIL}" -eq 0 ]]; then
   echo "✓ knowledge-lookup verify: ${PASS} 件成功"
   finish 0

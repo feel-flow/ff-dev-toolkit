@@ -1,9 +1,40 @@
 #!/usr/bin/env bash
 # Read-only Bash3.2 counterpart of the TS layout/row contract.
-# select BOOK prints a selected path (rc0) or diagnostic (rc2).
-# helpful_check BOOK preserves rc0/1/2. Diagnostics identify the actual file.
+# select BOOK [PROJECT_ROOT] prints a selected path (rc0) or diagnostic (rc2).
+# helpful_check BOOK [PROJECT_ROOT] preserves rc0/1/2. A writer binds its target project.
 
 FF_PLAYBOOK_CHANGELOG_VERDICT=""
+_ff_changelog_reader="${BASH_SOURCE[0]%/*}/knowledge-read-boundary.sh"
+if [ ! -f "$_ff_changelog_reader" ] || [ -L "$_ff_changelog_reader" ]; then
+  printf 'knowledge-read: missing-reader\n' >&2
+  return 2
+fi
+. "$_ff_changelog_reader"
+
+_ff_playbook_changelog_job() {
+  local job
+  job="$(mktemp -d "${TMPDIR:-/tmp}/playbook-changelog.XXXXXX")" || return 2
+  if ! ff_knowledge_private_fresh_directory "$job"; then rm -rf -- "$job"; return 2; fi
+  : >"$job/cache"
+  printf '%s\n' "$job"
+}
+
+_ff_playbook_changelog_authority() {
+  local project selected operand_rc
+  if [ -n "${2:-}" ]; then project="$2"
+  else project="$(ff_knowledge_project_context)" || return 2
+  fi
+  project="$(ff_knowledge_canonical_dir "$project")" || return 2
+  ff_knowledge_storage "$project" dir || return 2
+  if [ -n "${2:-}" ]; then printf '%s\n' "$project"; return 0; fi
+  if ff_knowledge_project_operand "$1" "$project"; then printf '%s\n' "$project"
+  else
+    operand_rc=$?
+    [ "$operand_rc" -eq 1 ] || return 2
+    selected="$(ff_knowledge_canonical_file "$1")" || return 2
+    printf '%s\n' "${selected%/*}"
+  fi
+}
 
 # A directly requested fixed CHANGELOG must not bypass its book's gate.
 ff_playbook_changelog_book() {
@@ -21,13 +52,18 @@ ff_playbook_changelog_book() {
 }
 
 _ff_playbook_changelog_scan() {
-  local file="$1" scanner="${BASH_SOURCE[0]%/*}/playbook-changelog-scan.awk" permissions
+  local file="$1" job="$2" authority="$3" scanner="${BASH_SOURCE[0]%/*}/playbook-changelog-scan.awk" canonical stamp snapshot
   FF_PLAYBOOK_CHANGELOG_VERDICT=unreadable-file
   FF_PLAYBOOK_CHANGELOG_OUTPUT=""
-  if [ ! -f "$file" ] || [ ! -r "$file" ] || [ ! -r "$scanner" ]; then return 2; fi
-  if ! permissions="$(LC_ALL=C ls -ld -- "$file" 2>/dev/null)"; then return 2; fi
-  [[ "${permissions:1:1}${permissions:4:1}${permissions:7:1}" == *r* ]] || return 2
-  if ! FF_PLAYBOOK_CHANGELOG_OUTPUT="$(LC_ALL=C awk -f "$scanner" "$file" 2>/dev/null)"; then return 2; fi
+  [ -r "$scanner" ] || return 2
+  canonical="$(ff_knowledge_authorize "$file" "$authority")" || return 2
+  stamp="$(ff_knowledge_meta "$canonical")" || return 2
+  snapshot="$(FF_READ_KEY="$canonical" FF_READ_STAMP="$stamp" awk -F '\t' '$1 == ENVIRON["FF_READ_KEY"] { if ($2 != ENVIRON["FF_READ_STAMP"]) exit 2; print $3; exit }' "$job/cache")" || return 2
+  if [ -z "$snapshot" ]; then
+    snapshot="$(ff_knowledge_snapshot "$file" "$authority" "$job")" || return 2
+    printf '%s\t%s\t%s\n' "$canonical" "$stamp" "$snapshot" >>"$job/cache"
+  fi
+  if ! FF_PLAYBOOK_CHANGELOG_OUTPUT="$(FF_READ_KEY="$file" LC_ALL=C awk -f "$scanner" "$snapshot" 2>/dev/null)"; then return 2; fi
   case "$FF_PLAYBOOK_CHANGELOG_OUTPUT" in
     *VERDICT=ok) FF_PLAYBOOK_CHANGELOG_VERDICT=ok; return 0 ;;
     *VERDICT=unreadable-helpful) FF_PLAYBOOK_CHANGELOG_VERDICT=unreadable-helpful; return 1 ;;
@@ -39,10 +75,10 @@ _ff_playbook_changelog_scan() {
   return 2
 }
 
-ff_playbook_changelog_select() {
-  local book="${1:-}" root candidate present=0 chosen="" physical
+_ff_playbook_changelog_select() {
+  local book="${1:-}" job="$2" authority="$3" root candidate present=0 chosen="" physical
   if [ -z "$book" ]; then printf '%s\n' 'PLAYBOOK のパスが空です'; return 2; fi
-  if _ff_playbook_changelog_scan "$book"; then :; fi
+  if _ff_playbook_changelog_scan "$book" "$job" "$authority"; then :; fi
   case "$FF_PLAYBOOK_CHANGELOG_VERDICT" in
     no-changelog|empty-stub) ;;
     unreadable-file) printf '%s\n' "Changelog を読めません: $book"; return 2 ;;
@@ -58,33 +94,43 @@ ff_playbook_changelog_select() {
     printf '%s\n' "Changelog の候補が複数あります: $root/CHANGELOG.md / $root/playbook/CHANGELOG.md"; return 2
   fi
   if [ "$present" -eq 0 ]; then printf '%s\n' "$book"; return 0; fi
-  if [ -L "$chosen" ] || [ ! -f "$chosen" ]; then printf '%s\n' "Changelog が通常ファイルではありません: $chosen"; return 2; fi
-  if ! physical="$(CDPATH='' cd -P -- "${chosen%/*}" && pwd)"; then return 2; fi
-  case "$physical/" in "$root/"*) ;; *) printf '%s\n' "Changelog が PLAYBOOK の領域外です: $chosen"; return 2 ;; esac
-  if _ff_playbook_changelog_scan "$chosen"; then :; fi
+  if ! physical="$(ff_knowledge_authorize "$chosen" "$authority")"; then return 2; fi
+  case "$physical" in "$root/"*) ;; *) printf '%s\n' "Changelog が PLAYBOOK の領域外です: $chosen"; return 2 ;; esac
+  if _ff_playbook_changelog_scan "$chosen" "$job" "$authority"; then :; fi
   case "$FF_PLAYBOOK_CHANGELOG_VERDICT" in
     no-changelog|empty-stub|unreadable-file) printf '%s\n' "Changelog の版を読めません: $chosen"; return 2 ;;
   esac
   printf '%s\n' "$chosen"
 }
 
+ff_playbook_changelog_select() (
+  local book="${1:-}" job authority
+  authority="$(_ff_playbook_changelog_authority "$book" "${2:-}")" || return 2
+  job="$(_ff_playbook_changelog_job)" || return 2
+  trap 'rm -rf -- "$job"' EXIT
+  _ff_playbook_changelog_select "$book" "$job" "$authority"
+)
+
 ff_playbook_changelog_helpful_check() {
-  local book="${1:-}" selected
+  local book="${1:-}" selected job authority result=2
   FF_PLAYBOOK_CHANGELOG_VERDICT=""
-  if ! selected="$(ff_playbook_changelog_select "$book")"; then
+  authority="$(_ff_playbook_changelog_authority "$book" "${2:-}")" || { FF_PLAYBOOK_CHANGELOG_VERDICT=unreadable-file; return 2; }
+  job="$(_ff_playbook_changelog_job)" || { FF_PLAYBOOK_CHANGELOG_VERDICT=unreadable-file; return 2; }
+  if ! selected="$(_ff_playbook_changelog_select "$book" "$job" "$authority")"; then
     FF_PLAYBOOK_CHANGELOG_VERDICT=unreadable-file
     case "$selected" in *候補が複数*) FF_PLAYBOOK_CHANGELOG_VERDICT=ambiguous-changelog ;; esac
-    printf '%s\n' "$selected"; return 2
+    printf '%s\n' "$selected"; rm -rf -- "$job"; return 2
   fi
-  if _ff_playbook_changelog_scan "$selected"; then :; fi
+  if _ff_playbook_changelog_scan "$selected" "$job" "$authority"; then :; fi
   case "$FF_PLAYBOOK_CHANGELOG_VERDICT" in
-    ok) return 0 ;;
-    unreadable-helpful) printf '%s\n' "$FF_PLAYBOOK_CHANGELOG_OUTPUT" | sed '$d'; return 1 ;;
+    ok) result=0 ;;
+    unreadable-helpful) printf '%s\n' "$FF_PLAYBOOK_CHANGELOG_OUTPUT" | sed '$d'; result=1 ;;
     no-changelog) printf '%s\n' "PLAYBOOK.md に ## Changelog がありません（parseChangelog と同じく判定不能）: $selected" ;;
     empty-stub|no-rows)
       FF_PLAYBOOK_CHANGELOG_VERDICT=no-rows
       printf '%s\n' "Changelog の追加 / カウンター更新の行が 1 件も読めません: $selected" ;;
     *) printf '%s\n' "Changelog の行形式を読めません: $selected"; printf '%s\n' "$FF_PLAYBOOK_CHANGELOG_OUTPUT" | sed '$d' ;;
   esac
-  return 2
+  rm -rf -- "$job"
+  return "$result"
 }

@@ -29,6 +29,7 @@
  *   npx --yes tsx docs-template/scripts/ace/ace-abstraction-report.ts docs/08-knowledge/PLAYBOOK.md --json
  */
 import * as fs from "node:fs";
+import { knowledgeReaderForSelection } from "./knowledge-read-boundary";
 import {
   blankFencedCodeBlocks,
   CATEGORY_CELL_SOURCE,
@@ -977,10 +978,6 @@ export type MainDeps = Readonly<{
   readonly readFile: (filePath: string) => string;
 }>;
 
-const DEFAULT_DEPS: MainDeps = {
-  readFile: (filePath) => fs.readFileSync(filePath, "utf8"),
-};
-
 /**
  * CLI エントリポイント。**読み取り専用**（書き込み経路を一切持たない）。
  *
@@ -991,7 +988,7 @@ const DEFAULT_DEPS: MainDeps = {
  */
 export function main(
   argv: readonly string[] = process.argv.slice(2),
-  deps: MainDeps = DEFAULT_DEPS,
+  deps?: MainDeps,
 ): number {
   const parsed = parseArgs(argv);
   if (!parsed.ok) {
@@ -1006,12 +1003,14 @@ export function main(
   }
 
   try {
+    const reader = knowledgeReaderForSelection(playbookPath);
+    reader.authorize(playbookPath);
     // 分割レイアウト（playbook/*.md）ではエントリ本体はサブファイル側にある。
     // **ファイルを連結せず 1 ファイルずつ解析する** — 連結すると次ファイルの前書きを
     // 直前ファイルの最終エントリのセグメントが吸収し、そこにある PR 番号・パスが
     // 最終エントリのスコアへ混入する。
-    const targets = [playbookPath, ...discoverPlaybookSubfiles(playbookPath)];
-    const entries = targets.flatMap((file) => parseAbstractionEntries(deps.readFile(file)));
+    const targets = [playbookPath, ...discoverPlaybookSubfiles(playbookPath, reader)];
+    const entries = targets.flatMap((file) => parseAbstractionEntries(deps ? deps.readFile(file) : reader.read(file)));
     if (entries.length === 0) {
       // レポートを出さずに止める（ace-refine-report の 0 件 = usage error と同じ契約）。
       // 誤ったパスを渡したときに「対象 0 / 候補 0」の正常レポートが出ると、「整理対象なし」

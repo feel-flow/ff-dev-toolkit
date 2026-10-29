@@ -305,9 +305,17 @@ if [[ -f "$RELEASE_RT_STATE/runall.loader-skip" ]]; then echo "    ○ skip: FF_
 if [[ -f "$RELEASE_RT_STATE/runall.os-limited-skip" ]]; then echo "  ○ skip: (w1)〜(w5) はドライブ付きのパスを扱う、Windows の Git Bash でだけ成立する検査のため未実行"; fi
 # bash 版限定の検査が macOS 標準の bash 3.2 で出す skip（retrospective-stop-hook / skill-drift-check と同じ文言。Issue `#2077`）
 if [[ -f "$RELEASE_RT_STATE/runall.bash4-limited-skip" ]]; then echo "  ○ skip: サブシェル数の検査（bash 3 系には BASHPID が無い）は、bash 4 以上でだけ成立する検査のため未実行"; fi
+# bwrap の無いホストで decision-tree が出す skip（同じ文言。Issue `#2457`）
+if [[ -f "$RELEASE_RT_STATE/runall.bwrap-skip" ]]; then echo "  ○ skip: bwrap が無いため sandbox 上の経路判定は未検査（J0 の静的固定は実施済み）"; fi
 echo "suites: total=3 run=3 passed=3 failed=0 skipped=0 not-run=0"
 [[ -f "$RELEASE_RT_STATE/runall.no-skipline" ]] || echo "checks-skipped: total=1 suites=1"
 exit 0
+STUB
+  # gate を回すホストの OS（`uname -s`）だけを state で差し替える。指定の無い回と他の引数は実体へ渡す（Issue `#2457`）
+  write_stub "$STUB_BIN/uname" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$*" == -s && -f "$RELEASE_RT_STATE/uname.os" ]]; then cat "$RELEASE_RT_STATE/uname.os"; exit 0; fi
+exec /usr/bin/uname "$@"
 STUB
   # gate 段が run-all の緑の後に明示起動する公開配置の合成（ADR-068）。呼ばれたことだけ記録する
   write_stub "$r/plugins/ff-dev-toolkit/tests/public-layout/verify.sh" <<'STUB'
@@ -658,13 +666,30 @@ else
   bad "2 行同時の回で止まらない・許容行が未知に混じる (rc=$RC render=${render_n} typecheck=${typecheck_n})"; dump
 fi
 rm -f "$STATE/runall.media-typecheck-skip"
+# bwrap 不在の skip は Darwin の gate だけが許可する条件付きの OS 限定（Issue `#2457`）。Linux では bubblewrap を
+# 入れれば実行できる環境 skip なので止まり、次の一手が導入を名指しする
+: >"$STATE/runall.bwrap-skip"
+printf '%s\n' Linux >"$STATE/uname.os"
+run_orch
+_next_step="$(printf '%s\n' "$OUT" | grep -F '次の一手: 環境 skip（' || true)"
+if [[ "$RC" -eq 1 ]] && has "NG: [gate] 許容表に無い部分 skip がある" && [[ "$_next_step" == *'bubblewrap を入れて'* ]]; then
+  ok "Linux の gate は bwrap 不在の skip で止まり、次の一手が bubblewrap の導入を名指しする"
+else
+  bad "Linux の gate が bwrap 不在の skip で止まらない・次の一手が bubblewrap を名指ししない (rc=$RC)"; dump
+fi
+printf '%s\n' Darwin >"$STATE/uname.os"
 # OS 限定の skip（Linux / macOS の run-all で必ず出る）と bash 版限定の skip（macOS 標準の bash 3.2 で出る）も同じ回に出す。
 # どちらかで止まるとリリースが進まない。フラグを分け、停止文でどちらが残っていたかを名指しする
 : >"$STATE/runall.os-limited-skip"
 : >"$STATE/runall.bash4-limited-skip"
 run_orch
 if [[ "$RC" -eq 0 ]] && has "RELEASE_VERSION=0.33.0" && has "Windows の Git Bash でだけ成立する検査のため未実行" && has "bash 4 以上でだけ成立する検査のため未実行"; then ok "typecheck の原因を取り除いた再実行は、opt-in の render-smoke skip・OS 限定・bash 版限定の skip が残っていても v0.33.0 まで完了する（許容表にある）"; else bad "再実行で完了しない（render-smoke の opt-in skip か OS 限定・bash 版限定の skip で止まった可能性。出力に OS 限定=$(has "Windows の Git Bash でだけ成立する検査のため未実行" && echo あり || echo なし) / bash 版限定=$(has "bash 4 以上でだけ成立する検査のため未実行" && echo あり || echo なし)） (rc=$RC)"; dump; fi
-rm -f "$STATE/runall.media-render-skip" "$STATE/runall.os-limited-skip" "$STATE/runall.bash4-limited-skip"
+if [[ "$RC" -eq 0 ]] && has "bwrap が無いため sandbox 上の経路判定は未検査"; then
+  ok "Darwin の gate は bwrap 不在の skip が残っていても完了する（条件付きの OS 限定）"
+else
+  bad "Darwin の gate が bwrap 不在の skip で止まった・skip 行が出ていない (rc=$RC)"; dump
+fi
+rm -f "$STATE/runall.media-render-skip" "$STATE/runall.os-limited-skip" "$STATE/runall.bash4-limited-skip" "$STATE/runall.bwrap-skip" "$STATE/uname.os"
 
 echo "-- release: 進行中のサイクル（in-flight 印） --"
 MARKER="$SSOT/.git/ff-release-in-flight"

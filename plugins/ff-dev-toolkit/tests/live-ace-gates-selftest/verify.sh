@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: knowledge-read-boundaryのfixtureコピー行を除く変異は、正常対照が依存不在で赤になりrc=1。通常は17件pass（2026-10-29、隔離fixtureで実測）。
 # 空振り検出: 隔離fixtureへのchangelog-layoutのコピー行を除く変異はrc=1、通常対照17件はrc=0（2026-10-26 mutation-harness・esbuild依存を配置して実測）。
 #
 # live-ace-gates の検出力を隔離 fixture への mutation で実測する（Issue #441）。
@@ -16,6 +17,7 @@ for file in \
   "$SOURCE_VERIFY" \
   "$SOURCE_SCRIPTS/check-category-size.ts" \
   "$SOURCE_SCRIPTS/changelog-layout.ts" \
+  "$SOURCE_SCRIPTS/knowledge-read-boundary.ts" \
   "$SOURCE_SCRIPTS/ace-domain.ts" \
   "$SOURCE_SCRIPTS/check-entry-format.ts" \
   "$SOURCE_SCRIPTS/sync-playbook-frontmatter.ts" \
@@ -79,6 +81,7 @@ chmod +x "$FIXTURE_PLUGIN/tests/live-ace-gates/verify.sh"
 ln -s "$SOURCE_NODE_MODULES" "$FIXTURE_PLUGIN/mcp/node_modules"
 cp "$SOURCE_SCRIPTS/check-category-size.ts" "$FIXTURE_REPO/scripts/ace/"
 cp "$SOURCE_SCRIPTS/changelog-layout.ts" "$FIXTURE_REPO/scripts/ace/"
+cp "$SOURCE_SCRIPTS/knowledge-read-boundary.ts" "$FIXTURE_REPO/scripts/ace/"
 cp "$SOURCE_SCRIPTS/ace-domain.ts" "$FIXTURE_REPO/scripts/ace/"
 cp "$SOURCE_SCRIPTS/check-entry-format.ts" "$FIXTURE_REPO/scripts/ace/"
 cp "$SOURCE_SCRIPTS/sync-playbook-frontmatter.ts" "$FIXTURE_REPO/scripts/ace/"

@@ -26,7 +26,7 @@ if args.probe_only: sys.exit(0)
 with tempfile.TemporaryDirectory(prefix='github-input-knowledge.') as d:
  t=pathlib.Path(d); b=t/'bin';b.mkdir(); cfg=t/'claude';cfg.mkdir(); leak=t/'gh-leak';calls=t/'gh-calls'
  # No system bin directory is exposed: installed gh cannot leak through PATH.
- for name in ['bash','git','jq','dirname','sed','cat','mktemp','rm','awk','find','head','sort','tr','grep','cut','wc','basename','date','uname','readlink','mv','mkdir','tail','env','chmod','sleep','touch','printf','ls']:
+ for name in ['bash','git','jq','dirname','sed','cat','mktemp','rm','awk','find','head','sort','tr','grep','cut','wc','basename','date','uname','readlink','mv','mkdir','tail','env','chmod','sleep','touch','printf','ls','stat']:
   loc=shutil.which(name)
   if loc: (b/name).symlink_to(loc)
  env={'PATH':str(b),'LC_ALL':'C','TMPDIR':str(t),'HOME':os.environ['HOME'],'CLAUDE_CONFIG_DIR':str(cfg),'FF_DEV_TOOLKIT_ROOT':str(p),'GIT_CONFIG_NOSYSTEM':'1','GIT_CONFIG_GLOBAL':'/dev/null'}

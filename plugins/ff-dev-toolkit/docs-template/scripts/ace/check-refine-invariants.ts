@@ -36,6 +36,7 @@
  * 実行例: npx --yes tsx scripts/ace/check-refine-invariants.ts docs/08-knowledge/PLAYBOOK.md
  */
 import * as fs from "node:fs";
+import { KnowledgeReadBoundary, knowledgeReaderForSelection, knowledgeInputExists } from "./knowledge-read-boundary";
 import * as path from "node:path";
 import {
   ACE_ENTRY_ID_SOURCE,
@@ -1128,8 +1129,8 @@ export function evaluateRefineInvariants(input: {
  * （`(.*)$` など）で判定しており、`\r` が残ると全エントリ見出しを見失う。
  * 本文の逐語比較も LF 同士で行うため、片側だけ CRLF でも比較が崩れない。
  */
-function readOrThrow(filePath: string): string {
-  return fs.readFileSync(filePath, "utf8").replace(/\r\n/gu, "\n");
+function readOrThrow(filePath: string, reader: KnowledgeReadBoundary): string {
+  return reader.read(filePath).replace(/\r\n/gu, "\n");
 }
 
 function formatReadError(error: unknown): string {
@@ -1142,12 +1143,12 @@ function formatReadError(error: unknown): string {
   return String(error);
 }
 
-function collectBlocks(files: readonly string[]): EntryBlock[] {
+function collectBlocks(files: readonly string[], reader: KnowledgeReadBoundary): EntryBlock[] {
   const blocks: EntryBlock[] = [];
   for (const filePath of files) {
     let text: string;
     try {
-      text = readOrThrow(filePath);
+      text = readOrThrow(filePath, reader);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`${filePath}: ${message}`);
@@ -1190,8 +1191,11 @@ export function main(): number {
   }
 
   let playbookContent: string;
+  let reader: KnowledgeReadBoundary;
+  const patternsPath = resolvePatternsPath(playbookPath, process.env.ACE_PATTERNS_PATH);
   try {
-    playbookContent = readOrThrow(playbookPath);
+    reader = knowledgeReaderForSelection(playbookPath, process.env.ACE_PATTERNS_PATH?.trim() ? [patternsPath] : []);
+    playbookContent = readOrThrow(playbookPath, reader);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`読み込み失敗: ${playbookPath}: ${message}`);
@@ -1205,8 +1209,8 @@ export function main(): number {
     // 「索引 + subfile」の規則）。単一ファイル構成ではエントリが索引本体にあり、subfile だけを
     // 見ると compact は「live に見出しが無い」で必ず赤、archive / merge の「live に残っている」
     // 判定は空集合に対して空振りする。分割構成の索引はエントリ見出しを持たないので結果は変わらない。
-    liveFiles = [playbookPath, ...discoverPlaybookSubfiles(playbookPath)];
-    archiveFiles = discoverArchiveFiles(playbookPath);
+    liveFiles = [playbookPath, ...discoverPlaybookSubfiles(playbookPath, reader)];
+    archiveFiles = discoverArchiveFiles(playbookPath, reader);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`読み込み失敗: playbook 走査に失敗しました: ${message}`);
@@ -1218,23 +1222,24 @@ export function main(): number {
   try {
     // `.md` で終わるディレクトリ（playbook/CHANGELOG.md がディレクトリ等）は discover が
     // 拾う。読み込み側で名指しして止める（黙って辿ると件数が変わる）。
-    liveBlocks = collectBlocks(liveFiles);
-    archiveBlocks = collectBlocks(archiveFiles);
+    liveBlocks = collectBlocks(liveFiles, reader);
+    archiveBlocks = collectBlocks(archiveFiles, reader);
   } catch (error: unknown) {
     console.error(`読み込み失敗: ${formatReadError(error)}`);
     return EXIT_USAGE_ERROR;
   }
-  const patternsPath = resolvePatternsPath(playbookPath, process.env.ACE_PATTERNS_PATH);
-  const patternsContent = fs.existsSync(patternsPath) ? readOrThrow(patternsPath) : null;
+  let patternsContent: string | null;
+  try { patternsContent = knowledgeInputExists(patternsPath) ? readOrThrow(patternsPath, reader) : null; }
+  catch (error) { console.error(`読み込み失敗: ${formatReadError(error)}`); return EXIT_USAGE_ERROR; }
 
   let changelogContent = playbookContent;
   let changelogSource: "body" | "split" = "body";
   if (!bodyChangelogAuthoritative(playbookContent)) {
     const splitPath = path.join(path.dirname(playbookPath), "playbook", "CHANGELOG.md");
-    if (fs.existsSync(splitPath)) {
+    if (knowledgeInputExists(splitPath)) {
       let splitText: string;
       try {
-        splitText = readOrThrow(splitPath);
+        splitText = readOrThrow(splitPath, reader);
       } catch (error: unknown) {
         console.error(`読み込み失敗: ${splitPath}: ${formatReadError(error)}`);
         return EXIT_USAGE_ERROR;

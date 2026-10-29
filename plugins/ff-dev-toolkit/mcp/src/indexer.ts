@@ -14,6 +14,7 @@ import path from 'path';
 import { SPEC_STATUS, SpecStatus } from './constants.js';
 import { SectionIndexEntry, SpecIndexResult, SpecRecordMeta, Glossary } from './types.js';
 import { splitSections, parseFrontMatter, buildGlossary, toPosixSeparators } from './utils.js';
+import { KnowledgeReadBoundary, KnowledgeReadError } from '../../docs-template/scripts/ace/knowledge-read-boundary.js';
 
 /** The `path` members projectRelative needs; tests pass `path.win32`. */
 type PathApi = Pick<typeof path, 'relative' | 'sep'>;
@@ -27,11 +28,57 @@ type PathApi = Pick<typeof path, 'relative' | 'sep'>;
 export const projectRelative = (projectRoot: string, file: string, p: PathApi = path): string =>
   toPosixSeparators(p.relative(projectRoot, file), p.sep);
 
-export const readFileSafe = (p: string): string => {
+export interface DocsReadAuthority {
+  readonly projectRoot: string;
+  readonly projectIdentity?: string;
+  readonly allowedDocsRoot?: string;
+  readonly allowedIdentity?: string;
+  readonly error?: string;
+}
+
+const directoryIdentity = (dir: string): string => {
+  const s = fs.lstatSync(dir);
+  if (!s.isDirectory() || s.isSymbolicLink()) throw new KnowledgeReadError('invalid-root');
+  return `${s.dev}:${s.ino}`;
+};
+const strictlyInside = (root: string, candidate: string): boolean => {
+  const relative = path.relative(root, candidate);
+  return relative !== '' && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+};
+
+/** Called once by the host bootstrap; project files never populate this grant. */
+export const captureDocsAuthority = (projectRoot: string, allowedDocsRoot?: string): DocsReadAuthority => {
+  const selected = path.resolve(projectRoot);
   try {
-    return fs.readFileSync(p, 'utf-8');
+    const real = fs.realpathSync(selected);
+    const authority: DocsReadAuthority = { projectRoot: real, projectIdentity: directoryIdentity(real) };
+    if (!allowedDocsRoot) return Object.freeze(authority);
+    if (!path.isAbsolute(allowedDocsRoot)) throw new KnowledgeReadError('invalid-external-grant');
+    const allowed = fs.realpathSync(allowedDocsRoot);
+    if (path.resolve(allowedDocsRoot) !== allowed) throw new KnowledgeReadError('invalid-external-grant');
+    return Object.freeze({ ...authority, allowedDocsRoot: allowed, allowedIdentity: directoryIdentity(allowed) });
   } catch {
-    return '';
+    return Object.freeze({ projectRoot: selected, error: 'invalid-read-authority' });
+  }
+};
+
+const docsReader = (projectRoot: string, authority: DocsReadAuthority): KnowledgeReadBoundary => {
+  if (authority.error || !authority.projectIdentity) throw new KnowledgeReadError('invalid-read-authority');
+  const projectReal = fs.realpathSync(projectRoot);
+  if (projectReal !== authority.projectRoot || directoryIdentity(projectReal) !== authority.projectIdentity) throw new KnowledgeReadError('root-changed');
+  const realDocs = fs.realpathSync(path.join(projectRoot, 'docs'));
+  if (realDocs === projectReal) throw new KnowledgeReadError('docs-is-project-root');
+  if (!strictlyInside(projectReal, realDocs)) {
+    if (realDocs !== authority.allowedDocsRoot || directoryIdentity(realDocs) !== authority.allowedIdentity) throw new KnowledgeReadError('outside-docs-authority');
+  }
+  return new KnowledgeReadBoundary(realDocs);
+};
+
+const entryExists = (file: string): boolean => {
+  try { fs.lstatSync(file); return true; }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw new KnowledgeReadError('metadata-unavailable');
   }
 };
 
@@ -67,28 +114,22 @@ export const resolveWithinRoot = (projectRoot: string, relOrAbs: string): string
  * of `<projectRoot>/docs/` — tools must never read arbitrary project files
  * (e.g. package.json, .env) even though they are inside the project root.
  *
- * Containment is measured against **docs/**, not the project root, so a project
- * whose `docs/` is itself a symlink works here exactly as it does in
- * listMarkdown (Issue #521 — previously `resolveDocsPath` routed through
- * resolveWithinRoot first, which rejected the linked tree as "outside the
- * project" and made extract_section the one tool that failed on that layout).
- * The lexical check on the *requested* path still rejects `../` traversal early.
+ * Shared docs require the independently captured exact external-root grant
+ * instead of the former automatic external-root trust. A handler supplies its
+ * existing reader so indexing and extraction consume the same accepted bytes.
  */
-export const resolveDocsPath = (projectRoot: string, relPath: string): string | null => {
+export const resolveDocsPath = (projectRoot: string, relPath: string, reader?: KnowledgeReadBoundary): string | null => {
   const rootAbs = path.resolve(projectRoot);
   const requested = path.resolve(rootAbs, relPath);
   if (!requested.startsWith(rootAbs + path.sep)) return null; // lexical escape
   if (!requested.toLowerCase().endsWith('.md')) return null;
-  if (!fs.existsSync(requested)) return null;
-  let real: string;
-  let docsReal: string;
   try {
-    real = fs.realpathSync(requested);
-    docsReal = fs.realpathSync(path.join(rootAbs, 'docs'));
+    const boundary = reader ?? docsReader(projectRoot, captureDocsAuthority(projectRoot));
+    const real = boundary.authorize(requested);
+    return real.toLowerCase().endsWith('.md') ? real : null;
   } catch {
     return null;
   }
-  return real.startsWith(docsReal + path.sep) ? real : null;
 };
 
 /**
@@ -105,58 +146,34 @@ export const resolveDocsPath = (projectRoot: string, relPath: string): string | 
  * `containmentRoot` is realpath-resolved once, so a project whose `docs/` is
  * itself a symlink keeps working (its real files resolve under the real root).
  */
-export const listMarkdown = (dir: string, containmentRoot: string = dir): string[] => {
-  if (!fs.existsSync(dir)) return [];
-  let realRoot: string;
-  let realDir: string;
-  try {
-    realRoot = fs.realpathSync(path.resolve(containmentRoot));
-    realDir = fs.realpathSync(path.resolve(dir));
-  } catch {
-    return [];
-  }
-  // The start directory itself must be inside the root. Without this a
-  // directory symlink at the entry point (`docs/specs -> /outside`) would put
-  // plain files — which carry no symlink flag of their own — inside the walk.
-  if (realDir !== realRoot && !realDir.startsWith(realRoot + path.sep)) return [];
-  return listMarkdownWithin(dir, realRoot);
+export const listMarkdown = (dir: string, containmentRoot: string = dir, reader?: KnowledgeReadBoundary): string[] => {
+  if (!entryExists(dir)) return [];
+  const boundary = reader ?? new KnowledgeReadBoundary(containmentRoot);
+  boundary.directory(dir);
+  return listMarkdownWithin(dir, boundary);
 };
 
 /** Recursive worker for listMarkdown. `realRoot` is already realpath-resolved. */
-const listMarkdownWithin = (dir: string, realRoot: string): string[] => {
+const listMarkdownWithin = (dir: string, reader: KnowledgeReadBoundary): string[] => {
   const out: string[] = [];
+  reader.directory(dir);
   // Sorted for deterministic tool output (search ties, list_docs, spec error order).
   const entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
   for (const e of entries) {
     const full = path.join(dir, e.name);
-    if (e.isDirectory()) {
-      out.push(...listMarkdownWithin(full, realRoot));
-    } else if (e.name.toLowerCase().endsWith('.md')) {
+    if (e.name.toLowerCase().endsWith('.md')) {
       // Follow file symlinks (stat, not lstat) so linked docs are indexed;
       // directory symlinks are intentionally not followed to avoid cycles.
-      let isFile = e.isFile();
-      if (!isFile && e.isSymbolicLink()) {
-        try {
-          isFile = fs.statSync(full).isFile();
-        } catch {
-          continue; // broken symlink — skip
-        }
-      }
-      if (!isFile) continue;
-      if (e.isSymbolicLink() && !isWithinRealRoot(full, realRoot)) continue; // escapes the root
+      // Unverifiable candidates are errors, not a healthy empty result. No
+      // source bytes are opened before type/authority/protected storage checks.
+      const real = reader.authorize(full);
+      if (!real.toLowerCase().endsWith('.md')) throw new KnowledgeReadError('non-markdown-input');
       out.push(full);
+    } else if (e.isDirectory()) {
+      out.push(...listMarkdownWithin(full, reader));
     }
   }
   return out;
-};
-
-/** True when `p` resolves (following symlinks) to a path inside `realRoot`. */
-const isWithinRealRoot = (p: string, realRoot: string): boolean => {
-  try {
-    return fs.realpathSync(p).startsWith(realRoot + path.sep);
-  } catch {
-    return false; // unresolvable — treat as outside
-  }
 };
 
 /**
@@ -166,15 +183,9 @@ const isWithinRealRoot = (p: string, realRoot: string): boolean => {
  * GLOSSARY.md). realpath resolves every component, so a symlinked parent
  * directory is caught as well as a symlinked file.
  */
-export const containedPath = (p: string, root: string): string | null => {
-  let realRoot: string;
-  try {
-    realRoot = fs.realpathSync(path.resolve(root));
-  } catch {
-    return null;
-  }
-  if (!fs.existsSync(p)) return null;
-  return isWithinRealRoot(p, realRoot) ? p : null;
+export const containedPath = (p: string, root: string, reader?: KnowledgeReadBoundary): string | null => {
+  if (!entryExists(p)) return null;
+  return (reader ?? new KnowledgeReadBoundary(root)).authorize(p);
 };
 
 export interface DocsState {
@@ -182,27 +193,29 @@ export interface DocsState {
   searchIndex: SectionIndexEntry[];
   specIndex: SpecIndexResult;
   glossary: Glossary;
+  reader?: KnowledgeReadBoundary;
 }
 
-export const buildSearchIndex = (files: string[], projectRoot: string): SectionIndexEntry[] =>
+export const buildSearchIndex = (files: string[], projectRoot: string, reader: KnowledgeReadBoundary): SectionIndexEntry[] =>
   files.flatMap((f) => {
     const rel = projectRelative(projectRoot, f);
-    const text = readFileSafe(f);
+    const text = reader.read(f);
     const sections = splitSections(text);
     if (!sections.length) return [{ file: rel, title: path.basename(f), content: text }];
     return sections.map((s) => ({ file: rel, title: s.title || path.basename(f), content: s.content }));
   });
 
-export const buildSpecIndex = (specsDir: string, projectRoot: string): SpecIndexResult => {
-  if (!fs.existsSync(specsDir)) return { specs: [], errors: [] };
+export const buildSpecIndex = (specsDir: string, projectRoot: string, reader?: KnowledgeReadBoundary): SpecIndexResult => {
+  if (!entryExists(specsDir)) return { specs: [], errors: [] };
+  const boundary = reader ?? docsReader(projectRoot, captureDocsAuthority(projectRoot));
   // Containment root is docs/ (the parent of specs/), so a link from
   // docs/specs/ to another file under docs/ stays indexable.
-  const files = listMarkdown(specsDir, path.dirname(specsDir));
+  const files = listMarkdown(specsDir, path.dirname(specsDir), boundary);
   const seen = new Set<string>();
   const specs: SpecRecordMeta[] = [];
   const errors: SpecIndexResult['errors'] = [];
   for (const f of files) {
-    const { meta, body } = parseFrontMatter(readFileSafe(f));
+    const { meta, body } = parseFrontMatter(boundary.read(f));
     const rel = projectRelative(projectRoot, f);
     const spec: SpecRecordMeta = { ...(meta as Record<string, unknown>), file: rel, body };
     const errs: string[] = [];
@@ -226,17 +239,21 @@ export const buildSpecIndex = (specsDir: string, projectRoot: string): SpecIndex
  * Rebuilt on every tool call (docs trees are small) so results never go
  * stale within a long-lived server process.
  */
-export const buildDocsState = (projectRoot: string): DocsState => {
+export const buildDocsState = (projectRoot: string, authority: DocsReadAuthority = captureDocsAuthority(projectRoot)): DocsState => {
+  if (authority.error) throw new KnowledgeReadError('invalid-read-authority');
   const docsRoot = path.join(projectRoot, 'docs');
+  if (!entryExists(docsRoot)) return { mdFiles: [], searchIndex: [], specIndex: { specs: [], errors: [] }, glossary: {} };
+  const reader = docsReader(projectRoot, authority);
   const specsDir = path.join(docsRoot, 'specs');
   // The glossary is read by path, not through the walk, so it needs the same
   // containment check (the file *or* any parent component may be a symlink).
-  const glossaryPath = containedPath(path.join(docsRoot, '06-reference', 'GLOSSARY.md'), docsRoot);
-  const mdFiles = listMarkdown(docsRoot);
+  const glossaryPath = containedPath(path.join(docsRoot, '06-reference', 'GLOSSARY.md'), docsRoot, reader);
+  const mdFiles = listMarkdown(docsRoot, docsRoot, reader);
   return {
     mdFiles,
-    searchIndex: buildSearchIndex(mdFiles, projectRoot),
-    specIndex: buildSpecIndex(specsDir, projectRoot),
-    glossary: glossaryPath ? buildGlossary(readFileSafe(glossaryPath)) : {},
+    searchIndex: buildSearchIndex(mdFiles, projectRoot, reader),
+    specIndex: buildSpecIndex(specsDir, projectRoot, reader),
+    glossary: glossaryPath ? buildGlossary(reader.read(glossaryPath)) : {},
+    reader,
   };
 };

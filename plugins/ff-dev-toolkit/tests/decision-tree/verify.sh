@@ -38,12 +38,32 @@
 #      Codex 1 レーン / full → 5 レーン / none → ホスト判定、完了報告の 1 行は DT_REASON の写像
 #      （例「経路: fast（根拠: docs のみ / 12 行）」）。根の DT_* 行をバイト同一で通し（判定を
 #      再実装しない）、根が判定不能（exit 2）の回・根（ルータ）が無い配置でも none を出して exit 2 を返す
+#   J. here-document の一時ファイルを作れない環境でも、変更ファイル一覧を読み切って経路と
+#      セキュリティ分類を決める。非コメント行の `<<` 禁止は常に検査する。bwrap で読み取り専用の
+#      一時領域を作れた環境では、修正前は経路が判定不能で `--check` は行を受け取らないまま成功し、
+#      修正後は通常環境と同じ答えになる
 #
 # 変異検出: 実測は本 suite の B 節がそのまま持つ（合成 root への注入で毎回測る。B1〜B14 の 14 変異）。
 # 空振り検出: 木データを空ファイルにすると (C2) が赤になる（--check は exit 2 を返し、suite は「rc 2 でない」を赤にする。2026-09-23 実測）。
 # 空振り検出: 木データの区切りをタブから `,` へ変えると (C4) が赤になる（正規化が BAD 行を出し --check が exit 1。2026-09-23 実測）。
 # 空振り検出: 合成 root の skills/ を空にすると (C5) が「母集団が空」で赤になる（2026-09-23 実測）。
 # 空振り検出: 記録 leaves.tsv が無い置き場を読み手に渡すと (G1 / G2) が (unmeasured) を要求して赤になる（0 件の到達へ倒さない。2026-09-23 実測）。
+# 空振り検出: route.sh の dt_begin_lines から set -f を外すと (D28) が赤になる（glob が展開されて件数照合が rc 2 の none。2026-10-28 実測）。
+# 空振り検出: route.sh の非コメント行へ here-string を 1 行足すと (J0) が赤になる（2026-10-28 実測）。sandbox を起動できたのに
+#   here-document が成功する環境は (J-probe) が赤になる。
+#
+# J の sandbox 再現（2026-10-28、bash 5.2.37 で実測）:
+#   書き込み不可の TMPDIR だけでは here-document は落ちない。bash は TMPDIR が書けないと
+#   /tmp、/var/tmp、/usr/tmp、cwd の順へ落ち、bash 5.1 以降は小さい文書をパイプで渡す。
+#   BASH_COMPAT=50 にすると小さい文書でも一時ファイル（sh-thd.*）を作る。/tmp と /var/tmp と
+#   cwd を読み取り専用にした bwrap の中で、失敗文言は
+#   `cannot create temp file for here-document` になる。unshare の user namespace は
+#   tmpfs の uid が合わず使わない。この検査は手元の route.sh を bwrap の読み取り専用
+#   マウントで走らせるだけで、本番の Codex sandbox や本番プロセスには触れない。
+#   J4 の git fixture は bwrap の tmpfs が /tmp を覆うので、リポジトリの親に実行ごとの一意名
+#   （ff-dt-2417-fixture.XXXXXX）で作り、終了時にその実体だけを消す。作れない環境も sandbox 検査だけ ○ skip。
+#   bwrap が無い、または起動に失敗して上記の失敗文言が出ない環境は sandbox 検査だけ ○ skip。
+#   sandbox は起動できたのに here-document が成功する環境は空振りなので赤にする。
 #
 # 依存: bash 3.2+、jq、git、awk、mktemp。jq / git / 一時領域が無ければ suite 全体を `○ skip`。
 # run-all-required: no — jq / git / 一時領域の無い環境の skip を許容する（静的検査は route.sh --check
@@ -89,6 +109,10 @@ cleanup() {
   local rc=$?
   chmod -R u+rwx "$TEST_TMP" 2>/dev/null || true
   rm -rf "$TEST_TMP"
+  if [ -n "${DT2417_FIX_MOUNT:-}" ]; then
+    chmod -R u+rwx "$DT2417_FIX_MOUNT" 2>/dev/null || true
+    rm -rf "$DT2417_FIX_MOUNT"
+  fi
   if [ "$REACHED_END" -ne 1 ] && [ "$rc" -eq 0 ]; then
     echo "✗ decision-tree: 最後まで到達しませんでした" >&2
     rc=1
@@ -405,6 +429,24 @@ ff_git_fixture_init "$ORPHAN" >/dev/null
 RC=0; OUT="$(cd "$ORPHAN" && env -u FF_JEV_MODE -u FF_JEV_POINTS -u FF_JEV_ENABLED WORKFLOW_TIER_BASE=main bash "$ROUTER" 2>/dev/null)" || RC=$?
 [ "$RC" -eq 2 ] && [ "$(kv DT_ROUTE)" = "none" ] && ok "D27 差分モード: base と共通祖先が無ければ none + exit 2（docs-only へ倒れない）" || bad "D27 orphan: rc=$RC out=[$OUT]"
 
+# glob 文字・空白・最初の契約 path。行の列挙を変えても通常環境の答えは変わらない。
+# D28 は glob が実際に一致する cwd で走らせる（一致しない cwd では set -f が無くても 1 件のままで空振りする）
+mkdir -p "$TEST_TMP/glob-cwd/changelog.d"
+printf 'a\n' > "$TEST_TMP/glob-cwd/changelog.d/a.md"
+printf 'b\n' > "$TEST_TMP/glob-cwd/changelog.d/b.md"
+_d28_prev_pwd="$PWD"
+cd "$TEST_TMP/glob-cwd"
+run_router -- --files 'changelog.d/*' --lines 3
+cd "$_d28_prev_pwd"
+assert_route "D28 glob 文字を含む path は展開せず docs-only の fast" fast docs-only rules
+[ "$(kv DT_FILES)" = "1" ] && ok "D28b changelog.d/* は 1 件（glob 展開しない）" || bad "D28b DT_FILES=$(kv DT_FILES)"
+run_router -- --files plugins/ff-dev-toolkit/skills/ace-curate/SKILL.md plugins/ff-dev-toolkit/hooks/hooks.json --lines 1
+assert_route "D29 最初に当たった契約 path を理由に残す" full "contract-change:plugins/ff-dev-toolkit/skills/ace-curate/SKILL.md" rules
+run_router -- --files 'src/my login.ts' --lines 20
+assert_route "D30 空白を含む path は 1 件のまま full（implementation）" full implementation rules
+[ "$(kv DT_FILES)" = "1" ] && [ "$(kv DT_SECURITY)" = "yes" ] && [ "$(kv DT_SECURITY_EVIDENCE)" = "src/my login.ts" ] \
+  && ok "D30b 空白 path の件数と security 根拠" || bad "D30b files=$(kv DT_FILES) sec=$(kv DT_SECURITY) ev=[$(kv DT_SECURITY_EVIDENCE)]"
+
 # ============================================================================
 echo "decision-tree E: FF_JEV_MODE=on（二段構え）"
 printf 'Issue body probe text\n' > "$TEST_TMP/issue.md"
@@ -692,6 +734,148 @@ else
     ok "I2 CRLF の jq でも、UserPromptSubmit は根の答え（fast）をセッション記録へ置く"
   else
     bad "I2 CRLF の jq で UserPromptSubmit が記録しない: rc=$RC out=[$OUT] err=[$ERR] route=[$crlf_route]"
+  fi
+fi
+
+# ============================================================================
+# here-document を作れない環境。静的固定は常に走る。sandbox は bwrap が再現できたときだけ。
+echo "decision-tree J: here-document を作れない環境でも経路とセキュリティ分類を決める"
+# `<<` は here-document と here-string の両方を含む（算術の左シフトも巻き込むが、route.sh では使わない）。
+# J2 が通す review-route.sh も同じ sandbox で走るので一緒に見る
+for _dt2417_f in "$ROUTER" "$PLUGIN_ROOT/scripts/review-route.sh"; do
+  if [ ! -r "$_dt2417_f" ]; then
+    bad "J0 検査対象を読めません: ${_dt2417_f}"
+    continue
+  fi
+  _dt2417_ops="$(awk '
+    {
+      s = $0
+      sub(/^[[:space:]]+/, "", s)
+      if (s ~ /^#/) next
+      if (index($0, "<<") > 0) print NR ": " $0
+    }
+  ' "$_dt2417_f")"
+  if [ -z "$_dt2417_ops" ]; then
+    ok "J0 ${_dt2417_f##*/} の非コメント行に \`<<\`（here-document / here-string）が無い"
+  else
+    bad "J0 ${_dt2417_f##*/} が一時ファイルを作る演算子に頼っている: ${_dt2417_ops}"
+  fi
+done
+
+DT2417_FIX_MOUNT=""
+REPO_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd -P)"
+if ! command -v bwrap >/dev/null 2>&1; then
+  echo "  ○ skip: bwrap が無いため sandbox 上の経路判定は未検査（J0 の静的固定は実施済み）"
+# bwrap の tmpfs が /tmp を覆うので、J4 の git fixture は /tmp の外（リポジトリの親）に置く。
+# 親は兄弟 worktree と共有されるので、実行ごとに一意の名前で作り、cleanup はその実体だけを消す
+elif ! DT2417_FIX_MOUNT="$(mktemp -d "$(dirname "$REPO_ROOT")/ff-dt-2417-fixture.XXXXXX")"; then
+  DT2417_FIX_MOUNT=""
+  echo "  ○ skip: リポジトリの親（$(dirname "$REPO_ROOT")）に sandbox 用 fixture を作れないため sandbox 上の経路判定は未検査"
+else
+  DT2417_BWRAP=(bwrap --dev-bind / / --tmpfs /tmp --remount-ro /tmp --tmpfs /var/tmp --remount-ro /var/tmp)
+  if [ -d /usr/tmp ]; then
+    DT2417_BWRAP+=(--tmpfs /usr/tmp --remount-ro /usr/tmp)
+  fi
+  DT2417_BWRAP+=(
+    --ro-bind "$REPO_ROOT" "$REPO_ROOT"
+    --bind "$DT2417_FIX_MOUNT" "$DT2417_FIX_MOUNT" --remount-ro "$DT2417_FIX_MOUNT"
+    --setenv TMPDIR /tmp --setenv BASH_COMPAT 50 --die-with-parent
+  )
+  for _v in FF_JEV_MODE FF_JEV_POINTS FF_JEV_ENABLED FF_DEV_TOOLKIT_ROOT CLAUDE_PLUGIN_ROOT \
+    GROK_PLUGIN_ROOT CLAUDECODE GROK_AGENT CODEX_THREAD_ID CODEX_HOME MULTI_AGENT_CONFIG \
+    MULTI_AGENT_SECURITY_GLOB MULTI_AGENT_SECURITY_GLOB_EXTRA MULTI_AGENT_SECURITY_REVIEW \
+    WORKFLOW_TIER_BASE TYPESAFE_API_KEY TYPESAFE_API_KEY_FILE SHELLOPTS BASHOPTS; do
+    DT2417_BWRAP+=(--unsetenv "$_v")
+  done
+  dt2417_run() { # <chdir> <cmd> [args...]
+    local chdir="$1"
+    shift
+    SANDBOX_RC=0
+    SANDBOX_OUT="$("${DT2417_BWRAP[@]}" --chdir "$chdir" -- "$@" 2>"$TEST_TMP/dt2417.err")" || SANDBOX_RC=$?
+    SANDBOX_ERR="$(cat "$TEST_TMP/dt2417.err" 2>/dev/null || true)"
+  }
+  dt2417_kv() { printf '%s\n' "$SANDBOX_OUT" | awk -F= -v k="$1" '$1 == k { sub(/^[^=]*=/, ""); print; exit }'; }
+  probe_rc=0
+  probe_err="$("${DT2417_BWRAP[@]}" --chdir "$REPO_ROOT" -- bash -c 'cat <<EOF
+probe
+EOF
+' 2>&1)" || probe_rc=$?
+  if [ "${probe_err#*"bwrap:"}" != "$probe_err" ] \
+    && [ "${probe_err#*"cannot create temp file for here-document"}" = "$probe_err" ]; then
+    _probe_head="$(printf '%s\n' "$probe_err" | awk 'NF { print; exit }')"
+    echo "  ○ skip: bwrap を起動できない（${_probe_head}）。sandbox 上の経路判定は未検査"
+  elif [ "${probe_err#*"cannot create temp file for here-document"}" = "$probe_err" ]; then
+    bad "J-probe here-document の一時ファイル失敗を再現できない（検査が空振りする）: [${probe_err}]"
+  else
+    ok "J-probe sandbox で here-document の一時ファイルを作れない"
+    dt2417_run "$REPO_ROOT" bash "$ROUTER" --files docs/a.md src/auth/login.ts --lines 20
+    if [ "$SANDBOX_RC" -eq 0 ] && [ "$(dt2417_kv DT_ROUTE)" = "full" ] \
+      && [ "$(dt2417_kv DT_REASON)" = "implementation" ] && [ "$(dt2417_kv DT_FILES)" = "2" ] \
+      && [ "$(dt2417_kv DT_LINES)" = "20" ] && [ "$(dt2417_kv DT_SECURITY)" = "yes" ] \
+      && [ "$(dt2417_kv DT_SECURITY_EVIDENCE)" = "src/auth/login.ts" ]; then
+      ok "J1 sandbox でも変更ファイルを読み切り full / security yes（根拠 src/auth/login.ts）"
+    else
+      bad "J1 sandbox の --files: rc=${SANDBOX_RC} route=[$(dt2417_kv DT_ROUTE)] reason=[$(dt2417_kv DT_REASON)] files=[$(dt2417_kv DT_FILES)] lines=[$(dt2417_kv DT_LINES)] sec=[$(dt2417_kv DT_SECURITY)] ev=[$(dt2417_kv DT_SECURITY_EVIDENCE)] err=[${SANDBOX_ERR}]"
+    fi
+    if [ "${SANDBOX_ERR#*"cannot create temp file for here-document"}" = "$SANDBOX_ERR" ]; then
+      ok "J1b --files の stderr に一時ファイル失敗が無い"
+    else
+      bad "J1b --files が一時ファイルを要求した: [${SANDBOX_ERR}]"
+    fi
+    dt2417_run "$REPO_ROOT" env CLAUDECODE=1 bash "$PLUGIN_ROOT/scripts/review-route.sh" --files docs/a.md src/auth/login.ts --lines 20
+    _sec_line="$(dt2417_kv REVIEW_SECURITY_REPORT_LINE)"
+    if [ "$SANDBOX_RC" -eq 0 ] && [ "$(dt2417_kv REVIEW_ROUTE)" = "full" ] \
+      && [ "$(dt2417_kv REVIEW_LANES)" = "codex:1+claude:4" ] \
+      && [ "$(dt2417_kv REVIEW_REPORT_LINE)" = "経路: full（根拠: 実装変更 / 20 行）" ] \
+      && [ "$(dt2417_kv REVIEW_SECURITY_SENSITIVE)" = "yes" ] \
+      && [ "$(dt2417_kv REVIEW_SECURITY_EVIDENCE)" = "src/auth/login.ts" ] \
+      && [ "$(dt2417_kv REVIEW_SECURITY_GATE)" = "security-review" ] \
+      && [ "$(dt2417_kv REVIEW_SECURITY_BASE_CHECK)" = "unchecked" ] \
+      && [ "${_sec_line#*"src/auth/login.ts"}" != "$_sec_line" ]; then
+      ok "J2 review-route は sandbox でも full と security-review（根拠 path 付き）"
+    else
+      bad "J2 review-route: rc=${SANDBOX_RC} route=[$(dt2417_kv REVIEW_ROUTE)] lanes=[$(dt2417_kv REVIEW_LANES)] line=[$(dt2417_kv REVIEW_REPORT_LINE)] sec=[$(dt2417_kv REVIEW_SECURITY_SENSITIVE)] gate=[$(dt2417_kv REVIEW_SECURITY_GATE)] base=[$(dt2417_kv REVIEW_SECURITY_BASE_CHECK)] report=[${_sec_line}] err=[${SANDBOX_ERR}]"
+    fi
+    _host_check="$(bash "$ROUTER" --check 2>/dev/null || true)"
+    dt2417_run "$REPO_ROOT" bash "$ROUTER" --check
+    if [ "$SANDBOX_RC" -eq 0 ] && [ "$SANDBOX_OUT" = "$_host_check" ] \
+      && [ "${SANDBOX_ERR#*"cannot create temp file for here-document"}" = "$SANDBOX_ERR" ]; then
+      ok "J3 sandbox の --check は通常環境と同じ成功要約で、一時ファイル失敗を出さない"
+    else
+      bad "J3 sandbox の --check: rc=${SANDBOX_RC} out=[${SANDBOX_OUT}] err=[${SANDBOX_ERR}]"
+    fi
+    SB_REPO="$DT2417_FIX_MOUNT/repo"
+    j4_ready=0
+    if ff_git_fixture_init "$SB_REPO" >/dev/null \
+      && git -C "$SB_REPO" checkout -q -b base \
+      && mkdir -p "$SB_REPO/docs" \
+      && printf 'a\n' > "$SB_REPO/docs/a.md" \
+      && git -C "$SB_REPO" add . \
+      && git -C "$SB_REPO" commit -q -m init \
+      && git -C "$SB_REPO" checkout -q -b 'feature/#2417-sandbox'; then
+      awk 'BEGIN { for (i = 1; i <= 30; i++) print "line " i }' > "$SB_REPO/new.py"
+      j4_ready=1
+    else
+      bad "J4 sandbox 用の git fixture を作れません"
+    fi
+    if [ "$j4_ready" -eq 1 ]; then
+      dt2417_run "$SB_REPO" bash "$ROUTER" --base base
+      if [ "$SANDBOX_RC" -eq 0 ] && [ "$(dt2417_kv DT_ROUTE)" = "full" ] \
+        && [ "$(dt2417_kv DT_REASON)" = "implementation" ] && [ "$(dt2417_kv DT_FILES)" = "1" ] \
+        && [ "$(dt2417_kv DT_LINES)" = "30" ] && [ "$(dt2417_kv DT_SECURITY)" = "no" ] \
+        && [ "${SANDBOX_ERR#*"cannot create temp file for here-document"}" = "$SANDBOX_ERR" ]; then
+        ok "J4 sandbox の untracked 30 行は行数に入り full（小差分・判定不能へ倒れない）"
+      else
+        bad "J4 sandbox の git: rc=${SANDBOX_RC} route=[$(dt2417_kv DT_ROUTE)] reason=[$(dt2417_kv DT_REASON)] files=[$(dt2417_kv DT_FILES)] lines=[$(dt2417_kv DT_LINES)] sec=[$(dt2417_kv DT_SECURITY)] err=[${SANDBOX_ERR}]"
+      fi
+    fi
+    dt2417_run "$REPO_ROOT" bash "$ROUTER" --files docs/a.md --lines 3
+    if [ "$SANDBOX_RC" -eq 0 ] && [ "$(dt2417_kv DT_ROUTE)" = "fast" ] \
+      && [ "$(dt2417_kv DT_REASON)" = "docs-only" ] && [ "$(dt2417_kv DT_SECURITY)" = "no" ]; then
+      ok "J5 sandbox の docs のみは fast / security no"
+    else
+      bad "J5 sandbox の docs: rc=${SANDBOX_RC} route=[$(dt2417_kv DT_ROUTE)] reason=[$(dt2417_kv DT_REASON)] sec=[$(dt2417_kv DT_SECURITY)] err=[${SANDBOX_ERR}]"
+    fi
   fi
 fi
 

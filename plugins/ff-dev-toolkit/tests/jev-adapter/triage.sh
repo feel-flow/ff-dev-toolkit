@@ -190,3 +190,51 @@ reset_fake
 run_triage on --candidate x --principles
 [ "$RC" -eq 2 ] && [[ "$ERR" == *usage* ]] && [ "$(calls)" -eq 0 ] \
   && ok 'L20 missing principles value has usage without curl' || bad 'L20'
+
+# Neither local ranking nor an API request may consume default external ACE.
+triage_private="$WORK/triage-private"
+mkdir -p "$triage_private"
+triage_canary=ff_triage_private_canary_2432
+printf '### ACE-2432-1: %s\n\n| Category | coding |\n| Status | active |\n\n%s\n' "$triage_canary" "$triage_canary" >"$triage_private/secret.md"
+triage_privacy_n=0
+for triage_case in main category parent; do
+  triage_root="$WORK/triage-privacy-$triage_case"
+  mkdir -p "$triage_root/docs/08-knowledge/playbook"
+  printf '## エントリ一覧\n\n[category](./playbook/secret.md)\n' >"$triage_root/docs/08-knowledge/PLAYBOOK.md"
+  case "$triage_case" in
+    main) rm "$triage_root/docs/08-knowledge/PLAYBOOK.md"; ln -s "$triage_private/secret.md" "$triage_root/docs/08-knowledge/PLAYBOOK.md" ;;
+    category) ln -s "$triage_private/secret.md" "$triage_root/docs/08-knowledge/playbook/secret.md" ;;
+    parent) rmdir "$triage_root/docs/08-knowledge/playbook"; ln -s "$triage_private" "$triage_root/docs/08-knowledge/playbook" ;;
+  esac
+  for triage_mode in off on; do
+    reset_fake
+    TRIAGE_CWD="$triage_root" run_triage "$triage_mode" --candidate x
+    [ "$RC" -eq 2 ] && [ "$(calls)" -eq 0 ] && [[ "$OUT$ERR" != *"$triage_canary"* ]] \
+      && ok "L21 $triage_case/$triage_mode refuses without private text or API" || bad "L21 $triage_case/$triage_mode rc=$RC"
+    triage_privacy_n=$((triage_privacy_n + 1))
+  done
+done
+[ "$triage_privacy_n" -eq 6 ] && ok 'L21 complete privacy caller census' || bad 'L21 empty or omitted privacy inputs'
+reset_fake
+printf '### P-2432: %s\n\n%s\n' "$triage_canary" "$triage_canary" >"$triage_private/principles.md"
+TRIAGE_CWD="$triage_root" run_triage off --candidate x --principles "$triage_private/principles.md"
+[ "$RC" -eq 12 ] && [ "$(calls)" -eq 0 ] && [[ "$OUT" == *"$triage_canary"* ]] \
+  && ok 'L21 explicit external principles still produce local hints' || bad "L21 explicit control rc=$RC"
+ln -s "$triage_private/principles.md" "$triage_root/principles.md"
+reset_fake
+TRIAGE_CWD="$triage_root" run_triage off --candidate x --principles "$triage_root/principles.md"
+[ "$RC" -eq 2 ] && [ "$(calls)" -eq 0 ] && [[ "$OUT$ERR" != *"$triage_canary"* ]] \
+  && ok 'L21 an in-project principles operand cannot create an external grant' || bad 'L21 implicit target promoted by an explicit local operand'
+ln -s "$triage_private" "$triage_root/glob-principles"
+reset_fake
+TRIAGE_CWD="$triage_root" run_triage off --candidate x --principles "$triage_root/glob-principles/*.md"
+[ "$RC" -eq 2 ] && [ "$(calls)" -eq 0 ] && [[ "$OUT$ERR" != *"$triage_canary"* ]] \
+  && ok 'L21 an in-project glob root cannot create an external grant' || bad 'L21 implicit glob root promoted by an explicit local operand'
+for triage_enabled in 0 1; do
+  reset_fake
+  OUT="$(cd "$triage_root" || exit 2
+    env -i HOME="$ISO_HOME" PATH="$FAKE/bin:$PATH" TMPDIR="$WORK" FAKE_CURL_DIR="$FAKE" FF_JEV_MODE=on FF_JEV_ENABLED="$triage_enabled" \
+      bash "$TRIAGE" --candidate x 2>"$WORK/triage-private.err")"; RC=$?
+  [ "$RC" -eq 2 ] && [ "$(calls)" -eq 0 ] && [[ "$OUT$(cat "$WORK/triage-private.err")" != *"$triage_canary"* ]] \
+    && ok "L21 enabled=$triage_enabled without key keeps unsafe input out of fallback and API" || bad "L21 no-key rc=$RC"
+done

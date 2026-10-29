@@ -554,9 +554,7 @@ describe("main（CLI エントリポイント）", () => {
     it("サブファイルが読み込み不能な場合、git エラーと誤分類せず専用メッセージで exit 1", () => {
       // 読み込み不能の再現に chmod 0o000 は使わない（root は 0o000 でも読めてしまい
       // テストが skip になるため）。代わりに playbook/ サブファイルの位置を「ディレクトリ」
-      // にして readFileSync を EISDIR で失敗させる。discoverPlaybookSubfiles は .md 末尾で
-      // 拾い isFile 検査をしないので process.md（ディレクトリ）もサブファイルとして拾われ、
-      // readSubfileOrThrow が throw する。root/非root いずれでも常に実行される（Issue #25）。
+      // にして読取前の種別検査で失敗させる。root/非root いずれでも実行される。
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ace-reuse-eisdir-"));
       const indexPath = path.join(tmp, "PLAYBOOK.md");
       fs.writeFileSync(indexPath, "# 索引\n");
@@ -572,8 +570,8 @@ describe("main（CLI エントリポイント）", () => {
         });
         expect(code).toBe(1);
         const errOut = errSpy.mock.calls.flat().join("\n");
-        expect(errOut).toContain("サブファイル読み込み失敗");
-        expect(errOut).toContain(unreadable);
+        expect(errOut).toContain("knowledge-read: nonregular-input");
+        expect(errOut).not.toContain("git コマンドの実行に失敗");
         expect(errOut).not.toContain("git コマンドが見つかりません");
       } finally {
         fs.rmSync(tmp, { recursive: true, force: true });

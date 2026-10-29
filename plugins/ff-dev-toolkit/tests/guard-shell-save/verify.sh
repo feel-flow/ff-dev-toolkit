@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: Writeのno-read fallbackを拒否へ戻す変異は構文0の後、外部の正常Write/提案全文ruleの針が赤（rc=1）。正常対照93件pass（2026-10-29実測）。
 # Runtime contract for the shell save guard hook (Issue `#1801` / OBS-042).
 #
 # 配布物 hooks/guard-shell-save.sh を stdin JSON（Write / Edit の PreToolUse 入力）で
@@ -33,6 +34,7 @@
 # 空振り検出: 一時領域へ写す ASDD ゲートから scripts/asdd/（設定の検証本体）の複製を外すと、写したゲートの判定が rc=2（判定不能）になり D3a の 2 件と D4b の 1 件が赤（2026-09-28 実測、bundle `#1808`。D3 の drain 検査だけでは判定不能の分岐と無効の分岐を区別できない）。
 # 空振り検出: 保存後の組み立て（Issue `#2357`。2026-10-26 に WSL で実測、変異なしは 74 件緑）。旧実装（`%%` / `#` の切り出し）へ戻す → R5 の 1 件赤、切り出しを 1 文字ずらす → F14・M4 の 2 件赤、二分探索の向きを取り違える → F7・F10 ほか 6 件赤、探索の上限を 1 文字手前に取り違える → F19 の 1 件赤、timeout を 10 秒へ戻す → R4 の 1 件赤。
 # 空振り検出: consumer保存回帰の集合を0件へ替えると、実ケースのfocused集合境界が1件赤・rc=1。正常は4/0、共有検出器への宣言受渡しを外す単独変異は宣言あり危険形だけ1件赤・rc=1（構文はいずれも0、2026-10-22）。
+# 空振り検出: 現行正常対照88/0。認可rootを全filesystemへ広げるとleaf/parentの2針、診断をraw行へ戻すとinternalのJSON/stderrの2針、privacy集合の空化でcensusの1針が赤。3変異とも構文0の後suite rc=1を確認（2026-10-29、私有workspaceと文字列検査追加後に再実測）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -91,8 +93,9 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 # <dir> <lib-dir|""> — lib-dir が空なら検出器を置かない（判定不能の経路）。
 make_plugin() { # <dir> <lib-dir> [hook-file]
   local dir="$1" libs="$2" hook="${3:-$TARGET}"
-  mkdir -p "$dir/hooks" "$dir/tests/lib"
+  mkdir -p "$dir/hooks" "$dir/tests/lib" "$dir/scripts/lib"
   cp "$hook" "$dir/hooks/guard-shell-save.sh"
+  cp "$PLUGIN_ROOT/scripts/lib/knowledge-read-boundary.sh" "$PLUGIN_ROOT/scripts/lib/knowledge-read-acl.ps1" "$dir/scripts/lib/"
   # ASDD の判定本体（scripts/asdd/）まで写す。hooks/ の 2 本だけでは判定が常に rc=2 になる。
   ff_asdd_copy_gate "$dir"
   if [ -n "$libs" ]; then
@@ -130,7 +133,7 @@ run_json() { # <hook> <json> [NAME=VALUE ...]
   local hook="$1" json="$2"
   shift 2
   RC=0
-  OUT="$(printf '%s' "$json" | env "$@" bash "$hook" 2>/dev/null)" || RC=$?
+  OUT="$(cd "$WORK" && printf '%s' "$json" | env "$@" bash "$hook" 2>/dev/null)" || RC=$?
   _decode
 }
 
@@ -188,18 +191,33 @@ run_json "$HOOK" "$(edit_json "$EXISTING" 'PLACEHOLDER' 'echo "$NEW'"${FW}"'"' t
 assert_fire "F7: replace_all の全置換で入る違反も deny"
 F7_REASON="$REASON"
 case "$F7_REASON" in
-  *'4:echo "$NEW'*'5:echo "$NEW'*) ok "F7: replace_all の 2 箇所がどちらも保存後の行番号付きで報告される" ;;
+  *'4:mbcs'*'5:mbcs'*) ok "F7: replace_allの2箇所が固定ruleと保存後の行番号で報告される" ;;
   *) bad "F7: replace_all の 2 箇所が報告されない: [${REASON}]" ;;
 esac
 
 run_json "$HOOK" "$(edit_json "$EXISTING" 'PLACEHOLDER' "$MB_BAD")"
 assert_fire "F9: 既存違反と同じ綴りの行を複製する Edit も deny（件数で突き合わせる）"
-run_json "$HOOK" "$(edit_json "$EXISTING" 'PLACEHOLDER' 'echo "$NEW'"${FW}"'" # a&b')"
+CAPTURE_PLUGIN="$TEST_TMP/capture-plugin"
+make_plugin "$CAPTURE_PLUGIN" "$LIB_SRC"
+sed 's/^mbcs_scan()/ff_test_original_mbcs_scan()/' "$LIB_SRC/mbcs-guard.sh" > "$CAPTURE_PLUGIN/tests/lib/mbcs-guard.sh"
+cat "$SCRIPT_DIR/fixtures/capture-mbcs.sh" >> "$CAPTURE_PLUGIN/tests/lib/mbcs-guard.sh"
+CAPTURE_FILE="$TEST_TMP/private-scan-inputs"
+: > "$CAPTURE_FILE"
+CAPTURE_EXPECTED_AFTER="$TEST_TMP/private-expected-after"
+printf '%s\n' '#!/usr/bin/env bash' 'set -o pipefail' "$MB_BAD" 'echo "$NEW'"${FW}"'" # a&b' 'PLACEHOLDER' > "$CAPTURE_EXPECTED_AFTER"
+capture_before=""; capture_after=""
+IFS= read -r -d '' capture_before < "$EXISTING" || true
+IFS= read -r -d '' capture_after < "$CAPTURE_EXPECTED_AFTER" || true
+printf '%s\000%s\000' "$capture_before" "$capture_after" > "$TEST_TMP/private-expected-inputs"
+run_json "$CAPTURE_PLUGIN/hooks/guard-shell-save.sh" "$(edit_json "$EXISTING" 'PLACEHOLDER' 'echo "$NEW'"${FW}"'" # a&b')" "FF_TEST_SHELL_CAPTURE=$CAPTURE_FILE"
 case "$REASON" in
-  *'4:echo "$NEW'*'a&b'*)
+  *'4:mbcs'*)
     case "$REASON" in
-      *'5:echo "$NEW'*) bad "F10: replace_all=false なのに 2 箇所目まで置換された: [${REASON}]" ;;
-      *) ok "F10: replace_all=false は先頭 1 箇所だけを字義どおり（& を展開せず）置換する" ;;
+      *'5:mbcs'*) bad "F10: replace_all=falseなのに2箇所目まで置換された" ;;
+      *)
+        if cmp -s "$CAPTURE_FILE" "$TEST_TMP/private-expected-inputs"; then
+          ok "F10: private before/after oracleで単一置換とliteral &を確認（公開診断は固定ruleのみ）"
+        else bad "F10: private before/after bytesが独立expectedと異なる"; fi ;;
     esac ;;
   *) bad "F10: 字義どおりの単一置換になっていない: [${REASON}]" ;;
 esac
@@ -209,7 +227,7 @@ MBPRE="$WORK/scripts/mbpre.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'set -o pipefail' '# 日本語のコメント行（全角）' 'PLACEHOLDER' 'echo tail' > "$MBPRE"
 run_json "$HOOK" "$(edit_json "$MBPRE" 'PLACEHOLDER' "$MB_BAD")"
 case "$DECISION:$REASON" in
-  deny:*"4:$MB_BAD"*) ok "F17: マルチバイトの行より後ろの置換も行番号と綴りがそのまま報告される" ;;
+  deny:*"4:mbcs"*) ok "F17: マルチバイトの行より後ろの置換も開始行と固定ruleを報告する" ;;
   *) bad "F17: マルチバイトの行より後ろの置換がずれた: decision=[${DECISION}] reason=[${REASON}]" ;;
 esac
 # 大きな .sh（約 13 万字・25 万バイト。Windows の Git Bash で旧実装が timeout を超えた大きさの桁）の
@@ -224,7 +242,7 @@ BIG="$WORK/scripts/big.sh"
 BIG_LINE=$((4000 + 3))
 run_json "$HOOK" "$(edit_json "$BIG" 'PLACEHOLDER' "$MB_BAD")"
 case "$DECISION:$REASON" in
-  deny:*"${BIG_LINE}:$MB_BAD"*) ok "F18: 大きな .sh でも、先頭一致（似た綴りの行の後ろ）を正しい行で置換して deny" ;;
+  deny:*"${BIG_LINE}:mbcs"*) ok "F18: 大きな .sh でも正しい置換位置の行と固定ruleでdeny" ;;
   *) bad "F18: 大きな .sh の置換が誤った: decision=[${DECISION}] reason=[${REASON:0:300}]" ;;
 esac
 # F19: old_string がファイルの最後のバイトで終わる（末尾に改行が無い）とき。二分探索が上限（全体の長さ）で
@@ -233,14 +251,14 @@ TAILF="$WORK/scripts/tail.sh"
 printf '%s\n%s\n%s' '#!/usr/bin/env bash' 'set -o pipefail' 'PLACEHOLDER' > "$TAILF"
 run_json "$HOOK" "$(edit_json "$TAILF" 'PLACEHOLDER' "$MB_BAD")"
 case "$DECISION:$REASON" in
-  deny:*"3:$MB_BAD"*) ok "F19: 末尾に改行の無い最後の行への置換も、行番号と綴りがそのまま報告される" ;;
+  deny:*"3:mbcs"*) ok "F19: 末尾に改行の無い最後の行への置換も、行番号と固定ruleを報告" ;;
   *) bad "F19: 末尾の置換がずれた: decision=[${DECISION}] reason=[${REASON}]" ;;
 esac
 GLOB="$WORK/scripts/glob.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'x=[*]' 'x=a' > "$GLOB"
 run_json "$HOOK" "$(edit_json "$GLOB" 'x=[*]' "$MB_BAD")"
 case "$REASON" in
-  *'2:echo "$VAR'*) ok "F11: glob 文字を含む old_string も字義どおりに一致させる" ;;
+  *'2:mbcs'*) ok "F11: glob 文字を含む old_string も字義どおりに一致させる" ;;
   *) bad "F11: glob 文字を含む old_string の置換位置が違う: [${REASON}]" ;;
 esac
 EMPTYF="$WORK/scripts/empty.sh"
@@ -259,7 +277,7 @@ run_json "$HOOK" "$(edit_json "$PFLATE" '#!/usr/bin/env bash' "$(printf '%s\n%s'
 assert_fire "F14: 既存の quiet grep の上へ pipefail を足す Edit（編集行そのものは無違反）も deny"
 run_json "$HOOK" "$(write_json "$WORK/scripts/all3.sh" "$(printf '%s\n' '#!/usr/bin/env bash' 'set -o pipefail' "$MB_BAD" "$MB_BAD" "$MB_BAD" "$MB_BAD" "$PF_BAD" "$EC_BAD")")"
 n_sections="$(printf '%s\n' "$REASON" | grep -c '^■' || true)"
-n_mb="$(printf '%s\n' "$REASON" | grep -c '^    | [0-9]*:echo "\$VAR' || true)"
+n_mb="$(printf '%s\n' "$REASON" | grep -c '^    | [0-9]*:mbcs$' || true)"
 if [ "$n_sections" -eq 3 ] && [ "$n_mb" -eq 3 ]; then
   ok "F15: 3 検出器が同時に当たると 3 節すべてを出し、各節は先頭 3 件に絞る"
 else
@@ -278,7 +296,7 @@ case "$REASON" in
   *) bad "F8: 抜け道の案内が無い: [${REASON}]" ;;
 esac
 case "$REASON" in
-  *'2:echo "$VAR'*) ok "F8: deny 本文が違反を保存後の開始行付きの実値で示す" ;;
+  *'2:mbcs'*) ok "F8: deny本文がソース行を含めず開始行と固定ruleを示す" ;;
   *) bad "F8: 違反の実値が無い: [${REASON}]" ;;
 esac
 run_json "$HOOK" "$(write_json "$WORK/scripts/pf.sh" "$(printf '%s\n' '#!/usr/bin/env bash' 'set -o pipefail' "$PF_BAD")")"
@@ -582,6 +600,50 @@ else
   run_json "$HOOK" "$(write_json "$WORK/tests/x/notes.md" "$MB_BAD")" "PATH=$CRLF_BIN:$PATH"
   assert_pass "W2: CRLF の jq でも、.sh 以外への保存は止めない"
 fi
+
+echo "guard-shell-save: 読取り境界と診断の機密非表示"
+SHELL_CANARY='ff_shell_read_canary_2432'
+READ_SHARED="$TEST_TMP/read-shared"
+mkdir -p "$READ_SHARED"
+printf '%s\n' '#!/usr/bin/env bash' "SYNTHETIC_KEY=$SHELL_CANARY; $MB_BAD" > "$READ_SHARED/config.sh"
+cp "$READ_SHARED/config.sh" "$TEST_TMP/read-protected-before"
+ln -s "$READ_SHARED/config.sh" "$WORK/scripts/external-link.sh"
+ln -s "$READ_SHARED" "$WORK/linked-dir"
+cp "$READ_SHARED/config.sh" "$WORK/scripts/internal-canary.sh"
+PRIVACY_CASES=0
+for read_case in leaf parent internal; do
+  PRIVACY_CASES=$((PRIVACY_CASES + 1))
+  case "$read_case" in
+    leaf) read_target="$WORK/scripts/external-link.sh" ;;
+    parent) read_target="$WORK/linked-dir/config.sh" ;;
+    internal) read_target="$WORK/scripts/internal-canary.sh" ;;
+  esac
+  read_payload="$(edit_json "$read_target" 'SYNTHETIC_KEY' 'RENAMED_KEY')"
+  run_json "$HOOK" "$read_payload"
+  if [ "$read_case" = internal ]; then
+    assert_fire "P-$read_case: 認可内の通常shell診断はdenyを維持"
+    case "$REASON" in *'2:mbcs'*) ok "P-internal: 規則と開始行は有用な診断として維持" ;; *) bad "P-internal: 規則/行の診断が欠落" ;; esac
+  else
+    assert_unavailable "P-$read_case: キー名だけを知る外部リンクEditをbefore-image読取り前に拒否"
+  fi
+  case "$OUT:$REASON" in *"$SHELL_CANARY"*) bad "P-$read_case: JSON診断へ合成機密値が漏れた" ;; *) ok "P-$read_case: JSON診断に合成機密値なし" ;; esac
+  if cmp -s "$read_target" "$TEST_TMP/read-protected-before"; then ok "P-$read_case: 元ファイル不変"; else bad "P-$read_case: 元ファイルが変化"; fi
+  RC=0
+  ERR="$(cd "$WORK" && printf '%s' "$read_payload" | PATH="$JQ_SHIM:$PATH" bash "$HOOK" 2>&1 >/dev/null)" || RC=$?
+  case "$RC:$ERR" in
+    *"$SHELL_CANARY"*) bad "P-$read_case: stderr fallbackへ合成機密値が漏れた" ;;
+    2:*) ok "P-$read_case: JSON生成失敗時もexit2/stderrに合成機密値なし" ;;
+    *) bad "P-$read_case: stderr fallback未到達（rc=${RC}）" ;;
+  esac
+done
+if [ "$PRIVACY_CASES" -eq 3 ]; then ok "P-census: leaf/parent/internalの実ケース3件を実行"; else bad "P-census: privacy実ケースが空または欠落"; fi
+run_json "$HOOK" "$(write_json "$READ_SHARED/config.sh" 'echo safe')"
+assert_pass 'P-write: project外の既存ファイルはbeforeを読まず提案全文を走査して通す'
+run_json "$HOOK" "$(write_json "$READ_SHARED/config.sh" "$MB_BAD")"
+assert_fire 'P-write: project外でも危険な提案全文はdeny'
+case "$REASON" in *'1:mbcs'*) ok 'P-write: 元ファイルの拒否で代用せず提案全文のrule/行を診断' ;; *) bad 'P-write: 提案全文の走査に到達していない' ;; esac
+case "$OUT:$REASON" in *"$SHELL_CANARY"*) bad 'P-write: 保存前の合成機密が漏れた' ;; *) ok 'P-write: beforeの値は診断へ出ない' ;; esac
+if cmp -s "$READ_SHARED/config.sh" "$TEST_TMP/read-protected-before"; then ok 'P-write: 保存前の外部ファイル不変'; else bad 'P-write: 外部ファイルが変化'; fi
 
 echo
 if [ "$FAIL" -gt 0 ]; then

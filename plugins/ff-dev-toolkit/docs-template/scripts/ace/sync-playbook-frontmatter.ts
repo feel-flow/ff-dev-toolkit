@@ -42,6 +42,7 @@
  *   npx --yes tsx docs-template/scripts/ace/sync-playbook-frontmatter.ts docs-template/08-knowledge/PLAYBOOK.md --write
  */
 import * as fs from "node:fs";
+import { KnowledgeReadBoundary, knowledgeReaderForSelection } from "./knowledge-read-boundary";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { scanChangelog, selectChangelog } from "./changelog-layout";
@@ -826,8 +827,10 @@ export function main(argv: readonly string[] = process.argv): number {
 
   const { playbookPath, write, bumpVersion } = parsed;
   let mainContent: string;
+  let reader: KnowledgeReadBoundary;
   try {
-    mainContent = fs.readFileSync(playbookPath, "utf8");
+    reader = knowledgeReaderForSelection(playbookPath);
+    mainContent = reader.read(playbookPath);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`読み込み失敗: ${playbookPath}: ${message}`);
@@ -836,7 +839,7 @@ export function main(argv: readonly string[] = process.argv): number {
 
   let subfiles: string[];
   try {
-    subfiles = discoverPlaybookSubfiles(playbookPath);
+    subfiles = discoverPlaybookSubfiles(playbookPath, reader);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`読み込み失敗: playbook/ ディレクトリの走査に失敗しました: ${message}`);
@@ -846,7 +849,7 @@ export function main(argv: readonly string[] = process.argv): number {
   const subfileContents: string[] = [];
   for (const sub of subfiles) {
     try {
-      subfileContents.push(fs.readFileSync(sub, "utf8"));
+      subfileContents.push(reader.read(sub));
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`読み込み失敗: ${sub}: ${message}`);
@@ -862,7 +865,7 @@ export function main(argv: readonly string[] = process.argv): number {
 
   // 履歴だけを固定2候補から選ぶ。エントリ集計の再帰探索とは独立し、任意リンクを辿らない。
   let selectedChangelog;
-  try { selectedChangelog = selectChangelog(playbookPath); }
+  try { selectedChangelog = selectChangelog(playbookPath, reader); }
   catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     return EXIT_USAGE_ERROR;

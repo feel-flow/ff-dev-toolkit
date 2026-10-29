@@ -16,6 +16,7 @@
  * 実行例: npx --yes tsx docs-template/scripts/ace/ace-refine-report.ts docs/08-knowledge/PLAYBOOK.md
  */
 import * as fs from "node:fs";
+import { KnowledgeReadBoundary, knowledgeReaderForSelection, knowledgeInputExists } from "./knowledge-read-boundary";
 import * as path from "node:path";
 import {
   ACE_ENTRY_ID_SOURCE,
@@ -760,9 +761,9 @@ export function formatRefineReport(input: RefineReportInput): string {
 // git 由来のエラー（ENOENT 等）と誤分類しないよう中立の接頭辞でタグ付けする。
 const FILE_READ_ERROR_PREFIX = "ファイル読み込み失敗";
 
-function readFileOrThrow(filePath: string): string {
+function readFileOrThrow(filePath: string, reader: KnowledgeReadBoundary): string {
   try {
-    return fs.readFileSync(filePath, "utf8");
+    return reader.read(filePath);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${FILE_READ_ERROR_PREFIX}: ${filePath}: ${message}`);
@@ -819,12 +820,14 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
   );
 
   try {
-    const indexContent = readFileOrThrow(playbookPath);
-    const subfiles = discoverPlaybookSubfiles(playbookPath);
+    const patternsPath = resolvePatternsPath(playbookPath, process.env.ACE_PATTERNS_PATH);
+    const reader = knowledgeReaderForSelection(playbookPath, process.env.ACE_PATTERNS_PATH?.trim() ? [patternsPath] : []);
+    const indexContent = readFileOrThrow(playbookPath, reader);
+    const subfiles = discoverPlaybookSubfiles(playbookPath, reader);
     const contentsByFile = new Map<string, string>();
     contentsByFile.set(playbookPath, indexContent);
     for (const subfile of subfiles) {
-      contentsByFile.set(subfile, readFileOrThrow(subfile));
+      contentsByFile.set(subfile, readFileOrThrow(subfile, reader));
     }
     const combinedContent = [...contentsByFile.values()].join("\n\n");
 
@@ -918,7 +921,7 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
 
     // 統合先の除外（Issue #917）。archive が無いプロジェクトでは discoverArchiveFiles が
     // 空配列を返すので、除外 0 件で従来どおりの候補一覧になる。
-    const archiveContents = discoverArchiveFiles(playbookPath).map(readFileOrThrow);
+    const archiveContents = discoverArchiveFiles(playbookPath, reader).map(file => readFileOrThrow(file, reader));
     const mergeTargets = collectMergeTargets(archiveContents);
     const { kept: archiveCandidates, excluded: mergeTargetExclusions } =
       partitionArchiveCandidates(
@@ -945,9 +948,8 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
 
     const overBudget = findOverBudgetEntries(measurementsByFile, maxEntryLines);
 
-    const patternsPath = resolvePatternsPath(playbookPath, process.env.ACE_PATTERNS_PATH);
-    const patternsExists = fs.existsSync(patternsPath) && fs.statSync(patternsPath).isFile();
-    const patternsContent = patternsExists ? readFileOrThrow(patternsPath) : null;
+    const patternsExists = knowledgeInputExists(patternsPath);
+    const patternsContent = patternsExists ? readFileOrThrow(patternsPath, reader) : null;
     const promotionCandidates = findPromotionCandidates(entries, patternsContent, promoteMin, rawEntries);
 
     console.log(

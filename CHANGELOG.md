@@ -20,6 +20,17 @@
 
 ## [Unreleased]
 
+## [0.171.0] - 2026-10-29
+
+### 破壊的変更
+
+- 知識検索・triage・shell保存診断・仕様MCPの暗黙外部リンクを読取り許可として扱わず、認可した資料を上限4 MiBのsnapshotから解析します。外部shared-docsはMCP起動環境のSPEC_DOCS_ALLOWED_DOCS_ROOTへ正規化済み実rootを明示し、外部ACE資料は既存の明示選択を使ってください。危険な共有祖先や検査能力不足は自動修復せず拒否し、hook診断にはソース全文行を表示しません。
+
+### 修正
+
+- 決定木の経路とセキュリティ分類が、一時ファイルを作れない環境（Codex CLI の read-only sandbox など）でも変更ファイル一覧を読み切るようにしました。修正前は経路が毎回判定不能になり、静的検査（`--check`）は行を受け取らないまま成功を返していました（`plugins/ff-dev-toolkit/scripts/decision-tree/route.sh`）。
+- リリースの定期実行点ゲートで、bwrap の無い macOS では経路判定の sandbox 検査の skip を OS 限定として許可し、Linux では bubblewrap の導入を求めて止まることを、同梱のリリース機構テストで両側とも固定しました。
+
 ## [0.170.0] - 2026-10-28
 
 ### 変更

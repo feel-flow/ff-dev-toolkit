@@ -38,13 +38,15 @@ describe("fixed Changelog selection", () => {
     const f = fixture(); f.write("CHANGELOG.md", canonical); f.write("playbook/CHANGELOG.md", "");
     expect(() => selectChangelog(f.book)).toThrow("候補が複数");
   });
-  it("rejects empty, unreadable, directory and symlink candidates", () => {
+  it("rejects empty, unreadable and directory candidates", () => {
     const empty = fixture(); empty.write("CHANGELOG.md", ""); expect(() => selectChangelog(empty.book)).toThrow();
     const unreadable = fixture(); const file = unreadable.write("CHANGELOG.md", canonical); fs.chmodSync(file, 0);
     try { expect(() => selectChangelog(unreadable.book)).toThrow(); } finally { fs.chmodSync(file, 0o644); }
     const directory = fixture(); fs.mkdirSync(path.join(directory.root, "CHANGELOG.md")); expect(() => selectChangelog(directory.book)).toThrow();
-    const linked = fixture(); linked.write("history.md", canonical); fs.symlinkSync("history.md", path.join(linked.root, "CHANGELOG.md"));
-    expect(() => selectChangelog(linked.book)).toThrow();
+  });
+  it('accepts a safe in-area symlink candidate', () => {
+    const linked = fixture(); linked.write('history.md', canonical); fs.symlinkSync('history.md', path.join(linked.root, 'CHANGELOG.md'));
+    expect(selectChangelog(linked.book).text).toBe(canonical);
   });
   it("does not hide arbitrary text in the main Changelog with an external file", () => {
     const f = fixture("## Changelog\nunknown history"); f.write("CHANGELOG.md", canonical);
@@ -52,7 +54,7 @@ describe("fixed Changelog selection", () => {
   });
   it("rejects a parent-directory symlink that leads outside the book area", () => {
     const f = fixture(); const outside = fixture(); outside.write("CHANGELOG.md", canonical);
-    fs.symlinkSync(outside.root, path.join(f.root, "playbook")); expect(() => selectChangelog(f.book)).toThrow("領域外");
+    fs.symlinkSync(outside.root, path.join(f.root, "playbook")); expect(() => selectChangelog(f.book)).toThrow("outside-authority");
   });
   it("preserves missing and empty main states for the calling gate", () => {
     expect(selectChangelog(fixture().book).scan.kind).toBe("absent");

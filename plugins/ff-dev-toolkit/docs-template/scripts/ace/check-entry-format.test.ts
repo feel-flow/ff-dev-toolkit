@@ -311,8 +311,8 @@ describe("--list-legacy 機械可読 CLI（Issue #336）", () => {
     expect(
       main(["node", "check-entry-format.ts", "--list-legacy", path.join(directory, "missing")]),
     ).toBe(2);
-    expect(err.mock.calls.flat().join("\n")).toContain("ディレクトリではありません");
-    expect(err.mock.calls.flat().join("\n")).toContain("missing");
+    expect(err.mock.calls.flat().join("\n")).toContain("knowledge-read: invalid-root");
+    expect(err.mock.calls.flat().join("\n")).toContain("knowledge-read: unresolvable-input");
   });
 
   it("未知の一覧オプションは通常ゲートへ落とさず stdout を空にして exit 2", () => {
@@ -1558,6 +1558,31 @@ describe("--init-allowlist（Issue #839）", () => {
     const code = main();
     return { code, err: err.mock.calls.flat().join("\n") };
   }
+
+  it.each(["337--1", "1-recognized_canary_2432"])("認識済み形状違反IDでも初期化が再実行でき、通常ゲートは元の見出しを指す (%s)", (suffix) => {
+    const playbookPath = writeLayout({
+      subfiles: { "coding.md": CATEGORY_HEADER + legacyEntry(suffix) + compactEntry("1-1") },
+    });
+    expect(runInit(playbookPath).code).toBe(0);
+    const before = fs.readFileSync(allowlistPathOf(playbookPath), "utf8");
+    expect(parseAllowlist(before)).toEqual([`ACE-${suffix}`]);
+    expect(runInit(playbookPath).code).toBe(0);
+    expect(fs.readFileSync(allowlistPathOf(playbookPath), "utf8")).toBe(before);
+    const gate = runGate(playbookPath);
+    expect(gate.code).toBe(1);
+    expect(gate.err).toContain(`ACE-${suffix}`);
+    expect(gate.err).toContain("coding.md");
+    expect(gate.err).not.toContain("allowlist の ID");
+    expect(gate.err).not.toContain("ACE-1-1");
+  });
+
+  it("allowlistの任意本文をIDと認識せず、エラーへも転載しない", () => {
+    const canary = "private_allowlist_value_2432";
+    let message = "";
+    try { parseAllowlist(canary); } catch (error) { message = (error as Error).message; }
+    expect(message).not.toBe("");
+    expect(message).not.toContain(canary);
+  });
 
   it("allowlist 未作成なら導入時点の旧形式 ID だけを記録し、形式ゲートが緑になる", () => {
     const playbookPath = writeLayout({

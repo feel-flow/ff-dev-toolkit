@@ -3262,8 +3262,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path3) {
-      let input2 = path3;
+    function removeDotSegments(path4) {
+      let input2 = path4;
       const output2 = [];
       let nextSlash = -1;
       let len = 0;
@@ -3337,11 +3337,11 @@ var require_utils = __commonJS({
       }
       return output2.join("");
     }
-    function removeDotSegmentsRelative(path3) {
-      if (path3 === "" || path3[0] === "/") {
-        return removeDotSegments(path3);
+    function removeDotSegmentsRelative(path4) {
+      if (path4 === "" || path4[0] === "/") {
+        return removeDotSegments(path4);
       }
-      const segments = path3.split("/");
+      const segments = path4.split("/");
       const last = segments.length - 1;
       const output2 = [];
       let trailingDirectory = false;
@@ -3704,8 +3704,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path3 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path3 && path3 !== "/" ? path3 : void 0;
+        const path4 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path4 && path4 !== "/" ? path4 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -7242,12 +7242,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs3, exportName) {
+    function addFormats(ajv, list, fs4, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs3[f]);
+        ajv.addFormat(f, fs4[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -7629,8 +7629,8 @@ function getErrorMap() {
 
 // node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path3, errorMaps, issueData } = params;
-  const fullPath = [...path3, ...issueData.path || []];
+  const { data, path: path4, errorMaps, issueData } = params;
+  const fullPath = [...path4, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -7745,11 +7745,11 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path3, key) {
+  constructor(parent, value, path4, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path3;
+    this._path = path4;
     this._key = key;
   }
   get path() {
@@ -8128,11 +8128,11 @@ function datetimeRegex(args) {
   regex = `${regex}(${opts.join("|")})`;
   return new RegExp(`^${regex}$`);
 }
-function isValidIP(ip, version2) {
-  if ((version2 === "v4" || !version2) && ipv4Regex.test(ip)) {
+function isValidIP(ip, version3) {
+  if ((version3 === "v4" || !version3) && ipv4Regex.test(ip)) {
     return true;
   }
-  if ((version2 === "v6" || !version2) && ipv6Regex.test(ip)) {
+  if ((version3 === "v6" || !version3) && ipv6Regex.test(ip)) {
     return true;
   }
   return false;
@@ -8159,11 +8159,11 @@ function isValidJWT(jwt2, alg) {
     return false;
   }
 }
-function isValidCidr(ip, version2) {
-  if ((version2 === "v4" || !version2) && ipv4CidrRegex.test(ip)) {
+function isValidCidr(ip, version3) {
+  if ((version3 === "v4" || !version3) && ipv4CidrRegex.test(ip)) {
     return true;
   }
-  if ((version2 === "v6" || !version2) && ipv6CidrRegex.test(ip)) {
+  if ((version3 === "v6" || !version3) && ipv6CidrRegex.test(ip)) {
     return true;
   }
   return false;
@@ -11704,10 +11704,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path3) {
-  if (!path3)
+function getElementAtPath(obj, path4) {
+  if (!path4)
     return obj;
-  return path3.reduce((acc, key) => acc?.[key], obj);
+  return path4.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -12047,11 +12047,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path3, issues) {
+function prefixIssues(path4, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path3);
+    iss.path.unshift(path4);
     return iss;
   });
 }
@@ -12513,16 +12513,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path3 = []) => {
+  const processError = (error63, path4 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path3, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path4, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path3, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path4, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path3, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path4, ...issue2.path]);
       } else {
-        const fullpath = [...path3, ...issue2.path];
+        const fullpath = [...path4, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -12561,17 +12561,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path3 = []) => {
+  const processError = (error63, path4 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path3, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path4, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path3, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path4, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path3, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path4, ...issue2.path]);
       } else {
-        const fullpath = [...path3, ...issue2.path];
+        const fullpath = [...path4, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -12610,8 +12610,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path3 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path3) {
+  const path4 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path4) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -12877,10 +12877,10 @@ function nanoidOfLength(length) {
 var duration = /^P(?:(\d+W)|(?!.*W)(?=\d|T\d)(\d+Y)?(\d+M)?(\d+D)?(T(?=\d)(\d+H)?(\d+M)?(\d+([.,]\d+)?S)?)?)$/;
 var extendedDuration = /^[-+]?P(?!$)(?:(?:[-+]?\d+Y)|(?:[-+]?\d+[.,]\d+Y$))?(?:(?:[-+]?\d+M)|(?:[-+]?\d+[.,]\d+M$))?(?:(?:[-+]?\d+W)|(?:[-+]?\d+[.,]\d+W$))?(?:(?:[-+]?\d+D)|(?:[-+]?\d+[.,]\d+D$))?(?:T(?=[\d+-])(?:(?:[-+]?\d+H)|(?:[-+]?\d+[.,]\d+H$))?(?:(?:[-+]?\d+M)|(?:[-+]?\d+[.,]\d+M$))?(?:[-+]?\d+(?:[.,]\d+)?S)?)??$/;
 var guid = /^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
-var uuid = (version2) => {
-  if (!version2)
+var uuid = (version3) => {
+  if (!version3)
     return /^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/;
-  return new RegExp(`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-${version2}[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$`);
+  return new RegExp(`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-${version3}[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$`);
 };
 var uuid4 = /* @__PURE__ */ uuid(4);
 var uuid6 = /* @__PURE__ */ uuid(6);
@@ -26415,12 +26415,12 @@ function describe(description) {
   return ch;
 }
 // @__NO_SIDE_EFFECTS__
-function meta(metadata) {
+function meta(metadata2) {
   const ch = new $ZodCheck({ check: "meta" });
   ch._zod.onattach = [
     (inst) => {
       const existing = globalRegistry.get(inst) ?? {};
-      globalRegistry.add(inst, { ...existing, ...metadata });
+      globalRegistry.add(inst, { ...existing, ...metadata2 });
     }
   ];
   ch._zod.check = () => {
@@ -28162,11 +28162,11 @@ function normalizeObjectSchema(schema) {
   }
   return void 0;
 }
-function getDotPath(path3) {
-  if (path3.length === 0) {
+function getDotPath(path4) {
+  if (path4.length === 0) {
     return "object root";
   }
-  return path3.reduce((acc, seg, index) => {
+  return path4.reduce((acc, seg, index) => {
     if (index === 0) {
       return String(seg);
     }
@@ -30393,13 +30393,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path3 = ref.slice(1).split("/").filter(Boolean);
-  if (path3.length === 0) {
+  const path4 = ref.slice(1).split("/").filter(Boolean);
+  if (path4.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path3[0] === defsKey) {
-    const key = path3[1] === void 0 ? void 0 : decodeJSONPointerSegment(path3[1]);
+  if (path4[0] === defsKey) {
+    const key = path4[1] === void 0 ? void 0 : decodeJSONPointerSegment(path4[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -31013,10 +31013,10 @@ function fromJSONSchema(schema, params) {
   } catch {
     throw new Error("fromJSONSchema input is not valid JSON (possibly cyclic); use $defs/$ref for recursive schemas");
   }
-  const version2 = detectVersion(normalized, params?.defaultTarget);
+  const version3 = detectVersion(normalized, params?.defaultTarget);
   const defs = normalized.$defs || normalized.definitions || {};
   const ctx = {
-    version: version2,
+    version: version3,
     defs,
     refs: /* @__PURE__ */ new Map(),
     processing: /* @__PURE__ */ new Set(),
@@ -36148,16 +36148,16 @@ var McpServer = class {
     this._promptHandlersInitialized = true;
   }
   resource(name, uriOrTemplate, ...rest) {
-    let metadata;
+    let metadata2;
     if (typeof rest[0] === "object") {
-      metadata = rest.shift();
+      metadata2 = rest.shift();
     }
     const readCallback = rest[0];
     if (typeof uriOrTemplate === "string") {
       if (this._registeredResources[uriOrTemplate]) {
         throw new Error(`Resource ${uriOrTemplate} is already registered`);
       }
-      const registeredResource = this._createRegisteredResource(name, void 0, uriOrTemplate, metadata, readCallback);
+      const registeredResource = this._createRegisteredResource(name, void 0, uriOrTemplate, metadata2, readCallback);
       this.setResourceRequestHandlers();
       this.sendResourceListChanged();
       return registeredResource;
@@ -36165,7 +36165,7 @@ var McpServer = class {
       if (this._registeredResourceTemplates[name]) {
         throw new Error(`Resource template ${name} is already registered`);
       }
-      const registeredResourceTemplate = this._createRegisteredResourceTemplate(name, void 0, uriOrTemplate, metadata, readCallback);
+      const registeredResourceTemplate = this._createRegisteredResourceTemplate(name, void 0, uriOrTemplate, metadata2, readCallback);
       this.setResourceRequestHandlers();
       this.sendResourceListChanged();
       return registeredResourceTemplate;
@@ -36190,11 +36190,11 @@ var McpServer = class {
       return registeredResourceTemplate;
     }
   }
-  _createRegisteredResource(name, title, uri, metadata, readCallback) {
+  _createRegisteredResource(name, title, uri, metadata2, readCallback) {
     const registeredResource = {
       name,
       title,
-      metadata,
+      metadata: metadata2,
       readCallback,
       enabled: true,
       disable: () => registeredResource.update({ enabled: false }),
@@ -36222,11 +36222,11 @@ var McpServer = class {
     this._registeredResources[uri] = registeredResource;
     return registeredResource;
   }
-  _createRegisteredResourceTemplate(name, title, template, metadata, readCallback) {
+  _createRegisteredResourceTemplate(name, title, template, metadata2, readCallback) {
     const registeredResourceTemplate = {
       resourceTemplate: template,
       title,
-      metadata,
+      metadata: metadata2,
       readCallback,
       enabled: true,
       disable: () => registeredResourceTemplate.update({ enabled: false }),
@@ -36646,8 +36646,8 @@ var StdioServerTransport = class {
 };
 
 // src/index.ts
-import fs2 from "fs";
-import path2 from "path";
+import fs3 from "fs";
+import path3 from "path";
 
 // src/constants.ts
 var EXCERPT_PADDING_CHARS = 80;
@@ -36793,100 +36793,371 @@ var buildGlossary = (md) => {
 };
 
 // src/indexer.ts
-import fs from "fs";
-import path from "path";
-var projectRelative = (projectRoot, file2, p = path) => toPosixSeparators(p.relative(projectRoot, file2), p.sep);
-var readFileSafe = (p) => {
+import fs2 from "fs";
+import path2 from "path";
+
+// ../docs-template/scripts/ace/knowledge-read-boundary.ts
+import fs from "node:fs";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
+var KNOWLEDGE_READ_MAX_BYTES = 4 * 1024 * 1024;
+var KnowledgeReadError = class extends Error {
+  constructor(code) {
+    super(`knowledge-read: ${code}`);
+    this.code = code;
+    this.name = "KnowledgeReadError";
+  }
+  code;
+};
+function refuse(code) {
+  throw new KnowledgeReadError(code);
+}
+var cleanPath = (value) => {
+  if (!value || [...value].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)) refuse("invalid-path");
+  return value;
+};
+var realPath = (value) => {
+  cleanPath(value);
   try {
-    return fs.readFileSync(p, "utf-8");
+    return cleanPath(fs.realpathSync(value));
   } catch {
-    return "";
+    return refuse("unresolvable-input");
   }
 };
-var resolveDocsPath = (projectRoot, relPath) => {
-  const rootAbs = path.resolve(projectRoot);
-  const requested = path.resolve(rootAbs, relPath);
-  if (!requested.startsWith(rootAbs + path.sep)) return null;
-  if (!requested.toLowerCase().endsWith(".md")) return null;
-  if (!fs.existsSync(requested)) return null;
-  let real;
-  let docsReal;
+var inside = (root, value) => {
+  const relative = path.relative(root, value);
+  return relative === "" || relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
+};
+var identity = (s) => `${s.dev}:${s.ino}`;
+var version2 = (s) => `${identity(s)}:${s.size}:${s.mtimeMs}:${s.ctimeMs}:${s.mode}:${s.uid}:${s.nlink}`;
+var metadata = (value) => {
   try {
-    real = fs.realpathSync(requested);
-    docsReal = fs.realpathSync(path.join(rootAbs, "docs"));
+    return fs.lstatSync(value);
+  } catch {
+    return refuse("metadata-unavailable");
+  }
+};
+function inspectDarwinReadAcl(output2) {
+  const lines = output2.split(String.fromCharCode(10)).filter(Boolean);
+  const header = lines.shift();
+  if (!header || !/^[-d][-rwxstST]{9}[+@ ]/.test(header)) refuse("read-unverifiable");
+  const readOnly = /* @__PURE__ */ new Set(["list", "search", "read", "readattr", "readextattr", "readsecurity", "synchronize", "file_inherit", "directory_inherit", "limit_inherit", "only_inherit"]);
+  let allow = false;
+  for (const line of lines) {
+    const ace = /^[ ]+[0-9]+: .+ (allow|deny) ([a-z_,]+)$/.exec(line);
+    if (!ace) refuse("read-unverifiable");
+    if (ace[1] === "allow") {
+      allow = true;
+      if (ace[2].split(",").some((right) => !readOnly.has(right))) refuse("additional-write-grant");
+    }
+  }
+  if (header[10] === "+" && lines.length === 0) refuse("read-unverifiable");
+  return allow;
+}
+var WINDOWS_KNOWLEDGE_ACL_SOURCE = String.raw`$ErrorActionPreference = 'Stop'
+[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$trusted = @($current, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+$sidType = [System.Security.Principal.SecurityIdentifier]
+$frames = [Console]::In.ReadToEnd().Split([char]10)
+$operation = $frames[0]
+$paths = @($frames | Select-Object -Skip 1 | Where-Object { $_.Length -gt 0 })
+if ($operation -eq 'private-staging') {
+    if ($paths.Count -ne 1) { throw 'One fresh staging directory required' }
+    $before = Get-Acl -LiteralPath $paths[0] -ErrorAction Stop
+    if ($before.GetOwner($sidType).Value -ne $current) { throw 'Foreign staging owner' }
+    $private = [System.Security.AccessControl.DirectorySecurity]::new()
+    $private.SetOwner([System.Security.Principal.SecurityIdentifier]::new($current))
+    $private.SetAccessRuleProtection($true, $false)
+    foreach ($sid in $trusted) {
+        $identity = [System.Security.Principal.SecurityIdentifier]::new($sid)
+        $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($identity, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+        $private.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $paths[0] -AclObject $private -ErrorAction Stop
+} elseif ($operation -ne 'inspect') { throw 'Unknown metadata operation' }
+$position = 0
+foreach ($literal in $paths) {
+    if ($literal.Length -eq 0) { continue }
+    if ($literal.Contains([string][char]13)) { throw 'Invalid path frame' }
+    $item = Get-Item -LiteralPath $literal -Force -ErrorAction Stop
+    if ($item.PSProvider.Name -ne 'FileSystem' -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unverified path type' }
+    $acl = Get-Acl -LiteralPath $literal -ErrorAction Stop
+    $raw = [System.Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
+    if ($null -eq $raw.DiscretionaryAcl) { throw 'Null DACL' }
+    $owned = if ($acl.GetOwner($sidType).Value -in $trusted) { 1 } else { 0 }
+    $danger = 0
+    $mask = if ($item.PSIsContainer) { [long]0x500D0152 } else { [long]0x500D0116 }
+    foreach ($rule in $acl.GetAccessRules($true, $true, $sidType)) {
+        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+        if ($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) { continue }
+        if ($rule.IdentityReference.Value -in $trusted) { continue }
+        $rights = [long]$rule.FileSystemRights
+        if ($rights -lt -2147483648 -or $rights -gt 4294967295) { throw 'Invalid rights' }
+        $rights = $rights -band [long]4294967295
+        if (($rights -band $mask) -or ($operation -eq 'private-staging' -and $rights -ne 0)) { $danger = 1 }
+    }
+    [Console]::Out.WriteLine(('{0}|{1}|{2}' -f $position, $owned, $danger))
+    $position++
+}
+`;
+function inspectWindowsReadAcl(output2, count) {
+  if (!Number.isSafeInteger(count) || count < 1) refuse("read-unverifiable");
+  const lines = output2.split(String.fromCharCode(10)).map((line) => line.replaceAll(String.fromCharCode(13), "")).filter(Boolean);
+  if (lines.length !== count || lines.some((line, index) => line !== `${index}|1|0`)) refuse("read-unverifiable");
+}
+function windowsReadAcl(paths) {
+  const systemRoot = process.env.SystemRoot;
+  if (!systemRoot || !path.isAbsolute(systemRoot)) refuse("read-unverifiable");
+  const program = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  try {
+    const output2 = execFileSync(program, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(WINDOWS_KNOWLEDGE_ACL_SOURCE, "utf16le").toString("base64")], {
+      input: "inspect" + String.fromCharCode(10) + paths.join(String.fromCharCode(10)) + String.fromCharCode(10),
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+      timeout: 1e4,
+      maxBuffer: 128 * 1024
+    });
+    inspectWindowsReadAcl(output2.charCodeAt(0) === 65279 ? output2.slice(1) : output2, paths.length);
+  } catch {
+    refuse("read-unverifiable");
+  }
+}
+var KnowledgeReadBoundary = class {
+  projectRoot;
+  roots;
+  files;
+  anchors;
+  directoryAcls = /* @__PURE__ */ new Map();
+  accepted = /* @__PURE__ */ new Map();
+  uid;
+  constructor(projectRoot, options = {}) {
+    if (process.platform !== "win32" && typeof process.getuid !== "function") refuse("read-unverifiable");
+    this.uid = typeof process.getuid === "function" ? process.getuid() : -1;
+    this.projectRoot = realPath(projectRoot);
+    this.roots = Object.freeze([.../* @__PURE__ */ new Set([this.projectRoot, ...(options.explicitRoots ?? []).map(realPath)])]);
+    this.files = new Set((options.explicitFiles ?? []).map(realPath));
+    const anchors = /* @__PURE__ */ new Map();
+    for (const root of this.roots) {
+      const s = metadata(root);
+      if (!s.isDirectory() || s.isSymbolicLink()) refuse("invalid-root");
+      this.protectedStorage(root, true);
+      anchors.set(root, identity(s));
+    }
+    this.anchors = anchors;
+  }
+  checkAnchors() {
+    for (const [root, expected] of this.anchors) {
+      const s = metadata(root);
+      if (!s.isDirectory() || s.isSymbolicLink() || identity(s) !== expected) refuse("root-changed");
+    }
+  }
+  acl(value, s) {
+    if (process.platform !== "darwin") return false;
+    const stamp = version2(s);
+    const cached2 = s.isDirectory() ? this.directoryAcls.get(value) : void 0;
+    if (cached2?.stamp === stamp) return cached2.allow;
+    let output2;
+    try {
+      output2 = execFileSync("/bin/ls", ["-ldeb", "--", value], {
+        encoding: "utf8",
+        timeout: 5e3,
+        maxBuffer: 128 * 1024,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { PATH: "/usr/bin:/bin", LC_ALL: "C", LANG: "C" }
+      });
+    } catch {
+      return refuse("read-unverifiable");
+    }
+    const allow = inspectDarwinReadAcl(output2);
+    if (s.isDirectory()) this.directoryAcls.set(value, { stamp, allow });
+    return allow;
+  }
+  protectedStorage(value, directory) {
+    let cursor = value;
+    let first = true;
+    let unsafe = false;
+    const nativePaths = [];
+    for (; ; ) {
+      const s = metadata(cursor);
+      if (s.isSymbolicLink() || (first && !directory ? !s.isFile() : !s.isDirectory())) refuse("nonregular-input");
+      if (first && !directory && process.platform !== "win32" && (s.mode & 292) === 0) refuse("unreadable-input");
+      if (first && !directory && s.nlink !== 1) refuse("hardlinked-input");
+      if (process.platform === "win32") nativePaths.push(cursor);
+      else {
+        if (s.uid !== 0 && s.uid !== this.uid) refuse("foreign-owner");
+        const allow = this.acl(cursor, s);
+        const stickyDirectory = s.isDirectory() && (s.mode & 512) !== 0;
+        if ((s.mode & 18) !== 0 && !stickyDirectory) unsafe = true;
+        if (s.isDirectory() && s.uid === this.uid && (s.mode & 63) === 0 && !allow) unsafe = false;
+      }
+      const parent = path.dirname(cursor);
+      if (parent === cursor) break;
+      cursor = parent;
+      first = false;
+    }
+    if (process.platform === "win32") windowsReadAcl(nativePaths);
+    if (unsafe) refuse("replaceable-storage");
+  }
+  /** Canonicalize for metadata only, then authorize before any source read. */
+  authorize(file2) {
+    this.checkAnchors();
+    const real = realPath(file2);
+    if (!this.roots.some((root) => inside(root, real)) && !this.files.has(real)) refuse("outside-authority");
+    this.protectedStorage(real, false);
+    return real;
+  }
+  directory(directory) {
+    this.checkAnchors();
+    const real = realPath(directory);
+    if (!this.roots.some((root) => inside(root, real))) refuse("outside-authority");
+    this.protectedStorage(real, true);
+    return real;
+  }
+  read(file2) {
+    const real = this.authorize(file2);
+    const cached2 = this.accepted.get(real);
+    if (cached2 !== void 0) {
+      if (version2(metadata(real)) !== cached2.stamp) refuse("input-changed");
+      return cached2.text;
+    }
+    const before = metadata(real);
+    if (before.size > KNOWLEDGE_READ_MAX_BYTES) refuse("input-too-large");
+    const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants;
+    const nativeWindows = process.platform === "win32";
+    if (!nativeWindows && (!Number.isInteger(O_NOFOLLOW) || O_NOFOLLOW === 0 || !Number.isInteger(O_NONBLOCK) || O_NONBLOCK === 0)) refuse("read-unverifiable");
+    let fd;
+    try {
+      fd = fs.openSync(real, nativeWindows ? O_RDONLY : O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+      const opened = fs.fstatSync(fd);
+      if (!opened.isFile() || opened.nlink !== 1 || version2(opened) !== version2(before)) refuse("input-changed");
+      const bytes = Buffer.alloc(KNOWLEDGE_READ_MAX_BYTES + 1);
+      let length = 0;
+      for (; ; ) {
+        const n = fs.readSync(fd, bytes, length, bytes.length - length, null);
+        if (n === 0) break;
+        length += n;
+        if (length > KNOWLEDGE_READ_MAX_BYTES) refuse("input-too-large");
+      }
+      const after = fs.fstatSync(fd);
+      if (length !== before.size || version2(after) !== version2(before) || version2(metadata(real)) !== version2(before) || this.authorize(file2) !== real) refuse("input-changed");
+      const snapshot = bytes.subarray(0, length);
+      if (snapshot.includes(0)) refuse("nul-input");
+      const text = snapshot.toString("utf8");
+      if (!Buffer.from(text, "utf8").equals(snapshot)) refuse("invalid-text");
+      this.accepted.set(real, { text, stamp: version2(after) });
+      return text;
+    } catch (error62) {
+      if (error62 instanceof KnowledgeReadError) throw error62;
+      return refuse("read-unverifiable");
+    } finally {
+      if (fd !== void 0) fs.closeSync(fd);
+    }
+  }
+};
+
+// src/indexer.ts
+var projectRelative = (projectRoot, file2, p = path2) => toPosixSeparators(p.relative(projectRoot, file2), p.sep);
+var directoryIdentity = (dir) => {
+  const s = fs2.lstatSync(dir);
+  if (!s.isDirectory() || s.isSymbolicLink()) throw new KnowledgeReadError("invalid-root");
+  return `${s.dev}:${s.ino}`;
+};
+var strictlyInside = (root, candidate) => {
+  const relative = path2.relative(root, candidate);
+  return relative !== "" && relative !== ".." && !relative.startsWith(".." + path2.sep) && !path2.isAbsolute(relative);
+};
+var captureDocsAuthority = (projectRoot, allowedDocsRoot) => {
+  const selected = path2.resolve(projectRoot);
+  try {
+    const real = fs2.realpathSync(selected);
+    const authority = { projectRoot: real, projectIdentity: directoryIdentity(real) };
+    if (!allowedDocsRoot) return Object.freeze(authority);
+    if (!path2.isAbsolute(allowedDocsRoot)) throw new KnowledgeReadError("invalid-external-grant");
+    const allowed = fs2.realpathSync(allowedDocsRoot);
+    if (path2.resolve(allowedDocsRoot) !== allowed) throw new KnowledgeReadError("invalid-external-grant");
+    return Object.freeze({ ...authority, allowedDocsRoot: allowed, allowedIdentity: directoryIdentity(allowed) });
+  } catch {
+    return Object.freeze({ projectRoot: selected, error: "invalid-read-authority" });
+  }
+};
+var docsReader = (projectRoot, authority) => {
+  if (authority.error || !authority.projectIdentity) throw new KnowledgeReadError("invalid-read-authority");
+  const projectReal = fs2.realpathSync(projectRoot);
+  if (projectReal !== authority.projectRoot || directoryIdentity(projectReal) !== authority.projectIdentity) throw new KnowledgeReadError("root-changed");
+  const realDocs = fs2.realpathSync(path2.join(projectRoot, "docs"));
+  if (realDocs === projectReal) throw new KnowledgeReadError("docs-is-project-root");
+  if (!strictlyInside(projectReal, realDocs)) {
+    if (realDocs !== authority.allowedDocsRoot || directoryIdentity(realDocs) !== authority.allowedIdentity) throw new KnowledgeReadError("outside-docs-authority");
+  }
+  return new KnowledgeReadBoundary(realDocs);
+};
+var entryExists = (file2) => {
+  try {
+    fs2.lstatSync(file2);
+    return true;
+  } catch (error62) {
+    if (error62.code === "ENOENT") return false;
+    throw new KnowledgeReadError("metadata-unavailable");
+  }
+};
+var resolveDocsPath = (projectRoot, relPath, reader) => {
+  const rootAbs = path2.resolve(projectRoot);
+  const requested = path2.resolve(rootAbs, relPath);
+  if (!requested.startsWith(rootAbs + path2.sep)) return null;
+  if (!requested.toLowerCase().endsWith(".md")) return null;
+  try {
+    const boundary = reader ?? docsReader(projectRoot, captureDocsAuthority(projectRoot));
+    const real = boundary.authorize(requested);
+    return real.toLowerCase().endsWith(".md") ? real : null;
   } catch {
     return null;
   }
-  return real.startsWith(docsReal + path.sep) ? real : null;
 };
-var listMarkdown = (dir, containmentRoot = dir) => {
-  if (!fs.existsSync(dir)) return [];
-  let realRoot;
-  let realDir;
-  try {
-    realRoot = fs.realpathSync(path.resolve(containmentRoot));
-    realDir = fs.realpathSync(path.resolve(dir));
-  } catch {
-    return [];
-  }
-  if (realDir !== realRoot && !realDir.startsWith(realRoot + path.sep)) return [];
-  return listMarkdownWithin(dir, realRoot);
+var listMarkdown = (dir, containmentRoot = dir, reader) => {
+  if (!entryExists(dir)) return [];
+  const boundary = reader ?? new KnowledgeReadBoundary(containmentRoot);
+  boundary.directory(dir);
+  return listMarkdownWithin(dir, boundary);
 };
-var listMarkdownWithin = (dir, realRoot) => {
+var listMarkdownWithin = (dir, reader) => {
   const out = [];
-  const entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+  reader.directory(dir);
+  const entries = fs2.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
   for (const e of entries) {
-    const full = path.join(dir, e.name);
-    if (e.isDirectory()) {
-      out.push(...listMarkdownWithin(full, realRoot));
-    } else if (e.name.toLowerCase().endsWith(".md")) {
-      let isFile = e.isFile();
-      if (!isFile && e.isSymbolicLink()) {
-        try {
-          isFile = fs.statSync(full).isFile();
-        } catch {
-          continue;
-        }
-      }
-      if (!isFile) continue;
-      if (e.isSymbolicLink() && !isWithinRealRoot(full, realRoot)) continue;
+    const full = path2.join(dir, e.name);
+    if (e.name.toLowerCase().endsWith(".md")) {
+      const real = reader.authorize(full);
+      if (!real.toLowerCase().endsWith(".md")) throw new KnowledgeReadError("non-markdown-input");
       out.push(full);
+    } else if (e.isDirectory()) {
+      out.push(...listMarkdownWithin(full, reader));
     }
   }
   return out;
 };
-var isWithinRealRoot = (p, realRoot) => {
-  try {
-    return fs.realpathSync(p).startsWith(realRoot + path.sep);
-  } catch {
-    return false;
-  }
+var containedPath = (p, root, reader) => {
+  if (!entryExists(p)) return null;
+  return (reader ?? new KnowledgeReadBoundary(root)).authorize(p);
 };
-var containedPath = (p, root) => {
-  let realRoot;
-  try {
-    realRoot = fs.realpathSync(path.resolve(root));
-  } catch {
-    return null;
-  }
-  if (!fs.existsSync(p)) return null;
-  return isWithinRealRoot(p, realRoot) ? p : null;
-};
-var buildSearchIndex = (files, projectRoot) => files.flatMap((f) => {
+var buildSearchIndex = (files, projectRoot, reader) => files.flatMap((f) => {
   const rel = projectRelative(projectRoot, f);
-  const text = readFileSafe(f);
+  const text = reader.read(f);
   const sections = splitSections(text);
-  if (!sections.length) return [{ file: rel, title: path.basename(f), content: text }];
-  return sections.map((s) => ({ file: rel, title: s.title || path.basename(f), content: s.content }));
+  if (!sections.length) return [{ file: rel, title: path2.basename(f), content: text }];
+  return sections.map((s) => ({ file: rel, title: s.title || path2.basename(f), content: s.content }));
 });
-var buildSpecIndex = (specsDir, projectRoot) => {
-  if (!fs.existsSync(specsDir)) return { specs: [], errors: [] };
-  const files = listMarkdown(specsDir, path.dirname(specsDir));
+var buildSpecIndex = (specsDir, projectRoot, reader) => {
+  if (!entryExists(specsDir)) return { specs: [], errors: [] };
+  const boundary = reader ?? docsReader(projectRoot, captureDocsAuthority(projectRoot));
+  const files = listMarkdown(specsDir, path2.dirname(specsDir), boundary);
   const seen = /* @__PURE__ */ new Set();
   const specs = [];
   const errors = [];
   for (const f of files) {
-    const { meta: meta3, body } = parseFrontMatter(readFileSafe(f));
+    const { meta: meta3, body } = parseFrontMatter(boundary.read(f));
     const rel = projectRelative(projectRoot, f);
     const spec = { ...meta3, file: rel, body };
     const errs = [];
@@ -36903,24 +37174,29 @@ var buildSpecIndex = (specsDir, projectRoot) => {
   }
   return { specs, errors };
 };
-var buildDocsState = (projectRoot) => {
-  const docsRoot = path.join(projectRoot, "docs");
-  const specsDir = path.join(docsRoot, "specs");
-  const glossaryPath = containedPath(path.join(docsRoot, "06-reference", "GLOSSARY.md"), docsRoot);
-  const mdFiles = listMarkdown(docsRoot);
+var buildDocsState = (projectRoot, authority = captureDocsAuthority(projectRoot)) => {
+  if (authority.error) throw new KnowledgeReadError("invalid-read-authority");
+  const docsRoot = path2.join(projectRoot, "docs");
+  if (!entryExists(docsRoot)) return { mdFiles: [], searchIndex: [], specIndex: { specs: [], errors: [] }, glossary: {} };
+  const reader = docsReader(projectRoot, authority);
+  const specsDir = path2.join(docsRoot, "specs");
+  const glossaryPath = containedPath(path2.join(docsRoot, "06-reference", "GLOSSARY.md"), docsRoot, reader);
+  const mdFiles = listMarkdown(docsRoot, docsRoot, reader);
   return {
     mdFiles,
-    searchIndex: buildSearchIndex(mdFiles, projectRoot),
-    specIndex: buildSpecIndex(specsDir, projectRoot),
-    glossary: glossaryPath ? buildGlossary(readFileSafe(glossaryPath)) : {}
+    searchIndex: buildSearchIndex(mdFiles, projectRoot, reader),
+    specIndex: buildSpecIndex(specsDir, projectRoot, reader),
+    glossary: glossaryPath ? buildGlossary(reader.read(glossaryPath)) : {},
+    reader
   };
 };
 
 // src/index.ts
 var SERVER_NAME = "spec-docs";
 var SERVER_VERSION = "1.0.0";
-var PROJECT_ROOT = path2.resolve(process.env.SPEC_DOCS_PROJECT_ROOT || process.cwd());
-var DOCS_ROOT = path2.join(PROJECT_ROOT, "docs");
+var PROJECT_ROOT = path3.resolve(process.env.SPEC_DOCS_PROJECT_ROOT || process.cwd());
+var DOCS_ROOT = path3.join(PROJECT_ROOT, "docs");
+var DOCS_AUTHORITY = captureDocsAuthority(PROJECT_ROOT, process.env.SPEC_DOCS_ALLOWED_DOCS_ROOT);
 var jsonResult = (data) => ({
   content: [{ type: "text", text: JSON.stringify(data, null, 2) }]
 });
@@ -36930,22 +37206,22 @@ var errorResult = (data) => ({
 });
 var withDocsState = (handler) => {
   return async (args) => {
-    if (!fs2.existsSync(DOCS_ROOT)) {
-      return errorResult({
-        error: "DOCS_NOT_INITIALIZED",
-        projectRoot: PROJECT_ROOT,
-        hint: "No docs/ directory under the project root. Run /init-docs first, or set SPEC_DOCS_PROJECT_ROOT to the correct project."
-      });
-    }
     let state;
     try {
-      state = buildDocsState(PROJECT_ROOT);
+      state = buildDocsState(PROJECT_ROOT, DOCS_AUTHORITY);
     } catch (e) {
       return errorResult({
         error: "INDEX_BUILD_FAILED",
         projectRoot: PROJECT_ROOT,
         cause: e.message,
         hint: "Failed to index docs/. Check directory permissions, or SPEC_DOCS_PROJECT_ROOT."
+      });
+    }
+    if (!state.reader) {
+      return errorResult({
+        error: "DOCS_NOT_INITIALIZED",
+        projectRoot: PROJECT_ROOT,
+        hint: "No docs/ directory under the project root. Run /init-docs first, or set SPEC_DOCS_PROJECT_ROOT to the correct project."
       });
     }
     return handler(state, args);
@@ -36984,8 +37260,8 @@ server.registerTool(
       heading: external_exports.string().min(1).describe("Exact level-2 heading title")
     }
   },
-  withDocsState((_state, { file: file2, heading }) => {
-    const abs = resolveDocsPath(PROJECT_ROOT, file2);
+  withDocsState((state, { file: file2, heading }) => {
+    const abs = resolveDocsPath(PROJECT_ROOT, file2, state.reader);
     if (!abs) {
       return errorResult({
         error: "FILE_NOT_ACCESSIBLE",
@@ -36995,7 +37271,8 @@ server.registerTool(
     }
     let text;
     try {
-      text = fs2.readFileSync(abs, "utf-8");
+      if (!state.reader) throw new Error("read-unverifiable");
+      text = state.reader.read(abs);
     } catch (e) {
       return errorResult({ error: "FILE_READ_FAILED", file: file2, cause: e.code ?? e.message });
     }
@@ -37028,7 +37305,7 @@ server.registerTool(
   },
   withDocsState((state, { prefix }) => {
     const rels = state.mdFiles.map((f) => projectRelative(PROJECT_ROOT, f));
-    return jsonResult(prefix ? rels.filter((r) => r.startsWith(toPosixSeparators(prefix, path2.sep))) : rels);
+    return jsonResult(prefix ? rels.filter((r) => r.startsWith(toPosixSeparators(prefix, path3.sep))) : rels);
   })
 );
 server.registerTool(
@@ -37077,14 +37354,14 @@ server.registerTool(
 );
 if (process.argv.includes("--check")) {
   try {
-    const state = buildDocsState(PROJECT_ROOT);
+    const state = buildDocsState(PROJECT_ROOT, DOCS_AUTHORITY);
     console.error(
       `[${SERVER_NAME}] root=${PROJECT_ROOT} files=${state.mdFiles.length} sections=${state.searchIndex.length} specs=${state.specIndex.specs.length} specErrors=${state.specIndex.errors.length} glossaryTerms=${Object.keys(state.glossary).length}`
     );
     for (const err of state.specIndex.errors) {
       console.error(`[${SERVER_NAME}]   spec error: ${err.file} (${err.specId ?? "no specId"}): ${err.errors.join(", ")}`);
     }
-    if (!fs2.existsSync(DOCS_ROOT)) {
+    if (!fs3.existsSync(DOCS_ROOT)) {
       console.error(`[${SERVER_NAME}] WARNING: no docs/ directory under ${PROJECT_ROOT} \u2014 run /init-docs first.`);
       process.exit(1);
     }
@@ -37166,7 +37443,7 @@ try {
   installTransportDiagnostics(transport);
   installProtocolDiagnostics(server);
   console.error(`[${SERVER_NAME}] server started (project root: ${PROJECT_ROOT})`);
-  if (!fs2.existsSync(DOCS_ROOT)) {
+  if (!fs3.existsSync(DOCS_ROOT)) {
     console.error(`[${SERVER_NAME}] WARNING: no docs/ directory under ${PROJECT_ROOT} \u2014 tools will return DOCS_NOT_INITIALIZED.`);
   }
 } catch (e) {

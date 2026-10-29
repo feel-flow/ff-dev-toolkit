@@ -1593,6 +1593,7 @@ describe("main", () => {
     );
     fs.writeFileSync(path.join(archiveDir, "testing.md"), ARCHIVE_MERGED);
     fs.writeFileSync(path.join(patternsDir, "PATTERNS.md"), PATTERNS_LISTED);
+    vi.spyOn(process, "cwd").mockReturnValue(tmpDir);
     return playbookPath;
   }
 
@@ -1714,6 +1715,7 @@ describe("main — 分割 Changelog（playbook/CHANGELOG.md）", () => {
     );
     fs.writeFileSync(path.join(archiveDir, "testing.md"), ARCHIVE_MERGED);
     fs.writeFileSync(path.join(patternsDir, "PATTERNS.md"), PATTERNS_LISTED);
+    vi.spyOn(process, "cwd").mockReturnValue(tmpDir);
     if (opts.changelog !== undefined) {
       const rel = opts.changelogRel ?? "CHANGELOG.md";
       const changelogPath = path.join(playbookDir, rel);
@@ -1822,7 +1824,7 @@ describe("main — 分割 Changelog（playbook/CHANGELOG.md）", () => {
     fs.mkdirSync(path.join(path.dirname(playbookPath), "playbook", "CHANGELOG.md"));
     const { code, errors } = run();
     expect(code).toBe(2);
-    expect(errors).toContain("CHANGELOG.md");
+    expect(errors).toContain("knowledge-read: nonregular-input");
   });
 
   it("分割 Changelog でも索引の残存は本体を見て違反にする", () => {
@@ -1897,6 +1899,7 @@ describe("main — CRLF 入力（core.autocrlf=true の導入先で CRLF のま�
     );
     fs.writeFileSync(path.join(archiveDir, "testing.md"), archive(ARCHIVE_MERGED));
     fs.writeFileSync(path.join(patternsDir, "PATTERNS.md"), live(PATTERNS_LISTED));
+    vi.spyOn(process, "cwd").mockReturnValue(tmpDir);
     process.argv = ["node", "check-refine-invariants.ts", playbookPath];
     vi.spyOn(console, "log").mockImplementation(() => {});
     const err = vi.spyOn(console, "error").mockImplementation(() => {});

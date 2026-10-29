@@ -280,22 +280,40 @@ if [ "${MODE}" != "search" ] && [ "${#KEYWORDS[@]}" -gt 0 ]; then
   exit 1
 fi
 
-# ── root の解決 ──────────────────────────────────────────────────────────────
-if [ -z "${ROOT}" ]; then
-  if ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"; then :; else ROOT="$(pwd)"; fi
-fi
-if [ ! -d "${ROOT}" ]; then
-  printf 'root が directory ではありません: %s\n' "${ROOT}" >&2
-  exit 2
-fi
-ROOT="$(CDPATH= cd -P -- "${ROOT}" && pwd)"
-
 # ── 一時領域（read-only 契約: ここ以外へ書かない） ──────────────────────────
 if ! TMP="$(mktemp -d "${TMPDIR:-/tmp}/knowledge-lookup.XXXXXX" 2>&1)" || [ ! -d "${TMP}" ]; then
   printf '一時ディレクトリを作成できません: %s\n' "${TMP}" >&2
   exit 2
 fi
 trap 'rm -rf "${TMP}"' EXIT
+# All derived text is private before the first source snapshot is created.
+knowledge_reader="${BASH_SOURCE[0]%/*}/lib/knowledge-read-boundary.sh"
+[ -f "$knowledge_reader" ] && [ ! -L "$knowledge_reader" ] || exit 2
+. "$knowledge_reader"
+ff_knowledge_private_fresh_directory "$TMP" || exit 2
+if [ -z "$ROOT" ]; then ROOT="$(ff_knowledge_project_context)" || exit 2
+else ROOT="$(ff_knowledge_canonical_dir "$ROOT")" || exit 2
+fi
+ff_knowledge_storage "$ROOT" dir || exit 2
+: >"${TMP}/read-cache"
+accepted_snapshot() { # <logical input> <independent authority> [root|file]
+  local input="$1" authority="$2" mode="${3:-root}" canonical stamp cached snapshot
+  canonical="$(ff_knowledge_authorize "$input" "$authority" "$mode")" || return 2
+  stamp="$(ff_knowledge_meta "$canonical")" || return 2
+  cached="$(FF_READ_KEY="$canonical" FF_READ_STAMP="$stamp" awk -F '\t' '$1 == ENVIRON["FF_READ_KEY"] { if ($2 != ENVIRON["FF_READ_STAMP"]) exit 2; print $3; exit }' "${TMP}/read-cache")" || return 2
+  if [ -n "$cached" ]; then printf '%s\n' "$cached"; return 0; fi
+  snapshot="$(ff_knowledge_snapshot "$input" "$authority" "$TMP" "$mode")" || return 2
+  printf '%s\t%s\t%s\n' "$canonical" "$stamp" "$snapshot" >>"${TMP}/read-cache"
+  printf '%s\n' "$snapshot"
+}
+ACE_AUTHORITY="$ROOT"
+OBS_AUTHORITY="$ROOT"; OBS_AUTHORITY_MODE=root
+snapshot_store_input() {
+  case "$1" in
+    "$OBS_FILE") accepted_snapshot "$1" "$OBS_AUTHORITY" "$OBS_AUTHORITY_MODE" ;;
+    *) accepted_snapshot "$1" "$ACE_AUTHORITY" ;;
+  esac
+}
 
 # ── store の実配置を確定する ─────────────────────────────────────────────────
 # 既定パスの不在だけを根拠に「未導入」と結論しない（/retrospective 起票前の既存確認 手順 2 と
@@ -309,11 +327,11 @@ resolve_store() { # <既定の相対パス> <ファイル名> <明示パス>
     printf '%s\n' "${explicit}"
     return 0
   fi
-  if [ -e "${ROOT}/${default_rel}" ]; then
+  if [ -e "${ROOT}/${default_rel}" ] || [ -L "${ROOT}/${default_rel}" ]; then
     printf '%s\n' "${ROOT}/${default_rel}"
     return 0
   fi
-  cands="$(find "${ROOT}" \( -path '*/node_modules' -o -path '*/.git' -o -path '*/docs-template' -o -path "${ROOT}/oss" \) -prune -o -type f -name "${fname}" -print 2>/dev/null | LC_ALL=C sort)" || cands=""
+  cands="$(find "${ROOT}" \( -path '*/node_modules' -o -path '*/.git' -o -path '*/docs-template' -o -path "${ROOT}/oss" \) -prune -o \( -type f -o -type l \) -name "${fname}" -print 2>/dev/null | LC_ALL=C sort)" || return 2
   if [ -z "${cands}" ]; then
     return 1
   fi
@@ -336,11 +354,10 @@ resolve_store() { # <既定の相対パス> <ファイル名> <明示パス>
 # 記録済み配置: root の AGENTS.md・CLAUDE.md・docs/MASTER.md（docs 索引）に書かれた、
 # `PLAYBOOK.md` で終わるパス（リンク先・バッククォート・地の文を問わない。`#` 以降は落ちる）。
 # root 相対と記載ファイルのディレクトリ相対の両方で試し、実在する通常ファイルだけを採る。
-# 採らないもの: ファイル自体が symlink のもの（途中のディレクトリの symlink は実体へ解決し、root 内
-# なら採る）・root の外・oss/・node_modules/・.git/ の配下と、plugin が同梱する配布テンプレート
+# 採らないもの: 認可後の実体が root 外のもの・oss/・node_modules/・.git/ の配下と、plugin が同梱する配布テンプレート
 # （`.claude-plugin/plugin.json` を持つディレクトリ直下の docs-template/）。記載の絶対パス・`~` は
 # root / 記載ファイルの下へ連結して解くので実在せず、構造上採られない（ホスト固有のパスを記録にしない）。
-# 判定（候補 = 重複を除いた実在候補）:
+# 判定（候補 = 認可済み実体pathで重複を除いた実在候補。選択/探索には論理配置を使う）:
 #   - 候補 0 件 → 既定パス → 探索へ進む
 #   - 既定パスに実体がある → 候補が既定パスを含めばそれを採る（他の候補は旧配置の注記と読む）。
 #     含まなければ記録と実体の矛盾として曖昧（記録が 1 件でも、旧配置のスタブを指している
@@ -351,22 +368,25 @@ resolve_store() { # <既定の相対パス> <ファイル名> <明示パス>
 # 配布リポジトリの実体が常に不在になる。記載ファイルを読めなかった回は戻り値 2（読み取り失敗）。
 # 出力: `<source><TAB><path>`（source = explicit / env / recorded:<記載ファイル> / default / search）
 # 戻り値: 0 = 確定 / 1 = 不在 / 2 = 記載ファイルの読み取り失敗 / 3 = 曖昧（stderr に候補）
-ace_record_candidate() { # <path> → 採れる候補なら canonical なパスを stdout へ
-  local p="$1" d="" pre=""
-  [ -f "${p}" ] && [ ! -L "${p}" ] || return 1
-  d="$(CDPATH= cd -P -- "${p%/*}" 2>/dev/null && pwd -P)" || return 1
-  case "${d}/" in "${ROOT}/"*) ;; *) return 1 ;; esac
-  case "${d}/" in "${ROOT}/oss/"*|*/node_modules/*|*/.git/*) return 1 ;; esac
-  case "${d}/" in
-    */docs-template/*)
-      pre="${d}/"; pre="${pre%%/docs-template/*}"
-      [ -f "${pre}/.claude-plugin/plugin.json" ] && return 1
-      ;;
-  esac
+ace_record_candidate() { # <path> → 認可後、親を正規化し論理leafを保ったパスを stdout へ
+  local p="$1" d="" pre="" real="" role_parent=""
+  [ -e "${p}" ] || [ -L "${p}" ] || return 1
+  real="$(ff_knowledge_authorize "$p" "$ROOT")" || return 1
+  d="$(ff_knowledge_canonical_dir "${p%/*}")" || return 1
+  for role_parent in "$d" "${real%/*}"; do
+    case "${role_parent}/" in "${ROOT}/"*) ;; *) return 1 ;; esac
+    case "${role_parent}/" in "${ROOT}/oss/"*|*/node_modules/*|*/.git/*) return 1 ;; esac
+    case "${role_parent}/" in
+      */docs-template/*)
+        pre="${role_parent}/"; pre="${pre%%/docs-template/*}"
+        [ -f "${pre}/.claude-plugin/plugin.json" ] && return 1
+        ;;
+    esac
+  done
   printf '%s/%s\n' "${d}" "${p##*/}"
 }
 resolve_playbook() {
-  local env_path="${ACE_PLAYBOOK_PATH:-}" rec="" src="" tok="" base="" c="" seen="" n=0 first_src="" first="" def=""
+  local env_path="${ACE_PLAYBOOK_PATH:-}" rec="" src="" tok="" base="" c="" seen="" n=0 first_src="" first="" def="" record_snapshot="" physical="" def_physical=""
   local nl='
 '
   if [ -n "${PLAYBOOK}" ]; then
@@ -381,11 +401,12 @@ resolve_playbook() {
     return 0
   fi
   for rec in AGENTS.md CLAUDE.md docs/MASTER.md; do
-    [ -f "${ROOT}/${rec}" ] && [ -r "${ROOT}/${rec}" ] || continue
+    [ -e "${ROOT}/${rec}" ] || [ -L "${ROOT}/${rec}" ] || continue
     printf '%s\n' "${rec}" >>"${TMP}/ace-record-files"
   done
   if [ -s "${TMP}/ace-record-files" ]; then
     while IFS= read -r rec; do
+      record_snapshot="$(accepted_snapshot "${ROOT}/${rec}" "$ROOT")" || return 2
       # トークンは 2 通りに切り出す: ASCII のパス文字だけ（「（docs-template/…）」の全角括弧を
       # 含めない）と、区切り文字（空白・括弧・引用符等）まで（`docs-template/知見/PLAYBOOK.md` の
       # ような非 ASCII を含むパスを途中で切らない）。どちらかが実在するパスになり、残りは実在確認で落ちる。
@@ -400,26 +421,28 @@ resolve_playbook() {
           }
         }
         { emit("[A-Za-z0-9_./~-]*PLAYBOOK\\.md"); emit("[^][()<>\"`|*,; \t\047]*PLAYBOOK\\.md") }
-      ' "${ROOT}/${rec}" || { printf '記録済み配置を読めません: %s\n' "${rec}" >&2; return 2; }
+      ' "$record_snapshot" || { printf '記録済み配置を読めません: %s\n' "${rec}" >&2; return 2; }
     done <"${TMP}/ace-record-files" >"${TMP}/ace-record-tokens"
     while IFS="${TAB}" read -r src tok; do
       base="${ROOT}/${src}"; base="${base%/*}"
       for c in "${ROOT}/${tok}" "${base}/${tok}"; do
         c="$(ace_record_candidate "${c}")" || continue
-        case "${nl}${seen}" in *"${nl}${c}${nl}"*) continue ;; esac
-        seen="${seen}${c}${nl}"
-        printf '%s\t%s\n' "${src}" "${c}" >>"${TMP}/ace-record-hits"
+        physical="$(ff_knowledge_authorize "$c" "$ROOT")" || return 2
+        case "${nl}${seen}" in *"${nl}${physical}${nl}"*) continue ;; esac
+        seen="${seen}${physical}${nl}"
+        printf '%s\t%s\t%s\n' "${src}" "${c}" "${physical}" >>"${TMP}/ace-record-hits"
         n=$((n + 1))
         if [ "${n}" -eq 1 ]; then first="${c}"; first_src="${src}"; fi
       done
     done <"${TMP}/ace-record-tokens"
   fi
   if [ "${n}" -gt 0 ] && def="$(ace_record_candidate "${ROOT}/docs/08-knowledge/PLAYBOOK.md")"; then
-    src="$(LC_ALL=C awk -F '\t' -v c="${def}" '$2 == c { print $1; exit }' "${TMP}/ace-record-hits")"
+    def_physical="$(ff_knowledge_authorize "$def" "$ROOT")" || return 2
+    src="$(FF_READ_KEY="$def_physical" LC_ALL=C awk -F '\t' '$3 == ENVIRON["FF_READ_KEY"] { print $1; exit }' "${TMP}/ace-record-hits")"
     if [ -n "${src}" ]; then
       if [ "${n}" -gt 1 ]; then
         printf '記録済み配置の候補 %s 件のうち既定パスを採りました（他の記載は採りません）:\n' "${n}" >&2
-        LC_ALL=C awk -F '\t' -v c="${def}" '$2 != c { printf "    %s（記載: %s）\n", $2, $1 }' "${TMP}/ace-record-hits" >&2
+        FF_READ_KEY="$def_physical" LC_ALL=C awk -F '\t' '$3 != ENVIRON["FF_READ_KEY"] { printf "    %s（記載: %s）\n", $2, $1 }' "${TMP}/ace-record-hits" >&2
       fi
       printf 'recorded:%s\t%s\n' "${src}" "${def}"
       return 0
@@ -461,13 +484,33 @@ if [ "${MODE}" = "search" ] || [ "${MODE}" = "resolve-playbook" ]; then
 fi
 # 明示指定・既定パスが存在しても読めなければ「読み取り失敗」（未導入へ吸収しない）
 if [ "${ACE_STATE}" = "ok" ] && { [ ! -f "${ACE_INDEX}" ] || [ ! -r "${ACE_INDEX}" ]; }; then ACE_STATE="unreadable"; fi
+ACE_OPERATOR_FILE="$ACE_INDEX"
 # 検索・解決のどちらへ分かれる前にも、ディレクトリを cd -P で実体化した絶対パスへ揃える。
 # `ACE_PLAYBOOK_PATH=PLAYBOOK.md` のようなファイル名だけの指定を相対のまま持つと、検索側の
 # `${ACE_INDEX%/*}` がファイル名自身を返し、カテゴリファイル（playbook/）の探索先を取り違える。
 # ファイル名（symlink ならリンク自身の名前）は変えない。
 if [ "${ACE_STATE}" = "ok" ]; then
-  ace_dir="$(CDPATH= cd -P -- "$(dirname -- "${ACE_INDEX}")" 2>/dev/null && pwd -P)" || ace_dir=""
+  case "$ACE_INDEX" in */*) ace_parent="${ACE_INDEX%/*}"; [ -n "$ace_parent" ] || ace_parent=/ ;; *) ace_parent=. ;; esac
+  ace_dir="$(ff_knowledge_canonical_dir "$ace_parent" 2>/dev/null)" || ace_dir=""
   if [ -n "${ace_dir}" ]; then ACE_INDEX="${ace_dir}/${ACE_INDEX##*/}"; else ACE_STATE="unreadable"; fi
+fi
+if [ "${ACE_STATE}" = "ok" ]; then
+  case "$ACE_SOURCE" in
+    explicit|env)
+      if ff_knowledge_project_operand "$ACE_OPERATOR_FILE" "$ROOT"; then :
+      else
+        operand_rc=$?
+        if [ "$operand_rc" -eq 1 ]; then
+          ace_selected="$(ff_knowledge_canonical_file "$ACE_INDEX")" || ACE_STATE=unreadable
+          if [ "$ACE_STATE" = ok ]; then ACE_AUTHORITY="${ace_selected%/*}"; fi
+        else ACE_STATE=unreadable
+        fi
+      fi
+      ;;
+  esac
+  if [ "$ACE_STATE" = ok ]; then
+    ff_knowledge_authorize "$ACE_INDEX" "$ACE_AUTHORITY" >/dev/null || ACE_STATE=unreadable
+  fi
 fi
 
 # ── --resolve-playbook: 解決結果だけを出して終える ───────────────────────────
@@ -513,9 +556,18 @@ fi
 if OBS_FILE="$(resolve_store "docs/08-knowledge/OBSERVATIONS.md" "OBSERVATIONS.md" "${LEDGER}")"; then
   OBS_STATE="ok"
 else
-  case $? in 3) OBS_STATE="ambiguous" ;; *) OBS_STATE="absent" ;; esac
+  case $? in 3) OBS_STATE="ambiguous" ;; 1) OBS_STATE="absent" ;; *) OBS_STATE="unreadable" ;; esac
 fi
 if [ "${OBS_STATE}" = "ok" ] && { [ ! -f "${OBS_FILE}" ] || [ ! -r "${OBS_FILE}" ]; }; then OBS_STATE="unreadable"; fi
+if [ -n "$LEDGER" ]; then
+  if ff_knowledge_project_operand "$LEDGER" "$ROOT"; then :
+  else
+    operand_rc=$?
+    if [ "$operand_rc" -eq 1 ]; then OBS_AUTHORITY="$LEDGER"; OBS_AUTHORITY_MODE=file
+    else OBS_STATE=unreadable
+    fi
+  fi
+fi
 
 # ── エントリの切り出し（共通 awk） ───────────────────────────────────────────
 # 1 エントリ = `### <PREFIX>-…:` 見出しから、終端 `---` / 次の anchor / 次の見出し / 次の `##`
@@ -529,12 +581,21 @@ if [ "${OBS_STATE}" = "ok" ] && { [ ! -f "${OBS_FILE}" ] || [ ! -r "${OBS_FILE}"
 # エントリがあればその本文として残す（例示は本文の一部）。
 extract_entries() { # <PREFIX: ACE|OBS> <file>...
   local prefix="$1"; shift
-  awk -v prefix="${prefix}" '
+  local input snapshot labels="${TMP}/entry-labels"; local snapshots=()
+  : >"$labels"
+  for input in "$@"; do
+    snapshot="$(snapshot_store_input "$input")" || return 2
+    snapshots+=("$snapshot")
+    printf '%s\t%s\n' "$snapshot" "$input" >>"$labels"
+  done
+  [ "${#snapshots[@]}" -gt 0 ] || return 2
+  FF_READ_LABELS="$labels" awk -v prefix="${prefix}" '
+    BEGIN { while ((getline row < ENVIRON["FF_READ_LABELS"]) > 0) { split(row, parts, "\t"); labels[parts[1]] = parts[2] } close(ENVIRON["FF_READ_LABELS"]) }
     function flush() {
       if (id != "") { gsub(/\n/, "\036", block); printf "%s\037%s\037%s\037%s\n", id, title, FILENAME_SAVED, block }
       id = ""; title = ""; block = ""
     }
-    FNR == 1 { flush(); FILENAME_SAVED = FILENAME; infence = 0 }
+    FNR == 1 { flush(); FILENAME_SAVED = labels[FILENAME]; infence = 0 }
     {
       line = $0
       if (line ~ /^[[:space:]]*(```|~~~)/) {
@@ -560,7 +621,7 @@ extract_entries() { # <PREFIX: ACE|OBS> <file>...
       block = block "\n" line
     }
     END { flush() }
-  ' "$@"
+  ' "${snapshots[@]}"
 }
 
 # ── 空 store と書式破損の切り分け ───────────────────────────────────────────
@@ -572,9 +633,11 @@ extract_entries() { # <PREFIX: ACE|OBS> <file>...
 # 戻り値: 0 = 空（正常）/ 1 = 書式破損の疑い
 store_is_empty() { # <索引ファイル> <走査対象ファイル...>
   local index="$1"; shift
+  index="$(snapshot_store_input "$index")" || return 1
   awk '/^[[:space:]]*(```|~~~)/ { infence = !infence; next } infence { next } /^## エントリ一覧/ { seen = 1 } END { exit seen ? 0 : 1 }' "${index}" || return 1
   local f
   for f in "$@"; do
+    f="$(snapshot_store_input "$f")" || return 1
     # 見出しを数えるのは `## エントリ一覧` 節の内側だけ（次の `## ` 見出し — Changelog 等 — で節を閉じる。
     # テンプレートの Changelog は `### [版]` 見出しを持つので、節を閉じないと空を書式破損と誤判定する）
     if awk '/^[[:space:]]*(```|~~~)/ { infence = !infence; next } infence { next } /^## / { seen = ($0 ~ /^## エントリ一覧/) } seen && /^### / { found = 1 } END { exit found ? 0 : 1 }' "${f}"; then
@@ -597,8 +660,10 @@ if [ "${ACE_STATE}" = "ok" ]; then
   ace_dir="${ACE_INDEX%/*}"
   printf '%s\n' "${ACE_INDEX}" >>"${ACE_FILES}"
   if [ -d "${ace_dir}/playbook" ]; then
+    ff_knowledge_storage "$(ff_knowledge_canonical_dir "${ace_dir}/playbook")" dir || exit 2
+    case "$(ff_knowledge_canonical_dir "${ace_dir}/playbook")/" in "$ACE_AUTHORITY/"*) ;; *) ff_knowledge_refuse outside-authority; exit 2 ;; esac
     find "${ace_dir}/playbook" -mindepth 1 -type d \( -name archive -o -name _archive -o -name '.*' \) -prune \
-      -o \( -type f -o -type l \) -name '*.md' -print 2>/dev/null | LC_ALL=C sort >>"${ACE_FILES}" || true
+      -o \( -type f -o -type l \) -name '*.md' -print 2>/dev/null | LC_ALL=C sort >>"${ACE_FILES}" || exit 2
   fi
   unreadable=""
   while IFS= read -r f; do
@@ -611,18 +676,19 @@ if [ "${ACE_STATE}" = "ok" ]; then
   else
     files=()
     while IFS= read -r f; do [ -n "${f}" ] && files+=("${f}"); done <"${ACE_FILES}"
-    extract_entries ACE "${files[@]}" >"${ACE_ENTRIES}"
+    extract_entries ACE "${files[@]}" >"${ACE_ENTRIES}" || exit 2
     if [ ! -s "${ACE_ENTRIES}" ]; then
       if store_is_empty "${ACE_INDEX}" "${files[@]}"; then ACE_STATE="empty"; else ACE_STATE="noentry"; fi
     fi
     if [ "${INCLUDE_ARCHIVED}" -eq 1 ]; then
       arch=()
       if [ -d "${ace_dir}/playbook" ]; then
-        while IFS= read -r f; do [ -n "${f}" ] && arch+=("${f}"); done < <(find "${ace_dir}/playbook" -mindepth 1 -type d -name '.*' -prune \
-          -o \( -type f -o -type l \) -name '*.md' \( -path '*/archive/*' -o -path '*/_archive/*' \) -print 2>/dev/null | LC_ALL=C sort)
+        find "${ace_dir}/playbook" -mindepth 1 -type d -name '.*' -prune \
+          -o \( -type f -o -type l \) -name '*.md' \( -path '*/archive/*' -o -path '*/_archive/*' \) -print 2>/dev/null | LC_ALL=C sort >"${TMP}/archive-files" || exit 2
+        while IFS= read -r f; do [ -n "${f}" ] && arch+=("${f}"); done <"${TMP}/archive-files"
       fi
       if [ "${#arch[@]}" -gt 0 ]; then
-        extract_entries ACE "${arch[@]}" >"${ACE_ARCHIVE_ENTRIES}"
+        extract_entries ACE "${arch[@]}" >"${ACE_ARCHIVE_ENTRIES}" || exit 2
       fi
     fi
   fi
@@ -631,7 +697,7 @@ fi
 # ── 観測台帳の走査 ───────────────────────────────────────────────────────────
 OBS_ENTRIES="${TMP}/obs-entries"; : >"${OBS_ENTRIES}"
 if [ "${OBS_STATE}" = "ok" ]; then
-  extract_entries OBS "${OBS_FILE}" >"${OBS_ENTRIES}"
+  extract_entries OBS "${OBS_FILE}" >"${OBS_ENTRIES}" || exit 2
   if [ ! -s "${OBS_ENTRIES}" ]; then
     # 見出しを 1 件も認識できない台帳は「0 件ヒット」ではなく読み取り失敗（書式変更を空振りで
     # 緑にしない）。ただしテンプレート直後の空台帳（エントリ一覧が空）は正常（判定は store_is_empty）。
@@ -964,9 +1030,10 @@ if [ "${ACE_STATE}" = "ok" ] || [ "${ACE_STATE}" = "empty" ]; then
     fi
     # shellcheck source=lib/ace-pending-functions.sh
     . "$pending_lib"
-    ff_ace_pending_validate "$PENDING_FILE" || exit 2
+    pending_snapshot="$(snapshot_store_input "$PENDING_FILE")" || exit 2
+    ff_ace_pending_validate "$pending_snapshot" || exit 2
     PENDING_PRESENT=1
-    extract_entries PENDING "$PENDING_FILE" >"${TMP}/pending-entries"
+    extract_entries PENDING "$PENDING_FILE" >"${TMP}/pending-entries" || exit 2
     filter_entries <"${TMP}/pending-entries" >"${TMP}/pending-hit"
     entries_meta "${TMP}/pending-hit" Category Origin >"${TMP}/pending-meta"
     : >"${TMP}/pending-ids"

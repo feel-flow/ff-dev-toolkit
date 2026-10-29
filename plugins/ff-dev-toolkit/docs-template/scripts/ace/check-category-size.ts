@@ -33,6 +33,7 @@
  * 実行例: npx --yes tsx scripts/ace/check-category-size.ts path/to/PLAYBOOK.md
  */
 import * as fs from "node:fs";
+import { KnowledgeReadBoundary, knowledgeReaderForSelection, knowledgeInputExists } from "./knowledge-read-boundary";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -1764,18 +1765,20 @@ export const PLAYBOOK_ARCHIVE_DIR_NAMES: readonly string[] = ["archive", "_archi
  * `.` 始まりのディレクトリは辿らない。シンボリックリンクのディレクトリも辿らない（循環を避ける）。
  * 戻り値はフルパスのソート済み配列で、check-entry-format の形式ゲートもこの関数で走査範囲を決める。
  */
-export function discoverPlaybookSubfiles(playbookPath: string): string[] {
+export function discoverPlaybookSubfiles(playbookPath: string, reader = knowledgeReaderForSelection(playbookPath)): string[] {
   const subDir = path.join(path.dirname(playbookPath), "playbook");
-  if (!fs.existsSync(subDir) || !fs.statSync(subDir).isDirectory()) {
+  if (!knowledgeInputExists(subDir)) {
     return [];
   }
   const found: string[] = [];
   const walk = (dir: string): void => {
+    reader.directory(dir);
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const fullPath = path.join(dir, entry.name);
       // `.md` で終わる名前は種別を問わず拾う（非再帰だった頃と同じ）。ディレクトリでも拾うので、
       // 読み込み側が EISDIR で名指しして止まる — 黙って辿り込んで件数を変えるより読めない入力として出す。
       if (entry.name.endsWith(".md")) {
+        reader.authorize(fullPath);
         found.push(fullPath);
         continue;
       }
@@ -1903,9 +1906,9 @@ function formatHistogram(histogram: CategoryHistogram): string {
     .join("\n");
 }
 
-function readFileOrExit(filePath: string): string | undefined {
+function readFileOrExit(filePath: string, reader: KnowledgeReadBoundary): string | undefined {
   try {
-    return fs.readFileSync(filePath, "utf8");
+    return reader.read(filePath);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`読み込み失敗: ${filePath}: ${message}`);
@@ -1923,8 +1926,11 @@ export function main(): number {
   }
 
   let subfiles: string[];
+  let reader: KnowledgeReadBoundary;
   try {
-    subfiles = discoverPlaybookSubfiles(playbookPath);
+    reader = knowledgeReaderForSelection(playbookPath);
+    reader.authorize(playbookPath);
+    subfiles = discoverPlaybookSubfiles(playbookPath, reader);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`読み込み失敗: playbook/ ディレクトリの走査に失敗しました: ${message}`);
@@ -1952,7 +1958,7 @@ export function main(): number {
   let declaredEmpty = false;
 
   for (const filePath of filesToAnalyze) {
-    const content = readFileOrExit(filePath);
+    const content = readFileOrExit(filePath, reader);
     if (content === undefined) {
       return EXIT_USAGE_ERROR;
     }

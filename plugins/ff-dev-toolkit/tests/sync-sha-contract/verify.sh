@@ -525,6 +525,31 @@ else
 fi
 contains '| `retrospective-stop-hook` / `skill-drift-check`: bash 4 以上でだけ成立する検査のため未実行 | bash 版限定 |' \
   "手順 0b の許容表に bash 版限定（retrospective-stop-hook / skill-drift-check）の行がある"
+# bwrap 不在の理由文（Issue `#2457`）は Darwin の gate だけが許可する条件付きの OS 限定。Linux では入れれば
+# 実行できる環境 skip なので、部分一致の許容表へ入れると Linux の未導入まで黙って通る。表に無いこと・
+# Darwin 条件・呼び出し・出す suite の集合を固定する
+if [[ "$_allowed_block" == *'bwrap が無いため'* ]]; then
+  bad "bwrap 不在の skip（Linux では環境 skip）が許容表の要素になっている"
+elif [[ -n "$_allowed_block" ]]; then
+  ok "bwrap 不在の skip を許容表の要素にしていない（Darwin 限定の判定関数で扱う）"
+fi
+release_contains "RELEASE_BWRAP_SKIP_REASON='bwrap が無いため sandbox 上の経路判定は未検査'" \
+  "bwrap 不在の理由文が判定関数の定数にある"
+release_contains '[[ "$(uname -s)" == Darwin && "$1" == *"○ skip: ${RELEASE_BWRAP_SKIP_REASON}"* ]]' \
+  "bwrap 不在の skip は gate ホストが Darwin の回だけ許可する"
+release_contains 'if ff_release_os_skip_allowed "$_line"; then _matched=1; fi' \
+  "gate 段が未知の skip の照合で OS 限定の条件付き許可を使う"
+release_contains "'bwrap が無いため sandbox 上の経路判定は未検査|bubblewrap を入れて" \
+  "ヒント表が Linux の bwrap 不在 skip に bubblewrap の導入を名指しする"
+_bwrap_emitters="$(grep -rlF -- 'bwrap が無いため sandbox 上の経路判定は未検査' "$REPO_ROOT"/plugins/*/tests 2>/dev/null \
+  | grep -v '/tests/sync-sha-contract/' | sed "s|^$REPO_ROOT/||" | sort)" || true
+if [[ "$_bwrap_emitters" == plugins/ff-dev-toolkit/tests/decision-tree/verify.sh ]]; then
+  ok "bwrap 不在の理由文を出す suite が decision-tree だけである（判定関数の文言が実出力にある）"
+else
+  bad "bwrap 不在の理由文を出す suite の集合が想定と違う（文言の変更か使い回し。判定関数と SKILL.md の表を見直す）: [${_bwrap_emitters}]"
+fi
+contains '| `decision-tree`: bwrap が無いため sandbox 上の経路判定は未検査 | 条件付きの OS 限定 |' \
+  "手順 0b の許容表に条件付きの OS 限定（decision-tree の bwrap 不在）の行がある"
 contains '`ff-media-toolkit/tests/typecheck` の `node_modules` 不在' \
   "手順 0b が ff-media の setup 前の typecheck を環境 skip（許容しない）として名指ししている"
 contains '`MSYS では成立しない検査のため未実行` は環境 skip で、許容表には載せない' \

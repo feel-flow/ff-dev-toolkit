@@ -727,6 +727,8 @@ else
         --log-level=error --outfile="$BUNDLE_DIR/check-category-size"
       "$ESBUILD_BIN" "$PLUGIN_ROOT/docs-template/scripts/ace/ace-domain.ts" --platform=node --format=esm \
         --log-level=error --outfile="$BUNDLE_DIR/ace-domain"
+      "$ESBUILD_BIN" "$PLUGIN_ROOT/docs-template/scripts/ace/knowledge-read-boundary.ts" --platform=node --format=esm \
+        --log-level=error --outfile="$BUNDLE_DIR/knowledge-read-boundary"
       "$ESBUILD_BIN" "$FORMAT_GATE_SCRIPT" --platform=node --format=esm \
         --log-level=error --outfile="$BUNDLE_PATH"
     2>&1)"

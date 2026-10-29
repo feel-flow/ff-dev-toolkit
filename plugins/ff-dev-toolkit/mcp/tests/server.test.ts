@@ -18,9 +18,14 @@ const PROJECT_FIXTURE = path.resolve(__dirname, 'fixtures/project');
 
 const parseText = (res: any): any => JSON.parse(res.content[0].text);
 
-const connect = async (cwd: string): Promise<Client> => {
+const serverEnv = (grant?: string): Record<string, string> => {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key, value]) => value !== undefined && !key.startsWith('SPEC_DOCS_'))) as Record<string, string>;
+  if (grant !== undefined) env.SPEC_DOCS_ALLOWED_DOCS_ROOT = grant;
+  return env;
+};
+const connect = async (cwd: string, grant?: string, extraEnv: Record<string, string> = {}): Promise<Client> => {
   const client = new Client({ name: 'vitest', version: '0.0.0' });
-  const transport = new StdioClientTransport({ command: process.execPath, args: [DIST], cwd });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [DIST], cwd, env: { ...serverEnv(grant), ...extraEnv } });
   await client.connect(transport);
   return client;
 };
@@ -147,6 +152,166 @@ describe('spec-docs server over stdio (fixture project)', () => {
     const body = parseText(res);
     expect(body.found).toBeNull();
     expect(body.specIndexErrors.length).toBeGreaterThan(0);
+  });
+});
+
+// The complete public read surface is exercised against the shipped bundle.
+// An empty or omitted tool vector must fail rather than report a green probe.
+const boundaryCalls = [
+  { name: 'search', arguments: { query: 'ff_mcp_private_canary_2432' } },
+  { name: 'list_docs', arguments: {} },
+  { name: 'extract_section', arguments: { file: 'docs/MASTER.md', heading: 'Boundary' } },
+  { name: 'glossary_lookup', arguments: { term: 'CANARY' } },
+  { name: 'spec_search', arguments: { query: 'canary' } },
+  { name: 'spec_lookup', arguments: { specId: 'SPEC-PRIVATE' } },
+];
+describe('built server protected docs boundary', () => {
+  const canary = 'ff_mcp_private_canary_2432';
+  let tmp: string;
+  let project: string;
+  let shared: string;
+  beforeAll(() => {
+    tmp = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'mcp-boundary-'));
+    shared = path.join(tmp, 'shared');
+    fs.mkdirSync(path.join(shared, '06-reference'), { recursive: true });
+    fs.mkdirSync(path.join(shared, 'specs'));
+    fs.writeFileSync(path.join(shared, 'MASTER.md'), `## Boundary\n\n${canary}\n`);
+    fs.writeFileSync(path.join(shared, '06-reference/GLOSSARY.md'), `### CANARY\n\n${canary}\n`);
+    fs.writeFileSync(path.join(shared, 'specs/private.md'), `---\nspecId: SPEC-PRIVATE\ntitle: canary\nstatus: draft\nversion: 1.0.0\n---\n\n${canary}\n`);
+    expect(boundaryCalls.map(call => call.name).sort()).toEqual(['extract_section', 'glossary_lookup', 'list_docs', 'search', 'spec_lookup', 'spec_search']);
+  });
+  afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  const newProject = (name: string): string => {
+    project = path.join(tmp, name);
+    fs.mkdirSync(project);
+    return project;
+  };
+  const assertRefused = async (root: string, grant?: string): Promise<void> => {
+    const client = await connect(root, grant);
+    try {
+      for (const call of boundaryCalls) {
+        const response = await client.callTool(call);
+        expect(response.isError, call.name).toBe(true);
+        expect(parseText(response).error, call.name).toBe('INDEX_BUILD_FAILED');
+        expect(JSON.stringify(response), call.name).not.toContain(canary);
+      }
+    } finally { await client.close(); }
+  };
+  it('refuses docs -> project root for every tool', async () => {
+    const root = newProject('project-root');
+    fs.writeFileSync(path.join(root, 'MASTER.md'), `## Boundary\n${canary}\n`);
+    fs.symlinkSync('.', path.join(root, 'docs'));
+    await assertRefused(root);
+  });
+  it('refuses docs -> .. for every tool', async () => {
+    const root = newProject('project-parent');
+    fs.symlinkSync('..', path.join(root, 'docs'));
+    await assertRefused(root);
+  });
+  it('refuses an ungranted external docs root for every tool', async () => {
+    const root = newProject('external');
+    fs.symlinkSync(shared, path.join(root, 'docs'));
+    await assertRefused(root);
+  });
+  it('refuses a dangling docs root instead of claiming an uninitialized project', async () => {
+    const root = newProject('dangling-root');
+    fs.symlinkSync(path.join(tmp, 'missing-docs'), path.join(root, 'docs'));
+    await assertRefused(root);
+  });
+  for (const kind of ['hardlink', 'oversized', 'nul', 'directory', 'dangling-file']) {
+    it(`refuses ${kind} input through every built tool`, async () => {
+      const root = newProject('input-' + kind), docs = path.join(root, 'docs');
+      fs.mkdirSync(docs);
+      const file = path.join(docs, 'MASTER.md');
+      if (kind === 'directory') fs.mkdirSync(file);
+      else if (kind === 'dangling-file') fs.symlinkSync(path.join(tmp, 'missing.md'), file);
+      else {
+        fs.writeFileSync(file, kind === 'oversized' ? canary + 'x'.repeat(4 * 1024 * 1024) : kind === 'nul' ? canary + String.fromCharCode(0) : canary);
+        if (kind === 'hardlink') fs.linkSync(file, path.join(docs, 'other.md'));
+      }
+      await assertRefused(root);
+    });
+  }
+  it.skipIf(process.platform === 'win32')('refuses a FIFO before opening through every built tool', async () => {
+    const root = newProject('fifo'), docs = path.join(root, 'docs');
+    fs.mkdirSync(docs); execFileSync('mkfifo', [path.join(docs, 'MASTER.md')]);
+    await assertRefused(root);
+  });
+  it('preserves all six tools for an exact explicit external root', async () => {
+    const root = newProject('explicit');
+    fs.symlinkSync(shared, path.join(root, 'docs'));
+    const client = await connect(root, shared);
+    try {
+      for (const call of boundaryCalls) {
+        const response = await client.callTool(call);
+        expect(response.isError, call.name).toBeFalsy();
+        const expected = call.name === 'list_docs' ? 'docs/MASTER.md' : call.name === 'spec_search' ? 'SPEC-PRIVATE' : canary;
+        expect(JSON.stringify(response), call.name).toContain(expected);
+      }
+    } finally { await client.close(); }
+  });
+  it('all built tools consume accepted snapshots without readFileSync on source markdown', async () => {
+    const root = newProject('snapshot-only');
+    fs.symlinkSync(shared, path.join(root, 'docs'));
+    const preload = path.join(tmp, 'deny-unbounded-source-read.cjs');
+    fs.writeFileSync(preload, [
+      'const fs = require("node:fs");',
+      'const original = fs.readFileSync;',
+      'fs.readFileSync = function(file, ...args) {',
+      '  if (typeof file === "string" && file.endsWith(".md")) throw new Error("unexpected source pathname reopen");',
+      '  return original.call(this, file, ...args);',
+      '};',
+    ].join('\n'));
+    const client = await connect(root, shared, { NODE_OPTIONS: '--require ' + JSON.stringify(preload) });
+    try {
+      for (const call of boundaryCalls) {
+        expect((await client.callTool(call)).isError, call.name).toBeFalsy();
+      }
+    } finally { await client.close(); }
+  });
+  it('refuses a sibling-prefix grant and a nested escaping file link', async () => {
+    const sibling = shared + '-sibling';
+    fs.mkdirSync(sibling);
+    const root = newProject('sibling-prefix');
+    fs.symlinkSync(sibling, path.join(root, 'docs'));
+    await assertRefused(root, shared);
+    const nested = newProject('nested');
+    const docs = path.join(nested, 'docs');
+    fs.mkdirSync(docs);
+    fs.symlinkSync(path.join(shared, 'MASTER.md'), path.join(docs, 'MASTER.md'));
+    await assertRefused(nested);
+  });
+  it('refuses a parent link into private glossary data', async () => {
+    const root = newProject('glossary-parent');
+    fs.mkdirSync(path.join(root, 'docs'));
+    fs.symlinkSync(path.join(shared, '06-reference'), path.join(root, 'docs/06-reference'));
+    await assertRefused(root);
+  });
+  it('keeps the external grant identity frozen after server startup', async () => {
+    const root = newProject('frozen');
+    const selected = path.join(tmp, 'selected');
+    fs.cpSync(shared, selected, { recursive: true });
+    fs.symlinkSync(selected, path.join(root, 'docs'));
+    const client = await connect(root, selected);
+    try {
+      const first = await client.callTool(boundaryCalls[1]);
+      expect(first.isError).toBeFalsy();
+      fs.renameSync(selected, selected + '-original');
+      fs.cpSync(shared, selected, { recursive: true });
+      for (const call of boundaryCalls) {
+        const response = await client.callTool(call);
+        expect(response.isError, call.name).toBe(true);
+        expect(JSON.stringify(response), call.name).not.toContain(canary);
+      }
+    } finally { await client.close(); }
+  });
+  it('--check refuses ungranted docs and accepts an exact explicit root', () => {
+    const root = newProject('check');
+    fs.symlinkSync(shared, path.join(root, 'docs'));
+    expect(() => execFileSync(process.execPath, [DIST, '--check'], { cwd: root, env: serverEnv(), stdio: 'pipe', timeout: 10000 })).toThrow();
+    const output = execFileSync(process.execPath, [DIST, '--check'], { cwd: root, env: serverEnv(shared), encoding: 'utf8', stdio: 'pipe', timeout: 10000 });
+    expect(output).not.toContain(canary);
   });
 });
 

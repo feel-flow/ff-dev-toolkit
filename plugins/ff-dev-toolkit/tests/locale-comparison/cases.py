@@ -283,8 +283,8 @@ class LocaleComparison(unittest.TestCase):
         self.assertEqual(len(lines), 1, "recorded default path command must be unique")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "ace-record-hits").write_text("wrong\t/repo/承認.md\nright\t/repo/記録.md\n", encoding='utf-8')
-            self.each(lines[0] + '\nprintf "%s\\n" "$src"', variables={"TMP": root, "def": "/repo/記録.md"}, expected="right\n")
+            (root / "ace-record-hits").write_text("wrong\t/logical/記録.md\t/repo/承認.md\nright\t/logical/承認.md\t/repo/記録.md\n", encoding='utf-8')
+            self.each(lines[0] + '\nprintf "%s\\n" "$src"', variables={"TMP": root, "def": "/logical/記録.md", "def_physical": "/repo/記録.md"}, expected="right\n")
 
     def test_release_tag_difference_keeps_distinct_japanese_names(self):
         if not (REPO / "scripts/release-dev-toolkit.sh").is_file():

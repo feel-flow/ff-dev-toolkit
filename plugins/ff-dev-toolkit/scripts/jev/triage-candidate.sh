@@ -28,13 +28,19 @@ case "$MODE" in on|off) ;; *) echo 'triage: FF_JEV_MODE must be on or off' >&2; 
 command -v jq >/dev/null 2>&1 || { echo 'triage: jq is required' >&2; exit 69; }
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/jev-triage.XXXXXX")" || exit 11
 trap 'rm -rf "$WORK"' EXIT
+READER="$SCRIPT_DIR/../lib/knowledge-read-boundary.sh"
+[ -f "$READER" ] && [ ! -L "$READER" ] || exit 2
+. "$READER"
+ff_knowledge_private_fresh_directory "$WORK" || exit 2
 REGISTRY="$SCRIPT_DIR/triage-registry.jq"
 [ -r "$REGISTRY" ] || { echo 'triage: registry helper missing' >&2; exit 2; }
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
+ROOT="$(ff_knowledge_project_context)" || exit 2
+ff_knowledge_storage "$ROOT" dir || exit 2
 : > "$WORK/entries.jsonl"
 printf '%s' "$CANDIDATE" > "$WORK/candidate"
 append_entries() {
-  jq -cn -L "$SCRIPT_DIR" --rawfile text "$1" --arg source "$1" --arg kind "$2" \
+  APPEND_SNAPSHOT="$(ff_knowledge_snapshot "$1" "${3:-$ROOT}" "$WORK" "${4:-root}")" || return 2
+  jq -cn -L "$SCRIPT_DIR" --rawfile text "$APPEND_SNAPSHOT" --arg source "$1" --arg kind "$2" \
     'include "triage-registry"; entries($text; $source; $kind)[]' >> "$WORK/entries.jsonl"
 }
 if [ -n "$PATTERN" ]; then
@@ -46,13 +52,27 @@ if [ -n "$PATTERN" ]; then
   if [ "$win_drive" -eq 0 ]; then
     case "$PATTERN" in /*) ;; ./*) PATTERN="$PWD/${PATTERN#./}" ;; *) PATTERN="$PWD/$PATTERN" ;; esac
   fi
-  if [ -f "$PATTERN" ]; then
-    append_entries "$PATTERN" principle || exit 2
+  if [ -e "$PATTERN" ] || [ -L "$PATTERN" ]; then
+    if ff_knowledge_project_operand "$PATTERN" "$ROOT"; then
+      append_entries "$PATTERN" principle || exit 2
+    else
+      operand_rc=$?
+      [ "$operand_rc" -eq 1 ] || exit 2
+      append_entries "$PATTERN" principle "$PATTERN" file || exit 2
+    fi
   else
     prefix="${PATTERN%%[\*\?]*}"
     base="${prefix%/*}"
     [ -n "$base" ] || base=/
     if [ -d "$base" ]; then
+      principles_authority="$(ff_knowledge_canonical_dir "$base")" || exit 2
+      ff_knowledge_storage "$principles_authority" dir || exit 2
+      if ff_knowledge_project_operand "$base" "$ROOT"; then
+        case "$principles_authority/" in "$ROOT/"*) principles_authority="$ROOT" ;; *) ff_knowledge_refuse outside-authority; exit 2 ;; esac
+      else
+        operand_rc=$?
+        [ "$operand_rc" -eq 1 ] || exit 2
+      fi
       # パターンとファイルパスは引数ではなく標準入力・ファイルの中身で渡す。Windows の Git Bash は
       # native の jq.exe へ渡す引数のうち `/c/x` の形を `C:/x` へ書き換えるので、片方だけが
       # 書き換わると `^/c/x/…` の正規表現が `C:/x/…` のパスに一致せず、glob が常に空振りしていた
@@ -63,7 +83,7 @@ if [ -n "$PATTERN" ]; then
       while IFS= read -r -d '' file; do
         rc=0
         printf '%s' "$file" | jq -Rse --rawfile re "$WORK/glob-regex" 'test($re)' >/dev/null || rc=$?
-        case "$rc" in 0) append_entries "$file" principle || exit 2 ;; 1) ;; *) exit 2 ;; esac
+        case "$rc" in 0) append_entries "$file" principle "$principles_authority" || exit 2 ;; 1) ;; *) exit 2 ;; esac
       done < "$WORK/files"
     fi
   fi
@@ -71,9 +91,9 @@ fi
 if [ ! -s "$WORK/entries.jsonl" ]; then
   echo 'triage: 原則 glob が未指定・一致なし・見出しなしのため live PLAYBOOK.md へ fallback' >&2
   playbook="$ROOT/docs/08-knowledge/PLAYBOOK.md"
-  if [ -r "$playbook" ]; then
+  if [ -e "$playbook" ] || [ -L "$playbook" ]; then
     append_entries "$playbook" ace || exit 2
-    jq -Rrs '[scan("\\]\\((?:\\./)?(playbook/[^)#]+\\.md)(?:#[^)]*)?\\)") | .[0] | select(contains("archive/") | not)] | unique[]' "$playbook" > "$WORK/links" || exit 2
+    jq -Rrs '[scan("\\]\\((?:\\./)?(playbook/[^)#]+\\.md)(?:#[^)]*)?\\)") | .[0] | select(contains("archive/") | not)] | unique[]' "$APPEND_SNAPSHOT" > "$WORK/links" || exit 2
     while IFS= read -r link; do
       link="${link%$'\r'}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
       case "$link" in *'..'*) echo 'triage: invalid playbook link' >&2; exit 2 ;; esac

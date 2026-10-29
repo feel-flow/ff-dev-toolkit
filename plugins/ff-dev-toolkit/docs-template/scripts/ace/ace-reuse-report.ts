@@ -13,6 +13,7 @@
  * 実行例: npx --yes tsx docs-template/scripts/ace/ace-reuse-report.ts docs-template/08-knowledge/PLAYBOOK.md
  */
 import * as fs from "node:fs";
+import { KnowledgeReadBoundary, knowledgeReaderForSelection } from "./knowledge-read-boundary";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import {
@@ -488,9 +489,9 @@ const SUBFILE_READ_ERROR_PREFIX = "サブファイル読み込み失敗";
  * playbook/ サブファイルの読み込み失敗を明示的なメッセージでタグ付けする。
  * これにより、後段の catch が git 由来のエラー（ENOENT 等）と誤分類しない。
  */
-function readSubfileOrThrow(filePath: string): string {
+function readSubfileOrThrow(filePath: string, reader: KnowledgeReadBoundary): string {
   try {
-    return fs.readFileSync(filePath, "utf8");
+    return reader.read(filePath);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${SUBFILE_READ_ERROR_PREFIX}: ${filePath}: ${message}`);
@@ -535,15 +536,16 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
   );
 
   try {
-    const content = fs.readFileSync(playbookPath, "utf8");
+    const reader = knowledgeReaderForSelection(playbookPath);
+    const content = reader.read(playbookPath);
     // 分割レイアウト（playbook/ サブディレクトリ）の場合、エントリ本体は
     // 索引ファイル（playbookPath）ではなくカテゴリ別サブファイルにある。
     // 集計対象を索引 + サブファイルの結合コンテンツにすることで、分割前後で
     // エントリ数・相互参照カウントが変わらないようにする。
-    const subfiles = discoverPlaybookSubfiles(playbookPath);
+    const subfiles = discoverPlaybookSubfiles(playbookPath, reader);
     const combinedContent =
       subfiles.length > 0
-        ? [content, ...subfiles.map((f) => readSubfileOrThrow(f))].join("\n\n")
+        ? [content, ...subfiles.map((f) => readSubfileOrThrow(f, reader))].join("\n\n")
         : content;
     const entries = parsePlaybookEntries(combinedContent);
     if (entries.length === 0) {

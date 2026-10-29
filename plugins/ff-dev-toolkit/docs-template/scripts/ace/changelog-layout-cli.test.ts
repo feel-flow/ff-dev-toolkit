@@ -48,12 +48,20 @@ describe("selected Changelog CLI", () => {
       const f = fixture("CHANGELOG.md", false);
       if (bad === "ambiguous") fs.writeFileSync(path.join(f.root, "playbook/CHANGELOG.md"), "");
       if (bad === "empty") fs.writeFileSync(f.history, "");
-      if (bad === "symlink") { fs.renameSync(f.history, `${f.history}.real`); fs.symlinkSync(`${f.history}.real`, f.history); }
+      if (bad === "symlink") {
+        const external = fs.mkdtempSync(path.join(os.tmpdir(), 'history-external-')); roots.push(external);
+        const target = path.join(external, 'private.md'); fs.renameSync(f.history, target); fs.symlinkSync(target, f.history);
+      }
       if (bad === "unreadable") fs.chmodSync(f.history, 0);
       try { expect(run(f.book).rc).toBe(2); expect(fs.readFileSync(f.book, "utf8")).toBe(f.content); }
       finally { if (bad === "unreadable") fs.chmodSync(f.history, 0o644); }
     });
   }
+  it('safe in-area linked history remains usable for a normal sync', () => {
+    const f = fixture('CHANGELOG.md', false);
+    fs.renameSync(f.history, `${f.history}.real`); fs.symlinkSync(`${f.history}.real`, f.history);
+    expect(run(f.book).rc).toBe(0);
+  });
   it("unclosed fence cannot hide invalid history behind a fallback", () => {
     const f = fixture("CHANGELOG.md", false);
     fs.appendFileSync(f.book, "\n```md\nbroken");

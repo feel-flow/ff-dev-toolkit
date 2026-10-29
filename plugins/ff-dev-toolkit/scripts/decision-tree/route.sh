@@ -64,6 +64,8 @@
 #
 # 制約: bash 3.2 互換（連想配列・mapfile 禁止）。外部コマンドは awk・grep・sort・git（--git のみ）・
 #       jq（--check の choice fixture 照合と FF_JEV_MODE=on の応答解釈だけ。off の経路は jq に触れない）。
+#       here-document と here-string（非コメント行の `<<`）は使わない。どちらも一時ファイルを作る bash が
+#       あり、読み取り専用の sandbox では入力を 0 件として受け取る（ACE-86-2）。tests/decision-tree の J0 が固定する。
 set -uo pipefail
 
 SCRIPT_DIR="$(CDPATH= cd -P -- "$(dirname "$0")" && pwd -P)"
@@ -157,6 +159,30 @@ tree_rows() { # 正規化行: node<TAB>id<TAB>kind<TAB>question / answer<TAB>nod
       print $1 "\t" $2 "\t" $3 "\t" $4
     }
   ' "$TREE"
+}
+
+# 行の列挙。here-document と here-string は使わない（一時ファイルを作れない sandbox で
+# 入力が 0 件になる。ACE-86-2）。パイプにすると代入がサブシェルで消える。
+# 呼び出し側は dt_begin_lines と dt_end_lines の間に for を直書きする。入れ子にしない。IFS は local に
+# しない（呼び出し側の for が同じ IFS を見るため）。ループ本体の先頭で IFS=$_DT_IFS に戻す（本体の
+# 単語分割は元の IFS で行う）。本体は set -f のまま走るので、本体に glob 展開を足さない。
+dt_begin_lines() {
+  _DT_IFS=$IFS
+  case $- in
+    *f*) _DT_NOGLOB=1 ;;
+    *) _DT_NOGLOB=0 ;;
+  esac
+  set -f
+  IFS='
+'
+}
+dt_end_lines() {
+  IFS=$_DT_IFS
+  if [ "${_DT_NOGLOB:-0}" -eq 0 ]; then
+    set +f
+  else
+    set -f
+  fi
 }
 
 # ---- --check: 静的検査 ---------------------------------------------------------------
@@ -275,20 +301,25 @@ check_tree() {
     }
   ')"
   # 違反行を出す
-  while IFS= read -r line; do
+  dt_begin_lines
+  # shellcheck disable=SC2086 # 改行だけの IFS で 1 行ずつ渡す。glob は set -f で止める
+  for line in $structural; do
+    IFS=$_DT_IFS
     case "$line" in
       "違反: "*) echo "  ✗ ${line#違反: }" >&2; n_violations=$((n_violations + 1)) ;;
     esac
-  done <<EOF
-$structural
-EOF
+  done
+  dt_end_lines
 
   # 葉の実在（skill / hook / doc）と hook の登録。登録は hooks.json の **command フィールドだけ**から
   # 引く（全文 grep だと description にパスが残っている限り command を消しても検出できない）。
   local leaf kindname name path anchor registered
   registered="$(jq -r '.hooks // {} | to_entries[] | .value[]? | .hooks[]? | .command // empty' "$hooks_json" 2>/dev/null | grep -oE 'hooks/[A-Za-z0-9_.-]+\.sh' | LC_ALL=C sort -u)"
   local reg_set="${nl}${registered}${nl}"
-  while IFS= read -r line; do
+  dt_begin_lines
+  # shellcheck disable=SC2086 # 改行だけの IFS で 1 行ずつ渡す。glob は set -f で止める
+  for line in $structural; do
+    IFS=$_DT_IFS
     case "$line" in
       "LEAF	"*) ;;
       *) continue ;;
@@ -321,9 +352,8 @@ EOF
         fi
         ;;
     esac
-  done <<EOF
-$structural
-EOF
+  done
+  dt_end_lines
 
   # 木に載っていないスキル / hook（母集団は実体と hooks.json の command から導出する。名簿は持たない）。
   # 照合は行全体（前後に改行を付けた完全一致）で行う — 部分一致だと `skill:ace` が
@@ -344,7 +374,10 @@ EOF
   [ "$found_skills" -gt 0 ] || { echo "  ✗ skills/ に SKILL.md が 1 件もありません（母集団が空 — 検査が空振りしています）" >&2; n_violations=$((n_violations + 1)); }
   local hname found_hooks=0
   [ -n "$registered" ] || { echo "  ✗ hooks.json の command から登録 hook を 1 件も抽出できません（母集団が空 — 検査が空振りしています）" >&2; n_violations=$((n_violations + 1)); }
-  while IFS= read -r hname; do
+  dt_begin_lines
+  # shellcheck disable=SC2086 # 改行だけの IFS で 1 行ずつ渡す。glob は set -f で止める
+  for hname in $registered; do
+    IFS=$_DT_IFS
     [ -n "$hname" ] || continue
     found_hooks=$((found_hooks + 1))
     hname="${hname#hooks/}"; hname="${hname%.sh}"
@@ -352,13 +385,15 @@ EOF
       *"${nl}hook:${hname}${nl}"*) ;;
       *) echo "  ✗ 木に載っていない hook: hooks/${hname}.sh" >&2; n_violations=$((n_violations + 1)) ;;
     esac
-  done <<EOF
-$registered
-EOF
+  done
+  dt_end_lines
 
   # choice ノードの criteria fixture（scripts/jev/questions/<id>.json）: option の集合 = none 以外の答え
   local qfile opts jopts cid
-  while IFS= read -r line; do
+  dt_begin_lines
+  # shellcheck disable=SC2086 # 改行だけの IFS で 1 行ずつ渡す。glob は set -f で止める
+  for line in $structural; do
+    IFS=$_DT_IFS
     case "$line" in
       "CHOICE	"*) ;;
       *) continue ;;
@@ -377,9 +412,8 @@ EOF
     if [ "$opts" != "$jopts" ]; then
       echo "  ✗ choice node ${cid} の答えの集合と fixture の option が一致しません（木: $(printf '%s' "$opts" | tr '\n' ' ') / fixture: $(printf '%s' "$jopts" | tr '\n' ' ')）" >&2; n_violations=$((n_violations + 1))
     fi
-  done <<EOF
-$structural
-EOF
+  done
+  dt_end_lines
 
   local summary
   summary="$(printf '%s\n' "$structural" | awk -F'\t' '$1 == "SUMMARY" { print $2 "\t" $3 "\t" $4 }')"
@@ -447,8 +481,10 @@ route_rules() { # $1=files（改行区切り） $2=lines → stdout: route<TAB>r
   max_lines="$(tree_rows | awk -F'\t' '$1 == "rule" && $2 == "root" && $3 == "fast-max-lines" { print $4; exit }')"
   [ -n "$docs_glob" ] && [ -n "$contract" ] && [ -n "$max_lines" ] || return 2
   case "$max_lines" in ''|*[!0-9]*) return 2 ;; esac
-  set -f
-  while IFS= read -r f; do
+  dt_begin_lines
+  # shellcheck disable=SC2086 # 改行だけの IFS で 1 行ずつ渡す。glob は set -f で止める
+  for f in $files; do
+    IFS=$_DT_IFS
     [ -n "$f" ] || continue
     seen=$((seen + 1))
     for pat in $contract; do
@@ -460,13 +496,11 @@ route_rules() { # $1=files（改行区切り） $2=lines → stdout: route<TAB>r
       case "$f" in $pat) matched=1; break ;; esac
     done
     [ "$matched" -eq 1 ] || docs_only=0
-  done <<EOF
-$files
-EOF
-  set +f
+  done
+  dt_end_lines
   if [ -n "$contract_hit" ]; then printf 'full\tcontract-change:%s\n' "$contract_hit"; return 0; fi
-  # ループが入力を受け取れなかった回（heredoc の一時ファイルを作れない sandbox 等）は docs_only=1 の
-  # まま fast へ倒れる。読んだ件数が渡した件数と合わなければ判定不能にする
+  # 行を 1 件も受け取れなかった回は docs_only=1 のまま fast へ倒れる。
+  # 読んだ件数が渡した件数と合わなければ判定不能にする
   [ "$seen" -eq "$(file_count "$files")" ] || return 3
   if [ "$docs_only" -eq 1 ]; then printf 'fast\tdocs-only\n'; return 0; fi
   case "$lines" in
@@ -488,8 +522,10 @@ security_rules() { # $1=files（改行区切り）→ SEC_STATE / SEC_REASON / S
     *) SEC_REASON="error:security-glob が空です（木データの rule・--security-glob を確認）"; return 0 ;;
   esac
   [ -n "$docs_glob" ] || { SEC_REASON="error:root の rule docs-glob が木データにありません"; return 0; }
-  set -f
-  while IFS= read -r f; do
+  dt_begin_lines
+  # shellcheck disable=SC2086 # 改行だけの IFS で 1 行ずつ渡す。glob は set -f で止める
+  for f in $files; do
+    IFS=$_DT_IFS
     [ -n "$f" ] || continue
     seen=$((seen + 1))
     # docs は経路の docs-only と同じ集合で除く（大文字小文字は経路と同じく区別する）
@@ -506,11 +542,9 @@ security_rules() { # $1=files（改行区切り）→ SEC_STATE / SEC_REASON / S
     shopt -u nocasematch
     [ "$hit" -eq 0 ] || SEC_EVIDENCE="${SEC_EVIDENCE}${f}
 "
-  done <<EOF
-$files
-EOF
-  set +f
-  # ループが入力を受け取れなかった回は 1 件も照合せずに no へ倒れる。件数で受け取りを確かめる
+  done
+  dt_end_lines
+  # 行を 1 件も受け取れなかった回は照合せずに no へ倒れる。件数の照合は残す
   if [ "$seen" -ne "$(file_count "$files")" ]; then
     SEC_EVIDENCE=""; SEC_REASON="error:変更ファイル一覧を読み切れませんでした（${seen} / $(file_count "$files") 件）"; return 0
   fi
@@ -596,16 +630,18 @@ route_request() {
         || undecidable "git diff --numstat ${BASE}...HEAD が失敗しました"
       numstat="${numstat}
 $(git diff --no-renames --numstat HEAD 2>/dev/null)" || undecidable "git diff --numstat HEAD が失敗しました"
-      while IFS= read -r f; do
+      dt_begin_lines
+      # shellcheck disable=SC2086 # 改行だけの IFS で 1 行ずつ渡す。glob は set -f で止める
+      for f in $untracked; do
+        IFS=$_DT_IFS
         [ -n "$f" ] || continue
         [ -f "$f" ] || continue
         untracked_lines="$(git diff --no-index --numstat /dev/null -- "$f" 2>/dev/null)"; rc_ns=$?
         [ "$rc_ns" -le 1 ] || undecidable "untracked ファイルの行数を取れません: ${f}"
         numstat="${numstat}
 ${untracked_lines}"
-      done <<EOF
-$untracked
-EOF
+      done
+      dt_end_lines
       lines="$(printf '%s\n' "$numstat" | awk -F'\t' '
         NF < 2 { next }
         $1 == "-" || $2 == "-" { binary = 1; next }

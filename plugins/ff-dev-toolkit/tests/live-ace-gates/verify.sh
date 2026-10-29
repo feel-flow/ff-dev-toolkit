@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: 共通knowledge readerのtranspile行を除く変異は、正常fixtureがmodule不在で赤になりselftest rc=1。通常対照はlive5ゲートとselftest17件pass（2026-10-29実測）。
 # 空振り検出: syncの新依存changelog-layoutの変換行を除く変異はrc=1、通常対照rc=0（2026-10-26 mutation-harness実測。依存の出力不在を成功にしない）。
 #
 # repository root の live ACE Playbook に、形式・frontmatter・archive リンク/アンカー・
@@ -42,6 +43,7 @@ for file in \
   "$PLAYBOOK" \
   "$ACE_SCRIPTS/check-category-size.ts" \
   "$ACE_SCRIPTS/ace-domain.ts" \
+  "$ACE_SCRIPTS/knowledge-read-boundary.ts" \
   "$ACE_SCRIPTS/check-entry-format.ts" \
   "$ACE_SCRIPTS/sync-playbook-frontmatter.ts" \
   "$ACE_SCRIPTS/check-archive-links.ts" \
@@ -82,6 +84,10 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 130' HUP INT TERM
+run_live_node() (
+  CDPATH= cd -P -- "$REPO_ROOT" || return 2
+  node "$@"
+)
 BUNDLE_REAL="$(cd "$BUNDLE_DIR" && pwd -P)"
 
 # tsx をネットワーク取得せず、同梱 esbuild で TypeScript を ESM へ変換する。
@@ -97,6 +103,7 @@ transpile_shared() {
 }
 transpile_shared "$ACE_SCRIPTS/check-category-size.ts"
 transpile_shared "$ACE_SCRIPTS/changelog-layout.ts"
+transpile_shared "$ACE_SCRIPTS/knowledge-read-boundary.ts"
 transpile_shared "$ACE_SCRIPTS/ace-domain.ts"
 transpile_shared "$ACE_SCRIPTS/ace-reuse-report.ts"
 transpile_shared "$ACE_SCRIPTS/ace-refine-report.ts"
@@ -112,22 +119,22 @@ transpile_shared "$ACE_SCRIPTS/check-archive-links.ts"
   --outfile="$BUNDLE_DIR/check-refine-invariants.mjs"
 
 echo "== live ACE entry format =="
-node "$BUNDLE_REAL/check-entry-format.mjs" "$PLAYBOOK"
+run_live_node "$BUNDLE_REAL/check-entry-format.mjs" "$PLAYBOOK"
 echo "✓ live ACE の新規旧形式エントリは 0 件"
 
 echo
 echo "== live ACE frontmatter sync =="
-node "$BUNDLE_REAL/sync-playbook-frontmatter.mjs" "$PLAYBOOK" --check
+run_live_node "$BUNDLE_REAL/sync-playbook-frontmatter.mjs" "$PLAYBOOK" --check
 echo "✓ live ACE の entry count / version / changeImpact は同期済み"
 
 echo
 echo "== live ACE archive links / anchors =="
-node "$BUNDLE_REAL/check-archive-links" "$PLAYBOOK"
+run_live_node "$BUNDLE_REAL/check-archive-links" "$PLAYBOOK"
 echo "✓ live ACE の archive リンク注記と <a id> 一意性"
 
 echo
 echo "== live ACE refine invariants =="
-node "$BUNDLE_REAL/check-refine-invariants.mjs" "$PLAYBOOK"
+run_live_node "$BUNDLE_REAL/check-refine-invariants.mjs" "$PLAYBOOK"
 echo "✓ live ACE の refine 結果不変条件"
 
 echo
@@ -135,5 +142,5 @@ echo "== live ACE category size =="
 # 共有モジュールとして transpile 済みの extensionless 版をそのまま entry にする
 # （check-archive-links と同じ形）。entry として起動したときだけ direct-execution
 # guard が main() を回すので、import 経路の判定は変わらない。
-node "$BUNDLE_REAL/check-category-size" "$PLAYBOOK"
+run_live_node "$BUNDLE_REAL/check-category-size" "$PLAYBOOK"
 echo "✓ live ACE のカテゴリ件数はブロック上限内"

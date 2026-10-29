@@ -980,6 +980,7 @@ describe("main（fixture E2E）", () => {
     );
 
     fs.writeFileSync(path.join(implDir, "PATTERNS.md"), "# PATTERNS.md\n", "utf8");
+    vi.spyOn(process, "cwd").mockReturnValue(root);
     return { playbookPath };
   }
 
@@ -1301,6 +1302,7 @@ describe("stale 日数既定値の単一源（ace-reuse-report との結合）",
       "utf8",
     );
     fs.writeFileSync(path.join(implDir, "PATTERNS.md"), "# PATTERNS.md\n", "utf8");
+    vi.spyOn(process, "cwd").mockReturnValue(root);
     return playbookPath;
   }
 
@@ -1412,6 +1414,7 @@ describe("stale 日数既定値の単一源（ace-reuse-report との結合）",
       "utf8",
     );
     fs.writeFileSync(path.join(implDir, "PATTERNS.md"), "# PATTERNS.md\n", "utf8");
+    vi.spyOn(process, "cwd").mockReturnValue(root);
     return playbookPath;
   }
 
@@ -1523,6 +1526,7 @@ describe("行数バジェット定数の単一源（check-category-size との�
     const playbookPath = path.join(knowledgeDir, "PLAYBOOK.md");
     fs.writeFileSync(playbookPath, "# ACE Playbook\n\n## エントリ一覧\n", "utf8");
     fs.writeFileSync(path.join(implDir, "PATTERNS.md"), "# PATTERNS.md\n", "utf8");
+    vi.spyOn(process, "cwd").mockReturnValue(root);
 
     const entries = Array.from({ length: count }, (_, i) =>
       entryBlockOfLines(`1-${String(i + 1)}`, totalLines, withException),

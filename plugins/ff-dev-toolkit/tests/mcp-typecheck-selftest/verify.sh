@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: 共通knowledge readerのfixtureコピー行を除く変異はbaseline型検査が未解決importを名指してrc=1。通常は42件pass（2026-10-29実測）。
 #
 # mcp-typecheck gate の検出力を mutation で実測する（Issue #360）。
 # 作業ツリーは変更せず、一時領域へ「プラグイン tree の最小クローン」を作って poison する。
@@ -160,6 +161,8 @@ reset_fixture() {
   FIXTURE_MCP="$TMP/plugin/mcp"
   cp "$MCP_DIR/package.json" "$FIXTURE_MCP/package.json"
   cp "$MCP_DIR/tsconfig.json" "$FIXTURE_MCP/tsconfig.json"
+  mkdir -p "$TMP/plugin/docs-template/scripts/ace"
+  cp "$PLUGIN_ROOT/docs-template/scripts/ace/knowledge-read-boundary.ts" "$TMP/plugin/docs-template/scripts/ace/knowledge-read-boundary.ts"
   # gate の EXPECTED 導出と同じ走査条件で、サブディレクトリを保って複製する。
   (cd "$MCP_DIR" && find . \( -name node_modules -o -name dist \) -prune -o \
     \( -name '*.ts' -o -name '*.mts' -o -name '*.cts' -o -name '*.tsx' \) -print) |
