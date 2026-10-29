@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
 # アダプタが CLI へ実際に渡す argv の検証（Issue #239）。
+# 空振り検出: 組み込みread-onlyでもgrant配列の欠損・イベント0件を拒否し、明示したeventless probeはinert。通常対照223件PASS、同じadapterの起動前検査を外す変異はeffective-permissionsでred（2026-10-29 macOS実測）。
 #
 # tests/no-hardcoded-model/ は「モデル slug が書かれていないこと」を静的に見るが、
 # 静的検査では次のような「機能が丸ごと届かない」変化を捕まえられない:
@@ -52,8 +53,8 @@ fi
 # mktemp の stderr を捨てない。捨てると read-only 以外の失敗（TMPDIR が不正なパス・
 # quota 超過など）まで「書き込み可能な環境で」に誤帰属し、恒常的に壊れた TMPDIR が
 # suite を exit 0 で無効化し続ける。2>&1 で受けると成功時はパス・失敗時は理由が入る。
-_ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ff-adapter-argv.XXXXXX" 2>&1)" || true   # 失敗時は stderr の内容が残る（空にすると理由が消える）
-if [ -d "$_ff_mktemp_out" ]; then WORK="$_ff_mktemp_out"; else WORK=""; fi
+_ff_mktemp_out="$(mktemp -d "$PLUGIN_ROOT/../../.ff-sandbox-probe.XXXXXX" 2>&1)" || true   # Grokの書込み例外とcheckoutを分離
+if [ -d "$_ff_mktemp_out" ]; then WORK="$(CDPATH='' cd "$_ff_mktemp_out" && pwd -P)" || exit 1; else WORK=""; fi
 if [ -z "$WORK" ]; then
   echo "○ skip: 一時ディレクトリを作成できません（本 suite の検査は1件も実行されていません）"
   printf '  mktemp: %s\n' "$_ff_mktemp_out"
@@ -97,6 +98,12 @@ mkdir -p "$WORK/bin"
 for cli in claude codex copilot grok; do
   {
     echo '#!/usr/bin/env bash'
+    echo 'if [ "$(basename "$0")" = copilot ] && [ "${1:-}" = help ]; then echo "--deny-tool --disallow-temp-dir Denial rules always take precedence"; exit 0; fi'
+    echo 'if [ "$(basename "$0")" = grok ] && [ "${STUB_GROK_NO_EVENTS:-false}" != true ]; then'
+    echo '  prev=""; profile=""; for a in "$@"; do [ "$prev" != --sandbox ] || profile="$a"; prev="$a"; done'
+    echo '  mkdir -p "$GROK_HOME"'
+    echo '  printf "%s\n" "{\"event_type\":\"ProfileApplied\",\"workspace\":\"$(pwd -P)\",\"profile\":\"$profile\",\"enforced\":true,\"read_write_paths\":[\"/tmp\"]}" >> "$GROK_HOME/sandbox-events.jsonl"'
+    echo 'fi'
     echo 'for a in "$@"; do printf "<%s>" "$a" >> "$ARGV_LOG"; done'
     echo 'printf "\n" >> "$ARGV_LOG"'
     echo 'if [ -n "${ENV_LOG:-}" ]; then'
@@ -481,7 +488,7 @@ else
 fi
 : > "$WORK/argv.log"
 probe_out="$(cd "$WORK/repo" && run_isolated PATH="$WORK/bin:$PATH" ARGV_LOG="$WORK/argv.log" \
-  GROK_HOME="$WORK/grok-home-empty" MULTI_AGENT_GROK_READONLY_PROFILE=ff-review-ro \
+  GROK_HOME="$WORK/grok-home-empty" MULTI_AGENT_GROK_READONLY_PROFILE=ff-review-ro STUB_GROK_NO_EVENTS=true \
   bash "$ADAPTERS_DIR/grok-cli-adapter.sh" --probe-sandbox review 2>/dev/null)" && probe_rc=0 || probe_rc=$?
 if grep -q -F "<--sandbox><ff-review-ro><inspect>" "$WORK/argv.log"; then
   ok "grok-cli: --probe-sandbox は差し替え名で inspect を起動する"
@@ -533,7 +540,7 @@ make_grok_stub() {
 
 # 実際に grok が書く形（timestamp が先頭、enforced は末尾寄り）。フィールド順に
 # 依存する判定を書くと、この形で正常系が落ちる（初版がそうだった）。
-emit_applied='mkdir -p "$GROK_HOME"; printf "%s\n" "{\"timestamp\":\"2026-08-02T00:00:00Z\",\"event_type\":\"ProfileApplied\",\"profile\":\"read-only\",\"workspace\":\"$(pwd -P)\",\"platform\":\"macos/seatbelt\",\"enforced\":true}" >> "$GROK_HOME/sandbox-events.jsonl"'
+emit_applied='mkdir -p "$GROK_HOME"; printf "%s\n" "{\"timestamp\":\"2026-08-02T00:00:00Z\",\"event_type\":\"ProfileApplied\",\"profile\":\"read-only\",\"workspace\":\"$(pwd -P)\",\"platform\":\"macos/seatbelt\",\"enforced\":true,\"read_write_paths\":[\"/tmp\"]}" >> "$GROK_HOME/sandbox-events.jsonl"'
 
 grok_case() { # <説明> <stub の副作用> <期待 rc: ok|fail> [NAME=VALUE（アダプタへ渡す env）]
   # env は run_adapter の引数で渡す。export しても run_isolated が MULTI_AGENT_* を
@@ -602,7 +609,7 @@ grok_case "grok-cli: FsViolation は失格にしない（サンドボックス�
   "$emit_applied"'; printf "%s\n" "{\"event_type\":\"FsViolation\",\"operation\":\"write\",\"target\":\"/x\"}" >> "$GROK_HOME/sandbox-events.jsonl"' ok
 
 grok_case "grok-cli: イベントのフィールド順が変わっても確認できる" \
-  'mkdir -p "$GROK_HOME"; printf "%s\n" "{\"enforced\":true,\"workspace\":\"$(pwd -P)\",\"profile\":\"read-only\",\"event_type\":\"ProfileApplied\"}" >> "$GROK_HOME/sandbox-events.jsonl"' ok
+  'mkdir -p "$GROK_HOME"; printf "%s\n" "{\"enforced\":true,\"workspace\":\"$(pwd -P)\",\"profile\":\"read-only\",\"event_type\":\"ProfileApplied\",\"read_write_paths\":[\"/tmp\"]}" >> "$GROK_HOME/sandbox-events.jsonl"' ok
 
 # (h) イベントログの置き場は版で動いた（実測: 0.2.118 は <home>/sandbox-events.jsonl、
 #     1.0.30 は <home>/sessions/sandbox-events.jsonl）。新パスに書く grok でも確認が
@@ -614,7 +621,7 @@ grok_case "grok-cli: 1.0.x の <home>/sessions/sandbox-events.jsonl でも確認
 printf '%s\n' '{"timestamp":"old","event_type":"ProfileApplied","profile":"read-only","enforced":true}' \
   > "$GROK_EVENTS_HOME/sandbox-events.jsonl"
 grok_case "grok-cli: 旧パスの残骸は新パスの判定を汚さない" \
-  'mkdir -p "$GROK_HOME/sessions"; printf "%s\n" "{\"event_type\":\"ProfileApplied\",\"profile\":\"read-only\",\"workspace\":\"$(pwd -P)\",\"enforced\":true}" >> "$GROK_HOME/sessions/sandbox-events.jsonl"' ok
+  'mkdir -p "$GROK_HOME/sessions"; printf "%s\n" "{\"event_type\":\"ProfileApplied\",\"profile\":\"read-only\",\"workspace\":\"$(pwd -P)\",\"enforced\":true,\"read_write_paths\":[\"/tmp\"]}" >> "$GROK_HOME/sessions/sandbox-events.jsonl"' ok
 grok_case "grok-cli: 新パスに何も追記されなければ旧パスの残骸では確認としない" 'true' fail
 rm -f "$GROK_EVENTS_HOME/sandbox-events.jsonl"
 
@@ -657,9 +664,9 @@ grok_custom_case "grok-cli: custom で引用として読めない要素は確認
 grok_case "grok-cli: custom で read_write_paths が無い行は確認不能として失格" \
   'mkdir -p "$GROK_HOME/sessions"; printf "%s\n" "{\"event_type\":\"ProfileApplied\",\"profile\":\"ff-review-ro\",\"workspace\":\"$(pwd -P)\",\"enforced\":true}" >> "$GROK_HOME/sessions/sandbox-events.jsonl"' fail \
   MULTI_AGENT_GROK_READONLY_PROFILE=ff-review-ro
-if grep -qF "carries no read_write_paths array" "$WORK/stderr.log" 2>/dev/null \
-  && grep -qF "carries no read_write_paths array" "$WORK/out.md" 2>/dev/null; then
-  ok "grok-cli: 確認不能の理由が「配列が無い」と名指しされ、成果物にも残る"
+if grep -qF "grants-unknown" "$WORK/stderr.log" 2>/dev/null \
+  && grep -qF "grants-unknown" "$WORK/out.md" 2>/dev/null; then
+  ok "grok-cli: grant確認不能がstderrと成果物の両方に残る"
 else
   bad "grok-cli: 確認不能の理由が降格・未確認と区別されていない（stderr / 成果物）"
 fi
@@ -670,8 +677,8 @@ grok_case "grok-cli: 差し替え名の要求に対して read-only が適用さ
 # 失格理由は「未確認」ではなく「書き込みが許されている」と名指しする（読み手が
 # イベントログの有無ではなく sandbox.toml を見に行けるように）。成果物にも同じ理由が残る。
 grok_custom_case "grok-cli: 降格の失格（本文検査用）" "${ws_json}" fail
-if grep -qF "grant writes to the working tree" "$WORK/stderr.log" 2>/dev/null \
-  && grep -qF "grant writes to the working tree" "$WORK/out.md" 2>/dev/null; then
+if grep -qF "write-granted" "$WORK/stderr.log" 2>/dev/null \
+  && grep -qF "write-granted" "$WORK/out.md" 2>/dev/null; then
   ok "grok-cli: 降格の失格理由が read_write_paths を名指しし、成果物にも残る"
 else
   bad "grok-cli: 降格の失格理由が「未確認」と区別されていない（stderr / 成果物）"
@@ -681,15 +688,15 @@ chmod 000 "$GROK_EVENTS_HOME/sessions/sandbox-events.jsonl" 2>/dev/null || true
 grok_case "grok-cli: 存在するのに読めないイベントログがあれば確認不能として失格" 'true' fail \
   MULTI_AGENT_GROK_READONLY_PROFILE=ff-review-ro
 chmod 644 "$GROK_EVENTS_HOME/sessions/sandbox-events.jsonl" 2>/dev/null || true
-if grep -qF "line count could not be read" "$WORK/stderr.log" 2>/dev/null; then
-  ok "grok-cli: baseline 不能の理由が名指しされる"
+if grep -qF "events-unreadable" "$WORK/stderr.log" 2>/dev/null; then
+  ok "grok-cli: baseline不能をイベント読取り失敗として拒否する"
 else
   bad "grok-cli: baseline 不能が別の理由として報告されている"
 fi
 rm -f "$GROK_EVENTS_HOME/sessions/sandbox-events.jsonl"
-# 組み込み read-only には追加条件を掛けない: read_write_paths が無くても（旧版の形）complete
-grok_case "grok-cli: 組み込み read-only は read_write_paths 無しでも従来どおり complete" \
-  'mkdir -p "$GROK_HOME/sessions"; printf "%s\n" "{\"event_type\":\"ProfileApplied\",\"profile\":\"read-only\",\"workspace\":\"$(pwd -P)\",\"enforced\":true}" >> "$GROK_HOME/sessions/sandbox-events.jsonl"' ok
+# 組み込みも実効grantが不明なら起動しない。
+grok_case "grok-cli: 組み込み read-only は read_write_paths 無しなら拒否" \
+  'mkdir -p "$GROK_HOME/sessions"; printf "%s\n" "{\"event_type\":\"ProfileApplied\",\"profile\":\"read-only\",\"workspace\":\"$(pwd -P)\",\"enforced\":true}" >> "$GROK_HOME/sessions/sandbox-events.jsonl"' fail
 
 
 # 拒否時の報告内容。CLI は 0 で終了し結論にも到達しているので、

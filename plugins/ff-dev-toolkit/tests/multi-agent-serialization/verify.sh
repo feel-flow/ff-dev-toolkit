@@ -55,8 +55,8 @@ build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE MULTI_AGENT_CROS
 # 成功時はパス・失敗時は理由が同じ変数に入る。
 # rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
 # 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
-if _ff_mktemp_out="$(mktemp -d 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
-  TMP="$_ff_mktemp_out"
+if _ff_mktemp_out="$(mktemp -d "$PLUGIN_ROOT/../../.ff-sandbox-probe.XXXXXX" 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
+  TMP="$(CDPATH='' cd "$_ff_mktemp_out" && pwd -P)" || exit 1
 else
   echo "○ skip: 一時ディレクトリを作成できない環境のためスキップ"
   printf '  mktemp: %s\n' "$_ff_mktemp_out"
@@ -113,6 +113,10 @@ GROK_LOG="$TMP/grok-events.log"
 # 継続の検査に使う。カウンタは逐次実行前提 — 本 suite が固定する性質そのもの）。
 cat > "$STUB/grok" <<SH
 #!/usr/bin/env bash
+if [ "\${1:-}" = --sandbox ] && [ "\${3:-}" = inspect ]; then
+  printf '{"event_type":"ProfileApplied","profile":"%s","enforced":true,"workspace":"%s","read_write_paths":["/tmp"]}\n' "\$2" "\$(pwd -P)" >> "\${GROK_HOME:?}/sandbox-events.jsonl"
+  exit 0
+fi
 n=\$( (cat "$TMP/grok-count" 2>/dev/null || echo 0) )
 n=\$((n + 1))
 echo "\$n" > "$TMP/grok-count"
@@ -126,7 +130,7 @@ for a in "\$@"; do
   prev="\$a"
 done
 ws="\$(pwd -P)"
-printf '{"event_type":"ProfileApplied","profile":"%s","enforced":true,"workspace":"%s"}\n' "\$prof" "\$ws" \
+printf '{"event_type":"ProfileApplied","profile":"%s","enforced":true,"workspace":"%s","read_write_paths":["/tmp"]}\n' "\$prof" "\$ws" \
   >> "\${GROK_HOME:?}/sandbox-events.jsonl"
 if [ -f "$TMP/grok-fail-nth" ] && [ "\$n" -eq "\$(cat "$TMP/grok-fail-nth")" ]; then
   echo "stub: simulated rate-limit failure" >&2

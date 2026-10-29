@@ -42,6 +42,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/adapter-common.sh"
+source "${SCRIPT_DIR}/../lib/grok-cli-readonly-boundary.sh"
 
 readonly CLI_NAME="Grok CLI"
 readonly CLI_COMMAND="grok"
@@ -493,6 +494,45 @@ run_sandbox_probe() { # $1: profile
   return "$SANDBOX_PROBE_REFUSED_STATUS"
 }
 
+verify_readonly_prelaunch() {
+  local profile="$1" home_dir="" file="" before="" after="" delta="" events="" verdict=""
+  local old_count="" new_count="" probe_out="" known_rc=0
+  home_dir="$(resolve_grok_home_dir)"
+  ff_grok_known_roots_safe "$home_dir" || known_rc=$?
+  if [[ "$known_rc" -ne 0 ]]; then
+    if [[ "$known_rc" -eq 1 ]]; then printf '%s\n' write-granted;
+    else printf '%s\n' grants-unknown; fi
+    return 1
+  fi
+  for file in "$home_dir/sessions/sandbox-events.jsonl" "$home_dir/sandbox-events.jsonl"; do
+    before=0
+    if [[ -e "$file" || -L "$file" ]]; then
+      [[ -f "$file" && -r "$file" && ! -L "$file" ]] || { printf '%s\n' events-unreadable; return 1; }
+      before="$(wc -l < "$file")" || { printf '%s\n' events-baseline-unknown; return 1; }
+    fi
+    if [[ -z "$new_count" ]]; then new_count="$before"; else old_count="$before"; fi
+  done
+  if ! probe_out="$(run_sandbox_probe "$profile")"; then
+    case "${probe_out%%$'\n'*}" in
+      unsandboxed-start|refused-to-start|inert|undetermined) printf '%s\n' "${probe_out%%$'\n'*}" ;;
+      *) printf '%s\n' unconfirmed ;;
+    esac
+    return 1
+  fi
+  for file in "$home_dir/sessions/sandbox-events.jsonl" "$home_dir/sandbox-events.jsonl"; do
+    before="$new_count"; new_count="$old_count"
+    [[ -e "$file" || -L "$file" ]] || continue
+    [[ -f "$file" && -r "$file" && ! -L "$file" ]] || { printf '%s\n' events-unreadable; return 1; }
+    after="$(wc -l < "$file")" || { printf '%s\n' events-baseline-unknown; return 1; }
+    [[ "$after" -ge "$before" ]] || { printf '%s\n' events-shrank; return 1; }
+    delta="$(tail -n "+$((before + 1))" "$file")" || { printf '%s\n' events-unreadable; return 1; }
+    events="$events"$'\n'"$delta"
+  done
+  verdict="$(printf '%s\n' "$events" | ff_grok_readonly_verdict "$profile" "$(pwd -P)")"
+  printf '%s\n' "$verdict"
+  [[ "$verdict" == confirmed ]]
+}
+
 if [[ "$PROBE_SANDBOX" == "true" ]]; then
   probe_rc=0
   # 環境変数が指すプロファイル名が不正なら、CLI は起動しない（アダプタが argv を
@@ -528,6 +568,15 @@ if ! sandbox_profile="$(get_sandbox_profile 2>&1)"; then
   printf '%s\n' "$sandbox_profile" >&2
   fail_orchestrator_error "$perspective_name" \
     "${READONLY_PROFILE_ENV} does not name a usable read-only sandbox profile: $(printf '%s\n' "$sandbox_profile" | sed -n '1p')"
+fi
+if [[ "${TASK_TYPE:-review}" != implement || "${INLINE_OUTPUT:-false}" == true ]]; then
+  if ! prelaunch_verdict="$(verify_readonly_prelaunch "$sandbox_profile")"; then
+    prelaunch_log="$(mktemp)" || fail_orchestrator_error "$perspective_name" "Cannot record the Grok read-only preflight refusal."
+    printf '%s\n' "Grok read-only sandbox preflight refused before reviewer launch: ${prelaunch_verdict:-unconfirmed}. Inspect, event and effective grant evidence must confirm the requested read-only boundary." \
+      | tee "$prelaunch_log" >&2
+    record_timeout_reason sandbox-refused
+    fail_cli_task 1 "$prelaunch_log" "$perspective_name" ""
+  fi
 fi
 if is_custom_readonly_profile "$sandbox_profile"; then
   echo "   ℹ️ sandbox: read-only スロットを ${READONLY_PROFILE_ENV}='${sandbox_profile}' で差し替えています（実行後に read_write_paths が作業ツリーを含まないことを確認します）" >&2
@@ -730,83 +779,28 @@ sandbox_workspace="$(pwd -P 2>/dev/null || pwd)"
 #   FsViolation / NetViolation は**失格にしない**。これはサンドボックスが実際に
 #   操作を止めた記録で、機能している証拠だから（実測: 書き込みを試させたときに 1 件出た）
 #
-# カスタムプロファイル（docker.sock symlink 対応）の追加条件: 名前は利用者が付けたもので、中身が
-# read-only 相当である保証は名前に無い。同じ ProfileApplied 行の `read_write_paths`
+# read-onlyスロットは組み込み・customの両方で、同じProfileApplied行の `read_write_paths`
 # （実測 1.0.30: 適用された書き込み許可の実パス配列。組み込み read-only では ~/.grok と
 # temp 系だけ、workspace ではそこに CWD が加わる）を見て、作業ツリー自身・その祖先・
 # その配下・`/` のいずれかが含まれていれば **read-only ではない**として結果を採用
 # しない（配下も落とすのは、`read_write = ["src"]` のような部分 grant でもソース改変が
 # 通るため）。配列そのものが無い行・引用文字列として読めない要素は「確認できない」=
-# 不採用（fail-closed）。組み込み `read-only` を要求した実行にはこの追加条件を掛けない
-# — 名前が組み込みの保証で、判定を配列の有無に依存させないため（0.2.118 の行にも配列は
-# 在ったが、stub で走る既存 suite の行には無い）。
+# 不採用（fail-closed）。組み込みread-onlyも同じ実効grant検査を通す。
 #
 # 配列は `"…"` の引用トークン単位で読む。`,` や `]` で切ると、パスにその文字を含む
 # grant が要素として壊れて一致せず、fail-open になる。awk の -v は `\` を解釈するので
 # 作業ツリーのパスは ENVIRON で素のまま渡す。
-sandbox_custom="false"
-is_custom_readonly_profile "$sandbox_profile" && sandbox_custom="true"
+sandbox_check_grants="false"
+if [[ "${TASK_TYPE:-review}" != implement || "${INLINE_OUTPUT:-false}" == true ]]; then
+  sandbox_check_grants="true"
+fi
 sandbox_verdict=""
 if [[ "$sandbox_events_unreadable" == "true" ]]; then
   sandbox_verdict="events-unreadable"
 elif [[ -n "$new_sandbox_events" ]]; then
-  # awk 自身の失敗（方言差・不在）は bare exit にせず「判定不能」へ倒す — set -e で
-  # ここが落ちると INCOMPLETE 成果物が残らない。
   sandbox_verdict="$(printf '%s\n' "$new_sandbox_events" \
-     | FF_SANDBOX_WSDIR="$sandbox_workspace" LC_ALL=C awk -v prof="\"profile\":\"${sandbox_profile}\"" \
-           -v ws="\"workspace\":\"${sandbox_workspace}\"" -v custom="${sandbox_custom}" '
-         BEGIN { wsdir = ENVIRON["FF_SANDBOX_WSDIR"]; sub(/\/+$/, "", wsdir) }
-         function grant_covers_tree(p) {
-           if (p == "/") return 1
-           sub(/\/+$/, "", p)
-           if (p == "") return 1                       # "/" の末尾正規化後
-           if (p == wsdir) return 1                    # 作業ツリー自身
-           if (index(wsdir, p "/") == 1) return 1      # 祖先
-           if (index(p, wsdir "/") == 1) return 1      # 配下
-           return 0
-         }
-         index($0, "\"event_type\":\"ProfileApplied\"") && index($0, ws) {
-           if (index($0, prof) && index($0, "\"enforced\":true")) {
-             applied = 1
-             if (custom == "true") {
-               key = "\"read_write_paths\":["
-               i = index($0, key)
-               if (i == 0) { grants_unknown = 1 }
-               else {
-                 rest = substr($0, i + length(key))
-                 closed = 0
-                 while (!closed) {
-                   sub(/^[ \t]*/, "", rest)
-                   c = substr(rest, 1, 1)
-                   if (c == "]") { closed = 1; break }
-                   if (c != "\"") { grants_unknown = 1; break }
-                   # 引用文字列の終端: `\` でエスケープされていない次の `"`
-                   rest = substr(rest, 2); p = ""; ended = 0
-                   while (length(rest) > 0) {
-                     c = substr(rest, 1, 1)
-                     if (c == "\\") { p = p substr(rest, 2, 1); rest = substr(rest, 3); continue }
-                     if (c == "\"") { rest = substr(rest, 2); ended = 1; break }
-                     p = p c; rest = substr(rest, 2)
-                   }
-                   if (!ended) { grants_unknown = 1; break }
-                   if (grant_covers_tree(p)) write_granted = 1
-                   sub(/^[ \t]*,?/, "", rest)
-                 }
-                 if (!closed && !grants_unknown) grants_unknown = 1
-               }
-             }
-           }
-           else other_profile = 1          # 要求と違うプロファイルが同じ窓で適用された
-         }
-         index($0, "\"event_type\":\"ApplyFailed\"")   { failed = 1 }
-         index($0, "\"event_type\":\"BypassGranted\"") { failed = 1 }
-         END {
-           if (!(applied && !other_profile && !failed)) { print "unconfirmed"; exit }
-           if (write_granted)  { print "write-granted";  exit }
-           if (grants_unknown) { print "grants-unknown"; exit }
-           print "confirmed"
-         }
-       ')" || sandbox_verdict="awk-failed"
+    | ff_grok_readonly_verdict "$sandbox_profile" "$sandbox_workspace" "$sandbox_check_grants")" \
+    || sandbox_verdict="awk-failed"
 fi
 sandbox_confirmed=false
 [[ "$sandbox_verdict" == "confirmed" ]] && sandbox_confirmed=true
@@ -826,12 +820,12 @@ if [[ "$sandbox_confirmed" != "true" ]]; then
     write-granted)
       # 名前は通ったが中身が read-only ではない。降格を黙って通さないための本体。
       echo "ERROR: ${CLI_NAME} applied the '${sandbox_profile}' sandbox, but its read_write_paths grant writes to the working tree (${sandbox_workspace}) or a directory above/inside it."
-      echo "       ${READONLY_PROFILE_ENV}='${sandbox_profile}' is therefore NOT a read-only profile (it extends workspace/devbox/strict, or adds the tree via read_write)."
-      echo "       Refusing the result: the review ran with write access it must not have. Fix the profile in ~/.grok/sandbox.toml (extends = \"read-only\") or unset ${READONLY_PROFILE_ENV}."
+      echo "       The effective '${sandbox_profile}' profile is therefore NOT read-only for this checkout."
+      echo "       Refusing the result: the review ran with write access it must not have. Check the checkout location and effective profile grants."
       ;;
     grants-unknown)
-      echo "ERROR: ${CLI_NAME} applied the '${sandbox_profile}' sandbox, but the ProfileApplied event carries no read_write_paths array (or one this adapter cannot parse), so the write boundary of this custom profile cannot be verified."
-      echo "       Refusing the result: a custom read-only profile is accepted only when the event proves the working tree is not writable."
+      echo "ERROR: ${CLI_NAME} applied the '${sandbox_profile}' sandbox, but its read_write_paths array is missing, empty, malformed or unresolved, so its effective read-only write boundary cannot be verified."
+      echo "       Refusing the result: read-only lanes require known grants disjoint from the physical working tree."
       ;;
     events-unreadable)
       echo "ERROR: ${CLI_NAME} sandbox event log exists but its line count could not be read before the run (${sandbox_events_file} / ${sandbox_events_file_legacy}), so this run's events cannot be isolated."

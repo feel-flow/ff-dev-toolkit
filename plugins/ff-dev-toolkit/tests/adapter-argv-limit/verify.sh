@@ -72,9 +72,9 @@ fi
 
 # mktemp の stderr を捨てない（read-only 以外の失敗を read-only へ誤帰属させない）。
 _ff_mktemp_rc=0
-_ff_mktemp_out="$(mktemp -d 2>&1)" || _ff_mktemp_rc=$?
+_ff_mktemp_out="$(mktemp -d "$PLUGIN_ROOT/../../.ff-sandbox-probe.XXXXXX" 2>&1)" || _ff_mktemp_rc=$?
 if [ "$_ff_mktemp_rc" -eq 0 ] && [ -d "$_ff_mktemp_out" ]; then
-  TMP="$_ff_mktemp_out"
+  TMP="$(CDPATH='' cd "$_ff_mktemp_out" && pwd -P)" || exit 1
 else
   echo "○ skip: 一時ディレクトリを作成できない環境のためスキップ（検査は1件も実行されていません）"
   printf '  mktemp: %s\n' "$_ff_mktemp_out"
@@ -150,6 +150,10 @@ mkdir -p "$BIN" "$GROK_HOME_DIR"
 for cli in claude codex copilot grok; do
   cat > "$BIN/$cli" <<SH
 #!/usr/bin/env bash
+if [ "\${1:-}" = help ] && [ "\${2:-}" = permissions ]; then
+  echo '--deny-tool --disallow-temp-dir Denial rules always take precedence over allow rules'
+  exit 0
+fi
 prev=""
 pf=""
 for a in "\$@"; do
@@ -160,7 +164,7 @@ done
 cat >> "$TMP/${cli}-stdin.log"
 if [ -n "\$pf" ] && [ -f "\$pf" ]; then cat "\$pf" >> "$TMP/${cli}-stdin.log"; fi
 if [ "\$(basename "\$0")" = "grok" ]; then
-  printf '{"timestamp":"t","event_type":"ProfileApplied","profile":"read-only","enforced":true,"workspace":"%s"}\n' \\
+  printf '{"timestamp":"t","event_type":"ProfileApplied","profile":"read-only","enforced":true,"workspace":"%s","read_write_paths":["/tmp"]}\n' \\
     "\$(pwd -P)" >> "$GROK_HOME_DIR/sandbox-events.jsonl"
 fi
 echo "- Suggestion: stub review output"

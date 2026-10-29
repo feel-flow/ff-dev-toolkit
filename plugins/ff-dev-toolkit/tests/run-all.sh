@@ -1620,7 +1620,6 @@ MISS_PROBE_BASELINE=(
   ace-scripts-typecheck
   adapter-argv-limit
   adapter-base-ref-freshness
-  adapter-model-args
   adapter-prompt-utf8
   agent-config-doc-sync
   auto-update-hook

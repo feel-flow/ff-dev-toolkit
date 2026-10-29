@@ -2,6 +2,14 @@
 
 アダプタが渡す `--sandbox` 引数と、**その CLI が実際に受け付ける値**との契約を固定する。
 
+`effective-permissions.py`は実アダプタを起動し、Grokの起動前grant検査と実行後の再検査、Codexの改行入りstagingを単一argvで渡す契約、Copilotのreview/explore/inlineのdenyと通常implementの互換性を検査する。Grokの通常対照はtemp例外の外へ置き、空ケース集合や入力不在は失敗とする。Python 3が必要。
+
+## Copilot実CLIの独立検証
+
+`python3 plugins/ff-dev-toolkit/tests/adapter-sandbox-contract/copilot-live-probe.py /absolute/path/to/copilot`を明示実行する。利用者の設定・認証を継承しない隔離HOMEへ合成の保存済みwrite/commands許可を置き、127.0.0.1のBYOK合成応答で無害なapply_patchとshellを要求する。allowのみでは両ファイルが作られ、deny付きでは両方の実ツール結果が権限拒否となり、ファイルが作られないことをassertする。CLIの実行結果とproviderへの往復を一時ディレクトリへ保存する。通常の全件ゲートはこの実CLI工程を自動実行せず、argv stub検査と区別する。2026-10-29にCopilot CLI 1.0.101/macOSで実測。
+
+根拠: [GitHubのdeny優先規則](https://docs.github.com/en/copilot/how-tos/copilot-cli/use-copilot-cli/allowing-tools)、[保存済み許可のschema](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference)、当該CLIの`help permissions`/`help providers`。Grokの既知例外は[ベンダーのpath実装](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-sandbox/src/paths.rs)を参照し、イベントの実効grantも別途照合する。
+
 ## なぜこれをテストするか
 
 潰しているのは「アダプタが、その CLI が受け付けない sandbox 値を渡す」という事故。develop で長期間生きていた実例（Issue #403）:

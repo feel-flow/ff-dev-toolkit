@@ -83,8 +83,8 @@ build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_MODEL_GROK_CLI MULTI_AGENT_CRO
 
 # rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
 # 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
-if _ff_mktemp_out="$(mktemp -d 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
-  TMP="$_ff_mktemp_out"
+if _ff_mktemp_out="$(mktemp -d "$PLUGIN_ROOT/../../.ff-sandbox-probe.XXXXXX" 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
+  TMP="$(CDPATH='' cd "$_ff_mktemp_out" && pwd -P)" || exit 1
 else
   echo "○ skip: 一時ディレクトリを作成できない環境のためスキップ（検査は1件も実行されていません）"
   printf '  mktemp: %s\n' "$_ff_mktemp_out"
@@ -138,6 +138,10 @@ GROK_COUNT="$TMP/grok-count"
 : > "$GROK_COUNT"
 cat > "$STUB/grok" <<SH
 #!/usr/bin/env bash
+if [ "\${1:-}" = --sandbox ] && [ "\${3:-}" = inspect ]; then
+  printf '{"event_type":"ProfileApplied","profile":"%s","enforced":true,"workspace":"%s","read_write_paths":["/tmp"]}\n' "\$2" "\$(pwd -P)" >> "\${GROK_HOME:?}/sandbox-events.jsonl"
+  exit 0
+fi
 n=\$( (cat "$GROK_COUNT" 2>/dev/null || echo 0) )
 n=\$((n + 1))
 echo "\$n" > "$GROK_COUNT"
@@ -148,7 +152,7 @@ for a in "\$@"; do
   prev="\$a"
 done
 emit_sandbox_event() {
-  printf '{"event_type":"ProfileApplied","profile":"%s","enforced":true,"workspace":"%s"}\n' \\
+  printf '{"event_type":"ProfileApplied","profile":"%s","enforced":true,"workspace":"%s","read_write_paths":["/tmp"]}\n' \\
     "\$prof" "\$(pwd -P)" >> "\${GROK_HOME:?}/sandbox-events.jsonl"
 }
 if [ "\$(cat "$TMP/grok-mode")" = critical ]; then

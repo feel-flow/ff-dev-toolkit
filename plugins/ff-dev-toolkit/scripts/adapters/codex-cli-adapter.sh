@@ -187,11 +187,9 @@ get_sandbox_mode() {
 # grok-cli-adapter.sh: only codex's implement writes are confined to staging by
 # the sandbox. For grok the boundary is still the repository, and staging-only
 # remains a prompt contract there.
-# Kept pure: it is called inside `$( )`, so it cannot fail the run itself — an
-# `exit` from a command substitution only kills the subshell and the caller would
-# carry on with an empty array. The "narrow or stop" decision therefore lives at
-# the call site below, in the main shell.
-cd_narrow_args() {
+# Set the array directly in the main shell. A path is never a line-delimited
+# option stream: an embedded newline remains part of exactly one argv element.
+set_cd_narrow_args() {
   # STAGING_DIR is non-empty exactly for a non-inline implement run: build_prompt
   # (called far above, before any argv is assembled) returns 1 for an implement
   # with neither a staging dir nor --inline-output, and this adapter turns that
@@ -202,7 +200,7 @@ cd_narrow_args() {
   [[ "${TASK_TYPE:-review}" == "implement" ]] || return 0
   [[ "${INLINE_OUTPUT:-false}" != "true" ]] || return 0
   [[ -n "${STAGING_DIR:-}" ]] || return 0
-  printf '%s\n%s\n' "-C" "$STAGING_DIR"
+  CD_NARROW_ARGS=(-C "$STAGING_DIR")
 }
 
 # `-C/--cd` arrived after the version this adapter was first written against, so
@@ -284,11 +282,7 @@ EOF
 
 # 同じ理由で `-C <staging>` も 1 要素 1 引数で受ける（staging パスは空白を含みうる）。
 CD_NARROW_ARGS=()
-while IFS= read -r _cd_narrow_arg; do
-  [[ -n "$_cd_narrow_arg" ]] && CD_NARROW_ARGS+=("$_cd_narrow_arg")
-done <<EOF
-$(cd_narrow_args)
-EOF
+set_cd_narrow_args
 # 「絞るはずの実行なのに -C が組み立てられなかった」を黙って通さない。ここで
 # 素通りさせると、書き込み境界がリポジトリ全体に戻った implement が**警告なしで**
 # 走る（プロンプトは staging を名指ししたままなので、出力からも判別できない）。

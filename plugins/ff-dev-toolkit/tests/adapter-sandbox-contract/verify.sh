@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
 # アダプタが渡す sandbox 引数と、CLI が実際に受け付ける値との契約検査（Issue #403）。
+# 空振り検出: effective-permissions のadapterディレクトリ不在はrc=1。正規ハーネスでhelper不在・profileケース集合0件・拒否理由の混同を含む10変異が全てred、通常対照53件PASS（2026-10-29 macOS実測）。
 #
 # 潰している事故: **アダプタが、その CLI が受け付けない sandbox 値を渡すこと**。
 # 実例（develop で長期間生きていた）— codex アダプタが implement に対して
@@ -103,7 +104,7 @@ ff_sandbox_root_preflight || exit "$?"
 # mktemp の stderr を捨てない。捨てると read-only 以外の失敗（TMPDIR が不正なパス・
 # quota 超過など）まで「書き込み可能な環境で」に誤帰属し、恒常的に壊れた TMPDIR が
 # suite を exit 0 で無効化し続ける。2>&1 で受けると成功時はパス・失敗時は理由が入る。
-_ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ff-adapter-sandbox.XXXXXX" 2>&1)" || true   # 失敗時は stderr の内容が残る（空にすると理由が消える）
+_ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ff-adapter-sandbox.XXXXXX" 2>&1)" || true   # grok homeはcheckoutの外
 if [ -d "$_ff_mktemp_out" ]; then WORK="$_ff_mktemp_out"; else WORK=""; fi
 if [ -z "$WORK" ]; then
   echo "○ skip: 一時ディレクトリを作成できません（本 suite の検査は1件も実行されていません）"
@@ -339,6 +340,12 @@ mkdir -p "$WORK/bin"
 for cli in claude codex copilot grok; do
   {
     echo '#!/usr/bin/env bash'
+    echo 'if [ "$(basename "$0")" = copilot ] && [ "${1:-}" = help ]; then echo "--deny-tool --disallow-temp-dir Denial rules always take precedence"; exit 0; fi'
+    echo 'if [ "$(basename "$0")" = grok ]; then'
+    echo '  prev=""; profile=""; for a in "$@"; do [ "$prev" != --sandbox ] || profile="$a"; prev="$a"; done'
+    echo '  mkdir -p "$GROK_HOME"'
+    echo '  printf "%s\n" "{\"event_type\":\"ProfileApplied\",\"workspace\":\"$(pwd -P)\",\"profile\":\"$profile\",\"enforced\":true,\"read_write_paths\":[\"/tmp\"]}" >> "$GROK_HOME/sandbox-events.jsonl"'
+    echo 'fi'
     echo 'd="$ARGV_DIR"'
     echo 'n=$(cat "$d/launches" 2>/dev/null || echo 0)'
     echo 'n=$((n + 1))'
@@ -674,6 +681,13 @@ expect_sandbox() {
     bad "${label}: CLI の起動回数が ${LAUNCHES} 回（期待: ${want_launches} 回）— arg.* に残るのは最後の 1 回だけなので、宣言と食い違う起動の argv は未検査のまま素通りする"
     return
   fi
+  if [ "$cli" = grok-cli ] && [ "$want_launches" = 2 ]; then
+    if [ "$(launch_argc 1)" != 3 ] || [ "$(launch_arg_at 1 0)" != --sandbox ] \
+       || [ "$(launch_arg_at 1 1)" != "$want" ] || [ "$(launch_arg_at 1 2)" != inspect ]; then
+      bad "${label}: first launch is not the model-free sandbox inspect"
+      return
+    fi
+  fi
 
   scan_sandbox
 
@@ -755,8 +769,8 @@ expect_sandbox codex-cli implement workspace-write 2
 # 「argv 組み立ての一部としての sandbox」を、こちらが「CLI が受け付ける値かどうか」を
 # 見ており、赤くなる理由が違うため。**プロファイル名を変えるときは両方を直すこと**
 # — 片側だけ動くと、もう片側が古い契約を主張し続ける。向こうにも相互参照がある。
-expect_sandbox grok-cli review    read-only
-expect_sandbox grok-cli explore   read-only
+expect_sandbox grok-cli review    read-only 2
+expect_sandbox grok-cli explore   read-only 2
 expect_sandbox grok-cli implement workspace
 
 echo "-- inline-output: implement を read-only 相当へ狭める --"
@@ -944,7 +958,7 @@ expect_net_pin explore   no
 # multi-agent.sh も --task-type を allowlist で検証していない）。case の `*)`
 # 既定枝は死んだコードではないので、安全側の値に落ちることを固定する。
 expect_sandbox codex-cli no-such-task-type read-only
-expect_sandbox grok-cli  no-such-task-type read-only
+expect_sandbox grok-cli  no-such-task-type read-only 2
 
 # 層 1 の網羅確認。DECLARED_CLIS × 実 task-type の全組が検査されたか。
 uncovered=""
@@ -1373,6 +1387,11 @@ else
 fi
 
 echo
+if ! python3 "$SCRIPT_DIR/effective-permissions.py"; then
+  bad "effective permission regression cases failed or could not run"
+else
+  ok "effective permission regression cases completed"
+fi
 echo "  PASS=${PASS} FAIL=${FAIL} SKIP=${SKIP}  層2: ${LAYER2_RUN}/${LAYER2_TOTAL} 照合実行"
 if [ "$LAYER2_RUN" -eq 0 ]; then
   echo "  ※ 層 2 が 1 件も走っていません。この実行で担保できているのは層 1（形と値、"

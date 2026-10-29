@@ -20,6 +20,12 @@
 
 ## [Unreleased]
 
+## [0.171.1] - 2026-10-29
+
+### 修正
+
+- Grokのread-onlyレビューがtemp/homeの書込み例外と重なるcheckoutで起動しないよう、実効grantを起動前と実行後に検証します。Codexの改行を含むstagingパスを単一引数へ保ち、Copilotのreview/exploreでも継承済みwrite/shell許可を明示denyします。
+
 ## [0.171.0] - 2026-10-29
 
 ### 破壊的変更
@@ -3610,7 +3616,8 @@
 
 <!-- 比較リンクは公開リポジトリに存在するタグ同士のみ。plugin version のうち未タグの版は見出しのみ。 -->
 
-[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.170.0...HEAD
+[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.171.0...HEAD
+[0.171.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.170.0...v0.171.0
 [0.170.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.169.0...v0.170.0
 [0.169.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.168.0...v0.169.0
 [0.168.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.167.0...v0.168.0

@@ -488,7 +488,9 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_ROOT_SIDECAR_NAME`
 - `FF_ROOT_SIDECAR_PATH`
 - `FF_RUN_ALL_ALLOW_SKIP`
-- `FF_SANDBOX_WSDIR`
+- `FF_GROK_PROFILE`（Grok適用イベント検証の内部受渡し）
+- `FF_GROK_TREE`（物理checkoutの内部受渡し）
+- `FF_GROK_CHECK_GRANTS`（非inline implementとの検査分岐）
 - `FF_STALE_BASE`
 - `FF_STDIN_BOUND_SECONDS`
 - `FF_TIMEOUT_KILL_GRACE`

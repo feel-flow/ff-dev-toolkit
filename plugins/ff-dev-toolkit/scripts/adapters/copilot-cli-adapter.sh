@@ -63,10 +63,20 @@ echo "   Timeout: ${TIMEOUT}s" >&2
 
 # Copilot CLI: -p for prompt, --silent suppresses stats
 # Copilot has no --sandbox profile, but permission denies are machine-enforced and
-# override allows. Inline implement therefore removes both file-write and shell
+# override allows. Read-only tasks therefore remove both file-write and shell
 # tools, and temp-dir access, so the prompt's no-write contract is not advisory.
 COPILOT_PERMISSION_ARGS=()
-if [[ "${TASK_TYPE:-review}" == "implement" && "${INLINE_OUTPUT:-false}" == "true" ]]; then
+if [[ "${TASK_TYPE:-review}" != "implement" || "${INLINE_OUTPUT:-false}" == "true" ]]; then
+  # Check the installed CLI's permission contract without a model or credentials.
+  # Unknown/unsupported semantics must not leave inherited allows in effect.
+  permission_help=""
+  if ! permission_help="$(run_with_timeout 10 "$CLI_COMMAND" help permissions 2>/dev/null)" \
+      || [[ "$permission_help" != *--deny-tool* ]] \
+      || [[ "$permission_help" != *--disallow-temp-dir* ]] \
+      || [[ "$permission_help" != *'Denial rules always take'* ]]; then
+    fail_orchestrator_error "$perspective_name" \
+      "Copilot permission denies and their precedence over inherited allows could not be verified. Update the CLI before using a read-only task."
+  fi
   COPILOT_PERMISSION_ARGS+=(--deny-tool write --deny-tool shell --disallow-temp-dir)
 fi
 # Guard this mktemp explicitly: under `set -e` a failure here would kill the

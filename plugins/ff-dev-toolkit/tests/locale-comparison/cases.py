@@ -219,16 +219,14 @@ class LocaleComparison(unittest.TestCase):
                     self.assertEqual(result.stdout, "P\t記録.md\tsecond\n")
 
     def test_custom_sandbox_preserves_unrelated_japanese_sibling_grant(self):
-        text = (PLUGIN / "scripts/adapters/grok-cli-adapter.sh").read_text(encoding='utf-8')
-        start = text.index('  sandbox_verdict="$(printf')
-        end = text.index(' || sandbox_verdict="awk-failed"', start)
-        body = text[start:end] + '\nprintf "%s\\n" "$sandbox_verdict"'
+        body = '. "$boundary_lib"; printf "%s\\n" "$new_sandbox_events" | ff_grok_readonly_verdict "$sandbox_profile" "$sandbox_workspace"'
         workspace = "/repo/承認"
         for grant, expected in (("/repo/記録", "confirmed\n"), (workspace, "write-granted\n"), ("/repo", "write-granted\n")):
             event = json.dumps({"event_type": "ProfileApplied", "profile": "readonly-custom", "workspace": workspace,
                                 "enforced": True, "read_write_paths": [grant]}, ensure_ascii=False, separators=(",", ":"))
             self.each(body, variables={"new_sandbox_events": event, "sandbox_workspace": workspace,
-                                      "sandbox_profile": "readonly-custom", "sandbox_custom": "true"}, expected=expected)
+                                      "sandbox_profile": "readonly-custom",
+                                      "boundary_lib": PLUGIN / "scripts/lib/grok-cli-readonly-boundary.sh"}, expected=expected)
 
     def test_cleanup_sort_producers_preserve_distinct_japanese_branch_names(self):
         for relative, target, with_oid in (("scripts/lib/merge-cleanup-remote.sh", "MERGED_LIST", True),

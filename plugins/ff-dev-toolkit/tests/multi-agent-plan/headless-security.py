@@ -41,8 +41,8 @@ def original_snapshot(directory):
             if not Path(k).parts[0].startswith(".recovery-")}
 
 
-with tempfile.TemporaryDirectory(prefix="ff-2281-") as temp:
-    work = Path(temp)
+with tempfile.TemporaryDirectory(prefix=".ff-sandbox-probe.", dir=Path(__file__).resolve().parents[4]) as temp, tempfile.TemporaryDirectory(prefix="ff-2281-tmp-") as scratch:
+    work = Path(temp).resolve()
     repo, bins, home, tools = (work / n for n in ["repo", "bin", "home", "tools"])
     for d in [repo, bins, home, tools]:
         d.mkdir()
@@ -50,7 +50,7 @@ with tempfile.TemporaryDirectory(prefix="ff-2281-") as temp:
     assert yq, "yq is required for the real config exclusion path"
     (tools / "yq").symlink_to(Path(yq).resolve())
     env = {"PATH": str(bins) + ":" + str(tools) + ":/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(home),
-           "LANG": "ja_JP.UTF-8", "LC_ALL": "ja_JP.UTF-8", "TMPDIR": str(work),
+           "LANG": "ja_JP.UTF-8", "LC_ALL": "ja_JP.UTF-8", "TMPDIR": str(Path(scratch).resolve()),
            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
            "FF_DEV_TOOLKIT_ROOT": str(root), "NO_COLOR": "1"}
     # Use the existing fixture identity helper; every child inherits only this isolated env.
@@ -78,7 +78,7 @@ if [[ "${0##*/}" == grok ]]; then
     previous="$a"
   done
   mkdir -p "$HOME/.grok/sessions"
-  printf '{"event_type":"ProfileApplied","profile":"%s","enforced":true,"workspace":"%s"}\\n' \\
+  printf '{"event_type":"ProfileApplied","profile":"%s","enforced":true,"workspace":"%s","read_write_paths":["/tmp"]}\\n' \\
     "$profile" "$(pwd -P)" >> "$HOME/.grok/sessions/sandbox-events.jsonl"
 fi
 cat >/dev/null

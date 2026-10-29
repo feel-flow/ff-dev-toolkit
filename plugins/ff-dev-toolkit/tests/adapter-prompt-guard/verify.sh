@@ -77,9 +77,9 @@ initialize_output_root() {
 # skip 文言で read-only と断定しない（すぐ上のコメントのとおり原因は 1 つではない。
 # 断定すると、壊れた TMPDIR の調査が read-only の確認だけで打ち切られる）。
 _ff_mktemp_rc=0
-_ff_mktemp_out="$(mktemp -d 2>&1)" || _ff_mktemp_rc=$?
+_ff_mktemp_out="$(mktemp -d "$PLUGIN_ROOT/../../.ff-sandbox-probe.XXXXXX" 2>&1)" || _ff_mktemp_rc=$?
 if [ "$_ff_mktemp_rc" -eq 0 ] && [ -d "$_ff_mktemp_out" ]; then
-  TMP="$_ff_mktemp_out"
+  TMP="$(CDPATH='' cd "$_ff_mktemp_out" && pwd -P)" || exit 1
 else
   echo "○ skip: 一時ディレクトリを作成できない環境のためスキップ"
   printf '  mktemp: %s\n' "$_ff_mktemp_out"
@@ -1171,6 +1171,11 @@ BOUNDARY_MARKER='## Execution Boundary (non-negotiable)'
 for cli in claude codex copilot grok; do
   cat > "$DELIV_BIN/$cli" <<SH
 #!/usr/bin/env bash
+if [ "$cli" = copilot ] && [ "\${1:-}" = help ]; then echo '--deny-tool --disallow-temp-dir Denial rules always take precedence'; exit 0; fi
+if [ "$cli" = grok ]; then
+  mkdir -p "\$GROK_HOME"
+  printf '%s\n' "{\"event_type\":\"ProfileApplied\",\"profile\":\"read-only\",\"workspace\":\"\$(pwd -P)\",\"enforced\":true,\"read_write_paths\":[\"/tmp\"]}" >> "\$GROK_HOME/sandbox-events.jsonl"
+fi
 prev=""
 pf=""
 for a in "\$@"; do
