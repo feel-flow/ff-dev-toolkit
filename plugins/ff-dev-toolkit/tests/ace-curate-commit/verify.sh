@@ -29,11 +29,13 @@
 # 空振り検出: サブdirの探索・追跡・変更判定をcwd基準へ戻す3変異は各rc=1。空ディレクトリはrc=2でindex/pending保持を実測し、0ファイルを成功にしない（2026-10-25、無変異対照は成功）。
 # 空振り検出: 展開先の不在ガード除去・明示対象を元argv集合へ戻す2変異は各rc=1、正常対照rc=0（2026-10-26 mutation-harness実測。削除済み追跡ファイルはstage前rc=2、末尾/.も実ファイル集合で照合）。
 # 変異検出: knowledge-commit.sh の hook の場所の判定を `/` 始まりだけへ戻すと 14b が赤（MSYS でも C:/hk をルートへ連結し、hook を検出せず保留を作る）。実機の MSYS / Cygwin では C:/hk が本物のドライブを指すので 14b は理由付きの skip（2026-10-26 WSL 実測。Issue `#2367`）。
+# 14c の断言: hook の場所を `/` 始まりだけに戻すと、バックスラッシュ形では件名行が出ない。14c は 14b と同じ case なので、実機の MSYS / Cygwin では同じ理由で回さない。
 
 # 空振り検出: literal pathspec 制御を変更前へ戻すと実在の :(glob)** から未選択ファイルが混入し rc=1、通常対照 rc=0（2026-10-28）。
 # 空振り検出: global literal を使う版へ戻すと hook の環境照合が rc=1、icase の集合ガードを外しても rc=1。通常対照 rc=0（2026-10-28、pre-commit / post-index-change を実測）。
 # 空振り検出: 共通 lib の空集合・空 path・icase で0件一致は rc=2、通常 file は rc=0、全ケースで index の同一性を確認（2026-10-28 実測）。
 # 変異検出: commit の読み戻しの停止を外すと 19 が赤（記録外のパスを含むコミットが rc=0）、自動の取り消しを外すと 19 が赤（HEAD が混入コミットのまま）、取り消しの前提（HEAD がこのコミット）の照合を外すと 19b が赤（post-commit が積んだコミットを巻き戻す）、知見のコミットの特定（commit 前の HEAD を親に持つもの）を外して HEAD を照合すると 19b が赤（名指しが post-commit のコミットになる）、Categories の折り返し幅を無効にすると 20 が赤（最長 147 字）、重複除去を外すと 20 が赤、lib の絶対パスの相対化を外すと 21 が赤（`:(literal)/…` を渡す）、`top` の初期化を外すと bash 4 以降で 21 が赤（set -u の unbound）、作業ツリー内の確認を外すと 21b が赤（外のパスがルート直下の同名ファイルへ付け替わる）（2026-10-29 実測。Issue `#2494` / `#2213` / `#2449`）。
+# 21c の断言: MSYS で C:/ を相対のままに戻すと `:(top,literal)C:/…` にならず赤。全 OS で C:/ を絶対にすると、他 OS 側が赤。実機の MSYS / Cygwin では C:/docs が本物のドライブを指すので 21c は理由付きの skip。
 # 空振り検出: KC_OUTPUTを旧兄弟leafのKC_TMP.outへ戻す独立変異は、合成canaryのbytes不変照合が1件赤（rc=1）。同じ出力部分の無変異対照は2/0、suite全体は169件pass（2026-10-28実測、Issue `#2429`）。
 set -euo pipefail
 
@@ -862,7 +864,7 @@ else
     #      分ける。ドライランはルートを cwd にして hook を起動するので、cwd 相対の C:/hk は起動時に見つからず hook 自体は
     #      走らない（Linux で作れる形の限界）。見るのは検出したか（hook-rejected）だけ
     case "${OSTYPE:-}" in
-      msys* | cygwin*) echo "  ○ skip: 実機の MSYS / Cygwin では C:/hk が本物のドライブを指すため、OSTYPE を差し替える 14b は回さない" ;;
+      msys* | cygwin*) echo "  ○ skip: 実機の MSYS / Cygwin では C:/hk が本物のドライブを指すため、OSTYPE を差し替える 14b と 14c は回さない" ;;
       *)
         W="$KC_TMP/hook-drive"
         new_repo "$W" "Knowledge Test" "knowledge-test@example.com"
@@ -875,10 +877,29 @@ else
         cd sub || exit 1
         rc=0; out="$(OSTYPE=msys kc add --source obs --id OBS-14b --summary "要約D" -- ../docs/08-knowledge/OBSERVATIONS.md 2>&1)" || rc=$?
         rc2=0; out2="$(OSTYPE=linux-gnu kc add --source obs --id OBS-14c --summary "要約E" -- ../docs/08-knowledge/OBSERVATIONS.md 2>&1)" || rc2=$?
-        if [ "$rc" -eq 4 ] && [[ "$out" == *"KNOWLEDGE_COMMIT=hook-rejected"* ]] && [ "$rc2" -eq 0 ] && [[ "$out2" == *"KNOWLEDGE_PENDING=1"* ]]; then
-          echo "  ✓ hook の場所が C:/… のとき、MSYS では絶対パスとしてそのまま使い（exit 4）、他の OS ではルートへ連結する（保留を作る）"
+        if [ "$rc" -eq 4 ] && [[ "$out" == *"KNOWLEDGE_COMMIT=hook-rejected"* ]] && [[ "$out" == *"KNOWLEDGE_SUBJECT="* ]] \
+          && [ "$rc2" -eq 0 ] && [[ "$out2" == *"KNOWLEDGE_PENDING=1"* ]] && [[ "$out2" != *"KNOWLEDGE_SUBJECT="* ]]; then
+          echo "  ✓ hook の場所が C:/… のとき、MSYS では絶対パスのままドライランして KNOWLEDGE_SUBJECT= を出し、他の OS ではルートへ連結して件名行を出さない"
         else
-          echo "  ✗ C:/… の hook の場所の扱いが OS で分かれない（msys rc=${rc} / linux rc=${rc2}: ${out}）" >&2; exit 1
+          echo "  ✗ C:/… の hook の場所の扱いが OS で分かれない（msys rc=${rc} / linux rc=${rc2}: ${out} / ${out2}）" >&2; exit 1
+        fi
+        kc discard >/dev/null; cd "$W" || exit 1; git reset -q; git checkout -q -- docs/08-knowledge/OBSERVATIONS.md
+
+        # 14c. git が返す C:\…/hook も同じ。MSYS では絶対パスのままドライランし KNOWLEDGE_SUBJECT= を出す。
+        #      他の OS ではルートへ連結するので hook は無く、件名行は出さずに保留を作る。
+        git config core.hooksPath 'C:\hk'
+        mkdir -p "sub/C:\\hk"
+        printf '%s\n' '#!/bin/sh' 'echo "drive-bs hook rejected"; exit 1' >"sub/C:\\hk/commit-msg"
+        chmod +x "sub/C:\\hk/commit-msg"
+        printf '%s\n' '- obs' >>docs/08-knowledge/OBSERVATIONS.md
+        cd sub || exit 1
+        rc=0; out="$(OSTYPE=msys kc add --source obs --id OBS-14d --summary "要約F" -- ../docs/08-knowledge/OBSERVATIONS.md 2>&1)" || rc=$?
+        rc2=0; out2="$(OSTYPE=linux-gnu kc add --source obs --id OBS-14e --summary "要約G" -- ../docs/08-knowledge/OBSERVATIONS.md 2>&1)" || rc2=$?
+        if [ "$rc" -eq 4 ] && [[ "$out" == *"KNOWLEDGE_COMMIT=hook-rejected"* ]] && [[ "$out" == *"KNOWLEDGE_SUBJECT="* ]] \
+          && [ "$rc2" -eq 0 ] && [[ "$out2" == *"KNOWLEDGE_PENDING=1"* ]] && [[ "$out2" != *"KNOWLEDGE_SUBJECT="* ]]; then
+          echo "  ✓ hook の場所が C:\\… のとき、MSYS ではドライランが KNOWLEDGE_SUBJECT= を出し、他の OS では件名行を出さず保留を作る"
+        else
+          echo "  ✗ C:\\… の hook の場所で KNOWLEDGE_SUBJECT の有無が OS で分かれない（msys rc=${rc} / linux rc=${rc2}: ${out} / ${out2}）" >&2; exit 1
         fi
         kc discard >/dev/null; cd "$W" || exit 1; git reset -q; git checkout -q -- docs/08-knowledge/OBSERVATIONS.md
         ;;
@@ -1334,6 +1355,40 @@ HOOK
     fi
     git reset -q
     rm -f "$F/same.md"
+
+    # 21c. MSYS では作業ツリー内の C:/… を :(top,literal) とリポジトリ相対パスで stage する。
+    #      :(literal)/c/… と :(literal)/C:/… は渡さない。他の OS では C:/… は相対のまま :(literal)C:/… にする。
+    #      実機の MSYS / Cygwin では C:/docs が本物のドライブなので、この模擬は回さない。
+    case "${OSTYPE:-}" in
+      msys* | cygwin*)
+        echo "  ○ skip: 実機の MSYS / Cygwin では C:/docs が本物のドライブを指すため、OSTYPE を差し替える 21c は回さない"
+        ;;
+      *)
+        mkdir -p "C:/docs"
+        printf '%s\n' '- drive' >"C:/docs/a.md"
+        : >"$KC_TMP/argv.log"
+        rc=0; ( export OSTYPE=msys
+          . "$PLUGIN_ROOT/scripts/lib/abs-path.sh" && . "$PLUGIN_ROOT/scripts/lib/git-literal-pathspec.sh" \
+            && PATH="$KC_TMP/argv-bin:$PATH" ff_git_literal "$F" add -- "C:/docs/a.md" ) || rc=$?
+        msys_argv="$(cat "$KC_TMP/argv.log")"
+        git reset -q
+        : >"$KC_TMP/argv.log"
+        rc2=0; ( . "$PLUGIN_ROOT/scripts/lib/abs-path.sh" && . "$PLUGIN_ROOT/scripts/lib/git-literal-pathspec.sh" \
+          && PATH="$KC_TMP/argv-bin:$PATH" ff_git_literal "$F" add -- "C:/docs/a.md" ) || rc2=$?
+        posix_argv="$(cat "$KC_TMP/argv.log")"
+        if [ "$rc" -eq 0 ] && [[ "$msys_argv" == *"add -- :(top,literal)C:/docs/a.md"* ]] \
+          && [[ "$msys_argv" != *":(literal)/c/"* ]] && [[ "$msys_argv" != *":(literal)/C:/"* ]] \
+          && [ "$rc2" -eq 0 ] && [[ "$posix_argv" == *"add -- :(literal)C:/docs/a.md"* ]] \
+          && [[ "$posix_argv" != *":(top,literal)C:/docs/a.md"* ]] \
+          && [ "$(git diff --cached --name-only)" = "C:/docs/a.md" ]; then
+          echo "  ✓ C:/… は MSYS では :(top,literal) で stage し :(literal)/c/… と :(literal)/C:/… を渡さない。他の OS では相対の :(literal)C:/… のまま"
+        else
+          echo "  ✗ C:/… の literal 化が OS で期待と違う（msys rc=${rc} posix rc=${rc2} staged=$(git diff --cached --name-only)）" >&2; exit 1
+        fi
+        git reset -q
+        rm -rf "C:/docs"
+        ;;
+    esac
 
     # 7. 合成 identity（テスト fixture の既定 identity）では commit しない。保留は残す
     F="$KC_TMP/fixture-id"

@@ -105,6 +105,43 @@ fi
 #   --tools <allowlist>    → blocks the built-in tools only. `--help` says
 #                            "Built-in tools to allow", and the agent was
 #                            observed reaching for an MCP server instead.
+#                            So the tool flags below are NOT a write guard
+#                            either; the sandbox stays the write boundary.
+#
+# ── Read-only lanes run without a shell (Issue `#2522`) ──
+#
+# Headless grok cannot ask for approval, so a reviewer that reaches for the shell
+# to "verify" something (`npx prettier --check`, `node scripts/...`) gets
+# `permission required: <call> was not run, as a headless run cannot ask for
+# approval` on stderr (exit 0), then ends without typed verdict lines (or sits
+# until timeout) — INCOMPLETE in 3 of 3 runs observed in a consumer project. The
+# diff is already in the review prompt, so read-only lanes get the read tools
+# only and the shell is not offered at all; there is nothing to attempt and be
+# refused.
+#
+# What this gives up: headless grok auto-approves a fixed read-only command set
+# (`git log` / `git show` / `git blame` / `rg` / `ls` …, vendor
+# 22-permissions-and-safety.md), so those no longer run either. explore loses
+# history digging that way. This matches claude-code's read-only lanes, which
+# get Read,Grep,Glob without Bash.
+#
+# Measured on grok 1.0.62 (2026-10-30, the shell route — `grok --prompt-file`,
+# streaming-messages-json `init.tools`). The daemon route names these tools
+# differently (`CallMcpTool` / `GetMcpTools` …) and an entry that names nothing
+# there only warns, so re-measure if headless runs move to the daemon route:
+#   --tools read_file,grep,list_dir
+#       → [read_file,list_dir,grep,search_tool,use_tool]. The MCP meta-tools
+#         stay (vendor 14-headless-mode.md: "always-on MCP meta-tools"), and
+#         asked to run `echo`, the model DID call search_tool to look for a shell.
+#   + --disallowed-tools run_terminal_cmd,Agent,search_tool,use_tool
+#       → exactly [read_file,list_dir,grep], stderr empty. Vendor doc: "When both
+#         flags are present, `--disallowed-tools` wins."
+# Both flags are needed: the allowlist alone keeps the MCP route open (the
+# counterpart of claude-code's --strict-mcp-config), and the denylist alone would
+# keep any optional tool a stock profile injects. `Agent` blocks subagents, which
+# would otherwise carry their own shell. implement keeps the default tools.
+readonly GROK_READONLY_TOOLS="read_file,grep,list_dir"
+readonly GROK_READONLY_DISALLOWED_TOOLS="run_terminal_cmd,Agent,search_tool,use_tool"
 #
 # Caveat when re-verifying: the read-only profile permits writes to /tmp,
 # /var/tmp and ~/.grok by design. Running the check inside a temp directory
@@ -677,12 +714,21 @@ if [[ -z "$prompt_file" ]]; then
 fi
 _FF_PROMPT_FILE="$prompt_file"
 
+# read-only レーンはシェル・サブエージェント・MCP メタツールを渡さない（上の
+# GROK_READONLY_TOOLS の注記。条件は sandbox_check_grants・claude-code の
+# CLAUDE_PERMISSION_ARGS と同じ）。
+GROK_TOOL_ARGS=()
+if [[ "${TASK_TYPE:-review}" != implement || "${INLINE_OUTPUT:-false}" == true ]]; then
+  GROK_TOOL_ARGS=(--tools "$GROK_READONLY_TOOLS" --disallowed-tools "$GROK_READONLY_DISALLOWED_TOOLS")
+fi
+
 # MODEL_ARGS は空になりうる。bash 3.2 では set -u 下で空配列を "${a[@]}" と
 # 展開すると unbound variable で落ちるため ${a[@]+"${a[@]}"} を使う。
 result=$(run_with_timeout "$TIMEOUT" \
   "$CLI_COMMAND" --prompt-file "$prompt_file" \
     --sandbox "$sandbox_profile" \
     --output-format plain \
+    ${GROK_TOOL_ARGS[@]+"${GROK_TOOL_ARGS[@]}"} \
     ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   2>"$stderr_log") || {
     # Capture the status first: any command inside this block would overwrite $?.

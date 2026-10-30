@@ -724,6 +724,24 @@ for _ma_part in "${MULTI_AGENT_PARTS[@]}"; do
   fi
 done
 unset _ma_part _ma_part_last _ma_part_loaded
+# Windows では出力先の私有を POSIX の mode で示せないため、知識の読み取り境界の ACL helper
+# で確かめる（Issue `#2478`）。orchestrator 自身のシェルで読み込み、helper（PowerShell）を
+# 1 回だけ起動して、コマンド置換の中の検査にも同じ helper を使わせる。POSIX では読まない。
+case "${OSTYPE:-}" in
+  msys* | cygwin*)
+    _ma_acl_lib="${SCRIPT_DIR}/lib/knowledge-read-boundary.sh"
+    if [[ -L "$_ma_acl_lib" || ! -f "$_ma_acl_lib" || ! -s "$_ma_acl_lib" || ! -r "$_ma_acl_lib" ]]; then
+      ma_refuse_part "（Windows の出力先の ACL 検査に使う knowledge-read-boundary.sh）を読めません" "$_ma_acl_lib"
+    fi
+    # shellcheck source=lib/knowledge-read-boundary.sh
+    source "$_ma_acl_lib"
+    # 途中で切れた・中身の違うファイルを、後の「helper を読み込んでいない」と取り違えない
+    if ! declare -F ff_knowledge_windows_acl ff_knowledge_storage > /dev/null; then
+      ma_refuse_part "（knowledge-read-boundary.sh）が ACL 検査の関数を定義していません" "$_ma_acl_lib"
+    fi
+    unset _ma_acl_lib
+    ;;
+esac
 unset -f ma_refuse_part
 
 # ── Main ──

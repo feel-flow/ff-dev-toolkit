@@ -28,8 +28,9 @@
 # ## 判定規則を複製しない（ただし名簿の綴りだけは複製している）
 #
 # 本 hook は `tests/lib/exit-code-guard.sh` を source して `exit_code_scan` を呼ぶだけで、
-# **どの形を違反とみなすかの判定を 1 つも持たない**。タグの意味・誤検出の除外条件・
-# 対象フィルタの集合はすべて検出器側の正本に従う。
+# **終了コードのどの形を違反とみなすかの判定を 1 つも持たない**。タグの意味・誤検出の除外条件・
+# 対象フィルタの集合はすべて検出器側の正本に従う。背景実行の待ちの上限と、
+# command -v で見つからない timeout / gtimeout の分類は `tests/lib/wait-bounds.sh` に置く。
 #
 # **例外は下の既定名簿 `GATE_NAME`** — 候補の前置フィルタは検出器を source する前に走る必要が
 # あり（後述の fail-closed の面を候補コマンドへ限るため）、そのとき検出器の関数はまだ
@@ -276,6 +277,7 @@ case "$input" in
 esac
 case "$input" in
   *'$?'*|*PIPESTATUS*|*"$GATE_NAME"*) : ;;
+  *timeout*|*gtimeout*|*sleep*) : ;;
   *) has_raw_consumer_gate_candidate "$input" || exit 0 ;;
 esac
 
@@ -330,6 +332,7 @@ deny_unavailable() { # <理由>
 # 「残り全部」として拾う。
 meta="$(printf '%s' "$input" | jq -r '
   (.tool_name // ""),
+  (if (.tool_input.run_in_background // false) == true then "bg" else "fg" end),
   (.tool_input.command // "")' 2>/dev/null)"
 jq_rc=$?
 # rc=5 は「入力が JSON として読めない」= 設計上の fail-open。usage(2) / compile(3) は
@@ -343,8 +346,10 @@ fi
 # ガードが黙って素通りする。Issue `#2017`）。
 meta="${meta//$'\r'/}"
 
+run_bg=0
 case "$meta" in
-  Bash"$nl"*) cmd="${meta#Bash"$nl"}" ;;
+  Bash"$nl"bg"$nl"*) cmd="${meta#Bash"$nl"bg"$nl"}"; run_bg=1 ;;
+  Bash"$nl"fg"$nl"*) cmd="${meta#Bash"$nl"fg"$nl"}" ;;
   *) exit 0 ;;
 esac
 [ -n "$cmd" ] || exit 0
@@ -357,6 +362,54 @@ while :; do
     *) break ;;
   esac
 done
+# 待ちの承認は先頭に並ぶ代入のどれでもよい。until / while は代入前置を取れないので、
+# 語末の ; は代入語の一部として剥がす（FF_UNBOUNDED_WAIT_ACK=1; until …）。
+# 終了コードの承認は下の既存分岐のまま（最初の語だけ）で、待ちの検査より後に置く。
+ff_ack_timeout=0
+ff_ack_unbounded=0
+ff_ack_rest="$ack_probe"
+while [ -n "$ff_ack_rest" ]; do
+  ff_ack_word="${ff_ack_rest%% *}"
+  ff_ack_word="${ff_ack_word%%	*}"
+  ff_ack_word="${ff_ack_word%%"$nl"*}"
+  ff_ack_bare="$ff_ack_word"
+  case "$ff_ack_bare" in
+    *\;) ff_ack_bare="${ff_ack_bare%;}" ;;
+  esac
+  case "$ff_ack_bare" in
+    FF_TIMEOUT_ACK=1) ff_ack_timeout=1 ;;
+    FF_UNBOUNDED_WAIT_ACK=1) ff_ack_unbounded=1 ;;
+    [A-Za-z_]*=*) : ;;
+    *) break ;;
+  esac
+  [ "$ff_ack_word" = "$ff_ack_rest" ] && break
+  ff_ack_rest="${ff_ack_rest#"$ff_ack_word"}"
+  while :; do
+    case "$ff_ack_rest" in
+      " "*|"	"*|"$nl"*) ff_ack_rest="${ff_ack_rest#?}" ;;
+      *) break ;;
+    esac
+  done
+done
+# ヘルパが無いコピーは待ちを見ない（終了コードの検査はそのまま続く）。
+WAIT_LIB="${BASH_SOURCE[0]%/*}/../tests/lib/wait-bounds.sh"
+if [ -r "$WAIT_LIB" ]; then
+  # shellcheck source=../tests/lib/wait-bounds.sh
+  . "$WAIT_LIB" 2>/dev/null || true
+fi
+if [ "$(type -t ff_wait_bounds_reason 2>/dev/null)" = function ]; then
+  wait_rc=0
+  wait_reason="$(ff_wait_bounds_reason "$cmd" "$run_bg" "$ff_ack_timeout" "$ff_ack_unbounded" 2>/dev/null)" || wait_rc=$?
+  if [ "$wait_rc" -ne 0 ]; then
+    case "$cmd" in
+      *timeout*|*gtimeout*|*sleep*)
+        deny_unavailable "待ちの上限を判定できませんでした（rc=${wait_rc}）" ;;
+    esac
+  elif [ -n "$wait_reason" ]; then
+    deny "$wait_reason"
+  fi
+fi
+unset wait_reason wait_rc
 case "$ack_probe" in
   'FF_EXIT_CODE_ACK=1 '*|'FF_EXIT_CODE_ACK=1	'*) exit 0 ;;
 esac
@@ -414,8 +467,15 @@ esac
 [ "$(type -t exit_code_scan 2>/dev/null)" = "function" ] || deny_unavailable "検出器に exit_code_scan がありません"
 
 # 検出器は awk の非 0 を呼び出し側へ伝播させる契約なので、その rc を判定不能として扱う。
+# 背景実行のときだけ名簿外の起動も主体にする。名前は FF_ にしない（公開面の契約変数ではない）。
+if [ "$run_bg" = 1 ]; then
+  export ff_exit_code_any_launch=1
+else
+  unset ff_exit_code_any_launch
+fi
 hits="$(printf '%s\n' "$code_only" | exit_code_scan 2>/dev/null)"
 scan_rc=$?
+unset ff_exit_code_any_launch
 [ "$scan_rc" -eq 0 ] || deny_unavailable "検出器の走査が失敗しました（rc=${scan_rc}）"
 
 [ -n "$hits" ] || exit 0
@@ -431,7 +491,7 @@ if [ "${CLAUDECODE:-}" = 1 ] && [ -n "${CLAUDE_PROJECT_DIR:-}" ] \
     rewritten="$(ff_exit_code_rewrite "$cmd")" || rewritten=""
     if [ -n "$rewritten" ]; then
       printf '%s' "$input" | jq --arg command "$rewritten" \
-        '{hookSpecificOutput: {hookEventName: "PreToolUse", updatedInput: (.tool_input + {command: $command}), additionalContext: "終了コードガード: 単一パイプの出力を一時ログへ受け、表示後に測定コマンドの終了コードを返す書き換え候補を作成しました。採用・実行は再検査と通常の権限判定に従います。"}}' || deny_unavailable '書き換え JSON を組み立てられません'
+        '{hookSpecificOutput: {hookEventName: "PreToolUse", updatedInput: (.tool_input + {command: $command}), additionalContext: "終了コードガード: 一意なパイプ（単一、または ; で区切った同じ形の並び）の出力を一時ログへ受け、表示後に測定コマンドの終了コードを返す書き換え候補を作成しました。区間のどれかが非 0 ならその終了コードで終わります。採用・実行は再検査と通常の権限判定に従います。"}}' || deny_unavailable '書き換え JSON を組み立てられません'
       exit 0
     fi
   fi

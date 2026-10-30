@@ -106,7 +106,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ### レビュー待ち時間の使い方
 
-既定（高速）モードの `run-all.sh` は同じ head SHA に対して並走させてよい。`FF_RUN_ALL_FULL=1` は並走させない（OBS-215）。baseline は最終ゲートを代替しない。
+既定（高速）モードの `run-all.sh` は同じ head SHA に対して並走させてよい（PR 作成直後はレビュー起動と同じターンが既定。git-workflow ステップ6）。`FF_RUN_ALL_FULL=1` は並走させない（OBS-215）。HEAD が動いたら baseline は最終ゲートを代替しない。
 
 **許可側**: `gh` 経由の GitHub 側作業（Issue 本文の AC 更新・PR 本文の更新・follow-up の起票・完了報告の下書き）は作業ツリーを触らないので回してよい。**禁止側**: 編集は溜めず、**レビュー終端後に直したらすぐ commit し、次の回転を dirty な作業ツリーで起動しない**。dirty のまま起動すると CLI 側は DISCARDED になり、レビューエージェント（`git diff <base>...HEAD` を見る）は PR の内容としては未解消のままと判定する。
 

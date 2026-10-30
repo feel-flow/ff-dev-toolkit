@@ -63,6 +63,7 @@
 # 空振り検出: consumer candidate helper の不在・不可読・同名0byte・名前だけ残す集合0は、実source境界を抜いたfocusedで各1件赤・rc=1（2026-10-22）。正常は25/0。
 # 変異検出 (1421e65b時点): decoded full-prefixを旧先頭語へ戻すと8件赤、cmd門削除3件/ASDD後へ遅延2件、code_only旧門1件、rawをfull-prefixへ過剰限定4件（tab/escaped slash/Unicode ASCII escape）が赤。全変異は構文0・focused rc=1（2026-10-22）。
 # 変異検出: Unicode command名をJSON ASCII escapeした実hookもdenyする。候補対照27/0、raw Unicode候補を外す単独変異は該当1件だけ赤・rc=1、構文0（2026-10-22）。
+# 空振り検出: 背景の名簿外分岐を if (0) にする、または待ちタグの print を別名にする（名前だけ残して中身が変わる）と、該当の deny は素通しになり赤（2026-10-30 実測: 変異 13/14/15 は各 1 件が pass へ落ち、変異検出がそれを赤として数える。正常は 259/0）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -150,6 +151,31 @@ run_hook() { # <command> [env NAME=VALUE]...
   local cmd="$1"
   shift
   run_hook_on "$TARGET" "$cmd" "$@"
+}
+
+run_hook_bg_on() { # <hook-file> <command> [env NAME=VALUE]...
+  local hook="$1" cmd="$2"
+  shift 2
+  local json errfile
+  json="$(jq -n --arg c "$cmd" --arg d "$TEST_TMP" \
+    '{tool_name: "Bash", tool_input: {command: $c, run_in_background: true}, cwd: $d, hook_event_name: "PreToolUse"}')"
+  RC=0
+  errfile="$TEST_TMP/.stderr"
+  if [ "$#" -gt 0 ]; then
+    OUT="$(printf '%s' "$json" | env "$@" bash "$hook" 2>"$errfile")" || RC=$?
+  else
+    OUT="$(printf '%s' "$json" | bash "$hook" 2>"$errfile")" || RC=$?
+  fi
+  ERR="$(cat "$errfile" 2>/dev/null || true)"
+  DECISION="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)"
+  EVENT="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.hookEventName // empty' 2>/dev/null || true)"
+  REASON="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null || true)"
+}
+
+run_hook_bg() { # <command> [env NAME=VALUE]...
+  local cmd="$1"
+  shift
+  run_hook_bg_on "$TARGET" "$cmd" "$@"
 }
 
 # deny は「実行前に止まる」ことが要件なので、hookEventName まで見る。別イベント名だと
@@ -345,6 +371,131 @@ if [ "$((PASS + FAIL - CONSUMER_BEFORE))" -gt 0 ]; then
   ok "consumer gate のケース集合は空でない"
 else
   bad "consumer gate のケース集合が空"
+fi
+
+echo "guard-exit-code: 背景実行の名簿外と、上限の無い待ちと、見つからない timeout"
+WAIT_BEFORE=$((PASS + FAIL))
+wait_cases() {
+run_hook_bg 'E2E_PORT=4399 npm run ci:local > log 2>&1; echo "ci exit $?"'
+assert_fire "背景実行の名簿外コマンドが診断で終端する形を deny"
+case "$REASON" in
+  *'rc=$?'*'exit $rc'*) ok "背景の名簿外 deny は rc 保存と exit を案内する" ;;
+  *) bad "背景の名簿外 deny に rc 伝播の案内が無い: [$REASON]" ;;
+esac
+run_hook 'E2E_PORT=4399 npm run ci:local > log 2>&1; echo "ci exit $?"'
+assert_pass "前景の同じ名簿外形は素通し"
+run_hook_bg 'npm test > log 2>&1; rc=$?; echo "EXIT=$rc"; exit $rc'
+assert_pass "背景でも推奨形（診断の後に exit）は素通し"
+run_hook 'sleep 1'
+assert_pass "sleep 単体は素通し"
+run_hook_bg 'sleep 1'
+assert_pass "背景の sleep 単体は素通し"
+run_hook 'until ready; do sleep 1; done'
+assert_pass "前景の until sleep は素通し"
+run_hook_bg 'until ready; do sleep 1; done'
+assert_fire "背景の until sleep を deny"
+case "$REASON" in
+  *'for i in $(seq 1 LIMIT); do COND && break; sleep N; done'*) ok "上限の無い待ちは回数で抜ける形を案内する" ;;
+  *) bad "上限の無い待ちの案内が無い: [$REASON]" ;;
+esac
+case "$REASON" in
+  *'FF_UNBOUNDED_WAIT_ACK=1;'*) ok "上限の無い待ちの承認は独立した文で案内する" ;;
+  *) bad "上限の無い待ちの承認案内が独立した文ではない: [$REASON]" ;;
+esac
+run_hook_bg 'while true; do sleep 2; done'
+assert_fire "背景の while true sleep を deny"
+run_hook_bg 'while ! ready; do sleep 2; done'
+assert_fire "背景の while ! sleep を deny"
+run_hook_bg 'until [ "$n" -lt 3 ]; do sleep 1; done'
+assert_pass "回数比較のある until は素通し"
+run_hook_bg 'until [ $n -lt 3 ]; do sleep 1; done'
+assert_pass "引用しない回数比較のある until は素通し"
+run_hook_bg 'until test $n -lt 3; do sleep 1; done'
+assert_pass "test の回数比較のある until は素通し"
+run_hook_bg 'while true; do [ "$n" -ge 3 ] && break; sleep 1; done'
+assert_pass "break のある while true は素通し"
+run_hook_bg 'while true; do FOO=1 break; sleep 1; done'
+assert_pass "代入を前置した break は待ちの上限"
+run_hook_bg 'until false; do seq 1 3; sleep 1; done'
+assert_fire "本体の seq は待ちの上限ではない"
+run_hook_bg 'while true; do for i in 1; do break; done; sleep 1; done'
+assert_fire "内側の break は外側の待ちの上限ではない"
+run_hook_bg 'until false x -lt; do sleep 1; done'
+assert_fire "test の外の -lt は回数比較ではない"
+run_hook_bg 'until ls -a -lt /tmp/missing; do sleep 1; done'
+assert_fire "ls の途中の -lt は回数比較ではない"
+run_hook_bg 'until test -f done; do sleep 1; done'
+assert_fire "条件の引数 done は待ちの終端に数えない"
+run_hook_bg 'until grep -q done status; do sleep 1; done'
+assert_fire "条件の語 done は待ちの終端に数えない"
+run_hook_bg 'while true; do echo seq; sleep 1; done'
+assert_fire "引数の seq は待ちの上限ではない"
+run_hook_bg 'until ls -lt /tmp/missing; do sleep 1; done'
+assert_fire "ls の -lt は回数比較ではない"
+ACK_WAIT='FF_UNBOUNDED_WAIT_ACK=1; until ready; do sleep 1; done'
+if bash -n -c "$ACK_WAIT"; then
+  ok "上限の無い待ちの承認は bash の構文として通る"
+else
+  bad "上限の無い待ちの承認が bash の構文として通らない"
+fi
+if bash -n -c 'FF_UNBOUNDED_WAIT_ACK=1 until ready; do sleep 1; done' 2>/dev/null; then
+  bad "空白だけで until に付けた承認が構文として通ってしまった"
+else
+  ok "空白だけで until に付けた承認は構文エラー"
+fi
+run_hook_bg "$ACK_WAIT"
+assert_pass "文としての FF_UNBOUNDED_WAIT_ACK=1; で上限の無い待ちを通す"
+run_hook_bg "$(printf '%s\n%s' 'FF_UNBOUNDED_WAIT_ACK=1' 'until ready; do sleep 1; done')"
+assert_pass "改行で分けた FF_UNBOUNDED_WAIT_ACK=1 で上限の無い待ちを通す"
+run_hook_bg 'FF_EXIT_CODE_ACK=1 until ready; do sleep 1; done'
+assert_fire "終了コードの ACK は上限の無い待ちを通さない"
+run_hook_bg 'echo "until ready; do sleep 1; done"'
+assert_pass "引用符の中の until sleep は素通し"
+WITH_BIN="$TEST_TMP/bin-with-timeout"
+WITHOUT_BIN="$TEST_TMP/bin-without-timeout"
+mkdir -p "$WITH_BIN" "$WITHOUT_BIN"
+ln -s "$(command -v bash)" "$WITH_BIN/bash"
+ln -s "$(command -v jq)" "$WITH_BIN/jq"
+ln -s "$(command -v awk)" "$WITH_BIN/awk"
+ln -s "$(command -v bash)" "$WITHOUT_BIN/bash"
+ln -s "$(command -v jq)" "$WITHOUT_BIN/jq"
+ln -s "$(command -v awk)" "$WITHOUT_BIN/awk"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$WITH_BIN/timeout"
+chmod +x "$WITH_BIN/timeout"
+run_hook 'echo timeout 5 true' "PATH=$WITHOUT_BIN"
+assert_pass "echo の引数に timeout があってもコマンド位置でなければ素通し"
+run_hook 'timeout 30 true' "PATH=$WITHOUT_BIN"
+assert_fire "command -v で見つからない timeout を deny"
+case "$REASON" in
+  *"perl -e 'alarm SECONDS; exec @ARGV'"*) ok "見つからない timeout は perl alarm を案内する" ;;
+  *) bad "見つからない timeout の案内が無い: [$REASON]" ;;
+esac
+run_hook 'gtimeout 5 true' "PATH=$WITH_BIN"
+assert_fire "timeout があっても gtimeout が無ければ deny"
+run_hook 'FF_TIMEOUT_ACK=1 timeout 30 true' "PATH=$WITHOUT_BIN"
+assert_pass "先頭の FF_TIMEOUT_ACK=1 で見つからない timeout を通す"
+run_hook 'sudo timeout 30 true' "PATH=$WITHOUT_BIN"
+assert_fire "wrapper の後の timeout もコマンド位置として deny"
+run_hook_bg 'timeout 30 until ready; do sleep 1; done' "PATH=$WITH_BIN"
+assert_pass "実在する timeout で包んだ until は上限あり"
+run_hook_bg 'timeout $SECS until ready; do sleep 1; done' "PATH=$WITH_BIN"
+assert_pass "実在する timeout の期間が変数でも上限"
+run_hook_bg 'timeout -s TERM $SECS until ready; do sleep 1; done' "PATH=$WITH_BIN"
+assert_pass "実在する timeout の -s の後のシグナル名も上限"
+run_hook_bg 'timeout 30; until ready; do sleep 1; done' "PATH=$WITH_BIN"
+assert_fire "前のコマンドの timeout は待ちの上限ではない"
+run_hook 'command -v gtimeout >/dev/null || printf fallback' "PATH=$WITHOUT_BIN"
+assert_pass "command -v は見つからない gtimeout の実行ではない"
+run_hook_bg 'command -v timeout; until false; do sleep 1; done' "PATH=$WITH_BIN"
+assert_fire "別コマンドの command -v timeout は待ちの上限ではない"
+run_hook_bg 'FF_TIMEOUT_ACK=1 timeout 30 until ready; do sleep 1; done' "PATH=$WITHOUT_BIN"
+assert_fire "実在しない timeout は待ちの上限に数えない"
+}
+wait_cases
+if [ "$((PASS + FAIL - WAIT_BEFORE))" -gt 0 ]; then
+  ok "待ちと背景名簿のケース集合は空でない"
+else
+  bad "待ちと背景名簿のケース集合が空"
 fi
 
 CONSUMER_RESOURCE_CASES=0
@@ -1103,6 +1254,50 @@ $GATE > log 2>&1; echo done"
   fi
 fi
 cp "$DETECTOR" "$MUT_DIR/tests/lib/exit-code-guard.sh"
+
+# 変異 13: 背景実行で名簿外を主体にする分岐を消す
+cp "$TARGET" "$MUT"
+sed 's/if (ENVIRON\["ff_exit_code_any_launch"\] == "1") {/if (0) {/' "$DETECTOR" > "$MUT_DIR/tests/lib/exit-code-guard.sh"
+if grep -q 'ENVIRON\["ff_exit_code_any_launch"\] == "1"' "$MUT_DIR/tests/lib/exit-code-guard.sh"; then
+  bad "変異 13 が当たっていない（背景の名簿外分岐が sed に一致しない）"
+else
+  run_hook_bg_on "$MUT" 'npm test > log 2>&1; echo "rc=$?"'
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
+    ok "変異検出: 背景の名簿外分岐を消すと npm の echo 終端は素通しになり、その検査は赤になる"
+  else
+    bad "背景の名簿外分岐を消しても deny のまま: decision=[$DECISION]"
+  fi
+fi
+cp "$DETECTOR" "$MUT_DIR/tests/lib/exit-code-guard.sh"
+
+# 変異 14: 上限の無い待ちのタグを出さない
+cp "$PLUGIN_ROOT/tests/lib/wait-bounds.sh" "$MUT_DIR/tests/lib/wait-bounds.sh"
+sed 's/print "unbounded /print "muted /' "$PLUGIN_ROOT/tests/lib/wait-bounds.sh" > "$MUT_DIR/tests/lib/wait-bounds.sh"
+if grep -q 'print "unbounded ' "$MUT_DIR/tests/lib/wait-bounds.sh"; then
+  bad "変異 14 が当たっていない（unbounded の print が sed に一致しない）"
+else
+  run_hook_bg_on "$MUT" 'until ready; do sleep 1; done'
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
+    ok "変異検出: 上限の無い待ちのタグを消すと until sleep は素通しになり、その検査は赤になる"
+  else
+    bad "上限の無い待ちのタグを消しても deny のまま: decision=[$DECISION]"
+  fi
+fi
+cp "$PLUGIN_ROOT/tests/lib/wait-bounds.sh" "$MUT_DIR/tests/lib/wait-bounds.sh"
+
+# 変異 15: 見つからない timeout のタグを出さない
+sed 's/print "missing-timeout /print "muted /' "$PLUGIN_ROOT/tests/lib/wait-bounds.sh" > "$MUT_DIR/tests/lib/wait-bounds.sh"
+if grep -q 'print "missing-timeout ' "$MUT_DIR/tests/lib/wait-bounds.sh"; then
+  bad "変異 15 が当たっていない（missing-timeout の print が sed に一致しない）"
+else
+  run_hook_on "$MUT" 'timeout 30 true' "PATH=$WITHOUT_BIN"
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
+    ok "変異検出: missing-timeout のタグを消すと見つからない timeout は素通しになり、その検査は赤になる"
+  else
+    bad "missing-timeout のタグを消しても deny のまま: decision=[$DECISION]"
+  fi
+fi
+cp "$PLUGIN_ROOT/tests/lib/wait-bounds.sh" "$MUT_DIR/tests/lib/wait-bounds.sh"
 
 # ---- Windows の jq.exe（改行を \r\n で出す）でも同じ判定になる（Issue `#2017`）----
 # hook は tool_name と command を改行で連結して 1 回の jq で取り出す。修正前は先頭が `Bash\r` に

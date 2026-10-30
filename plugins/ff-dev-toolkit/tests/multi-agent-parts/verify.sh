@@ -35,6 +35,7 @@
 #
 # 空振り検出: 名簿の区間を消した入口では ma_sources_load が「名簿（1 件以上）が見つかりません」で赤、構成ファイルが 0 本の写しでは「名簿の構成ファイルがありません」で赤（どちらも本 suite の (A) / (E) 末尾で毎回実測する）。(C) の source 検査は、構成ファイルの関数の中へ `source x` を足した写しで赤になる（毎回実測する）。
 # 空振り検出: 入口の「ファイルが無い」分岐を外した写しを与えると、「構成ファイルの不在: rc=2 と読み込み部の案内で止まらない」の 1 件だけが赤になる（2026-10-21 実測。成功 59。判定は rc=2 のまま、針「がありません」が外れ、次の分岐の「が 0 バイトです」になる。CLI は起動しない）。
+# 空振り検出: 入口の Windows 分岐（OSTYPE が msys / cygwin のときの ACL ライブラリの読み込み）を消した写しでは、「Windows: ACL ライブラリの不在」「Windows: ACL ライブラリが関数を定義しない」の 2 件が赤（読み込み部の案内で止まらず、出力先の準備まで進む）。Issue `#2478`。
 # 依存は bash 3.2・POSIX ユーティリティ・mktemp。一時領域が無いと (D) / (E) と空振りの実測が
 # 成立しないので、skip せず赤にする。
 
@@ -278,6 +279,26 @@ if ! msys_skip "置き場 scripts/lib の symlink（ln -s がコピーになる�
   fi
 fi
 expect_stop "構成ファイルが空" "が 0 バイトです" empty sh -c ': > multi-agent-lanes.sh'
+# Windows（msys / cygwin）だけが読む ACL ライブラリ（Issue `#2478`）。bash は起動時に OSTYPE を
+# 設定し直すので、BASH_ENV のファイルで差し替える。POSIX では読まないので、無くても --help は通る
+printf 'OSTYPE=msys\n' > "$TMP/msys.env"
+printf 'OSTYPE=linux-gnu\n' > "$TMP/posix.env" # Git Bash の子 bash は最初から msys なので、正対照も差し替える
+BASH_ENV="$TMP/msys.env" expect_stop "Windows: ACL ライブラリの不在" \
+  "（Windows の出力先の ACL 検査に使う knowledge-read-boundary.sh）を読めません" acl-missing rm -f knowledge-read-boundary.sh
+BASH_ENV="$TMP/msys.env" expect_stop "Windows: ACL ライブラリが関数を定義しない" \
+  "（knowledge-read-boundary.sh）が ACL 検査の関数を定義していません" acl-hollow sh -c 'printf "%s\n" "# hollow" > knowledge-read-boundary.sh'
+dir="$TMP/posix-no-acl"
+rm -rf "$dir"
+make_copy "$dir"
+rm -f "$dir/scripts/lib/knowledge-read-boundary.sh"
+rc=0
+BASH_ENV="$TMP/posix.env" run_copy "$dir" "$TMP/posix-no-acl.log" --help || rc=$?
+if [ "$rc" -eq 0 ] && grep -q 'Usage:' "$TMP/posix-no-acl.log"; then
+  ok "POSIX: ACL ライブラリを読まないので、無くても --help が rc=0"
+else
+  bad "POSIX: ACL ライブラリの不在で起動が止まる (rc=${rc})"
+  tail -5 "$TMP/posix-no-acl.log" | sed 's/^/    | /' >&2
+fi
 # 関数の境界で切れたファイルは構文としては読めてしまう（定義が足りないまま CLI が走り、完走後に
 # 落ちる）。関数の途中で切れたファイルは source が構文エラーで落ち、案内を出す前に set -e で
 # 止まる。どちらも source の前に最後の行の読み込み完了の印を照合して見分ける

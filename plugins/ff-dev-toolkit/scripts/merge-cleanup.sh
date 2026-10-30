@@ -1028,7 +1028,7 @@ esac
 echo "- 対象 PR のリモートブランチ ($PR_HEAD): $PR_REMOTE_RESULT — リモートブランチの削除: ${PR_REMOTE_HUMAN}"
 echo "- ${DELETED_LABEL}[gone] ローカルブランチ: ${#DELETED_BRANCHES[@]} 本${DELETED_BRANCHES[*]+ (${DELETED_BRANCHES[*]})}"
 echo "- ${DELETED_LABEL}エージェントブランチ: ${#DELETED_AGENT_BRANCHES[@]} 本${DELETED_AGENT_BRANCHES[*]+ (${DELETED_AGENT_BRANCHES[*]})}"
-echo "- ${DELETED_LABEL}worktree: ${#DELETED_WORKTREES[@]} 個${DELETED_WORKTREES[*]+ (${DELETED_WORKTREES[*]})}"
+echo "- ${DELETED_LABEL}worktree: ${#DELETED_WORKTREES[@]} 個${DELETED_WORKTREES[*]+ (${DELETED_WORKTREES[*]})}${DELETED_WORKTREES[*]+${WT_REMOVE_NOTE:+ — ${WT_REMOVE_NOTE}}}"
 if [ -n "$TRANSCRIPT_STEP_NOTE" ]; then
   echo "- worktree トランスクリプトの回収: $TRANSCRIPT_STEP_NOTE"
 elif [ "${#ARCHIVED_TRANSCRIPTS[@]}" -gt 0 ]; then

@@ -193,7 +193,7 @@ printf '%s\\n' 'fixture-media@1.0.0'
     git('remote','add','origin',str(public_remote),cwd=pub)
     git('fetch','-q','origin','+refs/heads/main:refs/remotes/origin/main',cwd=pub)
     gitdir=Path(git('rev-parse','--absolute-git-dir'))
-    (gitdir/'ff-release-state').write_text('GATE_OK='+base+':full\nGATE_LOADER_CONTEXT=disabled\n')
+    (gitdir/'ff-release-state').write_text('GATE_OK='+base+':full\n')
     now=dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     iso=lambda days:(now-dt.timedelta(days=days)).isoformat().replace('+00:00','Z')
     runrow=lambda ident,event,days=1:{'id':ident,'status':'completed','event':event,'head_branch':'develop','created_at':iso(days),'updated_at':iso(days),'html_url':'https://example.invalid/runs/'+str(ident),'conclusion':'success'}
@@ -321,7 +321,7 @@ printf '%s\\n' 'fixture-media@1.0.0'
     EXECUTED.add('release-lists')
     f=parity(release,('--public',pub,'--only','release'),'existing Release postconditions: stdout/stderr/rc gh=file')
     check(f.returncode==0 and scalar(f,'RELEASE_RESULT')=='stage-done','existing Release needs latest + fresh all-page after list')
-    check(b'RELEASE_PYTHON_PATH=' in f.stdout and b'RELEASE_MEDIA_TYPECHECK=ready' in f.stdout and b'RELEASE_LOADER_APPLICABILITY=disabled' in f.stdout,'release fixture reaches real upstream preflight before mandatory file acquisition')
+    check(b'RELEASE_PYTHON_PATH=' in f.stdout and b'RELEASE_MEDIA_TYPECHECK=ready' in f.stdout,'release fixture reaches real upstream preflight before mandatory file acquisition')
     # Exact default gh argv survives: real original request selectors are recorded.
     calls=[json.loads(line) for line in (T/'gh-calls').read_text().splitlines()]
     check(['api','--paginate','repos/feel-flow/ff-dev-toolkit/releases','--jq','.[] | select(.draft == false) | .tag_name'] in calls,'gh release-list exact argv retained')
@@ -382,7 +382,7 @@ printf '%s\\n' 'fixture-media@1.0.0'
     # The gh inability branch retains its existing full-gate alternative.
     build();bad=copy.deepcopy(data);bad['workflow']={};(T/'data').write_text(json.dumps(bad));(gitdir/'ff-release-state').write_text('');q=invoke(release,('--public',pub,'--only','gate','--dry-run'),file=False)
     check(q.returncode==0 and b'FF_RUN_ALL_FULL=1 bash' in q.stdout,'gh weekly unknown still plans full-gate fallback',repr((q.returncode,q.stdout,q.stderr)))
-    (gitdir/'ff-release-state').write_text('GATE_OK='+base+':full\nGATE_LOADER_CONTEXT=disabled\n')
+    (gitdir/'ff-release-state').write_text('GATE_OK='+base+':full\n')
     # No-op drift is a legitimate no-due result; forced drift reaches raw due latest.
     build();q=invoke(release,('--due','--drift-count','1','--last-sync-sha',base))
     check(q.returncode==0 and scalar(q,'RELEASE_DUE')=='yes','due scalar published_at read reached without gh')

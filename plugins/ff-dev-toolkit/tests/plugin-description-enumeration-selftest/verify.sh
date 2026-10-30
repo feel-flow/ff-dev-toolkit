@@ -39,6 +39,13 @@
 #        なので G31 の 500 文字は UTF-8 で 1400 バイトを超え、バイト数で数える退行は G31 が赤になる）
 #   G30. marketplace.json 側が 501 文字 → 赤（G29 の対称。片側だけ数える退行を固定）
 #   G31. 両側とも 500 文字ちょうど → 緑（境界。上限を 499 へ寄せる・バイト数で数える退行を固定）
+#   G32. manifest と一致する GitHub 配布元 → 緑 / G33. 一致しない GitHub 配布元 → 赤
+#   G34. 実体を持たない git-subdir エントリ（別リポジトリから配布）→ 緑。検査 A の集合から外れ、
+#        B〜D を走査しない（社内専用の ff-agent-press を別リポジトリへ移した形と同型）
+#   G35. git-subdir なのに同名の plugins/<name> が残っている → 赤（正本が 2 つ）
+#   G36. git-subdir の path が欠落 / url が https の .git でない / path に .. → 赤（書式崩れを
+#        集合から外すだけの緑にしない）
+#   G37. git-subdir エントリの description が 501 文字 → 赤（外部エントリにも検査 F が効く）
 #
 # baseline には 4 プラグインを置く: 全列挙 2 件（うち 1 件は部分文字列の罠を含む名前）、
 # 非列挙 1 件、部分列挙を免除される ff-dev-toolkit 1 件。免除名簿・非列挙名簿は本体に
@@ -559,6 +566,65 @@ if [ "$RC" -ne 0 ] && [[ "$OUT" == *"source が"* ]]; then
   ok "G33: manifest と異なる GitHub 配布元は赤"
 else
   bad "G33: GitHub 配布元の不一致が素通り（rc=${RC}）: $OUT"
+fi
+
+# G34〜G37: 別リポジトリの subdirectory から配布する git-subdir エントリ
+ext_add() {
+  # $1=root $2=name $3=source（JSON）$4=description
+  local m="$1/.claude-plugin/marketplace.json"
+  jq --arg n "$2" --argjson src "$3" --arg d "$4" \
+    '.plugins += [{name: $n, description: $d, source: $src}]' "$m" > "$m.tmp"
+  mv "$m.tmp" "$m"
+}
+EXT_SRC='{"source":"git-subdir","url":"https://github.com/example/zeta.git","path":"plugins/zeta"}'
+EXT_DESC='テスト用。zeta-one・zeta-two を別リポジトリから配る。'
+
+build_fixture "$FIX"
+ext_add "$FIX" zeta "$EXT_SRC" "$EXT_DESC"
+run_target "$FIX"
+if [ "$RC" -eq 0 ] \
+   && [[ "$OUT" == *"zeta: 外部リポジトリから配布（git-subdir: https://github.com/example/zeta.git の plugins/zeta"* ]] \
+   && [[ "$OUT" == *"zeta: marketplace.json の description は 500 文字以内"* ]] \
+   && [[ "$OUT" != *"marketplace.json にだけあるプラグイン"* ]] \
+   && [[ "$OUT" != *"zeta: 両ファイル"* ]] && [[ "$OUT" != *"zeta: description"* ]]; then
+  ok "G34: 実体を持たない git-subdir エントリは集合から外れて緑、B〜D を走査しない"
+else
+  bad "G34: git-subdir エントリの扱いが期待と違います（rc=${RC}）: $OUT"
+fi
+
+build_fixture "$FIX"
+ext_add "$FIX" zeta "$EXT_SRC" "$EXT_DESC"
+mkdir -p "$FIX/plugins/zeta/.claude-plugin"
+jq -n '{name: "zeta", version: "0.0.1", description: "テスト用。"}' > "$FIX/plugins/zeta/.claude-plugin/plugin.json"
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"zeta: git-subdir で外部から配布するのに plugins/zeta が残っています"* ]]; then
+  ok "G35: git-subdir と同名の plugins/ 実体の併存を赤にできる"
+else
+  bad "G35: git-subdir と plugins/ 実体の併存が素通りしました（rc=${RC}）: $OUT"
+fi
+
+for bad_src in \
+  '{"source":"git-subdir","url":"https://github.com/example/zeta.git"}' \
+  '{"source":"git-subdir","url":"git@github.com:example/zeta.git","path":"plugins/zeta"}' \
+  '{"source":"git-subdir","url":"https://github.com/example/zeta.git","path":"plugins/../zeta"}'; do
+  build_fixture "$FIX"
+  ext_add "$FIX" zeta "$bad_src" "$EXT_DESC"
+  run_target "$FIX"
+  if [ "$RC" -ne 0 ] && [[ "$OUT" == *"zeta: git-subdir の url / path が読めません"* ]] \
+     && [[ "$OUT" != *"marketplace.json にだけあるプラグイン"* ]]; then
+    ok "G36: git-subdir の書式崩れを赤にできる（${bad_src}）"
+  else
+    bad "G36: git-subdir の書式崩れが素通りしました（${bad_src} / rc=${RC}）: $OUT"
+  fi
+done
+
+build_fixture "$FIX"
+ext_add "$FIX" zeta "$EXT_SRC" "$(pad_to "$EXT_DESC" 501)"
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"zeta: marketplace.json の description が 500 文字を超えています（実測 501 文字。"* ]]; then
+  ok "G37: git-subdir エントリの description 超過を赤にできる"
+else
+  bad "G37: git-subdir エントリの description 超過が素通りしました（rc=${RC}）: $OUT"
 fi
 
 echo

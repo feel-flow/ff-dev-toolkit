@@ -25,7 +25,10 @@
 #      一致すること、marketplace.json に同名エントリが重複しないこと、skills/ を持つのに
 #      plugin.json が無い実体が無いことを固定する。marketplace の source が
 #      `./plugins/<name>` を指すことは B〜D のループで見る（文字列の一致であって、
-#      指す先の実体は見ない）
+#      指す先の実体は見ない）。source が git-subdir（別リポジトリの subdirectory から
+#      配布する。社内専用の ff-agent-press は別の非公開リポジトリから配る）
+#      のエントリは実体が本リポジトリに無いので集合から外し、代わりに url / path の書式・
+#      同名の実体が plugins/ に無いこと・description の文字数（F）を見る（B〜D は対象外）
 #   B. 各プラグイン P について、plugin.json の description が挙げる P のスキル名の集合と
 #      marketplace.json 側の集合が一致（片側更新の検出。PR #1003 の drift クラス。
 #      免除プラグインは対象外）
@@ -188,6 +191,38 @@ if [ -n "$DUP_NAMES" ]; then
   exit 1
 fi
 
+# 外部リポジトリの subdirectory から配布するエントリ（source が git-subdir）。実体は本リポジトリに
+# 無いので検査 A の集合と B〜D から外す。外すのは書式が正しいものだけにせず、書式が崩れていても
+# 名前は集合から外したうえで赤にする（only_market へ二重に出さない）。同名の実体が plugins/ に
+# 残っていると正本が 2 つになるので赤にする。
+EXTERNAL_NAMES="$(jq -r '.plugins[] | select((.source | type) == "object" and .source.source == "git-subdir") | .name' "$MARKET" | sort -u)"
+while IFS= read -r ext; do
+  [ -n "$ext" ] || continue
+  ext_url="$(jq -r --arg n "$ext" '.plugins[] | select(.name == $n) | .source.url // ""' "$MARKET")"
+  ext_path="$(jq -r --arg n "$ext" '.plugins[] | select(.name == $n) | .source.path // ""' "$MARKET")"
+  if [[ "$ext_url" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.git$ ]] \
+    && [[ "$ext_path" =~ ^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$ ]] \
+    && [[ "/${ext_path}/" != */../* ]]; then
+    ok "${ext}: 外部リポジトリから配布（git-subdir: ${ext_url} の ${ext_path}。実体は本リポジトリに無いので検査 B〜D は対象外）"
+  else
+    bad "${ext}: git-subdir の url / path が読めません（url=${ext_url:-未設定} / path=${ext_path:-未設定}。url は https://github.com/<owner>/<repo>.git、path は相対の subdirectory）"
+  fi
+  if [ -e "$PLUGINS_DIR/$ext" ]; then
+    bad "${ext}: git-subdir で外部から配布するのに plugins/${ext} が残っています（正本が 2 つになる。どちらかを消すこと）"
+  fi
+  if ! ext_desc="$(jq -er --arg n "$ext" '.plugins[] | select(.name == $n) | .description' "$MARKET")"; then
+    bad "${ext}: marketplace.json の description を取得できません"
+    continue
+  fi
+  ext_len="$(jq -rn --arg s "$ext_desc" '$s | length')"
+  if [ "$ext_len" -gt "$PLUGIN_DESC_MAX" ]; then
+    bad "${ext}: marketplace.json の description が ${PLUGIN_DESC_MAX} 文字を超えています（実測 ${ext_len} 文字。claude.ai のマーケットプレイス同期が除外する）"
+  else
+    ok "${ext}: marketplace.json の description は ${PLUGIN_DESC_MAX} 文字以内（${ext_len} 文字）"
+  fi
+done <<< "$EXTERNAL_NAMES"
+LOCAL_MARKET_NAMES="$(comm -23 <(printf '%s\n' "$MARKET_NAMES") <(printf '%s\n' "$EXTERNAL_NAMES") | sed '/^$/d')"
+
 DIR_NAMES=''
 STRUCT_BAD=0
 for pdir in "$PLUGINS_DIR"/*/; do
@@ -223,11 +258,11 @@ if [ -z "$DIR_NAMES" ]; then
   exit 1
 fi
 
-if [ "$MARKET_NAMES" = "$DIR_NAMES" ] && [ "$STRUCT_BAD" -eq 0 ]; then
-  ok "プラグイン集合が一致（marketplace.json = plugins/ 配下）"
+if [ "$LOCAL_MARKET_NAMES" = "$DIR_NAMES" ] && [ "$STRUCT_BAD" -eq 0 ]; then
+  ok "プラグイン集合が一致（marketplace.json の git-subdir 以外 = plugins/ 配下）"
 else
-  only_market="$(comm -23 <(printf '%s\n' "$MARKET_NAMES") <(printf '%s\n' "$DIR_NAMES") | tr '\n' ' ')"
-  only_dir="$(comm -13 <(printf '%s\n' "$MARKET_NAMES") <(printf '%s\n' "$DIR_NAMES") | tr '\n' ' ')"
+  only_market="$(comm -23 <(printf '%s\n' "$LOCAL_MARKET_NAMES") <(printf '%s\n' "$DIR_NAMES") | tr '\n' ' ')"
+  only_dir="$(comm -13 <(printf '%s\n' "$LOCAL_MARKET_NAMES") <(printf '%s\n' "$DIR_NAMES") | tr '\n' ' ')"
   if [ -n "${only_market// /}" ]; then
     bad "marketplace.json にだけあるプラグイン: ${only_market}"
   fi
@@ -237,7 +272,7 @@ else
 fi
 
 # 検査 B〜D は両側に居るプラグインだけを対象にする（片側だけの分は A が赤にしている）
-TARGETS="$(comm -12 <(printf '%s\n' "$MARKET_NAMES") <(printf '%s\n' "$DIR_NAMES"))"
+TARGETS="$(comm -12 <(printf '%s\n' "$LOCAL_MARKET_NAMES") <(printf '%s\n' "$DIR_NAMES"))"
 EXEMPT_NAMES="$(exempt_names)"
 # 実際に「両側とも非列挙」だったプラグイン（非列挙名簿の腐り検査で突き合わせる）
 NON_ENUM_USED=''

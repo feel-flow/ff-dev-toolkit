@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: run_windows_acl_cases は、private の Windows 分岐を外した写しで 6 件、chmod 700 の代わりの private-staging を外した写しで 1 件、ancestors の Windows 分岐を外した写しで 1 件が赤（Windows 11 の Git Bash、2026-10-30 実測、Issue `#2478`）。実 helper の回は Windows だけで走り、他の OS では理由付きで skip する。
 # 空振り検出: native-temp-aliasはmacOSのprivate user tempで2/0。標準別名の認識除去は1/1、case集合の空化は0/1で赤（syntax0、2026-10-28実測）。TMPDIR変更後の正常表記とsuffixリンク拒否を対にし、non-Darwinは実機対象外と明記する。
 #
 # multi-agent-stale-outputs: 前回実行の観点ファイルが「今回の結果」として読まれない
@@ -1148,6 +1149,10 @@ WINDOWS_CASES="$SCRIPT_DIR/windows-boundary-cases.sh"
 WINDOWS_BEFORE=$((PASS + FAIL))
 run_windows_boundary_cases
 [[ $((PASS + FAIL - WINDOWS_BEFORE)) -ge 4 ]] || { bad 'Windows output-boundary assertion collection empty'; exit 1; }
+[[ "$(type -t run_windows_acl_cases)" == function ]] || { bad 'Windows output ACL function missing'; exit 1; }
+WINDOWS_ACL_BEFORE=$((PASS + FAIL))
+run_windows_acl_cases
+[[ $((PASS + FAIL - WINDOWS_ACL_BEFORE)) -ge 6 ]] || { bad 'Windows output ACL assertion collection empty'; exit 1; }
 ADMIN_CASES="$SCRIPT_DIR/admin-identity-cases.sh"
 [[ -s "$ADMIN_CASES" && -r "$ADMIN_CASES" ]] || { bad 'Git administrative identity cases missing/unreadable/empty'; exit 1; }
 # shellcheck source=admin-identity-cases.sh

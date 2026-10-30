@@ -90,6 +90,8 @@ green」。healthy を確認できない回は全件で代替 — ADR-039）。`
 | case 35 | （tracked shell・SKILL.md・docs-template の静的監査 + `tests/lib/exit-code-guard.sh`。`cases/exit-code-guard.sh`） | 出力整形フィルタ（head / tail / less / more / cat / tee / wc、`sudo` / `command` / `env` / `VAR=` の前置き 1 段を含む）で終わるパイプラインの直後で `$?` を読む形（代入・`echo` のほか `if [ $? -ne 0 ]` などの制御構文、コメント行を跨いだ次の行も）と、zsh では機能しない `PIPESTATUS` 参照が無いこと、ゲート起動（`run-all.sh`）の終了コードを運ばない終端（セミコロン・`\|\|`・単独 `&`・パイプ。`{ }` / `( )` のグループ実行と環境代入・ラッパ前置きの終端も含む）が無いこと。論理行をまたぐ持ち越し（`gate-exit-dropped`）は同じ行の「上書き → 参照」を区間の実行順に判定し、閉じない引用符が単位の終端まで続いても末尾の行を個別に解析する。検出器 self-test 付き（誤検出しない形・Markdown フェンスの走査境界も含む） |
 | case 47 | chg-docs-probe, chg-script-probe, chg-required-probe, chg-tree-probe（隔離した一時リポジトリの `plugins/ff` に置いた複製ランナー。`cases/changed-selection.sh`） | 変更ベースの選択（`FF_RUN_ALL_CHANGED`。ADR-062）: 参照されたファイルの変更でそれを参照する suite だけを選んで根拠を出す／交差 0 件は登録照合だけで `suites: selected=0`／suite 自身のディレクトリ・改名元でも選ぶ／プラグインルートを参照する suite は配下のすべての変更で選ぶ／契約面の名簿（run-all.sh の 2 配列）の全要素と解決できない base は全件へ倒して理由を出す／FULL・FAST・明示引数との同時指定は矛盾警告、`0` と空値は未設定と同じ／参照を削った suite は選ばれず、参照 0 本の suite は常に選ぶ／選択の指定を suite へ継承しない／記録は `STATUS=partial` / `MODE=changed` |
 | case 49 | （複製ランナーと起動 sentinel、実体の検査専用モード・resource） | 非空の `FF_DEV_TOOLKIT_ROOT` を継承した既定・明示実行は rc 3 で suite 未起動。値を表示せず変数名と解除方法を案内し、未設定・空値・検査専用モード・resource 単体は維持する。診断を除去した変異で停止検査が赤になる |
+| case 50 | slow-a〜d（`FF_RUN_ALL_JOBS=2` と probe の rendezvous、`FF_RUN_ALL_ELAPSED_RECORD` で記録を与える）／slow-a + fail（50-K）／複製ランナーの一時リポジトリとその worktree（50-J） | 並列実行は前回の経過秒の長い順（数値で比べ、同順位は登録順）に起動し、記録に無い suite を先に起動する。見出し・elapsed-sec は登録順のまま。実行後は今回 pass した suite の経過秒で記録を書き直し、前回の記録が読めた回は走らなかった suite の行を残す（赤の suite の秒数は載せない）。記録が無い・空・1 行でも崩れている・ディレクトリの回は登録順と理由を出す（崩れた記録は捨てて今回の分だけで書き直し、ディレクトリの中へは書かない）。記録を与えない明示引数・逐次・入れ子の実行は並べ替えず、記録も書き換えない。記録を書けない回（塞がれた置き場・書けない既存ディレクトリ）も rc=0 で、シェルのエラー文を出さない。既定一覧は `<git common dir>/ff-dev-toolkit/run-all-elapsed.tsv` を絶対パスで名指しし、別 worktree からも同じ記録で並べ替える。起動順は probe ログの最初の 2 本の集合で読む（同時に起動した 2 本の前後は比べない） |
+| case 51 | pass, fail, stale（明示引数。fail は相対パスでも渡す。51-E は `FF_RUN_ALL_JOBS=2`、51-F は全件モード） | 赤の回は `✗ failed:` の後に、赤の suite だけを絶対パスで並べた再実行コマンドを出す（緑の suite は混ぜない）。赤が複数なら `✗ failed:` と同じ集合・同じ並び。全件モードの回は `FF_RUN_ALL_FULL=1` を前置する。出したコマンドは形を確かめてから入れ子の印付きで別の cwd から実行し、赤の 1 本だけが走る（not-run 0）。相対パスで渡した suite も絶対パスで出す。緑の回は案内を出さない |
 
 ケース番号には欠番があります。Issue #1022 でランナー契約の核心 4 領域（集計 / skip 判定 / fail-closed 経路 /
 選択モード）へ絞り、同じ検出対象を別の疑似 suite で二重に踏んでいたケースを**検出力単位で統合**したためです。
@@ -228,6 +230,22 @@ FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh
   | 計測行を指紋ブロックの内側へ移す | case 45-E |
   | `ff_record_elapsed` を no-op にする | case 45-A / 45-B / 45-C |
   | 記録する秒を常に 0 にする（2 秒かかる suite を 0 秒で出す） | case 45-B / 45-C |
+  | 起動順の並べ替えを外す（常に登録順） | case 50-A / 50-C |
+  | 記録なしの suite を記録ありより後ろへ回す | case 50-C |
+  | 記録の形式検査を外し、崩れた行を部分的に使う | case 50-E |
+  | 入れ子の実行を起動順の対象から外さない | case 50-G |
+  | 実行後に記録を書かない | case 50-B / 50-D / 50-E |
+  | 赤の suite の再実行コマンドを出さない | case 51-A / 51-B / 51-C |
+  | 再実行コマンドへ verify.sh のパスではなく suite 名を並べる | case 51-A / 51-B / 51-C |
+  | 相対パスの suite を絶対パスへ直さない | case 51-C |
+  | 赤の suite のパスを集めない | case 51-A / 51-C / 51-E（51-B は実行しない） |
+  | 赤の suite のパスを追記ではなく上書きで集める | case 51-E |
+  | 再実行コマンドから全件モードの前置を落とす | case 51-F |
+  | 秒を文字列で比べる / 同順位の並びを逆にする | case 50-A / case 50-I |
+  | 空の記録を有効として扱う | case 50-E2 |
+  | 赤の suite の秒数も記録する | case 50-K |
+  | 記録の場所がディレクトリでも書く / 一時ファイルのエラー文を stderr へ出す | case 50-H2 / case 50-H3 |
+  | 既定一覧の記録の場所（common dir・ファイル名）を変える | case 50-J |
   | 並列経路の起動直後に `wait $!` を挟んで逐次化する | case 30（最大同時実行数 1） |
   | `tests/lib/exit-code-guard.sh` の `is_pipe` を常に 0 へ倒す（パイプ終端を認識しなくする） | case 35 |
   | 同梱 MCP 依存ガードの発火条件を常に偽へ倒す | case 41-A |

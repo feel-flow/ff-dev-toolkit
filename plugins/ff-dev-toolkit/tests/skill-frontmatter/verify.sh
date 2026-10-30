@@ -373,11 +373,20 @@ fi
 # 1 件以上寄与していることを要求する。再 glob ではなく $SKILL_FILES の中身そのもの
 # から集合を作るので、走査パスが誤って特定プラグイン（過去実績: ff-dev-toolkit
 # のみ）へ縮んだ場合も確実に検出できる（fail-closed）。
-MARKET_PLUGIN_NAMES="$(jq -r '.plugins[].name' "$MARKET")"
+# source が git-subdir（別リポジトリの subdirectory から配布。社内専用の ff-agent-press は別の非公開
+# リポジトリから配る）のエントリは、スキルの実体が本リポジトリに無いので下限ガードの対象外にする。
+# 名前は出力に残す（黙って名簿から消えたように見せない）。url / path の書式と同名の実体が plugins/ に
+# 無いことは plugin-description-enumeration が見る。
+MARKET_PLUGIN_NAMES="$(jq -r '.plugins[] | select(((.source | type) == "object" and .source.source == "git-subdir") | not) | .name' "$MARKET")"
+MARKET_EXTERNAL_NAMES="$(jq -r '.plugins[] | select((.source | type) == "object" and .source.source == "git-subdir") | .name' "$MARKET")"
 if [ -z "$MARKET_PLUGIN_NAMES" ]; then
-  echo "✗ marketplace.json の plugins[] が空です: $MARKET" >&2
+  echo "✗ marketplace.json の plugins[]（git-subdir 以外）が空です: $MARKET" >&2
   exit 1
 fi
+while IFS= read -r external_name; do
+  [ -n "$external_name" ] || continue
+  echo "  ○ ${external_name}: source が git-subdir（別リポジトリから配布）のため、本リポジトリの skills/ は走査対象外"
+done <<< "$MARKET_EXTERNAL_NAMES"
 
 # skills/ を持たないプラグインの明示除外リスト（"理由" 付きで追加する）。
 # 現状は marketplace.json 掲載の全 9 プラグインが skills/ を持つため空。
@@ -423,7 +432,7 @@ while IFS= read -r plugin_name; do
       ;;
   esac
 done <<< "$MARKET_PLUGIN_NAMES"
-echo "  ○ marketplace.json の全プラグインが走査対象に 1 件以上寄与（下限ガード）"
+echo "  ○ marketplace.json の全プラグイン（git-subdir を除く）が走査対象に 1 件以上寄与（下限ガード）"
 
 for file in "${SKILL_FILES[@]}"; do
   skill_dir_name="$(basename "$(dirname "$file")")"

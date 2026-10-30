@@ -3,6 +3,7 @@
 # merge-cleanup.sh の破壊的経路の回帰テスト。
 # 空振り検出: detached linked caller の判定を除いた mutant は独立 fixture の dry-run 検査で赤になる。
 # 空振り検出: agent branch専用fixtureが削除処理の欠落・祖先判定欠落・worktree判定欠落・remote判定欠落を赤にする。
+# 空振り検出: msys の core.longpaths=true を外した mutant は long-paths.sh の呼び出し記録の照合で赤になる。Windows の実機では、深い node_modules の削除が git の「Filename too long」で失敗して赤になる（2026-10-30 実測、Issue `#2479`）。
 # 空振り検出: 入口の「ファイルが無い」分岐を外した写しを与えると、「構成ファイルを読めない入口が削除前に止まっていない（mode=missing）」の 1 件だけが赤になる（2026-10-21 実測。成功は残り全部。判定は exit 1 のまま、針「がありません」が外れ、次の分岐の「が 0 バイトです」になる。削除へは進まない）。
 # worktree一覧の不在・空・警告とremote照合失敗はfixtureでskip理由と残存を実測する。
 #
@@ -4204,6 +4205,30 @@ if bash "$SCRIPT_DIR/detached-caller.sh" "$TMP/detached-mutant/merge-cleanup.sh"
   exit 1
 else
   ok "detached caller の判定を除いた mutant を fixture が赤にする"
+fi
+
+# Issue `#2479`: Windows の長いパスの worktree は core.longpaths=true で消し、サマリーに名指しする
+if bash "$SCRIPT_DIR/long-paths.sh" "$TARGET"; then
+  ok "Windows（msys）は core.longpaths=true で worktree を消して名指しし、他の OS の削除経路は変えない"
+else
+  bad "長いパスの worktree 削除の回帰"
+  exit 1
+fi
+stage_cleanup_mutant "$TMP/longpaths-mutant"
+awk '
+  /WT_REMOVE_GIT=\(git -c core\.longpaths=true\)/ { print "    WT_REMOVE_GIT=(git)"; next }
+  { print }
+' "$TMP/longpaths-mutant/lib/merge-cleanup-local.sh" > "$TMP/longpaths-mutant/lib/merge-cleanup-local.new"
+mv "$TMP/longpaths-mutant/lib/merge-cleanup-local.new" "$TMP/longpaths-mutant/lib/merge-cleanup-local.sh"
+if cmp -s "$PLUGIN_ROOT/scripts/lib/merge-cleanup-local.sh" "$TMP/longpaths-mutant/lib/merge-cleanup-local.sh"; then
+  bad "long paths mutant が原本と同一（空振り）"
+  exit 1
+fi
+if bash "$SCRIPT_DIR/long-paths.sh" "$TMP/longpaths-mutant/merge-cleanup.sh" > "$TMP/longpaths-mutant.log" 2>&1; then
+  bad "core.longpaths の欠落を fixture が検出できない"
+  exit 1
+else
+  ok "core.longpaths を外した mutant を fixture が赤にする"
 fi
 
 echo "✓ merge-cleanup verify: 全 $PASS 件 pass"

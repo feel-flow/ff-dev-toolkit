@@ -9,6 +9,18 @@
 
 # ---- Step 5: [gone] ブランチ + 関連 worktree の削除 ---------------------------
 
+# Windows のパスは既定で 260 文字までで、node_modules を持つ worktree はそれを超える。
+# git は削除の途中で「Filename too long」で止まり、登録だけ外して実体を残す（Issue `#2479`）。
+# Windows の git に長いパスを扱わせる設定だけを足し、削除の判定（force なし）は変えない。
+WT_REMOVE_GIT=(git)
+WT_REMOVE_NOTE=""
+case "${OSTYPE:-}" in
+  msys* | cygwin*)
+    WT_REMOVE_GIT=(git -c core.longpaths=true)
+    WT_REMOVE_NOTE="Windows の 260 文字を超えるパスも消すため git -c core.longpaths=true worktree remove で削除"
+    ;;
+esac
+
 # grep は「マッチ 0 件」で exit 1 を返すが、[gone] ゼロ件は正常系なので || true で許容する
 GONE_BRANCHES="$(git for-each-ref \
   --format='%(if:equals=[gone])%(upstream:track)%(then)%(refname:short)%(end)' \
@@ -240,8 +252,8 @@ else
       WORKTREE_RM_OUT=""
       if [ "$DRY_RUN" = "1" ]; then
         # clean 確認・ロック判定は実行時と同じ条件を通過済み。削除だけ見送る。
-        dry_run_skip "git worktree remove ${WORKTREE_PATH}"
-      elif ! WORKTREE_RM_OUT="$(git worktree remove "$WORKTREE_PATH" 2>&1)"; then
+        dry_run_skip "${WT_REMOVE_GIT[*]} worktree remove ${WORKTREE_PATH}"
+      elif ! WORKTREE_RM_OUT="$("${WT_REMOVE_GIT[@]}" worktree remove "$WORKTREE_PATH" 2>&1)"; then
         echo "  ❌ worktree 削除に失敗: $WORKTREE_RM_OUT"
         echo "     ブランチ削除もスキップします。手動対応してください。"
         if [ "$WT_AGENT_PATH" = "1" ]; then

@@ -51,12 +51,15 @@ printf x >>"$read_input"
 read_rc=0; read_snapshot="$(ff_knowledge_snapshot "$read_input" "$read_probe/project" "$read_probe/job" 2>"$read_probe/error")" || read_rc=$?
 [[ "$read_rc" -eq 2 && -z "$read_snapshot" ]] && ok 'K31: Bash 4 MiB + 1 refused' || bad 'K31: oversized input accepted'
 printf normal >"$read_input"
-read_bin="$read_probe/no-node-bin"; mkdir "$read_bin"
-for read_command in awk uname stat mktemp chmod rm readlink; do
-  ln -s "$(command -v "$read_command")" "$read_bin/$read_command"
-done
-read_rc=0; read_snapshot="$(PATH="$read_bin" ff_knowledge_snapshot "$read_input" "$read_probe/project" "$read_probe/job" 2>"$read_probe/error")" || read_rc=$?
-[[ "$read_rc" -eq 0 ]] && cmp -s "$read_input" "$read_snapshot" && ok 'K31: Bash reader needs neither Node nor Python' || bad "K31: minimal PATH rc=$read_rc"
+# A copied executable in the minimal PATH cannot load its DLLs (rc=127), so the copy does not stand in.
+if ! kl_skip_no_symlink 'K31 の最小 PATH（コピーした実行ファイルは DLL を読めない）'; then
+  read_bin="$read_probe/no-node-bin"; mkdir "$read_bin"
+  for read_command in awk uname stat mktemp chmod rm readlink head tr; do
+    ln -s "$(command -v "$read_command")" "$read_bin/$read_command"
+  done
+  read_rc=0; read_snapshot="$(PATH="$read_bin" ff_knowledge_snapshot "$read_input" "$read_probe/project" "$read_probe/job" 2>"$read_probe/error")" || read_rc=$?
+  [[ "$read_rc" -eq 0 ]] && cmp -s "$read_input" "$read_snapshot" && ok 'K31: Bash reader needs neither Node nor Python' || bad "K31: minimal PATH rc=$read_rc"
+fi
 if [[ "$(uname -s)" == Darwin ]]; then
   mkdir "$read_probe/inherited"
   /bin/chmod +a 'everyone allow list,search,readattr,readextattr,readsecurity,file_inherit,directory_inherit' "$read_probe/inherited" || exit 1
@@ -76,26 +79,30 @@ read_book="$read_probe/history/PLAYBOOK.md"
 read_history="$read_probe/history/CHANGELOG.md"
 printf '# Book\n## Changelog\n[history](CHANGELOG.md)\n' >"$read_book"
 printf '## Changelog\n### [1.0.0] - 2026-10-29\n#### 追加\n- ACE-2432-1: normal\n' >"$read_probe/history/actual.md"
-ln -s actual.md "$read_history"
-read_rc=0; ff_playbook_changelog_helpful_check "$read_book" >"$read_probe/history-output" 2>"$read_probe/error" || read_rc=$?
-[[ "$read_rc" -eq 0 && "$FF_PLAYBOOK_CHANGELOG_VERDICT" == ok ]] && ok 'K31: Bash Changelog accepts a protected in-area link' || bad 'K31: Bash Changelog safe-link compatibility'
-rm "$read_history"; ln -s "$read_probe/outside/private.md" "$read_history"
-printf '## Changelog\n### [1.0.0] - 2026-10-29\n#### 追加\n- ACE-2432-1: private-history-canary-2432\n' >"$read_probe/outside/private.md"
-read_rc=0; ff_playbook_changelog_helpful_check "$read_book" >"$read_probe/history-output" 2>"$read_probe/error" || read_rc=$?
-[[ "$read_rc" -eq 2 && "$FF_PLAYBOOK_CHANGELOG_VERDICT" == unreadable-file && "$(cat "$read_probe/history-output" "$read_probe/error")" != *private-history-canary-2432* ]] \
-  && ok 'K31: Bash Changelog refuses discovered external text' || bad 'K31: Bash Changelog external read'
-mkdir "$read_probe/bound-project"
-ln -s "$read_probe/outside/private.md" "$read_probe/bound-project/PLAYBOOK.md"
-read_rc=0; ff_playbook_changelog_helpful_check "$read_probe/bound-project/PLAYBOOK.md" "$read_probe/bound-project" >"$read_probe/history-output" 2>"$read_probe/error" || read_rc=$?
-[[ "$read_rc" -eq 2 && "$FF_PLAYBOOK_CHANGELOG_VERDICT" == unreadable-file && "$(cat "$read_probe/history-output" "$read_probe/error")" != *private-history-canary-2432* ]] \
-  && ok 'K31: Bash writer uses its explicit project context outside caller cwd' || bad 'K31: external writer context silently promoted a main link'
-read_rc=0; read_result="$(
-  CDPATH= cd -P -- "$read_probe/bound-project" || exit 2
-  ff_playbook_changelog_helpful_check "$read_probe/bound-project/PLAYBOOK.md"
-)" 2>"$read_probe/error" || read_rc=$?
-[[ "$read_rc" -eq 2 && "$read_result$(cat "$read_probe/error")" != *private-history-canary-2432* ]] \
-  && ok 'K31: Bash Changelog local operand creates no external grant' || bad 'K31: local main operand silently promoted by selector'
-rm "$read_history"; ln -s actual.md "$read_history"
+if kl_skip_no_symlink 'K31 の Bash Changelog のリンク 4 件（範囲内のリンク・外部のリンク・明示の文脈・cwd 相対）'; then
+  cp "$read_probe/history/actual.md" "$read_history" # the snapshot count below needs no link
+else
+  ln -s actual.md "$read_history"
+  read_rc=0; ff_playbook_changelog_helpful_check "$read_book" >"$read_probe/history-output" 2>"$read_probe/error" || read_rc=$?
+  [[ "$read_rc" -eq 0 && "$FF_PLAYBOOK_CHANGELOG_VERDICT" == ok ]] && ok 'K31: Bash Changelog accepts a protected in-area link' || bad 'K31: Bash Changelog safe-link compatibility'
+  rm "$read_history"; ln -s "$read_probe/outside/private.md" "$read_history"
+  printf '## Changelog\n### [1.0.0] - 2026-10-29\n#### 追加\n- ACE-2432-1: private-history-canary-2432\n' >"$read_probe/outside/private.md"
+  read_rc=0; ff_playbook_changelog_helpful_check "$read_book" >"$read_probe/history-output" 2>"$read_probe/error" || read_rc=$?
+  [[ "$read_rc" -eq 2 && "$FF_PLAYBOOK_CHANGELOG_VERDICT" == unreadable-file && "$(cat "$read_probe/history-output" "$read_probe/error")" != *private-history-canary-2432* ]] \
+    && ok 'K31: Bash Changelog refuses discovered external text' || bad 'K31: Bash Changelog external read'
+  mkdir "$read_probe/bound-project"
+  ln -s "$read_probe/outside/private.md" "$read_probe/bound-project/PLAYBOOK.md"
+  read_rc=0; ff_playbook_changelog_helpful_check "$read_probe/bound-project/PLAYBOOK.md" "$read_probe/bound-project" >"$read_probe/history-output" 2>"$read_probe/error" || read_rc=$?
+  [[ "$read_rc" -eq 2 && "$FF_PLAYBOOK_CHANGELOG_VERDICT" == unreadable-file && "$(cat "$read_probe/history-output" "$read_probe/error")" != *private-history-canary-2432* ]] \
+    && ok 'K31: Bash writer uses its explicit project context outside caller cwd' || bad 'K31: external writer context silently promoted a main link'
+  read_rc=0; read_result="$(
+    CDPATH= cd -P -- "$read_probe/bound-project" || exit 2
+    ff_playbook_changelog_helpful_check "$read_probe/bound-project/PLAYBOOK.md"
+  )" 2>"$read_probe/error" || read_rc=$?
+  [[ "$read_rc" -eq 2 && "$read_result$(cat "$read_probe/error")" != *private-history-canary-2432* ]] \
+    && ok 'K31: Bash Changelog local operand creates no external grant' || bad 'K31: local main operand silently promoted by selector'
+  rm "$read_history"; ln -s actual.md "$read_history"
+fi
 # Fixed transform of our own reader for an open-count oracle; no input text is executed.
 sed 's/^ff_knowledge_snapshot()/ff_counted_original_snapshot()/' "$PLUGIN_ROOT/scripts/lib/knowledge-read-boundary.sh" >"$read_probe/counted-reader.sh"
 cp "$PLUGIN_ROOT/scripts/lib/knowledge-read-acl.ps1" "$read_probe/knowledge-read-acl.ps1"

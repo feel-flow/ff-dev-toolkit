@@ -300,7 +300,6 @@ if [[ -f "$RELEASE_RT_STATE/runall.unknown-skip" ]]; then echo "  ○ skip: code
 # ff-media-toolkit ラッパーは子 runner の出力を 4 スペースで写すので、子の suite 単位 skip が親では部分 skip になる（Issue `#1904`）
 if [[ -f "$RELEASE_RT_STATE/runall.media-typecheck-skip" ]]; then echo "    ○ skip: /x/plugins/ff-media-toolkit/node_modules が無いため型検査を行いません（検査は1件も実行されていません。ff-media.sh setup で有効化）"; fi
 if [[ -f "$RELEASE_RT_STATE/runall.media-render-skip" ]]; then echo "    ○ skip: FF_MEDIA_RENDER=1 が未設定のため実レンダリングを行いません（検査は1件も実行されていません）"; fi
-if [[ -f "$RELEASE_RT_STATE/runall.loader-skip" ]]; then echo "    ○ skip: FF_AGENT_PRESS_LOADER_NODE_MODULES（feelflow-website-2026 の feelflow-site/node_modules）が未設定のため差分テストを行いません（検査は1件も実行されていません）"; fi
 # OS 限定の検査が Linux / macOS で出す skip（guard-review-in-flight の (w1)〜(w5) と同じ文言。Issue `#2033`）
 if [[ -f "$RELEASE_RT_STATE/runall.os-limited-skip" ]]; then echo "  ○ skip: (w1)〜(w5) はドライブ付きのパスを扱う、Windows の Git Bash でだけ成立する検査のため未実行"; fi
 # bash 版限定の検査が macOS 標準の bash 3.2 で出す skip（retrospective-stop-hook / skill-drift-check と同じ文言。Issue `#2077`）
@@ -1392,7 +1391,6 @@ if [[ -n "$HOOK" && -f "$HOOK" ]]; then
   rm -f "$STATE/drift.stale"
 fi
 
-release_environment_loader_gate_cases
 RELEASE_GATE_MODE_REACHED=0
 release_gate_mode_cases
 [[ "$RELEASE_GATE_MODE_REACHED" -eq 1 ]] || bad 'gate-mode cases did not reach their end'

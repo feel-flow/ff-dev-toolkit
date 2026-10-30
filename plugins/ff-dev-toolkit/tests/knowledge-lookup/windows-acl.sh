@@ -164,11 +164,41 @@ win_run 'ff_knowledge_job_directory w12'
   && ok 'W12: TMPDIR を ACL の判定以外の理由で通せないときは、代替先へ移さずに理由を出して止める' \
   || bad "W12: ACL の判定でない拒否で作業場所を移した（rc=${win_rc} out=${win_out} err=${win_err}）"
 
+# Issue `#2530`: Windows hosts hand the plugin root over as C:/…; a reader sourced by that
+# spelling keeps the helper path as is instead of joining it to the cwd.
+case "$(uname -s 2>/dev/null)" in
+  MSYS*|MINGW*|CYGWIN*)
+    win_drive_lib="$(cygpath -m "$PLUGIN_ROOT/scripts/lib/knowledge-read-boundary.sh")"
+    # A lost helper exits 2 inside the substitution; take the rc so a lost helper fails W15 instead of ending the suite under set -e.
+    win_drive_rc=0; win_drive_out="$(cd "$win_project" && bash -c '. "$1"; printf "%s\n" "$ff_knowledge_acl_resource"; ff_knowledge_acl_command && echo found' _ "$win_drive_lib" 2>&1)" || win_drive_rc=$?
+    [[ "$win_drive_rc" -eq 0 && "$win_drive_out" == "${win_drive_lib%/*}/knowledge-read-acl.ps1"$'\nfound' ]] \
+      && ok 'W15: 実機: C:/… の綴りで読み込んだ境界は helper のパスを cwd へ連結せず、そのまま見つける' \
+      || bad "W15: 実機: C:/… の綴りで helper を見失う（rc=${win_drive_rc} out=${win_drive_out}）"
+    ;;
+  *)
+    # A C: directory under the cwd lets both rules run here: MINGW keeps C:/… as is, others join it.
+    mkdir -p "$win_root/drive/C:/lib" "$win_root/posix-bin"
+    cp "$PLUGIN_ROOT/scripts/lib/knowledge-read-boundary.sh" "$win_root/drive/C:/lib/"
+    printf '#!/usr/bin/env bash\necho Linux\n' >"$win_root/posix-bin/uname"; chmod +x "$win_root/posix-bin/uname"
+    win_drive_probe='. C:/lib/knowledge-read-boundary.sh; printf "%s\n" "$ff_knowledge_acl_resource"'
+    win_drive_mingw="$(cd "$win_root/drive" && env PATH="$win_bin:$PATH" bash -c "$win_drive_probe" 2>&1)"
+    win_drive_posix="$(cd "$win_root/drive" && env PATH="$win_root/posix-bin:$PATH" bash -c "$win_drive_probe" 2>&1)"
+    # A native root joined with /scripts/… arrives as C:\…/lib/…; here C:\m is one directory name.
+    mkdir -p "$win_root/drive/C:\\m/lib"
+    cp "$PLUGIN_ROOT/scripts/lib/knowledge-read-boundary.sh" "$win_root/drive/C:\\m/lib/"
+    win_drive_mixed="$(cd "$win_root/drive" && env PATH="$win_bin:$PATH" bash -c '. "C:\m/lib/knowledge-read-boundary.sh"; printf "%s\n" "$ff_knowledge_acl_resource"' 2>&1)"
+    [[ "$win_drive_mingw" == 'C:/lib/knowledge-read-acl.ps1' && "$win_drive_posix" == "$win_root/drive/C:/lib/knowledge-read-acl.ps1" \
+      && "$win_drive_mixed" == 'C:\m/lib/knowledge-read-acl.ps1' ]] \
+      && ok 'W15: C:/… と C:\…/… の綴りで読み込んだ境界は、MINGW では helper のパスをそのまま使い、他の OS では cwd へ連結する' \
+      || bad "W15: ドライブ付きの helper パスの判定（mingw=${win_drive_mingw} posix=${win_drive_posix} mixed=${win_drive_mixed}）"
+    ;;
+esac
+
 case "$(uname -s 2>/dev/null)" in
   MSYS*|MINGW*|CYGWIN*)
     # internetClient capability SID: the kind of ACE an MSIX app adds under AppData.
     win_sid='S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681'
-    win_real_rc=0; win_real="$(env -u SystemRoot SYSTEMROOT='C:\Windows' bash -c '. "$1"; ff_knowledge_job_directory win-real' _ "$PLUGIN_ROOT/scripts/lib/knowledge-read-boundary.sh")" || win_real_rc=$?
+    win_real_rc=0; win_real="$(env -u SystemRoot SYSTEMROOT='C:\Windows' TMPDIR="${kl_tmpdir_given:-${TMPDIR:-/tmp}}" bash -c '. "$1"; ff_knowledge_job_directory win-real' _ "$PLUGIN_ROOT/scripts/lib/knowledge-read-boundary.sh")" || win_real_rc=$?
     if [[ "$win_real_rc" -eq 0 && -d "$win_real" ]]; then
       ok 'W8: 実機: SYSTEMROOT だけの環境で、実 ACL の検査を通る作業場所を作る'
       mkdir "$win_real/clean" "$win_real/app"

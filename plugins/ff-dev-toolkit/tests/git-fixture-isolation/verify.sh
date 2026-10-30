@@ -468,6 +468,7 @@ markdownlint-selftest/verify.sh
 mbcs-guard-failclosed/verify.sh
 merge-cleanup/agent-branches.sh
 merge-cleanup/detached-caller.sh
+merge-cleanup/long-paths.sh
 merge-cleanup/verify.sh
 multi-agent-critical-marker/verify.sh
 multi-agent-host-delegation/completed-lane-cases.sh

@@ -100,4 +100,35 @@ out="$(printf '%s' "$next" | env CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" bash "$t
 check jq -e '.hookSpecificOutput.updatedInput.command != null' <<< "$out"
 command="$(jq -r '.hookSpecificOutput.updatedInput.command' <<< "$out")"
 check bash -c "$command"
+# ; で繋いだ一意なパイプ。片方の producer が非 0 なら書き換え後も非 0。
+next="$(jq --arg c "$tmp/fail | tail -1; echo \"rc=\${PIPESTATUS[0]}\"; printf ok | head -1; echo rc=\$?" '.tool_input.command=$c' <<< "$json")"
+out="$(printf '%s' "$next" | env CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" bash "$target")"
+check jq -e '.hookSpecificOutput.updatedInput.command != null and .hookSpecificOutput.permissionDecision == null' <<< "$out"
+command="$(jq -r '.hookSpecificOutput.updatedInput.command' <<< "$out")"
+rc=0
+bash -c "$command" > "$tmp/compound.log" || rc=$?
+check test "$rc" -eq 7
+check test "$(grep -c 'rc=7' "$tmp/compound.log")" -ge 1
+# 両方 0 なら 0。
+next="$(jq --arg c 'printf ok | head -1; echo rc=$?; printf ok | tail -1; echo rc=$?' '.tool_input.command=$c' <<< "$json")"
+out="$(printf '%s' "$next" | env CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" bash "$target")"
+command="$(jq -r '.hookSpecificOutput.updatedInput.command' <<< "$out")"
+check bash -c "$command"
+# 一意でない区間・関数・サブシェル・背景起動は書き換えない。
+for cmd in \
+  'printf x | grep -v y; echo rc=$?; printf ok | head -1; echo rc=$?' \
+  'f() { printf ok | head -1; echo rc=$?; }; f' \
+  '( printf ok ) | head -1; echo rc=$?; printf ok | tail -1; echo rc=$?' \
+  'printf ok | head -1; echo rc=$? & printf ok | tail -1; echo rc=$?'
+ do
+  next="$(jq --arg c "$cmd" '.tool_input.command=$c' <<< "$json")"
+  out="$(printf '%s' "$next" | env CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" bash "$target")"
+  check jq -e '.hookSpecificOutput.permissionDecision == "deny" and .hookSpecificOutput.updatedInput == null' <<< "$out"
+done
+# 複合の書き換えも、後段の deny で落ちる。
+out="$(run bash "$batch" "$target" "$tmp/recheck.sh")"
+check jq -e '.hookSpecificOutput.permissionDecision=="deny"' <<< "$out"
+next="$(jq --arg c 'printf ok | head -1; echo rc=$?; printf ok | tail -1; echo rc=$?' '.tool_input.command=$c' <<< "$json")"
+out="$(printf '%s' "$next" | env CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" bash "$batch" "$target" "$tmp/recheck.sh")"
+check jq -e '.hookSpecificOutput.permissionDecision=="deny" and .hookSpecificOutput.updatedInput==null and (.hookSpecificOutput.additionalContext|contains("採用しました")|not)' <<< "$out"
 echo "exit-code rewrite: $pass checks passed"

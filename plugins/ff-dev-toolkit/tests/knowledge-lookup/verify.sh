@@ -2,6 +2,8 @@
 # 空振り検出: 物理identityキー・既定照合列・物理role・論理roleを各1件戻す4変異は構文0の後、別名/除外の針でrc=1。前後privacy51件、既存分を含む全体135件pass（2026-10-29実測）。
 # 空振り検出: 記録候補を論理leafから実体pathnameへ戻す変異は構文0の後、配置/隣接categoryの2針が赤（rc=1）。前後対照privacy40件pass（2026-10-29実測）。
 # 空振り検出: privacy対照29件pass。root包含除去・UTF-8検査no-op・上限倍増・Changelog再読・空privacy集合の5変異は、構文成功後に各対象の針でrc=1（2026-10-29、隔離コピーで前後対照を実測）。
+# 空振り検出: 境界のドライブ付き判定（`[A-Za-z]:[/\\]*` の行）を消して `/` 始まりだけへ戻す変異で W15 が赤（mingw 側が cwd 連結、rc=1）、`[A-Za-z]:/*` へ狭める変異でも W15 が赤（`C:\…/…` 側が cwd 連結、rc=1）。正常対照は 146 件成功（2026-10-30 macOS 実測）。Windows の Git Bash では W15 の実機分岐が同じ「行を消す」変異で `✗ W15`（rc=2 と cwd 連結のパスを名指し、suite は打ち切らない）、正常対照は windows-acl.sh 15 件成功（2026-10-30 Windows Server 2022 実測）。
+# 空振り検出: symlink を作れない Git Bash の部分 skip（Issue `#2539`）は、OS 判定を linux-gnu へ固定する変異（probe が symlink を作れないと測っても skip しない＝Linux / macOS の振る舞い）で K8・K27・K28・K31 が赤、read-boundary.sh の相対リンク作成で suite が途中終了（rc=1）。正常対照は既定の TMPDIR（AppData\Local の下）のまま 114 件成功で W8・W9・W15 の実機分岐まで走る。変更前は既定の TMPDIR で K1 以降がほぼ全件赤、TMPDIR を移しても K8 / K27 / K28 / K31 の赤と同じ途中終了（2026-10-30 Windows Server 2022・開発者モードなしの Git Bash 実測）。
 #
 # scripts/knowledge-lookup.sh（ACE Playbook と観測台帳の統合読み出し器）の振る舞い検査（Issue `#1778`）。
 #
@@ -42,6 +44,9 @@
 #   K21. awk / tr / sed の起動回数がエントリ数に比例しない（4 件と 40 件の台帳で同じ回数。キーワード
 #        検索と --promoted-open の両方）。Windows の Git Bash ではプロセス起動 1 回が 0.1 秒を超え、
 #        エントリごとの起動は約 350 件の台帳の --promoted-open を 6 分超にしていた
+#   K32. 読むファイル 1 件あたりの stat / mktemp / head / tr / awk の起動が Windows 7 回・Linux 8 回以下（カテゴリ 1 件と
+#        5 件の差。macOS は回数がパスの深さで変わるので skip。Issue `#2477`）。同じ鎖の検査・同じ stat の繰り返しと
+#        1 バイトずつの read が、Windows の Git Bash で 1 回の検索を約 70 秒にしていた
 #   K22. 記録済み配置（AGENTS.md のリンク先・docs/MASTER.md の記載ファイル相対リンク）が指す
 #        docs-template/08-knowledge/PLAYBOOK.md を ok として検索し、--resolve-playbook も同じ配置を返す（Issue `#2142`）
 #   K23. ACE_PLAYBOOK_PATH の Playbook を採る。実在しない値は読み取り失敗（探索で上書きしない）、
@@ -59,6 +64,8 @@
 #        （判定以外の拒否では移さない）・別の要求の応答を読み飛ばす・helper の死で shell が落ちない・応答全体の期限・
 #        helper が判定できなかったパスの理由・素の wait が helper を待たない・相対の綴りを止める。
 #        W8〜W9 は Windows の Git Bash でだけ、実 ACL と capability SID の ACE で確かめる
+#   W15. C:/… と C:\…/… の綴りで読み込んだ境界は helper のパスを cwd へ連結しない（Issue `#2530`）。Windows の Git Bash では
+#        実ドライブの綴りで helper を見つけ、他のホストでは cwd 下の C: ディレクトリで MINGW（そのまま）と他の OS（連結）を分ける
 #   K28. --resolve-playbook の出力契約（unreadable の PATH、相対指定の REL、root 内外は実体で判定、
 #        symlink ファイルは実体が root 内のときだけ REL、キーワード拒否）
 #
@@ -66,6 +73,7 @@
 # 空振り検出: knowledge-lookup.sh の find を -maxdepth 1 へ戻す変異で K20 のサブディレクトリ検出が赤、prune から _archive を外す変異で K20 の既定除外が赤（2026-10-08 実測）。
 # 空振り検出: 両 store を置かない root を与えると K6 が rc=2 を要求し、台帳の見出しを `### OBS 001 …`（コロン無し）へ変えると K7 が `読み取り失敗` を要求する（2026-09-19 実測。スクリプト側の noentry 判定を `empty` へ倒す変異で K7 が赤、両不在の rc=2 を rc=0 へ倒す変異で K6 が赤）。
 # 空振り検出: K21 は変更前の実装（エントリごとに meta_of の `$(printf | tr | awk)` を起動）へ戻すと 2 件赤（promoted-open 4 件 74 回 / 40 件 650 回、検索 84 回 / 660 回）、annotate_refs の空白除去だけを要素ごとの sed へ戻す変異でも 2 件赤（15 回 / 69 回）。shim が 1 回も呼ばれない回は「測れていない」として赤にする（2026-10-16 Git Bash 実測）。
+# 空振り検出: K32 は Windows 11 の Git Bash で、変更前の 0.172.0 が 1 件あたり 12 回（カテゴリ 1 件 74 回 / 5 件 122 回）、変更後が 7 回（54 回 / 82 回）で、上限 7 を超える側へ倒れる。Linux（WSL）の変更後は 8 回（61 回 / 93 回）。件数を増やしても回数が増えない回は「測れていない」として赤にする（2026-10-30 実測、Issue `#2477`）。1 バイトずつの read へ戻す変異は外部プロセスを増やさない性能の後退で、K32 でも K31 の忠実度の検査でも見えない（未検査として名指す）。
 # 空振り検出: promoted の closed 説明を旧「対策済みまたは再発」へ戻す／mitigated の未解消再発確認を旧説明へ戻すと各 rc=1、正常対照は38件pass（2026-09-28実測）。状態名の接頭辞だけが残っても意味の欠落を緑にしない。
 # 空振り検出: resolve_playbook へ 1 件ずつ当てた 9 変異 — 記録段の削除・記録段で docs-template を一律除外・plugin 同梱テンプレートの除外を外す・曖昧時に先頭を採る・既定パス優先を外す・env 段の削除・env の空白判定を外す・旧 resolve_store へ戻す・記載ファイル相対の解決を外す — がすべて K22〜K26 のいずれかで赤（1〜12 件）、正常対照は 69 件成功（2026-10-18 実測）。
 # 空振り検出: レビュー対応後の 7 変異 — 記録段の symlink 除外・root 前置照合・node_modules 除外を外す、記録 1 件で実在する既定パスを置き換える、--resolve-playbook の絶対パス実体化を外す、symlink ファイルの実体確認を外す — がそれぞれ K25 / K27 / K28 で赤（1〜2 件）、正常対照は 82 件成功（2026-10-18 実測）。awk が読める記載ファイルで失敗する分岐（読み取り失敗の rc=2）は再現手段が無く未検査。
@@ -89,7 +97,10 @@
 #           process substitution だったため、両方外しても K16 は緑だった。
 #
 # 依存: bash・awk・find・mktemp。gh は PATH 先頭の stub で差し替える（実 gh は呼ばない）。
-# 一時領域を作れない環境では suite 全体を ○ skip する。
+# 一時領域を作れない環境では suite 全体を ○ skip する。Windows の Git Bash では fixture を読み取り境界の
+# ff_knowledge_job_directory で作り（既定の TMPDIR が AppData\Local の下なら状態ディレクトリ配下へ移る）、
+# 移し先も境界に止められたら赤で終わる。symlink を作れない Git Bash では symlink・chmod 000・最小 PATH を
+# 前提にするケースを字下げした部分 skip にする（tests/lib/msys-case.sh。Issue `#2539`）。
 # run-all-required: yes — 台帳の読み側（状態切り分け・不在時の既定・promoted 突き合わせ）を見る唯一の層で、一時領域不足で skip すると「promoted を未対策として返す」退行が黙って戻る
 
 set -euo pipefail
@@ -110,11 +121,24 @@ if [[ ! -f "${TARGET}" ]]; then
   echo "✗ knowledge-lookup verify: 1 件失敗 / 0 件成功" >&2
   exit 1
 fi
-if ! TMP="$(mktemp -d "${TMPDIR:-/tmp}/knowledge-lookup-suite.XXXXXX" 2>&1)" || [[ ! -d "${TMP}" ]]; then
-  echo "○ skip: 一時ディレクトリを作成できないため knowledge-lookup を実行できません（検査は 1 件も実行されていません）"
-  printf '  mktemp: %s\n' "${TMP}"
-  exit 0
-fi
+case "$(uname -s 2>/dev/null)" in
+  MSYS*|MINGW*|CYGWIN*)
+    # Issue `#2539`: fixtures must pass the reader's ACL check, or nearly every case refuses them. The reader's
+    # own job-directory rule moves off a TMPDIR whose ancestors (AppData\Local) a capability SID can write.
+    if ! TMP="$(bash -c '. "$1"; ff_knowledge_job_directory knowledge-lookup-suite' _ "${PLUGIN_ROOT}/scripts/lib/knowledge-read-boundary.sh")" || [[ ! -d "${TMP}" ]]; then
+      bad "fixture の置き場が読み取り境界の検査を通らない（上の knowledge-read: 行が止めた場所を避ける TMPDIR を渡す）"
+      echo "✗ knowledge-lookup verify: 1 件失敗 / 0 件成功" >&2
+      exit 1
+    fi
+    kl_tmpdir_given="${TMPDIR:-/tmp}" # W8 still makes the reader move off the caller's TMPDIR itself
+    export TMPDIR="${TMP%/*}" ;; # the lookups under test then need no move of their own
+  *)
+    if ! TMP="$(mktemp -d "${TMPDIR:-/tmp}/knowledge-lookup-suite.XXXXXX" 2>&1)" || [[ ! -d "${TMP}" ]]; then
+      echo "○ skip: 一時ディレクトリを作成できないため knowledge-lookup を実行できません（検査は 1 件も実行されていません）"
+      printf '  mktemp: %s\n' "${TMP}"
+      exit 0
+    fi ;;
+esac
 FINISHED=0
 cleanup() {
   local rc=$?
@@ -128,6 +152,23 @@ cleanup() {
 }
 trap cleanup EXIT
 finish() { FINISHED=1; exit "$1"; }
+
+# Windows' Git Bash without symlink rights copies `ln -s` (or fails on a missing target), and `chmod 000`
+# leaves the file readable. Those cases become indented skips there only (Issue `#2539`); elsewhere a
+# failed probe still runs the case, so a host that loses symlinks goes red instead of silent.
+if [[ -f "${SCRIPT_DIR}/../lib/msys-case.sh" ]]; then
+  # shellcheck source=../lib/msys-case.sh
+  . "${SCRIPT_DIR}/../lib/msys-case.sh"
+fi
+kl_symlinks=1
+{ ln -s missing-target "${TMP}/symlink-probe" && [[ -L "${TMP}/symlink-probe" ]]; } 2>/dev/null || kl_symlinks=0
+rm -f "${TMP}/symlink-probe"
+kl_skip_msys() { # <detail>
+  declare -F ff_skip_msys_case >/dev/null 2>&1 && ff_skip_msys_case "${OSTYPE:-}" "$1"
+}
+kl_skip_no_symlink() { # <cases>
+  [[ "${kl_symlinks}" -eq 0 ]] && kl_skip_msys "symlink を作れないため ${1}"
+}
 
 # ── fixture ─────────────────────────────────────────────────────────────────
 # Playbook: 索引 + playbook/coding.md（active 1・deprecated 1）+ playbook/archive/coding.md（1）
@@ -408,9 +449,13 @@ if [[ "$(id -u)" -eq 0 ]]; then
 else
   ROOT6="${TMP}/unreadable"; make_playbook "${ROOT6}"; make_ledger "${ROOT6}"
   chmod 000 "${ROOT6}/docs/08-knowledge/OBSERVATIONS.md"
-  run_lookup "${ROOT6}" --offline hydration
-  chmod 644 "${ROOT6}/docs/08-knowledge/OBSERVATIONS.md"
-  if [[ "${RC}" -eq 0 ]] && out_has "obs=読み取り失敗（ファイルを読めない）"; then ok "K8: 読めない台帳は読み取り失敗（未導入へ吸収しない）"; else bad "K8: 読めない台帳の扱い（rc=${RC}）"; fi
+  if [[ -r "${ROOT6}/docs/08-knowledge/OBSERVATIONS.md" ]] && kl_skip_msys "K8 は chmod 000 でも台帳が読めて成立しない"; then
+    chmod 644 "${ROOT6}/docs/08-knowledge/OBSERVATIONS.md"
+  else
+    run_lookup "${ROOT6}" --offline hydration
+    chmod 644 "${ROOT6}/docs/08-knowledge/OBSERVATIONS.md"
+    if [[ "${RC}" -eq 0 ]] && out_has "obs=読み取り失敗（ファイルを読めない）"; then ok "K8: 読めない台帳は読み取り失敗（未導入へ吸収しない）"; else bad "K8: 読めない台帳の扱い（rc=${RC}）"; fi
+  fi
 fi
 
 # ── K9: 実配置の探索 ──────────────────────────────────────────────────────────
@@ -688,6 +733,65 @@ for mode in promoted-open search; do
 done
 set --
 
+# ── K32: 読むファイル 1 件あたりの外部プロセスの起動回数に上限がある（Issue `#2477`） ──────────
+# snapshot はファイルごとに読むので起動回数は件数に比例するが、1 件あたりの回数は小さく保つ。
+# 認可・作業場所の検査・stage の私有化・読込前後の metadata を、同じ鎖の検査や同じ stat の
+# 繰り返しなしで行うと stat 3・mktemp 1・head 1・tr 1・awk 1 の 7 回。Linux は stage の mode の
+# 確認に stat がもう 1 回要るので 8 回（Windows は private-staging の ACL 判定が受け持つ）。
+# macOS は鎖の要素ごとに ACL 検査の awk を起動し、stat も -c を試してから -f を起動するので、
+# 回数がパスの深さで変わる。上限は Windows と Linux で固定し、macOS では理由付きで測らない。
+# 数えるのは stat / mktemp / head / tr / awk（cygpath は Windows、ls は macOS だけが起動する）。
+READ_SPAWN_BIN="${TMP}/bin-read-spawn"; mkdir -p "${READ_SPAWN_BIN}"
+for tool in stat mktemp head tr awk; do
+  real="$(command -v "${tool}")"
+  cat >"${READ_SPAWN_BIN}/${tool}" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "${tool}" >>"\${KL_SPAWN_LOG}"
+exec "${real}" "\$@"
+EOF
+  chmod +x "${READ_SPAWN_BIN}/${tool}"
+done
+make_category_files() { # <root> <件数>
+  local root="$1" n="$2" i=0
+  while [[ "${i}" -lt "${n}" ]]; do
+    i=$((i + 1))
+    printf '# PLAYBOOK — extra%s\n\n## エントリ一覧\n\n### ACE-9%s-1: hydration extra %s\n\n| Status | active |\n\nbody\n' "${i}" "${i}" "${i}" \
+      >"${root}/docs/08-knowledge/playbook/extra${i}.md"
+  done
+}
+read_spawn_count() { # <root> → READ_N / RC
+  local log="${TMP}/read-spawn.log"
+  : >"${log}"
+  set +e
+  OUT="$(KL_SPAWN_LOG="${log}" PATH="${READ_SPAWN_BIN}:${PATH}" "${LOOKUP[@]}" --root "$1" --offline hydration 2>&1)"; RC=$?
+  set -e
+  READ_N="$(wc -l <"${log}" | tr -d ' ')"
+}
+case "$(uname -s)" in
+  MSYS* | MINGW* | CYGWIN*) read_limit=7 ;;
+  Linux) read_limit=8 ;;
+  *) read_limit="" ;;
+esac
+if [[ -z "${read_limit}" ]]; then
+  echo "  ○ skip: K32（起動回数の上限は Windows と Linux でだけ固定する検査のため未実行。$(uname -s) は ACL 検査の起動回数がパスの深さで変わる）"
+else
+  ROOT32A="${TMP}/read-spawn-1"; make_playbook "${ROOT32A}"; make_ledger "${ROOT32A}"; make_category_files "${ROOT32A}" 1
+  ROOT32B="${TMP}/read-spawn-5"; make_playbook "${ROOT32B}"; make_ledger "${ROOT32B}"; make_category_files "${ROOT32B}" 5
+  read_spawn_count "${ROOT32A}"; read_small="${READ_N}"; read_small_rc="${RC}"
+  read_spawn_count "${ROOT32B}"; read_large="${READ_N}"; read_large_rc="${RC}"
+  read_growth=$((read_large - read_small))
+  if [[ "${read_small_rc}" -ne 0 || "${read_large_rc}" -ne 0 ]]; then
+    bad "K32: 実行に失敗（rc=${read_small_rc} / ${read_large_rc}）"; printf '%s\n' "${OUT}" | tail -n 5 | sed 's/^/    | /' >&2
+  elif [[ "${read_growth}" -le 0 ]]; then
+    # 件数を増やしても増えないなら、追加したファイルを読んでいないか shim を通っていない。緑にしない。
+    bad "K32: カテゴリ 1 件 / 5 件で起動回数が増えていない（${read_small} 回 / ${read_large} 回。測れていない）"
+  elif [[ "${read_growth}" -le $((read_limit * 4)) ]]; then
+    ok "K32: 読むファイル 4 件の追加で stat / mktemp / head / tr / awk の起動が ${read_growth} 回増えた（上限 1 件 ${read_limit} 回 × 4。1 件 ${read_small} 回 / 5 件 ${read_large} 回）"
+  else
+    bad "K32: 読むファイル 4 件の追加で起動が ${read_growth} 回増えた（上限 1 件 ${read_limit} 回 × 4。1 件 ${read_small} 回 / 5 件 ${read_large} 回）"
+  fi
+fi
+
 # ── K22〜K25: ACE Playbook の配置解決（resolve_playbook。Issue `#2142`） ────────────────
 # 優先順 --playbook → ACE_PLAYBOOK_PATH → 記録済み配置 → 既定パス → 探索。テンプレ配布リポジトリ
 # （実体が docs-template/08-knowledge/ に在る）で「Playbook なし」と報告していた欠陥の回帰を見る。
@@ -801,9 +905,13 @@ ROOT27="${TMP}/recorded-excluded"; make_ledger "${ROOT27}"
 make_template_playbook "${TMP}/outside-src"; mkdir -p "${TMP}/outside"; cp "${TMP}/outside-src/docs-template/08-knowledge/PLAYBOOK.md" "${TMP}/outside/PLAYBOOK.md"
 mkdir -p "${ROOT27}/docs/kb" "${ROOT27}/node_modules/x" "${ROOT27}/docs/abs"
 cp "${TMP}/outside/PLAYBOOK.md" "${ROOT27}/docs/abs/PLAYBOOK.md"
-ln -s "${TMP}/outside/PLAYBOOK.md" "${ROOT27}/docs/kb/PLAYBOOK.md"
+k27_links=1
+if kl_skip_no_symlink 'K27 のファイル自体の symlink の記録と K28 の symlink の引数 3 件'; then k27_links=0
+else ln -s "${TMP}/outside/PLAYBOOK.md" "${ROOT27}/docs/kb/PLAYBOOK.md"
+fi
 cp "${TMP}/outside/PLAYBOOK.md" "${ROOT27}/node_modules/x/PLAYBOOK.md"
 for rec in '../outside/PLAYBOOK.md' 'docs/kb/PLAYBOOK.md' 'node_modules/x/PLAYBOOK.md' "${ROOT27}/docs/abs/PLAYBOOK.md"; do
+  [[ "${k27_links}" -eq 1 || "${rec}" != docs/kb/PLAYBOOK.md ]] || continue
   printf '`%s`\n' "${rec}" >"${ROOT27}/AGENTS.md"
   run_resolve "${ROOT27}"
   # 記録として採らないことを見る（docs/abs/ の実体は探索段が拾ってよい）
@@ -826,14 +934,16 @@ set -e
 if [[ "${RC}" -eq 0 ]] && [[ "$(kv ACE_PLAYBOOK_REL)" = "docs-template/08-knowledge/PLAYBOOK.md" ]]; then ok "K28: cwd 相対の --playbook も root 相対の REL を返す"; else bad "K28: 相対指定の REL（rc=${RC} / $(kv ACE_PLAYBOOK_REL)）"; fi
 run_with_env "${ROOT27}/../outside/PLAYBOOK.md" "${ROOT27}" --resolve-playbook
 if [[ "${RC}" -eq 0 ]] && [[ -z "$(kv ACE_PLAYBOOK_REL)" ]]; then ok "K28: root/../ 経由で外へ出る絶対パスは REL を出さない"; else bad "K28: root の外を REL として返した（$(kv ACE_PLAYBOOK_REL)）"; fi
-run_with_env "${ROOT27}/docs/kb/PLAYBOOK.md" "${ROOT27}" --resolve-playbook
-if [[ "${RC}" -eq 2 && "$(kv ACE_PLAYBOOK_STATE)" = unreadable ]] && [[ -z "$(kv ACE_PLAYBOOK_REL)" ]]; then ok "K28: root 内の引数から外部リンクへ許可を広げず REL も出さない"; else bad "K28: root 内の引数で外部リンクを認可した（rc=${RC}）"; fi
-mkdir -p "${ROOT27}/docs/real"; cp "${TMP}/outside/PLAYBOOK.md" "${ROOT27}/docs/real/PLAYBOOK.md"; ln -s ../real/PLAYBOOK.md "${ROOT27}/docs/kb/IN.md"
-run_with_env "${ROOT27}/docs/kb/IN.md" "${ROOT27}" --resolve-playbook
-if [[ "${RC}" -eq 0 ]] && [[ "$(kv ACE_PLAYBOOK_REL)" = "docs/kb/IN.md" ]]; then ok "K28: root 内を指す symlink ファイルは REL を出す"; else bad "K28: root 内の symlink の REL（$(kv ACE_PLAYBOOK_REL)）"; fi
-ln -s "${ROOT23}" "${TMP}/alias-root"
-run_with_env "${TMP}/alias-root/docs-template/08-knowledge/PLAYBOOK.md" "${ROOT23}" --resolve-playbook
-if [[ "${RC}" -eq 0 ]] && [[ "$(kv ACE_PLAYBOOK_REL)" = "docs-template/08-knowledge/PLAYBOOK.md" ]]; then ok "K28: symlink 経由の表記でも root 内の絶対パスは REL を出す"; else bad "K28: 表記差で root 内を外扱いした（$(kv ACE_PLAYBOOK_REL)）"; fi
+if [[ "${k27_links}" -eq 1 ]]; then # the skip line above names these three
+  run_with_env "${ROOT27}/docs/kb/PLAYBOOK.md" "${ROOT27}" --resolve-playbook
+  if [[ "${RC}" -eq 2 && "$(kv ACE_PLAYBOOK_STATE)" = unreadable ]] && [[ -z "$(kv ACE_PLAYBOOK_REL)" ]]; then ok "K28: root 内の引数から外部リンクへ許可を広げず REL も出さない"; else bad "K28: root 内の引数で外部リンクを認可した（rc=${RC}）"; fi
+  mkdir -p "${ROOT27}/docs/real"; cp "${TMP}/outside/PLAYBOOK.md" "${ROOT27}/docs/real/PLAYBOOK.md"; ln -s ../real/PLAYBOOK.md "${ROOT27}/docs/kb/IN.md"
+  run_with_env "${ROOT27}/docs/kb/IN.md" "${ROOT27}" --resolve-playbook
+  if [[ "${RC}" -eq 0 ]] && [[ "$(kv ACE_PLAYBOOK_REL)" = "docs/kb/IN.md" ]]; then ok "K28: root 内を指す symlink ファイルは REL を出す"; else bad "K28: root 内の symlink の REL（$(kv ACE_PLAYBOOK_REL)）"; fi
+  ln -s "${ROOT23}" "${TMP}/alias-root"
+  run_with_env "${TMP}/alias-root/docs-template/08-knowledge/PLAYBOOK.md" "${ROOT23}" --resolve-playbook
+  if [[ "${RC}" -eq 0 ]] && [[ "$(kv ACE_PLAYBOOK_REL)" = "docs-template/08-knowledge/PLAYBOOK.md" ]]; then ok "K28: symlink 経由の表記でも root 内の絶対パスは REL を出す"; else bad "K28: 表記差で root 内を外扱いした（$(kv ACE_PLAYBOOK_REL)）"; fi
+fi
 run_lookup "${ROOT1}" --resolve-playbook hydration
 if [[ "${RC}" -eq 1 ]]; then ok "K28: --resolve-playbook はキーワードを取らない（rc=1）"; else bad "K28: --resolve-playbook がキーワードを受け付けた（rc=${RC}）"; fi
 

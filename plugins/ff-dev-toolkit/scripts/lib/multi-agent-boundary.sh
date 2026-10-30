@@ -14,6 +14,10 @@ ff_review_output_error() {
 # Neither suggestion leaves a new unignored path beside the root in the checkout.
 ff_review_output_next_step() { # <refused-output-root> [marked:true|false]
   if [[ "${2:-false}" == true ]]; then
+    if ff_review_output_windows; then
+      printf '       Next: this root carries the ownership marker; chmod cannot change a Windows ACL. If a knowledge-read line above names a place and a SID, remove that access entry (folder Properties > Security); if none is named, the ACL helper could not answer. Then rerun unchanged: %q\n' "$1" >&2
+      return 0
+    fi
     printf '       Next: this root carries the ownership marker and only lost its owner-only mode; restore it, then rerun unchanged: chmod 700 %q\n' "$1" >&2
     return 0
   fi
@@ -34,11 +38,48 @@ ff_review_output_stat() { # <path> <mode|uid>
   printf '%s\n' "$result"
 }
 
+# Git Bash cannot clear the group/other bits and stat reports 755, so on Windows the
+# POSIX mode proves nothing (Issue `#2478`, ADR-078). The ACL helper of the knowledge
+# read boundary answers instead. Only the orchestrator loads it, starting PowerShell
+# once; the review-lane hook must not wait for that within its time limit, so there
+# the check is refused, as the mode check refused it before.
+ff_review_output_windows() {
+  case "${OSTYPE:-}" in msys*|cygwin*) return 0 ;; esac
+  return 1
+}
+
+# A refusal that names a place and a SID is a verdict on the ACL; anything else means
+# the helper could not answer (PowerShell did not start, timed out or replied in
+# another form), and the message must not send the user looking for access entries.
+ff_review_output_acl_refusal() { # <diagnosis> <path> <what the verdict would mean>
+  [[ -z "$1" ]] || printf '%s\n' "$1" >&2
+  case "$1" in
+    *'knowledge-read: 止めた場所: '*) ff_review_output_error "${3} (named above): ${2}" ;;
+    *) ff_review_output_error "this directory could not be verified (no ACL verdict was given: the helper did not answer, or the chain was refused before it was asked; see the knowledge-read lines above): ${2}" ;;
+  esac
+}
+
+ff_review_output_windows_acl() { # <private|inspect|private-staging> <canonical dir>
+  local diagnosis
+  [[ "$(type -t ff_knowledge_windows_acl 2>/dev/null)" == function ]] || {
+    ff_review_output_error "cannot verify the Windows ACL here (the ACL helper is not loaded): ${2}"; return 1
+  }
+  diagnosis="$(ff_knowledge_windows_acl "$1" "$2" 2>&1)" && return 0
+  ff_review_output_acl_refusal "$diagnosis" "$2" 'the Windows ACL does not keep this directory private'
+  return 1
+}
+
 ff_review_output_private() { # <dir> [root:true|false]
   local path="$1" mode bits mask=$((8#022))
   [[ -d "$path" && ! -L "$path" && -O "$path" ]] || {
     ff_review_output_error "directory is not an owned real directory: ${path}"; return 1
   }
+  if ff_review_output_windows; then
+    # The root grants no right outside the trusted SIDs; below it, no write.
+    if [[ "${2:-false}" == true ]]; then ff_review_output_windows_acl private "$path"
+    else ff_review_output_windows_acl inspect "$path"; fi
+    return
+  fi
   mode="$(ff_review_output_stat "$path" mode)" || return 1
   bits=$((8#$mode))
   [[ "${2:-false}" != true ]] || mask=$((8#077))
@@ -50,8 +91,19 @@ ff_review_output_private() { # <dir> [root:true|false]
 # An outer owner-only ancestor shields its descendants from other UIDs. Still
 # inspect above it: an unprotected writable parent can rename that anchor.
 ff_review_output_ancestors() { # <canonical-path>
-  local path="$1" parent mode bits uid unsafe=''
+  local path="$1" parent mode bits uid unsafe='' diagnosis
   local write_mask=$((8#022)) private_mask=$((8#077)) sticky_bit=$((8#1000))
+  if ff_review_output_windows; then
+    # The knowledge read boundary walks the same chain: real directories, a trusted
+    # owner and no write outside the trusted SIDs, in one helper request.
+    parent="${path%/*}"; [[ -n "$parent" ]] || parent=/
+    [[ "$(type -t ff_knowledge_storage 2>/dev/null)" == function ]] || {
+      ff_review_output_error "cannot verify the Windows ACL of the ancestors here (the ACL helper is not loaded): ${parent}"; return 1
+    }
+    diagnosis="$(ff_knowledge_storage "$parent" dir 2>&1)" && return 0
+    ff_review_output_acl_refusal "$diagnosis" "$parent" 'an ancestor is not owned by you, an administrator or SYSTEM, or others can write it'
+    return 1
+  fi
   while :; do
     parent="${path%/*}"; [[ -n "$parent" ]] || parent=/
     [[ -d "$parent" && ! -L "$parent" ]] || return 1
@@ -258,7 +310,12 @@ ff_review_output_prepare() { # <repo> <requested> <explicit:true|false> <task>
       done
     fi
     [[ -d "$path" && ! -L "$path" && -O "$path" ]] || return 1
-    chmod 700 "$path" || return 1
+    if ff_review_output_windows; then
+      # The ACL counterpart of chmod 700: owner, SYSTEM and administrators only.
+      ff_review_output_windows_acl private-staging "$path" || return 1
+    else
+      chmod 700 "$path" || return 1
+    fi
     ff_review_output_private "$path" true || return 1
     for entry in "$path"/* "$path"/.[!.]* "$path"/..?*; do
       [[ -e "$entry" || -L "$entry" ]] || continue

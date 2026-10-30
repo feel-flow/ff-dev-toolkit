@@ -141,6 +141,27 @@
 # 経由で食って «間違った理由で赤い» を作る。数値の実測は Issue `#1907` の PR に残す
 # — ここへ書くと suite の増減で静かに腐る（ADR-034 のヘッダーが辿った形）。
 #
+# ── 起動順: 前回の経過秒の長い順（Issue `#2535`）──────────────────────────
+# 並列実行では、前回の実行で記録した suite 別の経過秒が長い順に起動する。長い suite が
+# 登録順の後方にあると、最後に 1 本だけ残って全体の壁時計を引き延ばすため。**変えるのは
+# 起動順だけ**で、実行対象・同時実行数・出力順（登録順）・elapsed-sec の並びは変えない。
+#
+#   記録: 既定一覧の実行は <git common dir>/ff-dev-toolkit/run-all-elapsed.tsv を読み書きする
+#         （`<suite 名>\t<秒>` の行）。common dir なので同じリポジトリの worktree 間で共有する —
+#         suite の所要は checkout ではなくリポジトリで決まり、新しい worktree の初回から効く。
+#         実行後に今回 pass した suite の経過秒で上書きする（赤・skip の短い秒数は載せない）。
+#         前回の記録が形式どおりに読めた回は、今回更新しなかった suite の行を残す
+#   上書き: FF_RUN_ALL_ELAPSED_RECORD=<パス>。明示引数の実行はこれを与えたときだけ並べ替えと
+#         記録を行う（与えなければ従来どおり登録順で、何も書かない）。上書きは単発の実行に付け、
+#         export したままにしない — env を隔離して runner を起動し直す suite（入れ子の判定が外れる。
+#         下の走行中マーカーの節）の実行もその記録を読み書きし、負荷込みの秒数で汚す
+#   記録に無い suite（新設など）は記録のある suite より先に起動する（長いかもしれないものを
+#   後ろへ回さない側へ倒す）。同じ秒数どうし・記録なしどうしは登録順を保つ
+#   記録が無い・読めない・1 行でも形式が崩れている回は登録順で起動し、理由を 1 行出す
+#   逐次実行（FF_RUN_ALL_JOBS=1 / 一時領域の退避）と入れ子の実行は並べ替えず、記録も読み書き
+#   しない（入れ子の回の秒数は外側の負荷を含み、記録を汚すため）
+#   記録を書けない回（read-only の環境など）は黙って何もしない。終了コードは変えない
+#
 # ── 経過秒（elapsed-sec / slowest）──────────────────────────────────────────
 # 実行した suite のプロセス経過を整数秒でサマリーへ出す。数値は文書へ書かない
 # （suite の増減で腐る）。並列実行の秒は負荷を含むプロセス時間であり、孤立時間では
@@ -1304,9 +1325,6 @@ else
     # ff-media-toolkit プラグインの suite（plugins/ff-media-toolkit/tests/run-all.sh）を
     # ラッパー経由で回す（ff-media-toolkit 導入時に追加）。node 20 以上が無い環境では丸ごと ○ skip。
     "$SCRIPT_DIR/ff-media-toolkit/verify.sh"
-    # ff-agent-press プラグインの suite（plugins/ff-agent-press/tests/run-all.sh）を
-    # ラッパー経由で回す（ff-agent-press 導入時に追加）。node 20 以上が無い環境では丸ごと ○ skip。
-    "$SCRIPT_DIR/ff-agent-press/verify.sh"
     # 公開リポジトリ単体の checkout を合成して公開 suite セットを回す（ADR-068）。
     # 全件ゲートと同規模（macOS 実測で単体約 19 分・全件ゲート内の並列実行で約 36 分）なので run-all からは
     # 常に ○ skip し、公開同期の直前に scripts/release-dev-toolkit.sh の gate 段が FF_RUN_PUBLIC_LAYOUT=1 で明示起動する。
@@ -2618,6 +2636,9 @@ fi
 
 PASSED=()
 FAILED=()
+# FAILED と同じ並びの verify.sh のパス。落ちた suite だけを回し直すコマンドの材料（名指し実行は
+# suite 名を受けず verify.sh のパスしか受けないため。OBS-282）。
+FAILED_SCRIPTS=()
 SKIPPED=()
 NOT_RUN=()
 # 鮮度由来の赤（base 先行）。FAILED の部分集合で、終了コードには影響しない（分類のみ）。
@@ -2809,6 +2830,7 @@ ff_consume() { # <name> <kind: run|missing|notexec|gone> <script> <rc>。本文�
     fi
   else
     FAILED+=("$name")
+    FAILED_SCRIPTS+=("$script")
   fi
   echo
 }
@@ -2844,29 +2866,228 @@ ff_run_sequential() {
   done
 }
 
-# 並列実行。${SPOOL}（mktemp -d 済み）を要求する。
+# ── 起動順の記録（ヘッダー「起動順: 前回の経過秒の長い順」）────────────────────
+# ELAPSED_RECORD が空なら起動順は登録順のまま、記録も書かない。並列実行の直前にだけ解決する
+# （逐次実行・入れ子の回は空のまま）。
+ELAPSED_RECORD=""
+LAUNCH_ORDER=()
+LAUNCH_ORDER_NOTE=""
+
+ff_resolve_elapsed_record() {
+  local d
+  ELAPSED_RECORD=""
+  [[ "$FF_ENTERED_NESTED" == "0" ]] || return 0
+  if [[ -n "${FF_RUN_ALL_ELAPSED_RECORD:-}" ]]; then
+    ELAPSED_RECORD="$FF_RUN_ALL_ELAPSED_RECORD"
+    return 0
+  fi
+  # 明示引数の実行は上書きが無ければ記録を使わない。if 形で書くのは、merge-freshness が
+  # 「明示引数なら鮮度記録を飛ばす」縮退の復活を同じ字面の 1 行で見張っているため（別の関数）。
+  if [[ "$USING_DEFAULT_SCRIPTS" != "1" ]]; then
+    return 0
+  fi
+  # git は common dir をサブディレクトリから引くと相対パスで返すので、実在するディレクトリへ
+  # 移って絶対パスへ直す（案内に出すパスを読める形にする）。
+  d="$(cd "$SCRIPT_DIR" 2>/dev/null && d="$(git rev-parse --git-common-dir 2>/dev/null)" && [[ -n "$d" ]] && cd "$d" 2>/dev/null && pwd -P)" || return 0
+  [[ -n "$d" ]] || return 0
+  ELAPSED_RECORD="$d/ff-dev-toolkit/run-all-elapsed.tsv"
+}
+
+# suite の表示名。出力・elapsed-sec と同じ導き方にする（記録の読み書きで名前がずれないように）。
+ff_suite_name() { # <script>
+  local n
+  if [[ "$USING_DEFAULT_SCRIPTS" == "1" ]]; then
+    n="${1%/*}"; n="${n##*/}"
+  else
+    n="$(basename "$(dirname "$1")")"
+  fi
+  printf '%s\n' "$n"
+}
+
+# 記録の形式検査。1 行でも `<suite 名>\t<秒>` でなければ非 0（部分的に読んで並べ替えると、
+# 崩れた行の suite だけが「記録なし」として先頭へ動き、崩れが順序の差として紛れる）。空も非 0。
+ff_elapsed_record_valid() { # <file>
+  awk -F '\t' '
+    NF != 2 || $1 !~ /^[A-Za-z0-9._-]+$/ || $2 !~ /^[0-9]+$/ { bad = 1 }
+    { n++ }
+    END { exit (bad || n == 0) ? 1 : 0 }
+  ' "$1" 2>/dev/null
+}
+
+# LAUNCH_ORDER に起動する添字の順を置く。並べ替えられない回は登録順を置き、その理由を
+# LAUNCH_ORDER_NOTE へ残す（記録を使わない回 = ELAPSED_RECORD が空の回は何も残さない）。
+ff_plan_launch_order() {
+  local total="${#SCRIPTS[@]}" i name names="" planned counts
+  local -a order
+  LAUNCH_ORDER=()
+  LAUNCH_ORDER_NOTE=""
+  for ((i = 0; i < total; i++)); do
+    LAUNCH_ORDER+=("$i")
+  done
+  [[ -n "$ELAPSED_RECORD" ]] || return 0
+  if [[ ! -e "$ELAPSED_RECORD" ]]; then
+    LAUNCH_ORDER_NOTE="登録順（前回の経過秒の記録がありません: ${ELAPSED_RECORD}）"
+    return 0
+  fi
+  if [[ ! -f "$ELAPSED_RECORD" || ! -r "$ELAPSED_RECORD" ]] || ! ff_elapsed_record_valid "$ELAPSED_RECORD"; then
+    LAUNCH_ORDER_NOTE="登録順（前回の経過秒の記録を読めないか、形式が崩れています: ${ELAPSED_RECORD}）"
+    return 0
+  fi
+  for ((i = 0; i < total; i++)); do
+    name="$(ff_suite_name "${SCRIPTS[$i]}")"
+    names="${names}${name}"$'\n'
+  done
+  # 出力の 1 行目は「記録あり 記録なし」の件数、2 行目が起動する添字（空白区切り）。並べ替えは
+  # awk の中で完結させる（パイプで sort へ渡すと上流の失敗が終了コードから消える）。
+  # 名前は環境変数で渡す（-v は値のエスケープを解釈し、改行入りの値を受けない awk がある）。
+  if ! planned="$(FF_RUN_ALL_LAUNCH_NAMES="$names" awk -F '\t' '
+    { sec[$1] = $2 + 0 }
+    END {
+      n = split(ENVIRON["FF_RUN_ALL_LAUNCH_NAMES"], nm, "\n")
+      for (i = 1; i <= n; i++) {
+        if (i == n && nm[i] == "") continue
+        m++
+        idx[m] = i - 1
+        known[m] = (nm[i] in sec) ? 1 : 0
+        s[m] = known[m] ? sec[nm[i]] : 0
+        if (known[m]) nk++; else nu++
+      }
+      # 挿入ソート（安定）: 記録なしを先に、記録ありは秒の降順。同順位は登録順を保つ
+      for (i = 2; i <= m; i++) {
+        ti = idx[i]; tk = known[i]; ts = s[i]
+        j = i - 1
+        while (j >= 1 && (known[j] > tk || (known[j] == tk && tk == 1 && s[j] < ts))) {
+          idx[j + 1] = idx[j]; known[j + 1] = known[j]; s[j + 1] = s[j]
+          j--
+        }
+        idx[j + 1] = ti; known[j + 1] = tk; s[j + 1] = ts
+      }
+      print (nk + 0) " " (nu + 0)
+      out = ""
+      for (i = 1; i <= m; i++) out = out (i == 1 ? "" : " ") idx[i]
+      print out
+    }
+  ' "$ELAPSED_RECORD" 2>/dev/null)"; then
+    LAUNCH_ORDER_NOTE="登録順（前回の経過秒の記録を読めないか、形式が崩れています: ${ELAPSED_RECORD}）"
+    return 0
+  fi
+  counts="${planned%%$'\n'*}"
+  # 添字の並びは数字と空白だけで、件数が登録数と一致する場合だけ採る（それ以外は登録順のまま）。
+  # here-string は一時ファイルを要求するので使わない（冒頭の read-only 制約）。
+  set -f
+  # shellcheck disable=SC2206 # 数字と空白だけの並びを単語分割で配列にする（直後で検査する）
+  order=(${planned#*$'\n'})
+  set +f
+  if [[ "${#order[@]}" -ne "$total" ]]; then
+    LAUNCH_ORDER_NOTE="登録順（前回の経過秒から起動順を組み立てられませんでした: ${ELAPSED_RECORD}）"
+    return 0
+  fi
+  # 0〜total-1 をちょうど 1 回ずつ含む並びだけを採る（重複や範囲外は、起動されない suite や
+  # set -u での途中死になる）。
+  local seen=" "
+  for i in "${order[@]}"; do
+    case "$i" in
+      ''|*[!0-9]*) seen="" ; break ;;
+    esac
+    if [[ "$i" -ge "$total" || "$seen" == *" $i "* ]]; then
+      seen=""
+      break
+    fi
+    seen="${seen}${i} "
+  done
+  if [[ -z "$seen" ]]; then
+    LAUNCH_ORDER_NOTE="登録順（前回の経過秒から起動順を組み立てられませんでした: ${ELAPSED_RECORD}）"
+    return 0
+  fi
+  LAUNCH_ORDER=("${order[@]}")
+  LAUNCH_ORDER_NOTE="前回の経過秒の長い順（記録なし ${counts##* } 件を先に、記録あり ${counts%% *} 件を秒の降順で起動）"
+}
+
+# 今回 pass した suite の経過秒で記録を更新する（赤・skip の短い秒数を載せると、直った次の回に
+# その suite が最後に起動されて、この節が減らしたい末尾の待ちを作る）。前回の記録が形式どおりに
+# 読めた回は、今回更新しなかった suite の行を残す（崩れた記録は捨てて今回の分だけで書き直す）。
+# 書けない回は黙って戻る（終了コードは変えない）。一時ファイルは記録と同じディレクトリに置き、
+# rename で置き換える（並行するゲートが書き途中の記録を読まないように）。
+ff_write_elapsed_record() {
+  local dir tmp prev=/dev/null entry name sec passed=" " lines=""
+  [[ -n "$ELAPSED_RECORD" && ${#ELAPSED_ENTRIES[@]} -gt 0 && ${#PASSED[@]} -gt 0 ]] || return 0
+  # 記録の場所に通常ファイル以外（ディレクトリなど）が在れば書かない（rename がその中へ入る）。
+  if [[ -e "$ELAPSED_RECORD" && ! -f "$ELAPSED_RECORD" ]]; then
+    return 0
+  fi
+  for name in "${PASSED[@]}"; do
+    passed="${passed}${name} "
+  done
+  for entry in "${ELAPSED_ENTRIES[@]}"; do
+    name="${entry%=*}"; sec="${entry##*=}"
+    [[ "$passed" == *" ${name} "* ]] || continue
+    lines="${lines}${name}"$'\t'"${sec}"$'\n'
+  done
+  [[ -n "$lines" ]] || return 0
+  dir="${ELAPSED_RECORD%/*}"
+  [[ "$dir" != "$ELAPSED_RECORD" ]] || dir="."
+  mkdir -p "$dir" 2>/dev/null || return 0
+  if [[ -f "$ELAPSED_RECORD" ]] && ff_elapsed_record_valid "$ELAPSED_RECORD"; then
+    prev="$ELAPSED_RECORD"
+  fi
+  # 同じ common dir を別の PID 名前空間（コンテナ等）と共有しても名前が衝突しにくいようにする。
+  tmp="${ELAPSED_RECORD}.tmp.$$.${RANDOM}"
+  # 2>/dev/null を先に置く: 一時ファイルを作れない回（書けないディレクトリ）のシェルの
+  # エラー文も捨てる（後に置くと、リダイレクトの失敗はその前の stderr へ出る）。
+  if FF_RUN_ALL_ELAPSED_NEW="$lines" awk -F '\t' '
+    BEGIN {
+      n = split(ENVIRON["FF_RUN_ALL_ELAPSED_NEW"], a, "\n")
+      for (i = 1; i <= n; i++) {
+        if (split(a[i], kv, "\t") != 2) continue
+        if (kv[1] ~ /^[A-Za-z0-9._-]+$/ && kv[2] ~ /^[0-9]+$/ && !(kv[1] in cur_sec)) { cur_sec[kv[1]] = kv[2]; order[++m] = kv[1] }
+      }
+    }
+    !($1 in cur_sec) { print }
+    END { for (i = 1; i <= m; i++) printf "%s\t%s\n", order[i], cur_sec[order[i]] }
+  ' "$prev" 2>/dev/null >"$tmp"; then
+    mv -f "$tmp" "$ELAPSED_RECORD" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+  else
+    rm -f "$tmp" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# 並列実行。${SPOOL}（mktemp -d 済み）を要求する。起動順は LAUNCH_ORDER、出力は登録順。
 ff_run_parallel() {
   local total="${#SCRIPTS[@]}"
-  local i next_launch=0 next_print=0 running=0 suite_rc _elapsed name
+  local i k=0 next_print=0 running=0 suite_rc _elapsed name
   # 配列名の DONE / PIDS を避けるのは shellcheck 対策。`DONE[$i]=1` が文頭に来ると
   # `done` キーワードの大文字違い（SC1081）+ `[` の前のスペース欠落（SC1069）と読まれる。
-  local -a SUITE_KIND SUITE_PID SUITE_DONE
+  local -a SUITE_KIND SUITE_PID SUITE_DONE SUITE_LAUNCHED
 
+  # 起動できない suite はスロットを使わないので、最初から完了扱いにする（出力は登録順で
+  # その位置に来たときに出す）。
   for ((i = 0; i < total; i++)); do
     SUITE_KIND[$i]="$(ff_suite_kind "${SCRIPTS[$i]}")"
     SUITE_PID[$i]=0
-    SUITE_DONE[$i]=0
+    SUITE_LAUNCHED[$i]=0
+    if [[ "${SUITE_KIND[$i]}" == "run" ]]; then
+      SUITE_DONE[$i]=0
+    else
+      SUITE_DONE[$i]=1
+    fi
   done
+  if [[ "${#LAUNCH_ORDER[@]}" -ne "$total" ]]; then
+    LAUNCH_ORDER=()
+    for ((i = 0; i < total; i++)); do
+      LAUNCH_ORDER+=("$i")
+    done
+  fi
 
   while [[ "$next_print" -lt "$total" ]]; do
-    # 空きスロットへ登録順に投入する
-    while [[ "$next_launch" -lt "$total" && "$running" -lt "$JOBS" ]]; do
-      i="$next_launch"
-      next_launch=$((next_launch + 1))
+    # 空きスロットへ LAUNCH_ORDER の順に投入する
+    while [[ "$k" -lt "$total" && "$running" -lt "$JOBS" ]]; do
+      i="${LAUNCH_ORDER[$k]}"
+      k=$((k + 1))
       if [[ "${SUITE_KIND[$i]}" != "run" ]]; then
-        SUITE_DONE[$i]=1
         continue
       fi
+      SUITE_LAUNCHED[$i]=1
       # 出力はファイルへ落とし、終了コードは**本文を書き終えた後に** rename で置く。
       # 「rc ファイルの実在 = その suite の出力が完成している」を、親が追加の同期
       # なしに読めるようにするため（部分的に書かれた出力を完成品として読まない）。
@@ -2887,9 +3108,9 @@ ff_run_parallel() {
       running=$((running + 1))
     done
 
-    # 完了を回収してスロットを空ける
-    for ((i = next_print; i < next_launch; i++)); do
-      [[ "${SUITE_DONE[$i]}" == "0" ]] || continue
+    # 完了を回収してスロットを空ける（起動済みで未完了のものだけ）
+    for ((i = next_print; i < total; i++)); do
+      [[ "${SUITE_LAUNCHED[$i]}" == "1" && "${SUITE_DONE[$i]}" == "0" ]] || continue
       if [[ -f "$SPOOL/$i.rc" ]]; then
         SUITE_DONE[$i]=1
         running=$((running - 1))
@@ -2907,7 +3128,7 @@ ff_run_parallel() {
 
     # 出力は完了順ではなく**登録順**に、suite 単位でまとめて出す。完了順に出すと
     # 同じ suite 一覧でも実行のたびに並びが変わり、前回との差分が読めなくなる。
-    while [[ "$next_print" -lt "$next_launch" ]] && [[ "${SUITE_DONE[$next_print]}" == "1" ]]; do
+    while [[ "$next_print" -lt "$total" ]] && [[ "${SUITE_DONE[$next_print]}" == "1" ]]; do
       i="$next_print"
       if [[ "$USING_DEFAULT_SCRIPTS" == "1" ]]; then
         name="${SCRIPTS[$i]%/*}"; name="${name##*/}"
@@ -2945,12 +3166,13 @@ ff_run_parallel() {
       # ここで解ける（wait は自分の子でない PID には即座に返るため、戻った時点で
       # rc が無ければ gone と確定してよい）。
       #
-      # 残余リスク: 投入待ちが残っている局面（next_launch < total）で子が rc を
+      # 残余リスク: 投入待ちが残っている局面（k < total）で子が rc を
       # 残さず死に、かつその PID が別プロセスへ再利用されると、スロットが空かず
       # ポーリングが続く。この場合ランナーはサマリー行を出さないので
       # 「サマリー行が出ていない実行は緑ではない」（docs/04-quality/TESTING.md）で
-      # fail-closed に落ちる — 偽の緑にはならない。
-      if [[ "$next_launch" -ge "$total" ]] \
+      # fail-closed に落ちる — 偽の緑にはならない。全件を投入し終えていれば、未完了の
+      # 先頭 suite は必ず起動済みなので、その PID を待ってよい。
+      if [[ "$k" -ge "$total" ]] \
         && [[ "${SUITE_DONE[$next_print]}" == "0" ]] \
         && [[ "${SUITE_KIND[$next_print]}" == "run" ]]; then
         wait "${SUITE_PID[$next_print]}" 2>/dev/null || true
@@ -3096,8 +3318,14 @@ if [[ ${#SCRIPTS[@]} -eq 0 ]]; then
   :
 elif [[ -n "$SPOOL" ]]; then
   echo "🧵 並列実行: 同時実行数 ${JOBS}（逐次に戻すには FF_RUN_ALL_JOBS=1）"
+  ff_resolve_elapsed_record
+  ff_plan_launch_order
+  if [[ -n "$LAUNCH_ORDER_NOTE" ]]; then
+    echo "🧵 起動順: ${LAUNCH_ORDER_NOTE}"
+  fi
   echo
   ff_run_parallel
+  ff_write_elapsed_record
 else
   ff_run_sequential
 fi
@@ -3202,6 +3430,26 @@ if [[ ${#NOT_RUN[@]} -gt 0 ]]; then
 fi
 if [[ ${#FAILED[@]} -gt 0 ]]; then
   echo "✗ failed: ${FAILED[*]}" >&2
+  # 直した後に通しを丸ごと回し直す前に、落ちた suite だけを緑にできるようにする（Issue `#2533`）。
+  # パスは絶対パスにして %q で引用する（suite 名・ディレクトリを渡すと名指し実行は 1 本も走らない —
+  # OBS-282。プラグインの配置先は空白を含みうる）。部分実行なので記録は STATUS=partial になり、
+  # マージ直前の照合で合格の証拠にはならない — 通しの 1 回は省かない。
+  # 実行モードの前置は保つ（全件モードでだけ赤になる suite が、前置を落とした再実行で緑に化けない
+  # ように。上の必須 skip の再現コマンドと同じ理由）。明示引数の実行は FF_RUN_ALL_FULL=1 だけを写す。
+  _rerun_prefix=""
+  if [[ "${FF_RUN_ALL_FULL:-}" == "1" ]] || [[ "$USING_DEFAULT_SCRIPTS" == "1" && "$FAST_MODE" != "1" ]]; then
+    _rerun_prefix="FF_RUN_ALL_FULL=1 "
+  fi
+  _rerun_cmd="${_rerun_prefix}bash $(printf '%q' "$SELF_PATH")"
+  for _fs in "${FAILED_SCRIPTS[@]}"; do
+    case "$_fs" in
+      /*) ;;
+      *) _fs="$PWD/$_fs" ;;
+    esac
+    _rerun_cmd="${_rerun_cmd} $(printf '%q' "$_fs")"
+  done
+  echo "  落ちた suite だけを回し直す（部分実行。合格の証拠には通しの 1 回が別に要る）:" >&2
+  echo "    ${_rerun_cmd}" >&2
 fi
 # 鮮度由来の赤は failed の内訳として**別行で**名指しする（failed からは外さない — 赤は赤のまま）。
 # 次の一手が変更起因の赤とは違う（コードを直すのではなく base を取り込む）ので、行を分けないと

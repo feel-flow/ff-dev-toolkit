@@ -230,6 +230,16 @@ function strip_prefix(s,   w, guard) {
 # 「あらゆるコマンド」へ広げると、診断で終わる普通のスクリプトが全部赤になる。
 function is_gate_launch(s,   w, rest, i, prefix, after) {
   s = strip_prefix(s)
+  # 背景実行の 1 回だけ、名簿外の起動も終了コードの主体にする。静的走査はこの変数を
+  # export しないので、診断で終わる普通のスクリプトは赤にならない。echo / printf は
+  # 診断であって起動ではない。
+  if (ENVIRON["ff_exit_code_any_launch"] == "1") {
+    w = s
+    sub(/[[:space:]].*$/, "", w)
+    sub(/^.*\//, "", w)
+    if (w == "" || w == "echo" || w == "printf") return 0
+    return 1
+  }
   # 宣言は ENVIRON から読む。awk -v へ渡すと backslash が再解釈され、literal でなくなる。
   # prefix は文字列比較だけに使い、正規表現や shell として実行しない。
   rest = s
@@ -365,7 +375,7 @@ function is_status(s) {
 #   (b) ゲート以降に `;` か `||` か単独の `&` が 1 つでもある
 # ただし終端が成否を運ぶ形（代入・制御構文・非フィルタ終端）なら、後段で使える形なので見ない。
 function gate_swallowed(m,   segs, seps, n, i, gi) {
-  if (consumer_gate_n == 0 && index(m, "run-all.sh") == 0) return 0
+  if (ENVIRON["ff_exit_code_any_launch"] != "1" && consumer_gate_n == 0 && index(m, "run-all.sh") == 0) return 0
   n = split_segments(m, segs, seps)
   if (n < 1) return 0
   gi = 0
@@ -474,7 +484,7 @@ function var_event(line, var,   m0, m1, i, n, c, k, st, seg0, seg1, w, a, re, co
   return ow ? 2 : 0
 }
 function track_gate(line, start, m, swallowed,   segs, seps, n, n0, i, gi, last, v, only_and, t, ev) {
-  if (g_state == 0 && g_pvar == "" && consumer_gate_n == 0 && index(m, "run-all.sh") == 0) return
+  if (ENVIRON["ff_exit_code_any_launch"] != "1" && g_state == 0 && g_pvar == "" && consumer_gate_n == 0 && index(m, "run-all.sh") == 0) return
   n0 = split_segments(m, segs, seps)
   gi = 0
   for (i = 1; i <= n0; i++) if (seg_has_gate(segs[i])) { gi = i; break }

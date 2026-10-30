@@ -295,14 +295,31 @@ else ROOT="$(ff_knowledge_canonical_dir "$ROOT")" || exit 2
 fi
 ff_knowledge_storage "$ROOT" dir || exit 2
 : >"${TMP}/read-cache"
+# A snapshot is reused only for the same spelling, authority and mode, and only while
+# the file still resolves to the same place with the same metadata. A miss is
+# authorized in full by the snapshot itself; its sidecar (the authorized path and the
+# metadata it was read under) keys the cache without another stat, which costs about
+# 0.1 s on Git Bash (Issue `#2477`). A file whose metadata changed since an earlier
+# read, under any key, is refused.
 accepted_snapshot() { # <logical input> <independent authority> [root|file]
-  local input="$1" authority="$2" mode="${3:-root}" canonical stamp cached snapshot
-  canonical="$(ff_knowledge_authorize "$input" "$authority" "$mode")" || return 2
-  stamp="$(ff_knowledge_meta "$canonical")" || return 2
-  cached="$(FF_READ_KEY="$canonical" FF_READ_STAMP="$stamp" awk -F '\t' '$1 == ENVIRON["FF_READ_KEY"] { if ($2 != ENVIRON["FF_READ_STAMP"]) exit 2; print $3; exit }' "${TMP}/read-cache")" || return 2
-  if [ -n "$cached" ]; then printf '%s\n' "$cached"; return 0; fi
+  local input="$1" authority="$2" mode="${3:-root}" canonical stamp snapshot
+  local c_input c_authority c_mode c_canonical c_stamp c_snapshot
+  while IFS="${TAB}" read -r c_input c_authority c_mode c_canonical c_stamp c_snapshot; do
+    [ "$c_input" = "$input" ] && [ "$c_authority" = "$authority" ] && [ "$c_mode" = "$mode" ] || continue
+    canonical="$(ff_knowledge_canonical_file "$input")" || return 2
+    [ "$canonical" = "$c_canonical" ] || break
+    stamp="$(ff_knowledge_meta "$canonical")" || return 2
+    [ "$stamp" = "$c_stamp" ] || { ff_knowledge_refuse input-changed; return 2; }
+    printf '%s\n' "$c_snapshot"
+    return 0
+  done <"${TMP}/read-cache"
   snapshot="$(ff_knowledge_snapshot "$input" "$authority" "$TMP" "$mode")" || return 2
-  printf '%s\t%s\t%s\n' "$canonical" "$stamp" "$snapshot" >>"${TMP}/read-cache"
+  IFS="${TAB}" read -r canonical stamp <"${snapshot%/*}/source" || { ff_knowledge_refuse read-unverifiable; return 2; }
+  [ -n "$canonical" ] && [ -n "$stamp" ] || { ff_knowledge_refuse read-unverifiable; return 2; }
+  while IFS="${TAB}" read -r c_input c_authority c_mode c_canonical c_stamp c_snapshot; do
+    [ "$c_canonical" != "$canonical" ] || [ "$c_stamp" = "$stamp" ] || { ff_knowledge_refuse input-changed; return 2; }
+  done <"${TMP}/read-cache"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$input" "$authority" "$mode" "$canonical" "$stamp" "$snapshot" >>"${TMP}/read-cache"
   printf '%s\n' "$snapshot"
 }
 ACE_AUTHORITY="$ROOT"
@@ -367,7 +384,9 @@ resolve_store() { # <既定の相対パス> <ファイル名> <明示パス>
 # 配布リポジトリの実体が常に不在になる。記載ファイルを読めなかった回は戻り値 2（読み取り失敗）。
 # 出力: `<source><TAB><path>`（source = explicit / env / recorded:<記載ファイル> / default / search）
 # 戻り値: 0 = 確定 / 1 = 不在 / 2 = 記載ファイルの読み取り失敗 / 3 = 曖昧（stderr に候補）
-ace_record_candidate() { # <path> → 認可後、親を正規化し論理leafを保ったパスを stdout へ
+# 出力は `<論理パス><TAB><認可済みの実体>`。呼び出し側が同じパスをもう一度認可しないよう、
+# ここで得た実体も返す（認可 1 回は Git Bash で約 0.4 秒。Issue `#2477`）
+ace_record_candidate() { # <path> → 認可後、親を正規化し論理leafを保ったパスと実体を stdout へ
   local p="$1" d="" pre="" real="" role_parent=""
   [ -e "${p}" ] || [ -L "${p}" ] || return 1
   real="$(ff_knowledge_authorize "$p" "$ROOT")" || return 1
@@ -382,10 +401,10 @@ ace_record_candidate() { # <path> → 認可後、親を正規化し論理leaf�
         ;;
     esac
   done
-  printf '%s/%s\n' "${d}" "${p##*/}"
+  printf '%s/%s\t%s\n' "${d}" "${p##*/}" "${real}"
 }
 resolve_playbook() {
-  local env_path="${ACE_PLAYBOOK_PATH:-}" rec="" src="" tok="" base="" c="" seen="" n=0 first_src="" first="" def="" record_snapshot="" physical="" def_physical=""
+  local env_path="${ACE_PLAYBOOK_PATH:-}" rec="" src="" tok="" base="" c="" seen="" tried="" hit="" n=0 first_src="" first="" def="" record_snapshot="" physical="" def_physical=""
   local nl='
 '
   if [ -n "${PLAYBOOK}" ]; then
@@ -425,8 +444,12 @@ resolve_playbook() {
     while IFS="${TAB}" read -r src tok; do
       base="${ROOT}/${src}"; base="${base%/*}"
       for c in "${ROOT}/${tok}" "${base}/${tok}"; do
-        c="$(ace_record_candidate "${c}")" || continue
-        physical="$(ff_knowledge_authorize "$c" "$ROOT")" || return 2
+        # 鏡写しの入口（AGENTS.md / CLAUDE.md）は同じ綴りを何度も挙げる。1 回の実行の中で
+        # 判定は変わらず、2 回目は下の seen で必ず捨てるので、認可の前に飛ばす
+        case "${nl}${tried}" in *"${nl}${c}${nl}"*) continue ;; esac
+        tried="${tried}${c}${nl}"
+        hit="$(ace_record_candidate "${c}")" || continue
+        c="${hit%%"${TAB}"*}"; physical="${hit#*"${TAB}"}"
         case "${nl}${seen}" in *"${nl}${physical}${nl}"*) continue ;; esac
         seen="${seen}${physical}${nl}"
         printf '%s\t%s\t%s\n' "${src}" "${c}" "${physical}" >>"${TMP}/ace-record-hits"
@@ -435,8 +458,8 @@ resolve_playbook() {
       done
     done <"${TMP}/ace-record-tokens"
   fi
-  if [ "${n}" -gt 0 ] && def="$(ace_record_candidate "${ROOT}/docs/08-knowledge/PLAYBOOK.md")"; then
-    def_physical="$(ff_knowledge_authorize "$def" "$ROOT")" || return 2
+  if [ "${n}" -gt 0 ] && hit="$(ace_record_candidate "${ROOT}/docs/08-knowledge/PLAYBOOK.md")"; then
+    def="${hit%%"${TAB}"*}"; def_physical="${hit#*"${TAB}"}"
     src="$(FF_READ_KEY="$def_physical" LC_ALL=C awk -F '\t' '$3 == ENVIRON["FF_READ_KEY"] { print $1; exit }' "${TMP}/ace-record-hits")"
     if [ -n "${src}" ]; then
       if [ "${n}" -gt 1 ]; then

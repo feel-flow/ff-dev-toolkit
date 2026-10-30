@@ -87,7 +87,10 @@ function Invoke-AclRequest([string[]]$frames, [bool]$closed) {
             $private.AddAccessRule($rule)
         }
         Set-Acl -LiteralPath $paths[0] -AclObject $private -ErrorAction Stop
-    } elseif ($operation -ne 'inspect') { throw 'Unknown metadata operation' }
+    } elseif ($operation -ne 'inspect' -and $operation -ne 'private') { throw 'Unknown metadata operation' }
+    # "private" checks without changing anything: like a staging directory, no right at
+    # all may be granted outside the trusted SIDs (the root of a review output directory).
+    $strict = $operation -eq 'private-staging' -or $operation -eq 'private'
     $position = 0
     foreach ($literal in $paths) {
         if ($literal.Length -eq 0) { continue }
@@ -109,7 +112,7 @@ function Invoke-AclRequest([string[]]$frames, [bool]$closed) {
             $rights = [long]$rule.FileSystemRights
             if ($rights -lt -2147483648 -or $rights -gt 4294967295) { throw 'Invalid rights' }
             $rights = $rights -band [long]4294967295
-            if (($rights -band $mask) -or ($operation -eq 'private-staging' -and $rights -ne 0)) {
+            if (($rights -band $mask) -or ($strict -and $rights -ne 0)) {
                 if ($danger -eq 0) { $writer = $rule.IdentityReference.Value }
                 $danger = 1
             }

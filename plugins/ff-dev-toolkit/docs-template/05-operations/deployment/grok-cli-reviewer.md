@@ -110,7 +110,19 @@ ls SHOULD_NOT_EXIST.txt   # 存在しないこと
 | 方式 | 結果 |
 | --- | --- |
 | `--permission-mode plan` | **書き込みを止めない**。実測でファイル作成・追記が成功した |
-| `--tools <allowlist>` | 組み込みツールのみが対象（`--help` が "Built-in tools to allow" と明記）。MCP ツールは管轄外で、実測でもエージェントは MCP 経由の書き込みを試みた |
+| `--tools <allowlist>` | 組み込みツールのみが対象（`--help` が "Built-in tools to allow" と明記）。MCP ツールは管轄外で、実測でもエージェントは MCP 経由の書き込みを試みた。書き込み境界には使わず、下の「read-only レーンのツール」のとおりシェルを渡さない用途にだけ使う |
+
+### read-only レーンのツール（シェルを渡さない）
+
+headless の Grok CLI は実行の承認を求められません。レビュー中に検証コマンド（`npx prettier --check` など）を打とうとすると `permission required: ... headless run cannot ask for approval` で拒否され、型付き判定行の無いまま終わります（タイムアウトまで止まる回もある）。差分はプロンプトに入っているので、アダプタは read-only レーン（review / explore / implement `--inline-output`）へ読み取りツールだけを渡し、シェルを最初から渡しません。
+
+```text
+--tools read_file,grep,list_dir --disallowed-tools run_terminal_cmd,Agent,search_tool,use_tool
+```
+
+grok 1.0.62 の実測（2026-10-30、`grok --prompt-file` の shell route）では、`--tools` だけだと MCP のメタツール（`search_tool` / `use_tool`）が残り、シェルを使うよう頼まれたモデルは `search_tool` でシェルを探しました。`--disallowed-tools` を併せると、提供ツールは `read_file` / `list_dir` / `grep` だけになります（両方を渡すと `--disallowed-tools` が優先される — ベンダー文書 14-headless-mode.md）。daemon route ではツール名が別（`CallMcpTool` 等）で、何も指さないエントリは警告だけで終わるため、headless 実行がそちらへ移ったら測り直してください。
+
+review の検証コマンドはこのレーンでは実行されないので、`- verification: skipped | <コマンド>` か `- verification: none` になり、親担当が裏取りします。引き換えに、headless でも承認なしで動く読み取り専用コマンド（`git log` / `git show` / `git blame` / `rg` / `ls` など。ベンダー文書 22-permissions-and-safety.md）も使えなくなり、explore は履歴をたどる手段が減ります。claude-code の read-only レーン（`Read,Grep,Glob`、Bash なし）と同じ方針です。implement（staging への書き込み）のツールは変えません。
 
 ---
 

@@ -2,11 +2,16 @@
 # ADR-078: protected-parent, bounded snapshots; Bash 3.2, no Node/Python.
 # Callers supply independent authority and a private job workspace. This library
 # never treats a discovered path as a grant and never prints source bytes.
-ff_knowledge_acl_resource="${BASH_SOURCE[0]%/*}/knowledge-read-acl.ps1"
-case "$ff_knowledge_acl_resource" in /*) ;; *) ff_knowledge_acl_resource="$PWD/$ff_knowledge_acl_resource" ;; esac # a later cd keeps it
 # Process starts cost about 0.1 s each on Git Bash, so the platform is read once
 # and per-path tools run once per chain, not once per ancestor.
 ff_knowledge_os="$(uname -s 2>/dev/null)" || ff_knowledge_os=""
+ff_knowledge_acl_resource="${BASH_SOURCE[0]%/*}/knowledge-read-acl.ps1"
+# Windows hosts hand the plugin root over as C:/… or C:\…, which is absolute there (ACE-2027-1, Issue `#2530`).
+case "$ff_knowledge_acl_resource" in
+  /*) ;;
+  [A-Za-z]:[/\\]*) case "$ff_knowledge_os" in MSYS*|MINGW*|CYGWIN*) ;; *) ff_knowledge_acl_resource="$PWD/$ff_knowledge_acl_resource" ;; esac ;;
+  *) ff_knowledge_acl_resource="$PWD/$ff_knowledge_acl_resource" ;; # a later cd keeps it
+esac
 
 ff_knowledge_refuse() { printf 'knowledge-read: %s\n' "$1" >&2; return 2; }
 
@@ -151,16 +156,19 @@ ff_knowledge_acl_service_stop() {
   ff_knowledge_acl_state=off
 }
 
-ff_knowledge_acl_explain() { # <refused verdict> <native paths...>; names the place, never file bytes
-  local position owned danger owner writer path temporary reason=""
+ff_knowledge_acl_explain() { # <operation> <refused verdict> <native paths...>; names the place, never file bytes
+  local operation="$1" position owned danger owner writer path temporary reason="" granted="書き込める"
+  shift
   case "$1" in E\|*) printf 'knowledge-read: 判定できない: %s\n' "${1#E|}" >&2; return 0 ;; esac
   IFS='|' read -r position owned danger owner writer <<< "$1"
   shift
   case "$position" in ''|*[!0-9]*) return 0 ;; esac
   [[ "$position" -lt $# ]] || return 0
   path="${@:$((position + 1)):1}"
+  # The strict operations refuse any right at all, a read grant included.
+  case "$operation" in private|private-staging) granted="アクセスできる" ;; esac
   [[ "$owned" != 0 ]] || reason="所有者が本人・管理者・SYSTEM のどれでもない（${owner:-SID 不明}）"
-  [[ "$danger" != 1 ]] || reason="${reason:+${reason}、}本人・管理者・SYSTEM 以外が書き込める（${writer:-SID 不明}）"
+  [[ "$danger" != 1 ]] || reason="${reason:+${reason}、}本人・管理者・SYSTEM 以外が${granted}（${writer:-SID 不明}）"
   printf 'knowledge-read: 止めた場所: %s — %s\n' "$path" "${reason:-ACL を照合できない}" >&2
   temporary="$(cygpath -am "${TMPDIR:-/tmp}" 2>/dev/null)" || temporary=""
   case "$temporary/" in
@@ -168,7 +176,7 @@ ff_knowledge_acl_explain() { # <refused verdict> <native paths...>; names the pl
   esac
 }
 
-ff_knowledge_windows_acl() { # <inspect|private-staging> <canonical paths...>
+ff_knowledge_windows_acl() { # <inspect|private|private-staging> <canonical paths...>
   local operation="$1" file converted request="" tag output="" line index=0 count=0 cr=$'\r' answered=0 deadline left
   local native=()
   shift
@@ -217,7 +225,7 @@ ff_knowledge_windows_acl() { # <inspect|private-staging> <canonical paths...>
   while IFS= read -r line; do
     if [[ "$line" != "$index|1|0" ]]; then
       printf 'knowledge-read: %s\n' read-unverifiable >&2 # the code line stays first for callers
-      ff_knowledge_acl_explain "$line" "${native[@]}"
+      ff_knowledge_acl_explain "$operation" "$line" "${native[@]}"
       return 2
     fi
     index=$((index + 1))
@@ -225,61 +233,81 @@ ff_knowledge_windows_acl() { # <inspect|private-staging> <canonical paths...>
   [[ "$index" -eq $# ]] || { ff_knowledge_refuse read-unverifiable; return 2; }
 }
 
-ff_knowledge_storage() { # <canonical path> <file|dir>
-  local cursor="$1" kind="$2" first=1 unsafe=0 meta dev inode bytes modified changed mode owner links bits allow parent platform position=0
-  local native_paths=() chain=()
+# Each pair is its own chain with its own verdict, but all chains share one stat and
+# one ACL request; each of those starts costs about 0.1 s on Git Bash (Issue `#2477`).
+ff_knowledge_storage() { # <canonical path> <file|dir> [<canonical path> <file|dir>]...
+  local cursor kind first unsafe=0 chain_unsafe meta dev inode bytes modified changed mode owner links bits allow parent platform position=0 target=0 end
+  local native_paths=() chain=() kinds=() starts=()
   platform="$ff_knowledge_os"
   case "$platform" in Darwin|Linux|MSYS*|MINGW*|CYGWIN*) ;; *) ff_knowledge_refuse read-unverifiable; return 2 ;; esac
-  while :; do
-    chain+=("$cursor")
-    [[ "$cursor" != / ]] || break
-    parent="${cursor%/*}"; [[ -n "$parent" ]] || parent=/
-    [[ "$parent" != "$cursor" ]] || break # a relative spelling never reaches /; refused below
-    cursor="$parent"
+  [[ $# -ge 2 && $(($# % 2)) -eq 0 ]] || { ff_knowledge_refuse invalid-path; return 2; }
+  while [[ $# -gt 0 ]]; do
+    cursor="$1"; starts+=("${#chain[@]}"); kinds+=("$2"); shift 2
+    while :; do
+      chain+=("$cursor")
+      [[ "$cursor" != / ]] || break
+      parent="${cursor%/*}"; [[ -n "$parent" ]] || parent=/
+      [[ "$parent" != "$cursor" ]] || break # a relative spelling never reaches /; refused below
+      cursor="$parent"
+    done
   done
+  starts+=("${#chain[@]}")
   ff_knowledge_meta_chain "${chain[@]}"
-  for cursor in "${chain[@]}"; do
-    [[ ! -L "$cursor" ]] || { ff_knowledge_refuse nonregular-input; return 2; }
-    if [[ "$first" -eq 1 && "$kind" == file ]]; then
-      [[ -f "$cursor" ]] || { ff_knowledge_refuse nonregular-input; return 2; }
-    else
-      [[ -d "$cursor" ]] || { ff_knowledge_refuse nonregular-input; return 2; }
-    fi
-    if [[ "$ff_knowledge_meta_count" -gt 0 ]]; then
-      meta="${ff_knowledge_metas[position]}"; ff_knowledge_meta_valid "$meta" || return 2
-    else
-      meta="$(ff_knowledge_meta "$cursor")" || return 2
-    fi
-    IFS=: read -r dev inode bytes modified changed mode owner links <<< "$meta"
-    if [[ "$first" -eq 1 && "$kind" == file && "$links" != 1 ]]; then ff_knowledge_refuse hardlinked-input; return 2; fi
-    case "$platform" in Darwin|Linux)
-      if [[ "$first" -eq 1 && "$kind" == file && $((8#$mode & 8#444)) -eq 0 ]]; then ff_knowledge_refuse unreadable-input; return 2; fi ;;
-    esac
-    case "$platform" in
-      MSYS*|MINGW*|CYGWIN*) native_paths+=("$cursor") ;;
-      *)
-        [[ "$owner" == 0 || "$owner" == "$EUID" ]] || { ff_knowledge_refuse foreign-owner; return 2; }
-        bits=$((8#$mode)); allow=0
-        if [[ "$platform" == Darwin ]]; then allow="$(ff_knowledge_darwin_acl "$cursor")" || return 2; fi
-        if [[ $((bits & 8#022)) -ne 0 ]]; then
-          [[ -d "$cursor" && $((bits & 8#1000)) -ne 0 ]] || unsafe=1
-        fi
-        if [[ -d "$cursor" && "$owner" == "$EUID" && $((bits & 8#077)) -eq 0 && "$allow" == 0 ]]; then unsafe=0; fi
-        ;;
-    esac
-    first=0; position=$((position + 1))
+  while [[ "$target" -lt "${#kinds[@]}" ]]; do
+    kind="${kinds[target]}"; first=1; chain_unsafe=0; end="${starts[target + 1]}"
+    while [[ "$position" -lt "$end" ]]; do
+      cursor="${chain[position]}"
+      [[ ! -L "$cursor" ]] || { ff_knowledge_refuse nonregular-input; return 2; }
+      if [[ "$first" -eq 1 && "$kind" == file ]]; then
+        [[ -f "$cursor" ]] || { ff_knowledge_refuse nonregular-input; return 2; }
+      else
+        [[ -d "$cursor" ]] || { ff_knowledge_refuse nonregular-input; return 2; }
+      fi
+      if [[ "$ff_knowledge_meta_count" -gt 0 ]]; then
+        meta="${ff_knowledge_metas[position]}"; ff_knowledge_meta_valid "$meta" || return 2
+      else
+        meta="$(ff_knowledge_meta "$cursor")" || return 2
+      fi
+      IFS=: read -r dev inode bytes modified changed mode owner links <<< "$meta"
+      if [[ "$first" -eq 1 && "$kind" == file && "$links" != 1 ]]; then ff_knowledge_refuse hardlinked-input; return 2; fi
+      case "$platform" in Darwin|Linux)
+        if [[ "$first" -eq 1 && "$kind" == file && $((8#$mode & 8#444)) -eq 0 ]]; then ff_knowledge_refuse unreadable-input; return 2; fi ;;
+      esac
+      case "$platform" in
+        MSYS*|MINGW*|CYGWIN*) native_paths+=("$cursor") ;;
+        *)
+          [[ "$owner" == 0 || "$owner" == "$EUID" ]] || { ff_knowledge_refuse foreign-owner; return 2; }
+          bits=$((8#$mode)); allow=0
+          if [[ "$platform" == Darwin ]]; then allow="$(ff_knowledge_darwin_acl "$cursor")" || return 2; fi
+          if [[ $((bits & 8#022)) -ne 0 ]]; then
+            [[ -d "$cursor" && $((bits & 8#1000)) -ne 0 ]] || chain_unsafe=1
+          fi
+          if [[ -d "$cursor" && "$owner" == "$EUID" && $((bits & 8#077)) -eq 0 && "$allow" == 0 ]]; then chain_unsafe=0; fi
+          ;;
+      esac
+      first=0; position=$((position + 1))
+    done
+    [[ "$cursor" == / ]] || { ff_knowledge_refuse invalid-path; return 2; }
+    [[ "$chain_unsafe" -eq 0 ]] || unsafe=1
+    target=$((target + 1))
   done
-  [[ "$cursor" == / ]] || { ff_knowledge_refuse invalid-path; return 2; }
   if [[ ${#native_paths[@]} -gt 0 ]]; then ff_knowledge_windows_acl inspect "${native_paths[@]}" || return 2; fi
   [[ "$unsafe" -eq 0 ]] || { ff_knowledge_refuse replaceable-storage; return 2; }
 }
 
-ff_knowledge_private_fresh_directory() { # Only a newly created, empty owned job/staging directory.
-  local directory="$1" parent platform meta dev inode bytes modified changed mode owner links
+# parent-checked: a snapshot stage that mktemp made directly inside the canonical
+# workspace the same call has just checked. Walking that chain again would only
+# repeat its verdict, and each walk costs about 0.25 s on Git Bash (Issue `#2477`);
+# a same-UID change in between is outside ADR-078. The stage itself is still made
+# private and checked.
+ff_knowledge_private_fresh_directory() { # <new empty owned job/staging directory> [parent-checked]
+  local directory="$1" checked="${2:-}" parent platform meta allow dev inode bytes modified changed mode owner links
   [[ -d "$directory" && ! -L "$directory" && -O "$directory" ]] || { ff_knowledge_refuse foreign-workspace; return 2; }
-  directory="$(ff_knowledge_canonical_dir "$directory")" || return 2
-  parent="${directory%/*}"; [[ -n "$parent" ]] || parent=/
-  ff_knowledge_storage "$parent" dir || return 2
+  if [[ "$checked" != parent-checked ]]; then
+    directory="$(ff_knowledge_canonical_dir "$directory")" || return 2
+    parent="${directory%/*}"; [[ -n "$parent" ]] || parent=/
+    ff_knowledge_storage "$parent" dir || return 2
+  fi
   platform="$ff_knowledge_os"
   case "$platform" in
     Darwin) /bin/chmod 700 "$directory" && /bin/chmod -N "$directory" || { ff_knowledge_refuse read-unverifiable; return 2; } ;;
@@ -287,7 +315,12 @@ ff_knowledge_private_fresh_directory() { # Only a newly created, empty owned job
     Linux) chmod 700 "$directory" || { ff_knowledge_refuse read-unverifiable; return 2; } ;;
     *) ff_knowledge_refuse read-unverifiable; return 2 ;;
   esac
-  ff_knowledge_storage "$directory" dir || return 2
+  if [[ "$checked" != parent-checked ]]; then
+    ff_knowledge_storage "$directory" dir || return 2
+  elif [[ "$platform" == Darwin ]]; then # Windows: the private-staging verdict covers the stage
+    allow="$(ff_knowledge_darwin_acl "$directory")" || return 2
+    [[ "$allow" == 0 ]] || { ff_knowledge_refuse replaceable-storage; return 2; }
+  fi
   case "$platform" in
     Darwin|Linux)
       meta="$(ff_knowledge_meta "$directory")" || return 2
@@ -377,7 +410,9 @@ ff_knowledge_project_operand() { # 0 means an operand in the independently selec
   done
 }
 
-ff_knowledge_authorize() { # <literal file> <operator-selected root/file> [root|file]
+# A canonical workspace given as the fourth argument is checked in the same storage
+# pass as the file (a snapshot needs both; Issue `#2477`).
+ff_knowledge_authorize() { # <literal file> <operator-selected root/file> [root|file] [canonical workspace]
   local real authority
   real="$(ff_knowledge_canonical_file "$1")" || return 2
   if [[ "${3:-root}" == file ]]; then
@@ -388,7 +423,9 @@ ff_knowledge_authorize() { # <literal file> <operator-selected root/file> [root|
     authority="$(ff_knowledge_canonical_dir "$2")" || return 2
     case "$real" in "${authority%/}"/*) ;; *) ff_knowledge_refuse outside-authority; return 2 ;; esac
   fi
-  ff_knowledge_storage "$real" file || return 2
+  if [[ -n "${4:-}" ]]; then ff_knowledge_storage "$real" file "$4" dir || return 2
+  else ff_knowledge_storage "$real" file || return 2
+  fi
   printf '%s\n' "$real"
 }
 
@@ -402,29 +439,46 @@ ff_knowledge_snapshot() ( # <literal file> <independent authority> <private work
   set -uo pipefail
   export LC_ALL=C
   local source="$1" authority="$2" workspace="$3" kind="${4:-root}" real before after current stage="" accepted=0
-  local dev inode bytes modified changed mode owner links data="" rc=0 limit=4194304
+  local dev inode bytes modified changed mode owner links copied rc=0 limit=4194304
   trap 'if [[ "$accepted" -eq 0 && -n "$stage" && -d "$stage" && ! -L "$stage" && -O "$stage" ]]; then rm -rf -- "$stage"; fi' EXIT
-  real="$(ff_knowledge_authorize "$source" "$authority" "$kind")" || return 2
   ff_knowledge_clean_path "$workspace" || { ff_knowledge_refuse invalid-path; return 2; }
   workspace="$(ff_knowledge_canonical_dir "$workspace")" || return 2
-  ff_knowledge_storage "$workspace" dir || return 2
+  real="$(ff_knowledge_authorize "$source" "$authority" "$kind" "$workspace")" || return 2
   [[ -O "$workspace" ]] || { ff_knowledge_refuse foreign-workspace; return 2; }
   stage="$(mktemp -d "$workspace/.ff-knowledge-read.XXXXXX")" || { ff_knowledge_refuse read-unverifiable; return 2; }
-  ff_knowledge_private_fresh_directory "$stage" || return 2
+  [[ "${stage%/*}" == "$workspace" ]] || { ff_knowledge_refuse read-unverifiable; return 2; }
+  ff_knowledge_private_fresh_directory "$stage" parent-checked || return 2
   before="$(ff_knowledge_meta "$real")" || return 2
   IFS=: read -r dev inode bytes modified changed mode owner links <<< "$before"
   [[ $((10#$bytes)) -le "$limit" ]] || { ff_knowledge_refuse input-too-large; return 2; }
   exec 3< "$real" || { ff_knowledge_refuse read-unverifiable; return 2; }
   [[ -f /dev/fd/3 ]] || { ff_knowledge_refuse read-unverifiable; return 2; }
-  IFS= read -r -d '' -n "$((limit + 1))" -u 3 data 2> "$stage/read-error" || rc=$?
+  # One bounded copy from the opened descriptor straight into the private stage. The
+  # builtin read with -d/-n makes one system call per byte, which was most of a
+  # lookup's time on Git Bash (Issue `#2477`). NUL bytes are dropped on the way, so a
+  # file that holds one comes out short and is refused as incomplete below.
+  ( set -C; head -c "$((limit + 1))" <&3 2> "$stage/read-error" | tr -d '\000' > "$stage/input" ) || rc=$?
   exec 3<&-
-  [[ "$rc" -eq 1 && ! -s "$stage/read-error" && "${#data}" -eq $((10#$bytes)) && "${#data}" -le "$limit" ]] \
+  [[ "$rc" -eq 0 && ! -s "$stage/read-error" ]] || { ff_knowledge_refuse incomplete-input; return 2; }
+  # One stat for the copy and the source after the read (each start is about 0.1 s on Git Bash).
+  ff_knowledge_meta_chain "$stage/input" "$real"
+  [[ "$ff_knowledge_meta_count" -eq 2 ]] || { ff_knowledge_refuse metadata-unavailable; return 2; }
+  copied="${ff_knowledge_metas[0]}"; after="${ff_knowledge_metas[1]}"
+  ff_knowledge_meta_valid "$copied" && ff_knowledge_meta_valid "$after" || return 2
+  IFS=: read -r _ _ copied _ <<< "$copied"
+  [[ $((10#$copied)) -eq $((10#$bytes)) && $((10#$copied)) -le "$limit" ]] \
     || { ff_knowledge_refuse incomplete-input; return 2; }
-  after="$(ff_knowledge_meta "$real")" || return 2
-  current="$(ff_knowledge_authorize "$source" "$authority" "$kind")" || return 2
+  # After the read only the path identity is checked again. The authorization before
+  # the open proved no other UID can change the chain, and ADR-078 decision 3 leaves
+  # same-UID, administrator and remote-filesystem replacement out of scope, so a second
+  # walk checks nobody in scope (about 0.4 s on Git Bash, Issue `#2477`). A change to
+  # the leaf's own ACL moves its ctime and fails the metadata compare (Windows 11).
+  current="$(ff_knowledge_canonical_file "$source")" || return 2
   [[ "$before" == "$after" && "$current" == "$real" ]] || { ff_knowledge_refuse input-changed; return 2; }
-  printf '%s' "$data" | ff_knowledge_valid_utf8 || { ff_knowledge_refuse invalid-text; return 2; }
-  ( set -C; printf '%s' "$data" > "$stage/input" ) || { ff_knowledge_refuse read-unverifiable; return 2; }
+  ff_knowledge_valid_utf8 < "$stage/input" || { ff_knowledge_refuse invalid-text; return 2; }
+  # The authorized path and the metadata the bytes were read under, for a caller
+  # that keys a cache on them without another stat (never source bytes).
+  ( set -C; printf '%s\t%s\n' "$real" "$before" > "$stage/source" ) || { ff_knowledge_refuse read-unverifiable; return 2; }
   accepted=1
   printf '%s\n' "$stage/input"
 )

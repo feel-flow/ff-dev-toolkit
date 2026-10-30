@@ -199,6 +199,8 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_EFFORT_ACTUAL_ACK`
 - `FF_MERGE_CLOSING_ACK`
 - `FF_EXIT_CODE_ACK`
+- `FF_TIMEOUT_ACK`（`hooks/guard-exit-code.sh` で、command -v で見つからない timeout / gtimeout の停止だけを通すコマンド先頭の環境代入）
+- `FF_UNBOUNDED_WAIT_ACK`（同 hook で、背景実行の上限の無い sleep 待ちの停止だけを通す。until / while の前は独立した文 `FF_UNBOUNDED_WAIT_ACK=1;` とする）
 - `FF_CREDENTIAL_OUTPUT_ACK`
 - `FF_LITERAL_WRITE_ACK`
 - `FF_LONG_GATE_BACKGROUND_ACK`
@@ -254,8 +256,6 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 テストハーネスと fixture の注入口です。全件ゲート `tests/run-all.sh` のスイッチのうち、公開文書に載っていないものもここに含みます。suite が組み立てる fixture の中でしか使われない名前（`FF_FIXTURE_*` など）も、suite のソースが配布物に含まれる以上は母集団に入るため、ここへ載せます。
 
 - `FF_AGENTS_HITS`
-- `FF_AGENT_PRESS_LOADER_NODE_MODULES`（公開リリースの隔離 fixture が任意検査の適用判断を検証するための参照）
-- `FF_AGENT_PRESS_NODE`（同 fixture の ff-agent-press 実行器を制御するための参照）
 - `FF_ALLOW_DISPATCH_BRANCH`
 - `FF_AMBIENT_GITHUB_ACTIONS`
 - `FF_ASDD_DRAIN_OUT`
@@ -367,6 +367,9 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_RUN_ALL_CHECK_REGISTRATION`
 - `FF_RUN_ALL_DUMP_DECLARATIONS`
 - `FF_RUN_ALL_ELAPSED_FIXTURE`
+- `FF_RUN_ALL_ELAPSED_RECORD`（並列実行の起動順に使う suite 別経過秒の記録のパス。明示引数の実行はこれを与えたときだけ並べ替える）
+- `FF_RUN_ALL_ELAPSED_NEW`（起動順の記録を書き直す awk へ、今回 pass した suite の秒数を渡す内部変数）
+- `FF_RUN_ALL_LAUNCH_NAMES`（起動順を組み立てる awk へ suite 名の一覧を渡す内部変数）
 - `FF_RUN_ALL_FAST`
 - `FF_RELEASE_IN_FLIGHT_MAX_AGE`
 - `FF_RUN_ALL_JOBS`

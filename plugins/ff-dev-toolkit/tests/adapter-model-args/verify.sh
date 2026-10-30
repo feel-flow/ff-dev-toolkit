@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # アダプタが CLI へ実際に渡す argv の検証（Issue #239）。
-# 空振り検出: 組み込みread-onlyでもgrant配列の欠損・イベント0件を拒否し、明示したeventless probeはinert。通常対照223件PASS、同じadapterの起動前検査を外す変異はeffective-permissionsでred（2026-10-29 macOS実測）。
+# 空振り検出: 組み込みread-onlyでもgrant配列の欠損・イベント0件を拒否し、明示したeventless probeはinert。通常対照223件PASS、同じadapterの起動前検査を外す変異はeffective-permissionsでred（2026-10-29 macOS実測）。grok read-onlyレーンのGROK_TOOL_ARGSを空にする変異は7件red（argv 6件とシェルを外したreviewのcomplete 1件、2026-10-30 macOS実測）。
 #
 # tests/no-hardcoded-model/ は「モデル slug が書かれていないこと」を静的に見るが、
 # 静的検査では次のような「機能が丸ごと届かない」変化を捕まえられない:
@@ -143,7 +143,9 @@ run_adapter() {
   # 渡さない implement は build_prompt が fail-loud で拒否するため、CLI が
   # 起動せず argv が空になる。ここは実行経路に近い方 = staging を渡す形にする。
   local task_args=()
-  if [ "${RUN_TASK_TYPE:-review}" = "implement" ]; then
+  if [ "${RUN_TASK_TYPE:-review}" = "implement" ] && [ "${RUN_INLINE_OUTPUT:-false}" = "true" ]; then
+    task_args=(--inline-output)
+  elif [ "${RUN_TASK_TYPE:-review}" = "implement" ]; then
     mkdir -p "$WORK/staging"
     task_args=(--staging-dir "$WORK/staging")
   fi
@@ -737,6 +739,75 @@ if grep -qF "exited successfully but produced no output" "$WORK/out.md" 2>/dev/n
   ok "grok-cli: 空出力をクラッシュ／中断として報告しない"
 else
   bad "grok-cli: 空出力が「CLI が落ちた／止められた」と報告されている（原因の指し先が誤り）"
+fi
+
+# ---- grok: read-only レーンはシェルを渡さない（Issue `#2522`） ---------------------
+# headless の grok は承認を求められないので、レビュー中に検証コマンドを打とうとすると
+# `permission required: ... headless run cannot ask for approval` で拒否され、型付き
+# 判定行の無いまま終わる（導入先の観測で 3 回中 3 回）。対策は「実行を試みる
+# 経路そのもの」を外すこと = read-only レーンへ読み取りツールだけを渡す。
+# 値はアダプタの定数から読まず**リテラルで**書く。grok 1.0.62 の実測（init.tools が
+# [read_file,list_dir,grep] だけになる組）の転記であり、定数側だけを変えたら赤にする。
+GROK_TOOLS_ARG="<--tools><read_file,grep,list_dir>"
+GROK_DISALLOWED_ARG="<--disallowed-tools><run_terminal_cmd,Agent,search_tool,use_tool>"
+make_grok_stub "$emit_applied"
+for readonly_case in review explore inline; do
+  case "$readonly_case" in
+    inline) RUN_TASK_TYPE=implement RUN_INLINE_OUTPUT=true RUN_GROK_HOME="$GROK_EVENTS_HOME" run_adapter grok-cli-adapter.sh ;;
+    *)      RUN_TASK_TYPE="$readonly_case" RUN_GROK_HOME="$GROK_EVENTS_HOME" run_adapter grok-cli-adapter.sh ;;
+  esac
+  expect_launched "grok-cli: ${readonly_case} で CLI が起動している"
+  expect_argv_has "grok-cli: ${readonly_case} は読み取りツールだけを許す" "$GROK_TOOLS_ARG"
+  expect_argv_has "grok-cli: ${readonly_case} はシェル・サブエージェント・MCP メタツールを外す" "$GROK_DISALLOWED_ARG"
+done
+RUN_TASK_TYPE=implement RUN_GROK_HOME="$GROK_EVENTS_HOME" run_adapter grok-cli-adapter.sh
+expect_launched "grok-cli: implement で CLI が起動している"
+expect_argv_lacks "grok-cli: implement（staging）はツールを絞らない" "<--tools>"
+expect_argv_lacks "grok-cli: implement（staging）はツールを外さない" "<--disallowed-tools>"
+
+# 拒否で INCOMPLETE になる経路の固定。stub は「シェルを外されていなければ実物と同じく
+# 検証コマンドを試みて拒否され、判定行なしで終わる / 外されていれば判定行を返す」。
+# 拒否行は実物と同じく stderr へ 1 行出し exit 0 で終わる（ベンダー文書
+# 14-headless-mode.md の書式）。受理判定が見るのは stdout の判定行の有無だけなので
+# 文言には依存しない。STUB_GROK_FORCE_SHELL=true は外されていても拒否側を
+# 演じさせる対照で、「拒否の出力は INCOMPLETE になる」こと自体を固定する — これが緑の
+# まま上の argv だけが消えると、本番では毎回 INCOMPLETE に戻る。
+{
+  echo '#!/usr/bin/env bash'
+  echo 'for a in "$@"; do printf "<%s>" "$a" >> "$ARGV_LOG"; done'
+  echo 'printf "\n" >> "$ARGV_LOG"'
+  echo "$emit_applied"
+  echo 'shell_removed=false; prev=""'
+  echo 'for a in "$@"; do'
+  echo '  if [ "$prev" = --disallowed-tools ]; then case ",$a," in *,run_terminal_cmd,*) shell_removed=true ;; esac; fi'
+  echo '  prev="$a"'
+  echo 'done'
+  echo 'if [ "$shell_removed" != true ] || [ "${STUB_GROK_FORCE_SHELL:-false}" = true ]; then'
+  echo '  echo "I will run the project checks before reporting."'
+  echo '  echo "permission required: run_terminal_cmd node scripts/check-prerequisites.mjs was not run, as a headless run cannot ask for approval" >&2'
+  echo '  exit 0'
+  echo 'fi'
+  echo 'echo "## Verification"'
+  echo 'echo "### Skipped"'
+  echo 'echo "- verification: skipped | node scripts/check-prerequisites.mjs"'
+  echo 'echo "No shell tool in this lane."'
+  echo 'echo "- verdict: none"'
+} > "$WORK/bin/grok"
+chmod +x "$WORK/bin/grok"
+RUN_GROK_HOME="$GROK_EVENTS_HOME" run_adapter grok-cli-adapter.sh
+if [ "$RUN_RC" -eq 0 ] && grep -qF "<!-- Status: complete -->" "$WORK/out.md" 2>/dev/null \
+  && grep -qF -- "- verdict: none" "$WORK/out.md" 2>/dev/null; then
+  ok "grok-cli: シェルを外した review は実行を試みず判定行を返して complete になる"
+else
+  bad "grok-cli: シェルを外した review が complete にならない（rc=${RUN_RC}）"
+fi
+RUN_GROK_HOME="$GROK_EVENTS_HOME" run_adapter grok-cli-adapter.sh STUB_GROK_FORCE_SHELL=true
+if [ "$RUN_RC" -ne 0 ] && grep -qF "<!-- Status: incomplete -->" "$WORK/out.md" 2>/dev/null \
+  && grep -qF "missing-review-body" "$WORK/out.md" 2>/dev/null \
+  && grep -qF "headless run cannot ask for approval" "$WORK/out.md" 2>/dev/null; then
+  ok "grok-cli: 実行要求の拒否で終わった出力は missing-review-body の INCOMPLETE になり、拒否行を成果物に残す"
+else
+  bad "grok-cli: 実行要求の拒否が INCOMPLETE（missing-review-body・拒否行つき）にならない（rc=${RUN_RC}）"
 fi
 
 # 通常の stub に戻す（後続のヘルパー検査へ影響させない）

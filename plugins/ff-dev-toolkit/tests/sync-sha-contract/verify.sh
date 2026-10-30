@@ -150,6 +150,7 @@
 # 空振り検出: 同じ実runtime block/helperの単体で、case helperと実libの不在・読取不能・同名空・関数名消失の8入力、およびcase集合0は各0 pass / 1 fail・exit 1（2026-10-22）。正常18件に届かない入力を緑へ倒さない。
 # 空振り検出: release の環境lib不在/空、Python不在/版不明/能力不足/空成功、型検査依存不在/npm不在/赤/空成功、loader不備/空成功はprepare・suite前に停止する（2026-10-22実測）。
 # 変異検出: 環境呼出/Python/media/loaderの各probe除去、loader skip無条件許可、loader context照合除去に加え、実probeのPython本体/manifest引数/loader import、npmのNode PATH、loader条件診断の破壊を既存ownerの同じfixtureへ適用し全て赤転（適用11/11、SURVIVED 0）。実Python/Nodeを含む正常対照35pass/0fail、mutation-harness rc=0（2026-10-22）。
+# 2026-10-30: 社内専用の ff-agent-press を別の非公開リポジトリへ移したので、release の loader（loader-diff）の probe・部分 skip の条件付き許可・gate 記録の loader context 照合を撤去した。上 2 行の loader 部分は撤去前の実測で、残る環境 probe（Python / media）の停止は同じ fixture が引き続き赤にする。
 
 # 変異検出: run_orch の FF_RUN_ALL_FULL 分離だけを外すと、外側は未設定でも neutral ケースの明示 FULL=1 が再検査へ漏れ、recheck 1 で赤（2026-10-23 実測、release-runtime 149 pass / 1 fail、exit 1）。健全性悪化時の全件実行は正常のまま。
 # 空振り検出: FF_SYNC_SHA_RELEASE_SCRIPT の明示不在と同名空ファイルはどちらも exit 1（2026-10-23 実測）。空ファイルの全件実行コマンドは 0 件一致となり赤で、検査対象の欠落を skip・緑へ倒さない。
@@ -451,6 +452,10 @@ release_contains "'Windows の Git Bash でだけ成立する検査のため未�
 # 表から消えると macOS からのリリースが gate 段で止まる（Issue `#2077`）
 release_contains "'bash 4 以上でだけ成立する検査のため未実行'" \
   "許容表に bash 版限定（bash 4 以上でだけ成立する検査）がある"
+# knowledge-lookup の K32 は、macOS では ACL 検査の起動回数がパスの深さで変わるので上限を固定できず必ず skip になる。
+# 表から消えると macOS からのリリースが gate 段で止まる（Issue `#2477`）
+release_contains "'起動回数の上限は Windows と Linux でだけ固定する検査のため未実行'" \
+  "許容表に OS 限定（起動回数の上限を Windows と Linux でだけ固定する検査）がある"
 # 配列ブロック（`NAME=(` 〜 行頭 `)`）の中だけを見る。ファイル全体の grep だと、SKIP_HINTS の要素（同じ理由文 + `|`）や
 # 語尾を変えた要素（`…行いません（`）で禁止針が外れる
 release_block() { awk -v n="$1" '$0 ~ ("^" n "=\\($") {f=1; next} f && /^\)$/ {exit} f' "$RELEASE_SCRIPT"; }
@@ -506,9 +511,9 @@ contains '| `ff-media-toolkit/tests/render-smoke`: FF_MEDIA_RENDER=1 が未設�
 # どちらもこの針の更新（= レビュー）を経る。grep が失敗して空になった回も一致しないので赤になる
 _os_emitters="$(grep -rlF -- 'Windows の Git Bash でだけ成立する検査のため未実行' "$REPO_ROOT"/plugins/*/tests 2>/dev/null \
   | grep -v '/tests/sync-sha-contract/' | sed "s|^$REPO_ROOT/||" | sort)" || true
-_os_emitters_want="$(printf '%s\n' plugins/ff-dev-toolkit/tests/ace-curate-commit/verify.sh plugins/ff-dev-toolkit/tests/guard-review-in-flight/verify.sh plugins/ff-dev-toolkit/tests/knowledge-lookup/windows-acl.sh)"
+_os_emitters_want="$(printf '%s\n' plugins/ff-dev-toolkit/tests/ace-curate-commit/verify.sh plugins/ff-dev-toolkit/tests/guard-review-in-flight/verify.sh plugins/ff-dev-toolkit/tests/knowledge-lookup/windows-acl.sh plugins/ff-dev-toolkit/tests/multi-agent-stale-outputs/windows-boundary-cases.sh)"
 if [[ "$_os_emitters" == "$_os_emitters_want" ]]; then
-  ok "OS 限定の理由文を出す suite が guard-review-in-flight・ace-curate-commit・knowledge-lookup だけである（表の文言が実出力にある）"
+  ok "OS 限定の理由文を出す suite が guard-review-in-flight・ace-curate-commit・knowledge-lookup・multi-agent-stale-outputs だけである（表の文言が実出力にある）"
 else
   bad "OS 限定の理由文を出す suite の集合が想定と違う（文言の変更か使い回し。許容表と SKILL.md の表を見直す）: [${_os_emitters}]"
 fi
@@ -518,6 +523,18 @@ contains '| `ace-curate-commit`: Windows の Git Bash でだけ成立する検�
   "手順 0b の許容表に OS 限定（ace-curate-commit の 6b の別名ケース）の行がある"
 contains '| `knowledge-lookup`: Windows の Git Bash でだけ成立する検査のため未実行 | OS 限定 |' \
   "手順 0b の許容表に OS 限定（knowledge-lookup の W8〜W9）の行がある"
+contains '| `multi-agent-stale-outputs`: 実 ACL helper の回は Windows の Git Bash でだけ成立する検査のため未実行 | OS 限定 |' \
+  "手順 0b の許容表に OS 限定（multi-agent-stale-outputs の実 ACL helper の回）の行がある"
+contains '| `knowledge-lookup`: K32（起動回数の上限は Windows と Linux でだけ固定する検査のため未実行） | OS 限定 |' \
+  "手順 0b の許容表に OS 限定（knowledge-lookup の K32）の行がある"
+# K32 の理由文（Issue `#2477`）も、出す suite の集合を完全一致で固定する。文言を変えると macOS の gate 段で初めて止まるため
+_k32_emitters="$(grep -rlF -- '起動回数の上限は Windows と Linux でだけ固定する検査のため未実行' "$REPO_ROOT"/plugins/*/tests 2>/dev/null \
+  | grep -v '/tests/sync-sha-contract/' | sed "s|^$REPO_ROOT/||" | sort)" || true
+if [[ "$_k32_emitters" == plugins/ff-dev-toolkit/tests/knowledge-lookup/verify.sh ]]; then
+  ok "K32 の理由文を出す suite が knowledge-lookup だけである（表の文言が実出力にある）"
+else
+  bad "K32 の理由文を出す suite の集合が想定と違う（文言の変更か使い回し。許容表と SKILL.md の表を見直す）: [${_k32_emitters}]"
+fi
 # bash 版限定の理由文（Issue `#2077`）。OS 限定と同じく、文言を出す suite の集合を完全一致で固定する
 _bash4_emitters="$(grep -rlF -- 'bash 4 以上でだけ成立する検査のため未実行' "$REPO_ROOT"/plugins/*/tests 2>/dev/null \
   | grep -v '/tests/sync-sha-contract/' | sed "s|^$REPO_ROOT/||" | sort)" || true
@@ -585,14 +602,15 @@ fi
 # 判定関数は「○ skip: 」の直後に理由文が続く形だけを許すので、出し手もその形で探す（語順を変えた行を拾わない）
 _darwin_emitters="$(grep -rlF -- '○ skip: Darwin でだけ成立する検査のため未実行' "$REPO_ROOT"/plugins/*/tests 2>/dev/null \
   | grep -v '/tests/sync-sha-contract/' | sed "s|^$REPO_ROOT/||" | sort)" || true
-_darwin_emitters_want="$(printf '%s\n' plugins/ff-agent-press/tests/cli-guards/local-output.test.mjs plugins/ff-dev-toolkit/tests/guard-exit-code/consumer-resource-cases.sh)"
+# ff-agent-press の cli-guards も同じ理由文を出していたが、プラグインごと別の非公開リポジトリへ移した
+_darwin_emitters_want="plugins/ff-dev-toolkit/tests/guard-exit-code/consumer-resource-cases.sh"
 if [[ "$_darwin_emitters" == "$_darwin_emitters_want" ]]; then
-  ok "Darwin 専用の理由文を出す suite が ff-agent-press の cli-guards と guard-exit-code だけである（判定関数の文言が実出力にある）"
+  ok "Darwin 専用の理由文を出す suite が guard-exit-code だけである（判定関数の文言が実出力にある）"
 else
   bad "Darwin 専用の理由文を出す suite の集合が想定と違う（文言の変更か使い回し。判定関数と SKILL.md の表を見直す）: [${_darwin_emitters}]"
 fi
-contains '| `ff-agent-press/tests/cli-guards` / `guard-exit-code`: Darwin でだけ成立する検査のため未実行 | 条件付きの OS 限定 |' \
-  "手順 0b の許容表に条件付きの OS 限定（ff-agent-press の Darwin 専用 ACL 検査）の行がある"
+contains '| `guard-exit-code`: Darwin でだけ成立する検査のため未実行 | 条件付きの OS 限定 |' \
+  "手順 0b の許容表に条件付きの OS 限定（guard-exit-code の Darwin 専用 sandbox-exec 検査）の行がある"
 contains '`ff-media-toolkit/tests/typecheck` の `node_modules` 不在' \
   "手順 0b が ff-media の setup 前の typecheck を環境 skip（許容しない）として名指ししている"
 contains '`MSYS では成立しない検査のため未実行` は環境 skip で、許容表には載せない' \
@@ -608,7 +626,8 @@ for _msys_site in \
   plugins/ff-dev-toolkit/tests/sync-forbidden-patterns/verify.sh \
   plugins/ff-dev-toolkit/tests/host-route-parity/verify.sh \
   plugins/ff-dev-toolkit/tests/sync-sha-contract/footer-reuse-runtime.sh \
-  plugins/ff-dev-toolkit/tests/claude-hooks-path/verify.sh
+  plugins/ff-dev-toolkit/tests/claude-hooks-path/verify.sh \
+  plugins/ff-dev-toolkit/tests/knowledge-lookup/verify.sh
 do
   if [[ -f "$REPO_ROOT/$_msys_site" ]] && grep -qF -- 'ff_skip_msys_case' "$REPO_ROOT/$_msys_site"; then
     ok "ff_skip_msys_case の呼び出しがある: ${_msys_site}"
@@ -1033,8 +1052,8 @@ release_contains 'ff_release_marker_try_reclaim "$MARKER_DIR"' \
   "残骸の in-flight 印は、判定に使った token で rename（CAS 相当）回収する 1 つの helper を通す"
 release_contains 'pub_ahead="$(git -C "$PUBLIC" rev-list --count origin/main..main)"' \
   "preflight が公開側の未 push の commit（前回の push 失敗の残り）を見る"
-release_contains 'if [[ "${rec%%:*}" == "$head" && "$(state_get GATE_LOADER_CONTEXT)" == "$RELEASE_LOADER_CONTEXT" && ( "${rec#*:}" == full || "$gate_mode" == fast ) ]]; then' \
-  "gate 段は同じ HEAD と loader 適用条件が一致した成功記録を再利用する（footer child は別の内容証明を要求）"
+release_contains 'if [[ "${rec%%:*}" == "$head" && ( "${rec#*:}" == full || "$gate_mode" == fast ) ]]; then' \
+  "gate 段は同じ HEAD の成功記録を再利用する（footer child は別の内容証明を要求）"
 release_contains 'if footer_gate_reusable "$rec" "$head"; then' \
   "public-layout の再利用には footer の内容証明関数を通す"
 release_contains "has_line \"\$proof\" 'FULL_GATE_REUSE=CHANGELOG_FOOTER_ONLY' || return 1" \

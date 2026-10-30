@@ -920,7 +920,7 @@ You've hit your individual spend limit · your session limit resets 10:10pm (Asi
 
 同じ実行で `codex-cli` は完走し、ホストのセッションも問題なく動作していた。`claude auth` には**呼び出し単位のアカウント選択が無い**（実測 / claude 2.1.263。`login` / `logout` / `status` のみ）ので、`logout` → `login` というグローバルな切り替え以外に手段が無く、CLI 側では解決できない。`MULTI_AGENT_MODEL_CLAUDE_CODE` はモデル指定であってアカウント指定ではない。
 
-grok をホストにした場合は別の動機がある: `grok -p`（headless）のレビューレーンが型付き判定行を含む本文を返さず `missing-review-body` で落ちる（OBS-351）。grok セッション内（`GROK_AGENT` が立つ）で grok-cli レーンが失敗すると、`--delegate-to-host=grok-cli` で再実行するコマンドが案内される。
+grok をホストにした場合は別の動機がある: `grok -p`（headless）のレビューレーンが型付き判定行を含む本文を返さず `missing-review-body` で落ちる（OBS-351）。grok セッション内（`GROK_AGENT` が立つ）で grok-cli レーンが失敗すると、`--delegate-to-host=grok-cli` で再実行するコマンドが案内される。検証コマンドを打とうとして headless の承認不可で拒否される経路は、read-only レーンへシェルを渡さないことで構造的に閉じている（[grok-cli-reviewer.md の「read-only レーンのツール」](grok-cli-reviewer.md#read-only-レーンのツールシェルを渡さない)）。
 
 このフラグは既存の CLI 復旧案内に加える選択肢であり、主担当ホストの標準レビューをスクリプト起動へ戻す条件ではない。
 
