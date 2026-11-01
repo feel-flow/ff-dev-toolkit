@@ -14,6 +14,7 @@
 # 空振り検出: 書き込み口が不在だと「共通の書き込み口」節の全ケースが赤になる（skip へ倒さない）。
 # 空振り検出: ace-cycle.md の「#### 4. コミット」見出しが見つからない・節が空なら赤（2026-09-29 実測: 見出しを改名すると赤）。
 # 空振り検出: finish.sh の写しで保護判定の jq から 3 項目判定を外すと（PR 必須 / 必須チェック / push 制限の 3 ケース）、署名必須・読み取り専用を外すとそれぞれ 1 ケース、protected-no-pr で rulesets を見ないと（3 項目とも未設定 / null / null + rulesets PR 必須の 3 ケース）、protected-no-pr を protected と出すと（未設定 / null の 2 ケース）、probe を非 0 で終わらせると全 14 ケースが赤になる（判定行は完全一致・終了コードも照合。2026-09-30 実測）。
+# 空振り検出: 保護判定 block の抽出元を finish.sh のままにすると marker が無く probe が空になり、抽出失敗と保護判定 14 ケースが赤になる（2026-10-30 実測。block は scripts/lib/finish-knowledge-commit-functions.sh にある）。
 # 変異検出: add の鮮度検査の呼び出しを外す、または対象を default branch 以外へ広げると 13 が赤（2026-09-24 実測）。
 # 変異検出: add の commit-msg hook ドライランの呼び出しを外すと 14 が赤（保留記録が作られ stage が残る）、commit 側を外すと 15 が赤、prepare-commit-msg の呼び出しを外すと 16 が赤、add のドライランが保留の type を引き継がないと 15 が赤、commit の KNOWLEDGE_SUBJECT を hook 前の件名に戻すと 16 が赤（2026-09-30 実測）。
 # 空振り検出: 6b の別名ケースは、Windows の Git Bash で fixture の別名（mount の /tmp/… とドライブの /c/…）を作れないと赤（同じ綴りへ戻して緑にしない）。他の OS では別名を作れないので、理由付きの部分 skip を出す（2026-10-04）。
@@ -44,12 +45,13 @@ PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 COMMAND_FILE="$PLUGIN_ROOT/skills/ace-curate/SKILL.md"
 # 手順 5 の規則（commitlint・保護判定の API・拒否メッセージでの切替）と chore PR 経路のフェンスは
 # 条件付き reference（references/curate.md）、Phase 1 の委譲プロンプトは references/extract-prompt.md、
-# 保護判定 block と直 push の実測ガードは scripts/finish.sh knowledge-commit（probe / push）にある。
+# 保護判定 block と直 push の実測ガードは scripts/lib/finish-knowledge-commit-functions.sh（probe / push）にある。入口の finish.sh は構成ファイルを読んでから cmd_knowledge_commit を呼ぶ。
 RULES_FILE="$PLUGIN_ROOT/skills/ace-curate/references/curate.md"
 PROMPT_FILE="$PLUGIN_ROOT/skills/ace-curate/references/extract-prompt.md"
 FINISH="$PLUGIN_ROOT/scripts/finish.sh"
+KC_LIB="$PLUGIN_ROOT/scripts/lib/finish-knowledge-commit-functions.sh"
 
-for _f in "$COMMAND_FILE" "$RULES_FILE" "$PROMPT_FILE" "$FINISH"; do
+for _f in "$COMMAND_FILE" "$RULES_FILE" "$PROMPT_FILE" "$FINISH" "$KC_LIB"; do
   [ -s "$_f" ] || {
     echo "✗ 必須ファイルが存在しないか空です: $_f" >&2
     exit 1
@@ -260,11 +262,11 @@ expect_contains \
   '**保護判定（必須・直 push を試す前に行う）**' \
   "保護判定が直 push より前の必須手順として明記されている"
 
-expect_contains_in "$FINISH" \
+expect_contains_in "$KC_LIB" \
   'gh api "repos/${owner_repo}/branches/${default_branch}/protection"' \
   "branch protection API での保護判定コマンドが手順に含まれる"
 
-expect_contains_in "$FINISH" \
+expect_contains_in "$KC_LIB" \
   'gh api "repos/${owner_repo}/rules/branches/${default_branch}"' \
   "rulesets API でのフォールバック判定コマンドが手順に含まれる"
 
@@ -329,23 +331,23 @@ echo "== 手順 5 直 push 経路の実測ガード検査（Issue #739） =="
 # knowledge コミットが届かない。ブランチの実測・push 出力の照合・push 後 CI 確認の
 # 3 点が手順から侵食されないよう固定する。
 
-expect_contains_in "$FINISH" \
+expect_contains_in "$KC_LIB" \
   'current_branch="$(git symbolic-ref -q --short HEAD)" || current_branch=""' \
   "コミット先ブランチを git symbolic-ref で実測するガード"
 
-expect_contains_in "$FINISH" \
+expect_contains_in "$KC_LIB" \
   'push_refspec="HEAD:${default_branch}"' \
   "detached HEAD 時は push refspec を HEAD:default-branch 形式へ切替"
 
-expect_contains_in "$FINISH" \
+expect_contains_in "$KC_LIB" \
   'git push origin "${push_refspec}"' \
   "push が実測済み refspec を使う"
 
-expect_contains_in "$FINISH" \
+expect_contains_in "$KC_LIB" \
   'push 出力に -> ${default_branch} が無く、コミットが届いていません' \
   "push 出力の -> default-branch 照合（Everything up-to-date を成功扱いしない）"
 
-expect_contains_in "$FINISH" \
+expect_contains_in "$KC_LIB" \
   'gh run list --branch "${default_branch}"' \
   "直 push 後の CI 結果確認手順"
 
@@ -408,16 +410,16 @@ done
 
 echo "== 手順 5 保護判定ロジックの実測検査（stub gh。Issue #1147） =="
 # 文言 grep だけでは「404 の後 rulesets へ到達しない」ような分岐バグを検出できない
-# （実際にレビューで指摘された欠陥）。finish.sh（knowledge-commit probe）から保護判定 block を
+# （実際にレビューで指摘された欠陥）。scripts/lib/finish-knowledge-commit-functions.sh から保護判定 block を
 # `# ff-ace-protection-probe:start/end` マーカーで実際に抽出し、stub gh を PATH に
 # 挟んで 4 シナリオを実行し、最終的な protection= 判定を実測する。
 
 PROBE_DIR="$(mktemp -d)"
 
-awk '/# ff-ace-protection-probe:start/{flag=1; next} /# ff-ace-protection-probe:end/{flag=0} flag' "$FINISH" > "$PROBE_DIR/probe.sh"
+awk '/# ff-ace-protection-probe:start/{flag=1; next} /# ff-ace-protection-probe:end/{flag=0} flag' "$KC_LIB" > "$PROBE_DIR/probe.sh"
 
 if [ -s "$PROBE_DIR/probe.sh" ]; then
-  ok "保護判定 block を ff-ace-protection-probe マーカーで finish.sh から抽出できた"
+  ok "保護判定 block を ff-ace-protection-probe マーカーで knowledge-commit 構成ファイルから抽出できた"
 else
   bad "保護判定 block の抽出に失敗しました（marker が見つからない？）"
 fi

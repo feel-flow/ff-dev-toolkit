@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Bash-only squash closing-keyword guard. The checker is the sole keyword detector.
-# Unknown shell values/cwd/input, queue and delayed auto merge pass with a reason.
+# An executed gh pr merge whose subject cannot be resolved stops. Echo, heredoc,
+# comments, and the same words inside one argument stay allowed. Queue, delayed auto merge, fetch failure, and missing
+# tools still pass with a reason.
 # gh's server preview is a snapshot, not an atomic guarantee of the future message.
 # Perl is optional: without it bounded gh calls cannot run, so inspection is reported skipped.
 # Each gh call has 1 second (the shared 5-second window never cuts the four 1-second calls); at most 4 calls leave time for bounded
@@ -36,6 +38,214 @@ fi
 MC_NOTES=""
 mc_note() { MC_NOTES="${MC_NOTES}${MC_NOTES:+
 }$1"; }
+# 0 when this segment executes gh pr merge. A quote is a word boundary, so the
+# same words inside one argument are not a merge. Lex failure is 1 (the outer
+# lexer already fail-opens on unreadable shell).
+mc_merge_scan_script() {
+  local script_segments script_raw script_seg
+  script_segments="$(ff_lex_segments "$1")" || return 0
+  while [ -n "$script_segments" ]; do
+    script_raw="${script_segments%%$'\001'*}"
+    case "$script_segments" in
+      *$'\001'*) script_segments="${script_segments#*$'\001'}" ;;
+      *) break ;;
+    esac
+    script_seg="${script_raw#?}"
+    [ -n "$script_seg" ] || continue
+    if mc_merge_scan "$script_seg"; then
+      return 0
+    fi
+  done
+  return 1
+}
+mc_merge_scan() {
+  local scan_rc
+  MC_MERGE_DEPTH=$((${MC_MERGE_DEPTH:-0}+1))
+  if [ "$MC_MERGE_DEPTH" -gt 4 ]; then
+    MC_MERGE_DEPTH=$((MC_MERGE_DEPTH-1))
+    return 0
+  fi
+  mc_merge_scan_body "$1"
+  scan_rc=$?
+  MC_MERGE_DEPTH=$((MC_MERGE_DEPTH-1))
+  return "$scan_rc"
+}
+mc_merge_scan_body() {
+  local scan_tokens scan_stream scan_raw scan_word scan_mode scan_redo scan_key
+  local scan_consume=0 scan_resume="" scan_arm="" scan_after=""
+  scan_tokens="$(ff_lex_tokens "$1")" || return 1
+  scan_stream="$scan_tokens"
+  scan_mode="cmd"
+  while [ -n "$scan_stream" ]; do
+    case "$scan_stream" in
+      *$'\001'*) scan_raw="${scan_stream%%$'\001'*}"; scan_stream="${scan_stream#*$'\001'}" ;;
+      *) return 1 ;;
+    esac
+    if [ "$scan_consume" -eq 1 ]; then
+      scan_consume=0
+      [ -n "$scan_resume" ] && scan_mode="$scan_resume"
+      scan_resume=""
+      continue
+    fi
+    # Grouping tokens are syntax. A quoted brace is a different raw token.
+    case "$scan_raw" in
+      "{"|"("|"}"|")") continue ;;
+    esac
+    if ! mc_literal_var "$scan_raw"; then
+      if [ "$scan_arm" = shellc ]; then return 0; fi
+      scan_arm=""
+      scan_mode="uncertain"
+      [ "$scan_after" = pr ] || scan_after="unresolved"
+      continue
+    fi
+    mc_chomp_var
+    scan_word="$MC_LITERAL"
+    if [ -n "$scan_arm" ]; then
+      scan_mode="$scan_arm"
+      scan_arm=""
+    fi
+    scan_redo=1
+    while [ "$scan_redo" -eq 1 ]; do
+      scan_redo=0
+      case "$scan_mode" in
+        cmd)
+          case "$scan_word" in
+            *=*) ;;
+            builtin|"{"|"("|"}"|")"|!|if|then|else|do) ;;
+            command) scan_mode="command" ;;
+            env) scan_mode="env" ;;
+            exec) scan_mode="exec" ;;
+            sudo) scan_mode="sudo" ;;
+            nohup) scan_mode="nohup" ;;
+            time) scan_mode="timew" ;;
+            nice) scan_mode="nice" ;;
+            timeout) scan_mode="timeout" ;;
+            bash|sh) scan_mode="shell" ;;
+            cd|pushd|popd|export|unset|echo|printf|:) return 1 ;;
+            gh|*/gh) scan_mode="gh" ;;
+            *) return 1 ;;
+          esac ;;
+        command)
+          case "$scan_word" in
+            --) scan_mode="cmd" ;;
+            -*)
+              scan_key="${scan_word#-}"
+              case "$scan_key" in
+                *v*|*V*) return 1 ;;
+                *[!pPvV]*) scan_mode="uncertain"; scan_after="unresolved"; scan_redo=1 ;;
+                *) ;;
+              esac ;;
+            *) scan_mode="cmd"; scan_redo=1 ;;
+          esac ;;
+        env)
+          case "$scan_word" in
+            -u|--unset) scan_consume=1; scan_resume="env" ;;
+            --unset=*|-i|--ignore-environment|-0|-v) ;;
+            --) scan_mode="cmd" ;;
+            *=*) ;;
+            -*) scan_mode="uncertain"; scan_after="unresolved"; scan_redo=1 ;;
+            *) scan_mode="cmd"; scan_redo=1 ;;
+          esac ;;
+        exec)
+          case "$scan_word" in
+            -a) scan_consume=1; scan_resume="exec" ;;
+            -c|-l|-cl|-lc) ;;
+            --) scan_mode="cmd" ;;
+            -*) scan_mode="uncertain"; scan_after="unresolved"; scan_redo=1 ;;
+            *) scan_mode="cmd"; scan_redo=1 ;;
+          esac ;;
+        sudo)
+          case "$scan_word" in
+            --) scan_mode="cmd" ;;
+            -u|-g|-p|-C|-D|-R|-T|--user|--group|--prompt|--close-from|--chdir|--role|--other-user|--command-timeout|--chroot) scan_consume=1; scan_resume="sudo" ;;
+            --*=*) ;;
+            -*) ;;
+            *) scan_mode="cmd"; scan_redo=1 ;;
+          esac ;;
+        nohup|timew)
+          case "$scan_word" in
+            --) scan_mode="cmd" ;;
+            -*) ;;
+            *) scan_mode="cmd"; scan_redo=1 ;;
+          esac ;;
+        nice)
+          case "$scan_word" in
+            -n|--adjustment) scan_consume=1; scan_resume="nice" ;;
+            --adjustment=*) ;;
+            --) scan_mode="cmd" ;;
+            -*) ;;
+            *) scan_mode="cmd"; scan_redo=1 ;;
+          esac ;;
+        timeout)
+          case "$scan_word" in
+            --) scan_arm="timeoutdur" ;;
+            -k|--kill-after|-s|--signal) scan_consume=1; scan_resume="timeout" ;;
+            --kill-after=*|--signal=*) ;;
+            -*) ;;
+            *) scan_mode="cmd" ;;
+          esac ;;
+        timeoutdur) scan_mode="cmd" ;;
+        shell)
+          case "$scan_word" in
+            -c) scan_arm="shellc" ;;
+            --) scan_mode="cmd" ;;
+            -o|--rcfile|-O|--init-file) scan_consume=1; scan_resume="shell" ;;
+            --*) ;;
+            -*[c]*) scan_arm="shellc" ;;
+            -*) ;;
+            *) return 1 ;;
+          esac ;;
+        shellc)
+          mc_merge_scan_script "$scan_word"
+          return $? ;;
+        gh)
+          case "$scan_word" in
+            pr) scan_mode="ghpr" ;;
+            --) scan_arm="gh" ;;
+            --repo|-R|--hostname) scan_consume=1; scan_resume="gh" ;;
+            --repo=*|-R?*|--hostname=*) ;;
+            -*) scan_mode="ghseek" ;;
+            *) return 1 ;;
+          esac ;;
+        ghpr)
+          [ "$scan_word" = merge ] && return 0
+          return 1 ;;
+        ghseek)
+          case "$scan_word" in
+            pr) scan_mode="ghpr" ;;
+            *) ;;
+          esac ;;
+        uncertain)
+          case "$scan_word" in
+            gh|*/gh) scan_after="gh" ;;
+            pr)
+              if [ "$scan_after" = gh ] || [ "$scan_after" = unresolved ]; then scan_after="pr"; else scan_after=""; fi ;;
+            merge)
+              [ "$scan_after" = pr ] && return 0
+              scan_after="" ;;
+            *) scan_after="" ;;
+          esac ;;
+        *) return 1 ;;
+      esac
+    done
+  done
+  return 1
+}
+mc_is_pr_merge_text() {
+  if [ -z "${MC_MERGE_CACHED:-}" ]; then
+    if mc_merge_scan "$1"; then MC_MERGE_CACHED=merge; else MC_MERGE_CACHED=other; fi
+  fi
+  [ "$MC_MERGE_CACHED" = merge ]
+}
+MC_STOP_REASON=""
+# ack is local to mc_inspect. Bash dynamic scope lets the same-segment ACK stay allow.
+mc_stop() {
+  if [ "${ack:-0}" -eq 1 ]; then
+    mc_note '同じmergeの前置FF_MERGE_CLOSING_ACK=1により検査を省略しました。'
+    return 0
+  fi
+  [ -n "$MC_STOP_REASON" ] || MC_STOP_REASON="$1"
+}
 mc_finish() {
   [ -n "$MC_NOTES" ] || exit 0
   printf '%s' "ff-dev-toolkit merge closing guard: $MC_NOTES" | jq -Rs '{systemMessage:.,hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:.}}'
@@ -165,20 +375,45 @@ mc_sanitize() { # reuse checker SUGGEST per line/target; recheck the complete ca
 }
 mc_inspect() {
   local token stream kind raw n=0 i=0 key t ack=0 selector="" repo_arg="" subject="" body="" body_file="" head_flag="" author=""
-  local have_body=0 have_subject=0 squash=0 other_strategy=0 admin=0 auto=0 disable=0 delete_flag="" extra="" positional=0
+  local have_body=0 have_subject=0 squash=0 other_strategy=0 admin=0 auto=0 disable=0 delete_flag="" extra="" positional=0 unknown=0
   local prior="$1" segment="$2" tokens
-  tokens="$(ff_lex_tokens "$segment")" || { mc_note '候補の字句解析に失敗したため検査を省略しました。'; return; }
+  MC_MERGE_CACHED=""
+  MC_MERGE_DEPTH=0
+  tokens="$(ff_lex_tokens "$segment")" || {
+    case "$segment" in
+      *" pr merge"|*" pr merge "*) mc_stop '候補の字句解析に失敗したため件名を検査できません。'; return ;;
+    esac
+    mc_note '候補の字句解析に失敗したため検査を省略しました。'; return
+  }
   local context_prefix=1 context_env=0 context_builtin="" context_key
   local context_wrapper="" context_option_arg=0 context_external=0 context_options=0
   local first="${tokens%%$'\001'*}"
-  mc_literal_var "${first%%=*}" || { MC_ENV_UNKNOWN=2; mc_note '候補の実行語を確定できないため検査を省略しました。'; return; }
-  mc_chomp_var; first="$MC_LITERAL"
-  case "${tokens%%$'\001'*}" in *=*) first="$first=" ;; esac
-  case "$first" in gh|*/gh|*=*|env|command|exec|!|if|then|else|do|cd|pushd|popd|export|unset) ;; sudo|nohup|time|nice|timeout|bash|sh|\(*) mc_note 'wrapper/入れ子shellの実行環境が未解決のため検査を省略しました。'; return ;; *) return ;; esac
+  case "$first" in
+    "{"|"("|"}"|")") ;;
+    *)
+      mc_literal_var "${first%%=*}" || {
+        MC_ENV_UNKNOWN=2
+        if mc_is_pr_merge_text "$segment"; then mc_stop '候補の実行語を確定できないため件名を検査できません。'; return; fi
+        mc_note '候補の実行語を確定できないため検査を省略しました。'; return
+      }
+      mc_chomp_var; first="$MC_LITERAL"
+      case "${tokens%%$'\001'*}" in *=*) first="$first=" ;; esac ;;
+  esac
+  case "$first" in
+    gh|*/gh|*=*|env|command|exec|!|if|then|else|do|cd|pushd|popd|export|unset|builtin|"{"|"(") ;;
+    sudo|nohup|time|nice|timeout|bash|sh)
+      if mc_is_pr_merge_text "$segment"; then mc_stop 'wrapper/入れ子shellの中の gh pr merge は件名を検査できません。'; return; fi
+      return ;;
+    *) return ;;
+  esac
   local toks=()
   stream="$tokens"
   while [ -n "$stream" ]; do
     case "$stream" in *$'\001'*) raw="${stream%%$'\001'*}"; stream="${stream#*$'\001'}" ;; *) return ;; esac
+    # Grouping tokens are syntax. A quoted brace is a different raw token and stays an argument.
+    case "$raw" in
+      "{"|"("|"}"|")") continue ;;
+    esac
     # One prefix walk owns executable position; arguments are decoded only after classification.
     if [ "$context_option_arg" -eq 1 ]; then
       context_option_arg=0
@@ -195,6 +430,7 @@ mc_inspect() {
     fi
     mc_literal_var "$raw" || {
       if [ "$context_prefix" -eq 1 ]; then MC_ENV_UNKNOWN=2; fi
+      if mc_is_pr_merge_text "$segment"; then mc_stop '候補に未解決のshell値があるため件名を検査できません。'; return; fi
       mc_note '候補に未解決のshell値があるため検査を省略しました。'; return
     }
     token="$MC_LITERAL"
@@ -205,7 +441,10 @@ mc_inspect() {
             --) context_wrapper=""; context_options=1; continue ;;
             -*)
               context_key="${token#-}"
-              case "$context_key" in ''|*[!pVv]*) mc_note '未対応のcommand optionのため検査を省略しました。'; return ;; esac
+              case "$context_key" in ''|*[!pVv]*)
+                if mc_is_pr_merge_text "$segment"; then mc_stop '未対応のcommand optionのため件名を検査できません。'; return; fi
+                mc_note '未対応のcommand optionのため検査を省略しました。'; return ;;
+              esac
               # -v/-V describe names; they never execute cd/export or gh.
               case "$context_key" in *v*|*V*) return ;; esac
               context_options=1; continue ;;
@@ -216,7 +455,9 @@ mc_inspect() {
             -u|--unset) context_option_arg=1; context_options=1; continue ;;
             --unset=*|-i|--ignore-environment|-0|-v) context_options=1; continue ;;
             --) context_wrapper=""; context_options=1; continue ;;
-            -*) mc_note '未対応のenv optionのため検査を省略しました。'; return ;;
+            -*)
+              if mc_is_pr_merge_text "$segment"; then mc_stop '未対応のenv optionのため件名を検査できません。'; return; fi
+              mc_note '未対応のenv optionのため検査を省略しました。'; return ;;
             *) context_wrapper="" ;;
           esac ;;
         exec)
@@ -224,25 +465,42 @@ mc_inspect() {
             -a) context_option_arg=1; context_options=1; continue ;;
             -c|-l|-cl|-lc) context_options=1; continue ;;
             --) context_wrapper=""; context_options=1; continue ;;
-            -*) mc_note '未対応のexec optionのため検査を省略しました。'; return ;;
+            -*)
+              if mc_is_pr_merge_text "$segment"; then mc_stop '未対応のexec optionのため件名を検査できません。'; return; fi
+              mc_note '未対応のexec optionのため検査を省略しました。'; return ;;
             *) context_wrapper="" ;;
           esac ;;
       esac
       case "$token" in
         *=*) context_key="${token%%=*}"
-          [[ "$context_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return
+          [[ "$context_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || {
+            if mc_is_pr_merge_text "$segment"; then mc_stop '前置代入の名前を確定できないため件名を検査できません。'; return; fi
+            return
+          }
           case "$token" in FF_MERGE_CLOSING_ACK=1) ack=1 ;; esac
           case "$context_key" in GH_REPO) [ "$context_env" -ge 1 ] || context_env=1 ;; GH_*|GITHUB_*|PATH|HOME) context_env=2 ;; esac ;;
         env|exec) context_external=1; context_wrapper="$token" ;;
         command) context_wrapper=command ;;
         !|if|then|else|do) ;;
+        builtin|"{"|"("|"}"|")") continue ;;
         cd|pushd|popd) [ "$context_external" -eq 1 ] || MC_CWD_UNKNOWN=1; return ;;
         export|unset) [ "$context_external" -eq 0 ] || return; context_builtin="$token" ;;
         gh)
-          [ "$context_env" -eq 0 ] || { mc_note 'gh環境を変更する前置代入のため検査を省略しました。'; return; }
-          [ "$context_options" -eq 0 ] || { mc_note 'wrapper optionの実行環境が未解決のため検査を省略しました。'; return; }
+          if [ "$context_env" -ne 0 ]; then
+            if mc_is_pr_merge_text "$segment"; then mc_stop 'gh環境を変更する前置代入のため件名を検査できません。'; return; fi
+            mc_note 'gh環境を変更する前置代入のため検査を省略しました。'; return
+          fi
+          if [ "$context_options" -ne 0 ]; then
+            if mc_is_pr_merge_text "$segment"; then mc_stop 'wrapper optionの実行環境が未解決のため件名を検査できません。'; return; fi
+            mc_note 'wrapper optionの実行環境が未解決のため検査を省略しました。'; return
+          fi
           context_prefix=0; i=${#toks[@]} ;;
-        */gh) mc_note 'path指定ghは照会実体と一致を保証できないため検査を省略しました。'; return ;;
+        */gh)
+          if mc_is_pr_merge_text "$segment"; then mc_stop 'path指定ghは照会実体と一致を保証できないため件名を検査できません。'; return; fi
+          mc_note 'path指定ghは照会実体と一致を保証できないため検査を省略しました。'; return ;;
+        sudo|nohup|time|nice|timeout|bash|sh)
+          if mc_is_pr_merge_text "$segment"; then mc_stop 'wrapper/入れ子shellの中の gh pr merge は件名を検査できません。'; return; fi
+          return ;;
         *) return ;;
       esac
     fi
@@ -256,7 +514,12 @@ mc_inspect() {
   n=${#toks[@]}
   i=$((i + 1))
   if [ "${toks[$i]:-}" != pr ] || [ "${toks[$((i+1))]:-}" != merge ]; then
-    mc_note 'gh global flag/サブコマンドを確定できないため検査を省略しました。'; return
+    case "${toks[$i]:-}" in
+      ""|-*)
+        if mc_is_pr_merge_text "$segment"; then mc_stop 'gh global flag/サブコマンドを確定できないため件名を検査できません。'; return; fi
+        mc_note 'gh global flag/サブコマンドを確定できないため検査を省略しました。'; return ;;
+      *) return ;;
+    esac
   fi
   [ "$ack" -eq 1 ] && { mc_note '同じmergeの前置FF_MERGE_CLOSING_ACK=1により検査を省略しました。'; return; }
   i=$((i + 2))
@@ -270,7 +533,7 @@ mc_inspect() {
       --disable-auto) disable=1 ;;
       --delete-branch|-d) delete_flag=' --delete-branch' ;;
       --repo|-R|--subject|-t|--body|-b|--body-file|-F|--match-head-commit|--author-email)
-        i=$((i+1)); [ "$i" -lt "$n" ] || { mc_note 'merge flagの値が無いため検査を省略しました。'; return; }
+        i=$((i+1)); [ "$i" -lt "$n" ] || { mc_stop 'merge flagの値が無いため件名を検査できません。'; return; }
         case "$t" in --repo|-R) repo_arg="${toks[$i]}" ;; --subject|-t) subject="${toks[$i]}"; have_subject=1 ;; --body|-b) body="${toks[$i]}"; have_body=1 ;; --body-file|-F) body_file="${toks[$i]}" ;; --match-head-commit) head_flag="${toks[$i]}" ;; --author-email) author="${toks[$i]}" ;; esac ;;
       --repo=*|-R?*) repo_arg="${t#*=}"; case "$t" in -R*) repo_arg="${t#-R}" ;; esac ;;
       --subject=*|-t?*) subject="${t#*=}"; case "$t" in -t*) subject="${t#-t}" ;; esac; have_subject=1 ;;
@@ -279,15 +542,16 @@ mc_inspect() {
       --match-head-commit=*) head_flag="${t#*=}" ;;
       --author-email=*) author="${t#*=}" ;;
       --) positional=1 ;;
-      -*) mc_note '未対応のmerge flagがあるため検査を省略しました。'; return ;;
-      *) [ -z "$selector" ] || { mc_note 'PR指定が複数あるため検査を省略しました。'; return; }; selector="$t" ;;
+      -*) unknown=1 ;;
+      *) [ -z "$selector" ] || { mc_stop 'PR指定が複数あるため件名を検査できません。'; return; }; selector="$t" ;;
     esac
     i=$((i+1))
   done
   [ "$disable" -eq 1 ] && return
   [ "$squash" -eq 1 ] && [ "$other_strategy" -eq 0 ] || return
-  if [ "$MC_CWD_UNKNOWN" -eq 1 ] && [ -z "$repo_arg" ]; then mc_note '先行cwd変更が未解決のため検査を省略しました。'; return; fi
-  if [ "$MC_ENV_UNKNOWN" -eq 2 ] || { [ "$MC_ENV_UNKNOWN" -eq 1 ] && [ -z "$repo_arg" ]; }; then mc_note '先行prefix/gh実行環境が未解決のため検査を省略しました。'; return; fi
+  if [ "$unknown" -eq 1 ]; then mc_stop '未対応のmerge flagがあるため件名を検査できません。'; return; fi
+  if [ "$MC_CWD_UNKNOWN" -eq 1 ] && [ -z "$repo_arg" ]; then mc_stop '先行cwd変更が未解決のため件名を検査できません。'; return; fi
+  if [ "$MC_ENV_UNKNOWN" -eq 2 ] || { [ "$MC_ENV_UNKNOWN" -eq 1 ] && [ -z "$repo_arg" ]; }; then mc_stop '先行prefix/gh実行環境が未解決のため件名を検査できません。'; return; fi
   if [ -n "$body_file" ]; then
     if [ "$have_body" -eq 1 ] || [ "$body_file" = - ] || [ "$prior" -ne 0 ] || [ "$MC_CWD_UNKNOWN" -ne 0 ]; then mc_note 'body-file/stdin/先行commandの内容を確定できないため検査を省略しました。'; return; fi
     ff_path_is_absolute "$body_file" || body_file="$cwd/$body_file"  # Windows の C:/… も絶対（Issue `#2367`）
@@ -388,6 +652,14 @@ done
 if [ -n "$MC_DENY" ]; then
   reason="$MC_DENY
 この呼び出し全体は未実行です。復旧commandのsubject/bodyを確認して再実行してください。
+迂回: 同じmergeの前置 FF_MERGE_CLOSING_ACK=1、全体無効化 FF_DEV_TOOLKIT_SKIP_MERGE_CLOSING_GUARD=1。
+${MC_NOTES}"
+  printf '%s' "$reason" | jq -Rs '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:.}}'
+  exit 0
+fi
+if [ -n "$MC_STOP_REASON" ]; then
+  reason="$MC_STOP_REASON
+この呼び出し全体は未実行です。単独の gh pr merge（先行の cd、未解決の変数、wrapper、global flag を含めない形）へ書き直して再実行してください。
 迂回: 同じmergeの前置 FF_MERGE_CLOSING_ACK=1、全体無効化 FF_DEV_TOOLKIT_SKIP_MERGE_CLOSING_GUARD=1。
 ${MC_NOTES}"
   printf '%s' "$reason" | jq -Rs '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:.}}'

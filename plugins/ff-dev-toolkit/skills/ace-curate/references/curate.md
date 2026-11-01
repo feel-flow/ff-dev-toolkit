@@ -134,13 +134,16 @@ Changelog は有効な本体を優先し、節不在・空スタブなら同階�
 
 `version` は新規エントリ追加で **minor +1**（カウンター更新のみは不変）、`updated` を今日へ、`changeImpact` は `medium`。`ace_entry_count` は merged tree の live エントリ実数から再計算する。Changelog は手順4-bの採用先・書式の先頭へ当該版のブロック（空を禁止）。正規書式の `#### カウンター更新`・旧書式の `- 更新:` は 1 行 1 ID。各エントリのブロック行数は **15 行以内**（`<!-- ace-line-budget-exception: 理由 -->` 付きでも **30 行以内**）を自分で数える。
 
+frontmatter は手で書かない。本文・索引・Changelog・Helpful を検証して保存したあと、保存済みの tree から既存の `sync-playbook-frontmatter.ts` で導出する。新規エントリがある回だけ `--write --bump-version` を使う。カウンター更新だけの回は `--write` とし、版を二重に上げない。書き込み後に CLI が非 0 を返しても、全対象未変更や同期成功とは報告しない。保存済みの版と差分を調べ、同じ bump を無条件に再実行せず、必要な修正と手順 4-f の同期検証を終えてから先へ進む。
+
 ## 旧形式との互換
 
 - ヘッダ行・区切り行を持たないメタ 4 行は GitHub 上ではテーブルとして描画されない（AI ファースト文書として意図した仕様。詳細は PLAYBOOK.md §エントリテンプレート）
 - 旧テーブル形式（`| フィールド | 値 |` + Insight/Context/Action）のエントリは**読み取り互換として共存**させる。重複時の `Helpful` +1 は、旧形式なら `| Helpful | n |` 行、新形式なら `| Helpful | n | Harmful | m |` 行の n を +1 する
 - Changelog の `#### カウンター更新` には **ID ごとに 1 行**を書く（`- ACE-X: Helpful +1（理由）` / `- ACE-X: Helpful +1 ×N（理由）` / `- ACE-X: Helpful +1 — 理由`）。同じ理由でも ID が 3 つなら 3 行にする。複数 ID を `- Helpful +1: ACE-A / ACE-B（理由）` の形へ束ねると Jev の評価セット生成器（`scripts/jev/build-ace-eval-sets.ts` の `parseChangelog`）が exit 2 で止まり、書き込み口の `add` が同じ判定（`scripts/lib/playbook-changelog-functions.sh`）でその行を名指しして止まる。`#### 変更` / `#### 更新` など他の見出しの配下は読まないが、カウンター更新を他の見出しへ逃がさない
 - 既存の ID なしエントリ（`## [Pattern] ...` 形式等）や旧連番エントリ（3 桁・4 桁以上とも）は改名・書き換えしない（エントリID規則「既存 ID の扱い」）。採番ルールの SSOT は PLAYBOOK.md §エントリID規則
-- 機械同期する場合はプロジェクトの `ace:bump-playbook-frontmatter`（`--write --bump-version`。**minor +1**）。count のみ直すなら `ace:sync-playbook-frontmatter`。`--write` は変更済みなのに `changeImpact` が欠落している場合 `medium` を自動追記する（`/validate-docs` が「変更済みなのに未記録」を赤にするため放置しない）
+- `---` 終端が無い旧形式エントリのブロックは、次のエントリの始点（直前のアンカーを含む。次のアンカー自体は前のエントリへ含めない）、それも無ければ次の `## ` 見出しの手前、どちらも無ければ EOF で終わる。末尾の空行は除く。境界は `check-category-size.ts` の `countBudgetExceptions` と同じであり、`splitEntrySegments` を編集境界として再利用しない
+- 機械同期する場合はプロジェクトの `ace:bump-playbook-frontmatter`（`--write --bump-version`。**minor +1**）。count のみ直すなら `ace:sync-playbook-frontmatter`。導出は上の「Frontmatter・Changelog・行数」のとおり、本文・索引・Changelog・Helpful を保存したあとである。`--write` は変更済みなのに `changeImpact` が欠落している場合 `medium` を自動追記する（`/validate-docs` が「変更済みなのに未記録」を赤にするため放置しない）
 
 ## コミット（手順 5）の規則
 

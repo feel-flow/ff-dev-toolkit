@@ -17,6 +17,7 @@
 #   4. tests/ 配下で user.name / user.email を直接 `git config` する箇所は lib と本 suite と
 #      未移行 allowlist 以外に無く、allowlist の stale entry は赤。ヘルパー利用箇所は lib を
 #      source している（-f ガードは verify.sh だけをコピーする selftest に限る）。
+#      consumer 名簿との不一致は、名簿へ足す名前と名簿から消す名前を分けて名指しする。
 #      既定 identity 文字列は lib と本 suite 以外に無い（静的照合）
 #   5. shell・実行可能ファイル・fixtures 内の通常ファイルにシステム git 直書きが無い。
 #      コメント行・Markdown・.probe 報告は除外。対象不在・空集合・読取器異常は赤。
@@ -420,6 +421,50 @@ else
   bad "allowlist の stale 判定が空と非空で区別できない"
 fi
 
+# consumer 名簿（期待）と実体の差分を、足りない名前と余計な名前に分ける。名簿全体を 2 回
+# 並べる出力では、どれが漏れたかを目で探す必要があった（OBS-237）。
+# roster_diff <期待> <実体> <prefix>: <prefix>.add（実体にだけある = 名簿へ足す）と
+# <prefix>.del（名簿にだけある = 名簿から消す）を書く。一致 0 / 差分あり 1 / 照合不能 2。
+roster_diff() {
+  printf '%s\n' "$1" | sed '/^$/d' | LC_ALL=C sort >"$3.expected" || return 2
+  printf '%s\n' "$2" | sed '/^$/d' | LC_ALL=C sort >"$3.actual" || return 2
+  LC_ALL=C comm -13 "$3.expected" "$3.actual" >"$3.add" || return 2
+  LC_ALL=C comm -23 "$3.expected" "$3.actual" >"$3.del" || return 2
+  if [ -s "$3.add" ] || [ -s "$3.del" ]; then
+    return 1
+  fi
+  return 0
+}
+report_roster_diff() { # <prefix>
+  if [ -s "$1.add" ]; then
+    bad "ff_git_fixture_init を使うのに consumer 名簿に無い（本 suite の expected_users へ足す）:"
+    sed 's/^/      /' "$1.add" >&2
+  fi
+  if [ -s "$1.del" ]; then
+    bad "consumer 名簿にあるが ff_git_fixture_init を使っていない（expected_users から消す）:"
+    sed 's/^/      /' "$1.del" >&2
+  fi
+}
+
+# 差分の報告形そのもの（live tree は名簿一致なので、temp の名簿で固定する）
+rd_rc=0
+roster_diff "$(printf '%s\n' a/verify.sh b/verify.sh)" "$(printf '%s\n' c/cases.sh b/verify.sh)" \
+  "$TMP/rd-diff" || rd_rc=$?
+if [ "$rd_rc" -eq 1 ] && [ "$(cat "$TMP/rd-diff.add")" = "c/cases.sh" ] \
+  && [ "$(cat "$TMP/rd-diff.del")" = "a/verify.sh" ]; then
+  ok "名簿不一致は足りない名前（c/cases.sh）と余計な名前（a/verify.sh）だけを分けて出す"
+else
+  bad "名簿差分の切り分けが崩れている (rc=${rd_rc}, add='$(tr '\n' ' ' <"$TMP/rd-diff.add")', del='$(tr '\n' ' ' <"$TMP/rd-diff.del")')"
+fi
+rd_rc=0
+roster_diff "$(printf '%s\n' b/verify.sh a/verify.sh)" "$(printf '%s\n' a/verify.sh b/verify.sh)" \
+  "$TMP/rd-same" || rd_rc=$?
+if [ "$rd_rc" -eq 0 ] && [ ! -s "$TMP/rd-same.add" ] && [ ! -s "$TMP/rd-same.del" ]; then
+  ok "名簿と実体の並び順だけが違うときは一致として扱う"
+else
+  bad "並び順だけの違いを名簿不一致にした (rc=${rd_rc})"
+fi
+
 # 移行済みの利用箇所（ヘルパーは既定 identity を持つため、fixture 文字列ではなく呼び出しで数える）
 users="$(grep -rlF 'ff_git_fixture_init' "$TESTS_DIR" --include='*.sh' 2>/dev/null \
   | grep -v -F "$LIB" | grep -v -F "$SCRIPT_DIR/" | grep -v -F "$TESTS_DIR/run-all.sh" || true)"
@@ -470,6 +515,7 @@ merge-cleanup/agent-branches.sh
 merge-cleanup/detached-caller.sh
 merge-cleanup/long-paths.sh
 merge-cleanup/verify.sh
+merge-cleanup/windows-junctions.sh
 multi-agent-critical-marker/verify.sh
 multi-agent-host-delegation/completed-lane-cases.sh
 multi-agent-host-delegation/verify.sh
@@ -505,15 +551,19 @@ sync-sha-contract/release-runtime.sh
 sync-sha-contract/reuse-runtime.sh
 sync-sha-contract/src-sha-runtime.sh
 update-check/verify.sh"
-  actual_users="$(printf '%s\n' "$users" | sed "s#^$TESTS_DIR/##" | sort)"
+  actual_users="$(printf '%s\n' "$users" | sed "s#^$TESTS_DIR/##")"
   expected_count="$(printf '%s\n' "$expected_users" | grep -c .)"
-  if [ "$actual_users" != "$expected_users" ]; then
-    missing="$missing 名簿不一致（期待: $(printf '%s' "$expected_users" | tr '\n' ' ')/ 実体: $(printf '%s' "$actual_users" | tr '\n' ' '))"
+  roster_rc=0
+  roster_diff "$expected_users" "$actual_users" "$TMP/roster" || roster_rc=$?
+  if [ "$roster_rc" -eq 1 ]; then
+    report_roster_diff "$TMP/roster"
+  elif [ "$roster_rc" -ne 0 ]; then
+    bad "consumer 名簿と実体を照合できない（rc=${roster_rc}。fail-closed）"
   fi
-  if [ -z "$missing" ]; then
-    ok "ff_git_fixture_init を使う ${expected_count} ファイル（名簿一致）すべてが lib を source している"
-  else
+  if [ -n "$missing" ]; then
     bad "ff_git_fixture_init を使うが lib を source していない:$missing"
+  elif [ "$roster_rc" -eq 0 ]; then
+    ok "ff_git_fixture_init を使う ${expected_count} ファイル（名簿一致）すべてが lib を source している"
   fi
   # -f ガードは verify.sh だけをコピーする selftest に限る。必須 suite が optional source
   # だと GIT_DIR 継承下で raw git init が外側を汚してから command not found になる。
@@ -638,6 +688,114 @@ if [ "$rc" -eq 2 ] && grep -q '読み取り検査不能' "$TMP/git-path-read.log
   ok "読取器の異常終了は検査不能で赤"
 else
   bad "読取器の異常終了を緑へ倒した (rc=$rc)"
+fi
+
+# /pre-commit-check 種別 F の判定器: staged の *.sh が consumer に触れた回だけ本 suite を回す。
+# 名簿漏れは全件ゲート 1 周の末尾でしか見つからなかったので、commit 前に起動するかを固定する（OBS-237）。
+PCF_LIB="$TESTS_DIR/lib/precommit-git-fixture.sh"
+PCF="$TMP/pcf"
+PCF_T="plugins/ff-dev-toolkit/tests"
+pcf_scan() { # <log> [stub]: rc を返す
+  local rc=0
+  ( . "$PCF_LIB"
+    case "${2:-}" in
+      unreadable) git() { if [ "${3:-}" = cat-file ]; then return 128; fi; command git "$@"; } ;;
+      head-missing) git() { if [ "${3:-}" = cat-file ] && [ "${4:-}" = -e ]; then return 128; fi; command git "$@"; } ;;
+      glob-pathspecs) export GIT_GLOB_PATHSPECS=1 ;;
+    esac
+    git_fixture_consumer_scan "$PCF" ) >"$1" 2>&1 || rc=$?
+  return "$rc"
+}
+pcf_reset() {
+  git -C "$PCF" reset -q --hard HEAD && git -C "$PCF" clean -qfd
+}
+if [ ! -s "$PCF_LIB" ]; then
+  bad "種別 F の判定器がありません: $PCF_LIB"
+elif ! ( . "$LIB"; ff_git_fixture_init "$PCF" ) >"$TMP/pcf-init.log" 2>&1; then
+  bad "種別 F の fixture を作れない: $(cat "$TMP/pcf-init.log")"
+else
+  # 利用者の core.autocrlf による改行変換の警告をログへ混ぜない
+  git -C "$PCF" config core.autocrlf false
+  mkdir -p "$PCF/$PCF_T/old" "$PCF/$PCF_T/plain"
+  printf '%s\n' '. "$(dirname "$0")/../lib/git-fixture.sh"' 'ff_git_fixture_init "$1"' >"$PCF/$PCF_T/old/verify.sh"
+  printf '%s\n' 'echo plain' >"$PCF/$PCF_T/plain/verify.sh"
+  if ! { git -C "$PCF" add -A && git -C "$PCF" commit -qm seed; } >"$TMP/pcf-seed.log" 2>&1; then
+    bad "種別 F の fixture へ seed を commit できない: $(cat "$TMP/pcf-seed.log")"
+  fi
+  # 使わない *.sh だけ → 起動しない（固定表の他の行は判定器の外）
+  printf '%s\n' 'echo plain2' >>"$PCF/$PCF_T/plain/verify.sh"
+  git -C "$PCF" add -A
+  rc=0; pcf_scan "$TMP/pcf-none.log" || rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(cat "$TMP/pcf-none.log")" = "git-fixture-isolation: none" ]; then
+    ok "種別 F: fixture lib を使わない *.sh だけの staged では起動しない"
+  else
+    bad "種別 F: 使わない *.sh だけで起動した/判定できない (rc=$rc): $(cat "$TMP/pcf-none.log")"
+  fi
+  # 新しい consumer → 名指しして起動
+  pcf_reset
+  mkdir -p "$PCF/$PCF_T/new"
+  printf '%s\n' 'ff_git_fixture_init "$1"' >"$PCF/$PCF_T/new/verify.sh"
+  git -C "$PCF" add -A
+  rc=0; pcf_scan "$TMP/pcf-add.log" || rc=$?
+  if [ "$rc" -eq 0 ] && grep -qxF "git-fixture consumer: $PCF_T/new/verify.sh" "$TMP/pcf-add.log" \
+    && grep -qxF 'git-fixture-isolation: run 1' "$TMP/pcf-add.log"; then
+    ok "種別 F: 新しい consumer を stage すると名指しして起動する"
+  else
+    bad "種別 F: 新しい consumer で起動しない (rc=$rc): $(tr '\n' ' ' <"$TMP/pcf-add.log")"
+  fi
+  # 利用者の環境の pathspec 解釈に依らない（GIT_GLOB_PATHSPECS で '*.sh' が下位を外す形を防ぐ）
+  rc=0; pcf_scan "$TMP/pcf-glob.log" glob-pathspecs || rc=$?
+  if [ "$rc" -eq 0 ] && grep -qxF "git-fixture consumer: $PCF_T/new/verify.sh" "$TMP/pcf-glob.log"; then
+    ok "種別 F: GIT_GLOB_PATHSPECS=1 でも下位ディレクトリの consumer を拾う"
+  else
+    bad "種別 F: GIT_GLOB_PATHSPECS=1 で consumer を見落とした (rc=$rc): $(tr '\n' ' ' <"$TMP/pcf-glob.log")"
+  fi
+  # 判定器自身の変更は、内容に針が無くてもパスで起動する（判定器のケースは本 suite にある）
+  pcf_reset
+  mkdir -p "$PCF/$PCF_T/lib"
+  printf '%s\n' 'echo detector' >"$PCF/$PCF_T/lib/precommit-git-fixture.sh"
+  git -C "$PCF" add -A
+  rc=0; pcf_scan "$TMP/pcf-self.log" || rc=$?
+  if [ "$rc" -eq 0 ] && grep -qxF "git-fixture consumer: $PCF_T/lib/precommit-git-fixture.sh" "$TMP/pcf-self.log"; then
+    ok "種別 F: 判定器だけの変更でも本 suite を起動する"
+  else
+    bad "種別 F: 判定器の変更で本 suite を起動しない (rc=$rc): $(tr '\n' ' ' <"$TMP/pcf-self.log")"
+  fi
+  # 利用をやめた・消した consumer も名簿をずらす → HEAD 側で拾う
+  pcf_reset
+  printf '%s\n' 'echo stopped' >"$PCF/$PCF_T/old/verify.sh"
+  git -C "$PCF" add -A
+  rc=0; pcf_scan "$TMP/pcf-stop.log" || rc=$?
+  if [ "$rc" -eq 0 ] && grep -qxF "git-fixture consumer: $PCF_T/old/verify.sh" "$TMP/pcf-stop.log"; then
+    ok "種別 F: consumer が利用をやめる変更でも起動する（HEAD 側の内容）"
+  else
+    bad "種別 F: 利用をやめる変更で起動しない (rc=$rc): $(tr '\n' ' ' <"$TMP/pcf-stop.log")"
+  fi
+  pcf_reset
+  git -C "$PCF" rm -q "$PCF_T/old/verify.sh"
+  rc=0; pcf_scan "$TMP/pcf-del.log" || rc=$?
+  if [ "$rc" -eq 0 ] && grep -qxF "git-fixture consumer: $PCF_T/old/verify.sh" "$TMP/pcf-del.log"; then
+    ok "種別 F: consumer の削除でも起動する"
+  else
+    bad "種別 F: consumer の削除で起動しない (rc=$rc): $(tr '\n' ' ' <"$TMP/pcf-del.log")"
+  fi
+  # blob を読めない回は「起動しない」へ倒さない
+  pcf_reset
+  printf '%s\n' 'echo plain3' >>"$PCF/$PCF_T/plain/verify.sh"
+  git -C "$PCF" add -A
+  rc=0; pcf_scan "$TMP/pcf-read.log" unreadable || rc=$?
+  if [ "$rc" -eq 2 ] && grep -q '未検査' "$TMP/pcf-read.log"; then
+    ok "種別 F: blob を読めない回は未検査（rc=2）で、起動しない側へ倒さない"
+  else
+    bad "種別 F: blob の読取失敗を判定済みにした (rc=$rc): $(cat "$TMP/pcf-read.log")"
+  fi
+  # 変更（M）なのに HEAD 側を引けないのは異常。利用停止を見落とす側へ倒さない
+  rc=0; pcf_scan "$TMP/pcf-head.log" head-missing || rc=$?
+  if [ "$rc" -eq 2 ] && grep -q '未検査' "$TMP/pcf-head.log"; then
+    ok "種別 F: 変更で HEAD 側を引けない回は未検査（rc=2）"
+  else
+    bad "種別 F: 変更で HEAD 側を引けない回を判定済みにした (rc=$rc): $(cat "$TMP/pcf-head.log")"
+  fi
 fi
 
 echo ""

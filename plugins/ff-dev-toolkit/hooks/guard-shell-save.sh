@@ -55,7 +55,8 @@
 #   - ライブラリのファイルが無い / 読めない / source に失敗する / 公開関数が無い
 #   - 走査（awk）が非 0 で終わる・新規違反の突き合わせ（awk）が失敗する
 #   - jq のフィルタ実行が usage(2) / compile(3) で失敗する
-#   - Edit の対象ファイルが在るのに読めない・NUL を含んで全体を読めない
+#   - Edit の対象ファイルが在るのに読めない・NUL を含んで全体を読めない（読み取り境界が場所を理由に
+#     拒否したときは止めず、下の「保存前を読めない Edit は断片で検査する」の縮退へ進む）
 #   - Edit の `old_string` が CR 除去後もバイト一致しない（Edit ツールは引用符の正規化でも一致
 #     させるため保存されうるが、その対応をバイト列で再現すると引用符の意味が変わる）
 #   - ASDD ゲートが検証不能を返す・ASDD ヘルパ自体を読めない（.asdd/config.json があるのに
@@ -64,6 +65,37 @@
 # fail-closed の面は `.sh` への保存に限るので、検出器が壊れても他のファイルの編集は止まらない。
 # Write の対象ファイルが在るのに読めないときは、保存前を空として扱う（全体を新規として走査
 # する。判定は厳しい側へ寄り、判定不能にはならない）。
+#
+# ## 保存前を読めない Edit は断片で検査する（縮退。Issue `#2560`）
+#
+# 読み取り境界が**場所**を理由に拒否したとき、Edit は判定不能で止めず、**ファイルを読まずに**
+# `old_string` を保存前・`new_string` を保存後とみなして同じ 3 検出器と同じ件数の突き合わせを当てる。
+# 場所の拒否として扱うのは次の 3 つだけ:
+#   - `outside-authority`（セッションの作業ディレクトリの project の外）
+#   - `replaceable-storage`（祖先を本人以外が置き換えられる）
+#   - `read-unverifiable` のうち、種別の行の**後に** `止めた場所:` の行が続くもの（祖先の ACL が検査を
+#     通らない。Windows の `%TEMP%` の下の scratchpad が該当する）。`read-unverifiable` は ACL ヘルパの
+#     不在・タイムアウトや開けない権限でも出るが、そのときは場所の行を伴わないので縮退させない。
+#     Windows では TMPDIR を移した案内の `止めた場所:` が種別の行より**前**に出るので、順序で区別する
+#     （作業場所の TMPDIR と状態ディレクトリの両方が通らないときは、その場所の拒否として縮退する）
+#   - 保存後の全体を組み立てる（対象を通常の読み取りで開く）形は採らない。ADR-078 は境界の外を
+#     読むことを許さず、読んだ内容で `old_string` の一致を判定すると、deny の有無が外部ファイルの
+#     中身を当てる手がかりになる。断片だけの判定はファイルの中身に依存しない
+#   - 断片には `pipefail` の設定行が無いので、先頭へ `# pipefail-inherited:` の宣言を足して
+#     「pipefail あり」として走査する（厳しい側）。`gate-exit-dropped` が断片の末尾を単位の終端と
+#     読むのも厳しい側の誤りで、どちらも止める方向にしか働かない
+#   - `new_string` の末尾が行継続（奇数個の `\`、または `|` / `&&` / `||`）で終わるときは論理行が
+#     断片の外へ続くので、判定不能として止める
+#   - CR は断片から除く。通常の経路が CR を残すのは生のファイルと比べるためで、縮退はファイルと比べない。
+#     Windows の jq.exe は文字列の中の改行も CRLF で出し、CR が残ると行継続（`\`）を検出器が見落とす
+#   - 届かない残余: 断片が行の途中から始まる・引用符の内側から始まるなど、断片の外の綴りと
+#     繋がって初めてできる違反は見えない。追跡対象の `*.sh` は `/pre-commit-check` と全件ゲートが
+#     ファイル全体で見る
+# 縮退した回は、許可でも deny でも出力へ 1 行残す（許可は `systemMessage`。guard-background-cwd.sh と
+# 同じチャネルで、利用者向けの表示。エージェントには deny の本文だけが届く）。場所以外の拒否（NUL を
+# 含む・上限超過・開けない権限・途中で変わった・ACL を照合できない等）は、従来どおり判定不能で止める。
+# project 自体が境界の検査を通らない（作業ディレクトリが `%TEMP%` の下）ときは、project の中の Edit も
+# すべて縮退検査になる。
 #
 # ## 抜け道
 #
@@ -157,6 +189,18 @@ deny() { # <reason>
   exit 0
 }
 
+# 許可したまま利用者へ 1 行を残す。jq が失敗しても止めない（注記であって判定ではない）。
+notice() { # <message>
+  local out
+  out="$(jq -n --arg m "$1" '{systemMessage: $m}' 2>/dev/null)"
+  if [ -z "$out" ]; then
+    printf '%s\n' "$1" >&2
+    exit 0
+  fi
+  printf '%s\n' "$out"
+  exit 0
+}
+
 deny_unavailable() { # <理由>
   deny "⚠️ ff-dev-toolkit guard（shell 保存時の静的検査）: **判定不能**のため保存を止めました（$1）。
 対象: ${file_path:-（未取得）}
@@ -233,24 +277,91 @@ read_before_image() {
 # 境界の診断（knowledge-read: 行。止めた場所・SID・TMPDIR の案内）は deny の理由へ載せる。
 # 境界は paths と SID だけを出し、ファイルの中身は出さない。
 read_diagnosis=""
+# 拒否の種別は最初の「英小文字とハイフンだけ」の行。場所の診断（止めた場所:）はその行の後に続く
+# （Windows で TMPDIR を移した案内の行は種別の行より前に来る）。縮退してよい拒否かをこの 2 つで決める。
+read_code=""
+read_place=0
+degraded=0
 if [ -e "$file_path" ] || [ -L "$file_path" ]; then
   read_errors="$(mktemp "${TMPDIR:-/tmp}/ff-shell-read-err.XXXXXX" 2>/dev/null)" || read_errors=/dev/null
   read_rc=0; read_before_image 2>"$read_errors" || read_rc=$?
   if [ "$read_errors" != /dev/null ]; then
     while IFS= read -r read_line; do
-      case "$read_line" in 'knowledge-read: '*) read_diagnosis="${read_diagnosis:+${read_diagnosis} / }${read_line}" ;; esac
+      case "$read_line" in
+        'knowledge-read: '*)
+          read_diagnosis="${read_diagnosis:+${read_diagnosis} / }${read_line}"
+          if [ -z "$read_code" ]; then
+            case "${read_line#knowledge-read: }" in
+              '' | *[!a-z-]*) : ;;
+              *) read_code="${read_line#knowledge-read: }" ;;
+            esac
+          else
+            case "$read_line" in 'knowledge-read: 止めた場所: '*) read_place=1 ;; esac
+          fi ;;
+      esac
     done < "$read_errors"
     rm -f -- "$read_errors"
   fi
   if [ "$read_rc" -ne 0 ]; then
-    if [ "$tool_name" = Write ]; then before=""; before_readable=0
-    else deny_unavailable "対象の読取りroot・通常型・権限・上限を検証できません${read_diagnosis:+。境界の診断: ${read_diagnosis}}"
+    before=""; before_readable=0
+    if [ "$tool_name" = Edit ]; then
+      # 場所を理由にした拒否だけを縮退させる（上の「保存前を読めない Edit は断片で検査する」）。
+      case "${read_code}:${read_place}" in
+        outside-authority:* | replaceable-storage:* | read-unverifiable:1) degraded=1 ;;
+        *) deny_unavailable "対象の読取りroot・通常型・権限・上限を検証できません${read_diagnosis:+。境界の診断: ${read_diagnosis}}" ;;
+      esac
     fi
   fi
 fi
+degraded_note="ℹ️ ff-dev-toolkit guard（shell 保存時の静的検査）: 縮退検査 — 保存前の内容を読み取り境界で読めないため（${read_code:-不明}）、ファイルを読まずに Edit の断片（old_string → new_string）だけを検査しました。断片の外の綴りと繋がってできる違反は見えません${read_diagnosis:+（境界の診断: ${read_diagnosis}）}"
 
 # 保存後の内容を組み立てる。
-if [ "$tool_name" = "Write" ]; then
+# 縮退した Edit は保存前 / 保存後を old_string / new_string の断片にする（ファイルは読まない）。
+# 断片の先頭へ pipefail の継承宣言を足すので、報告する開始行は line_offset だけ引いて断片の中の行へ戻す。
+line_offset=0
+if [ "$degraded" -eq 1 ]; then
+  jq_field '((.tool_input | objects | .old_string) // "") | tostring' || deny_unavailable "old_string を取り出せませんでした（jq rc=$?）"
+  old="$JQ_VALUE"
+  jq_field '((.tool_input | objects | .new_string) // "") | tostring' || deny_unavailable "new_string を取り出せませんでした（jq rc=$?）"
+  new="$JQ_VALUE"
+  # 断片はファイルと比べないので CR を除く（ヘッダの「保存前を読めない Edit は断片で検査する」）。
+  cr="$(printf '\r')"
+  old="${old//"$cr"/}"
+  new="${new//"$cr"/}"
+  # 末尾の行継続（奇数個の `\`、または `|` / `&&` / `||` で終わる最後の行）は論理行が断片の外へ続くので判定できない。
+  new_tail="$new"
+  while :; do
+    case "$new_tail" in
+      *"$nl" | *"$cr") new_tail="${new_tail%?}" ;;
+      *) break ;;
+    esac
+  done
+  new_end="$new_tail"
+  new_bs=0
+  while :; do
+    case "$new_tail" in
+      *'\') new_tail="${new_tail%?}"; new_bs=$((new_bs + 1)) ;;
+      *) break ;;
+    esac
+  done
+  # `|` / `&&` の後ろの空白は継続を変えないので落としてから見る（`\` の後ろの空白は継続を切るので落とさない）。
+  while :; do
+    case "$new_end" in
+      *' ' | *'	') new_end="${new_end%?}" ;;
+      *) break ;;
+    esac
+  done
+  case "$new_end" in
+    *'|' | *'&&') new_bs=1 ;;
+  esac
+  if [ $((new_bs % 2)) -eq 1 ]; then
+    deny_unavailable "保存前を読めないため Edit の断片だけで検査しますが、new_string の末尾が行継続（\\ / | / && / ||）で終わり、論理行が断片の外へ続くため判定できません。${degraded_note#*: }"
+  fi
+  pf_decl='# pipefail-inherited: guard-shell-save の断片検査（保存前を読めないため pipefail を仮定する）'
+  before="${pf_decl}${nl}${old}"
+  after="${pf_decl}${nl}${new}"
+  line_offset=1
+elif [ "$tool_name" = "Write" ]; then
   jq_field '((.tool_input | objects | .content) // "") | tostring' || deny_unavailable "content を取り出せませんでした（jq rc=$?）"
   after="$JQ_VALUE"
 else
@@ -327,7 +438,7 @@ else
   done
   after="${after}${rest}"
 fi
-[ "$before_readable" -eq 1 ] || before=""
+[ "$before_readable" -eq 1 ] || [ "$degraded" -eq 1 ] || before=""
 
 # ---- 判定（3 ライブラリの再利用） ------------------------------------------------
 
@@ -379,13 +490,27 @@ for h in "$mbcs_hits" "$pipefail_hits" "$exit_hits"; do
   esac
 done
 
-[ -n "${mbcs_hits}${pipefail_hits}${exit_hits}" ] || exit 0
+if [ -z "${mbcs_hits}${pipefail_hits}${exit_hits}" ]; then
+  [ "$degraded" -eq 1 ] && notice "$degraded_note"
+  exit 0
+fi
 
 # ---- deny 本文（開始行と固定ruleを案内する。各検出器とも先頭 3 件まで） ---------
 
-first3() { printf '%s\n' "$1" | awk -F: -v rule="$2" 'NF && n < 3 { print "    | " $1 ":" rule; n++ }'; }
+first3() { printf '%s\n' "$1" | awk -F: -v rule="$2" -v off="$line_offset" 'NF && n < 3 { print "    | " ($1 - off) ":" rule; n++ }'; }
 
-reason="⚠️ ff-dev-toolkit guard（shell 保存時の静的検査）: 保存しようとしている ${file_path} に、保存前には無かった違反が入ります。保存前に直してください（全件ゲートの横断メタ検査が同じ検出器で赤にします）。"
+if [ "$degraded" -eq 1 ]; then
+  reason="⚠️ ff-dev-toolkit guard（shell 保存時の静的検査）: 保存しようとしている ${file_path} への Edit の new_string に、old_string には無かった違反が入ります。保存前に直してください（全件ゲートの横断メタ検査が同じ検出器で赤にします）。
+${degraded_note}"
+  line_note="行頭の数字は new_string の中の行"
+else
+  reason="⚠️ ff-dev-toolkit guard（shell 保存時の静的検査）: 保存しようとしている ${file_path} に、保存前には無かった違反が入ります。保存前に直してください（全件ゲートの横断メタ検査が同じ検出器で赤にします）。"
+  line_note="行頭の数字は保存後のファイルの開始行"
+  if [ "$before_readable" -eq 0 ] && [ -e "$file_path" ]; then
+    reason="${reason}
+保存前の内容を読み取り境界で読めないため、Write の全文の違反をすべて新規として数えています（保存前から在った違反も含みます）${read_diagnosis:+（境界の診断: ${read_diagnosis}）}"
+  fi
+fi
 if [ -n "$mbcs_hits" ]; then
   reason="${reason}
 
@@ -409,7 +534,7 @@ $(first3 "$exit_hits" exit-code)"
 fi
 reason="${reason}
 
-（行頭の数字は保存後のファイルの開始行。判定の正本は ${LIB_SHOWN} の 3 ライブラリで、この hook は判定を持ちません）
+（${line_note}。判定の正本は ${LIB_SHOWN} の 3 ライブラリで、この hook は判定を持ちません）
 どうしてもこの形で保存する必要がある場合は、hook の環境へ FF_SHELL_SAVE_ACK=1 を設定してください（Write / Edit にはコマンド先頭の環境代入が無いため、ホストの env 設定か起動時の export で渡します）。"
 
 deny "$reason"

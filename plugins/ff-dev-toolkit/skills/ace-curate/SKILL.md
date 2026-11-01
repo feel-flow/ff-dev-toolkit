@@ -138,7 +138,7 @@ domainでは同梱契約の4行形式でEvidence / Verification / Distill-Toを�
 
 #### 4-c / 4-d / 4-e. Frontmatter・Changelog・行数バジェット
 
-[更新規則](references/curate.md#history-update-rules)に従う。`ace_entry_count` は merged tree の live エントリ実数から再計算。Helpful は 1 行 1 ID。行数例外は `ace-line-budget-exception` で明示する。
+[更新規則](references/curate.md#history-update-rules)に従う。`ace_entry_count` は merged tree の live エントリ実数から再計算。Helpful は 1 行 1 ID。行数例外は `ace-line-budget-exception`。frontmatter は保存後に導出する。
 
 #### 4-f. 同期検証（必須）
 

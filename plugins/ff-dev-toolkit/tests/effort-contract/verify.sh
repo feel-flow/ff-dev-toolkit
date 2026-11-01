@@ -754,6 +754,53 @@ contains "$CREATE_ESTIMATION" "| 文書同期・決定記録の docs Issue（ADR
 contains "$CREATE_ESTIMATION" "和が最小値 1.0h を下回るときは最小値を置く" "文書同期の行も最小値 1.0h を下回らない"
 contains "$CREATE_ESTIMATION" "未決の論点数を数え直して AI 予定を見直す" "決定 Issue は着手時に未決の論点数で見直す"
 
+echo "検査 9e: 先勝ちは補正元より先（references/estimation.md）"
+contains "$CREATE_ESTIMATION" "条件が真になる最初の行だけを採る" "先勝ちは条件が真になる最初の行だけ"
+contains "$CREATE_ESTIMATION" "補正元があっても先に見る" "先勝ちは補正元があっても先に見る"
+contains "$CREATE_ESTIMATION" "直近の同形リリースが補正元の条件を満たしても" "本番リリースは補正元になってもレビュー対応分を積まない"
+contains "$CREATE_ESTIMATION" "develop → main の本番リリース" "本番リリースは develop から main"
+contains "$CREATE_ESTIMATION" "レビュー対応分は積まない" "本番リリースにレビュー対応分を積まない"
+contains "$CREATE_ESTIMATION" "起票前に原因の調査と設計が済んでいて" "写すだけの実装は起票前に調査と設計が済んでいる"
+contains "$CREATE_ESTIMATION" "レビュー対応分は実装分の **1/3**" "写すだけのレビュー対応分は実装分の 1/3"
+contains "$CREATE_ESTIMATION" "同額へ落とさない" "写すだけを同額へ落とさない"
+contains "$CREATE_ESTIMATION" "手元の再現か区間計測" "原因を絞れる不具合は手元の再現か区間計測"
+contains "$CREATE_ESTIMATION" "原因を 1 つに絞れないときはこの行を使わず" "原因を絞れない不具合はこの行を使わない"
+contains "$CREATE_ESTIMATION" "テスト整理・高速化" "テスト整理・高速化の行"
+contains "$CREATE_ESTIMATION" "新しい係数も固定時間も置かない" "テスト整理に新しい係数も固定時間も置かない"
+contains "$CREATE_ESTIMATION" "8.0h 以上の根拠再確認を二重に数えない" "8.0h 以上の根拠再確認を二重に数えない"
+contains "$CREATE_ESTIMATION" "固定費は bundle で 1 回だけ数え、子ごとに数えない" "bundle の固定費は子ごとに数えない"
+contains "$CREATE_ESTIMATION" "skill:create-issue" "観測台帳の所在は skill:create-issue"
+first_match_table="$(awk '
+  index($0, "| 条件 | 積み方 | 出所 |") { grab=1; next }
+  grab && $0 == "" { exit }
+  grab { print }
+' "$CREATE_ESTIMATION")"
+first_match_order_prev=0
+first_match_order_ok=1
+while IFS= read -r first_match_needle; do
+  [ -n "$first_match_needle" ] || continue
+  first_match_line="$(printf '%s\n' "$first_match_table" | awk -v n="$first_match_needle" 'index($0, n) { print NR; exit }')"
+  if [ -z "$first_match_line" ]; then
+    bad "先勝ちの表に行が無い: ${first_match_needle}"
+    first_match_order_ok=0
+    continue
+  fi
+  if [ "$first_match_line" -le "$first_match_order_prev" ]; then
+    bad "先勝ちの行順が違う: ${first_match_needle} は ${first_match_line} 行目"
+    first_match_order_ok=0
+  fi
+  first_match_order_prev="$first_match_line"
+done <<'EOF'
+develop → main の本番リリース
+起票前に原因の調査と設計が済んでいて
+原因を手元の再現か区間計測で 1 つに絞れる不具合
+テスト整理・高速化
+並列サブエージェントと、先行 bundle の成果を引く実装
+EOF
+if [ "$first_match_order_ok" -eq 1 ]; then
+  ok "先勝ちの5行は本番リリース、写すだけ、原因を絞る不具合、テスト整理、並列の順"
+fi
+
 echo "検査 9d: bundle の固定費を一度だけ記録する"
 # 写しが本体の欠落を隠さないよう、一致行はちょうど 1 行を要求する（ACE-1825-1）。
 bundle_rule_once() {

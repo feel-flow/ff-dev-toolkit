@@ -127,7 +127,7 @@ git diff --name-only -- <1) で得た staged パス>
 - 2) が空なら一致している。手順 7・8 をそのまま実行する
 - 2) が空でなければ、そこに並ぶファイルについて**プリフライトは判定できない**。ファイル名を名指しして「不一致のため判定不能」と報告し、「違反なし」とは書かない。緑扱いにせず commit へ進まない側の判定にする（fail-closed）
 - 次の一手は `git add <名指ししたファイル>` で作業ツリーの内容を staged へ揃え、手順 6 から回し直すこと。staged 側の内容のまま commit したいなら、代わりに `git restore --worktree -- <名指ししたファイル>` で作業ツリーを staged 内容へ戻してから回し直す
-- 1) が 0 件なら手順 7・8 はどちらも「対象なし」になる。一致確認も「対象なし」として 1 行で報告し、他の手順の結果は変えない
+- 1) が 0 件なら手順 7・8 はどちらも「対象なし」になる。一致確認も「対象なし」として 1 行で報告し、他の手順の結果は変えない。ただし削除も対象にする手順 8 の「staged SKILL 本線の容量」と「fixture consumer の判定」は 1) が 0 件でも回す（削除だけの commit を「対象なし」にしない）
 
 手順 8 が回す suite にはリポジトリ全体を走査するもの（`sync-forbidden-patterns` の live 検査、`plugin-root-contract` の census）があり、staged していないファイルの作業ツリー内容も判定へ入る。本手順が保証するのは「staged パスについて、検査される内容と commit される内容が一致すること」までである。
 
@@ -162,13 +162,14 @@ git diff --name-only -- <1) で得た staged パス>
 | C. shell | `*.sh`（リポジトリ内の位置は問わない） | `run-all` / `shellcheck` |
 | D. docs 仕様文書 | リポジトリ直下の `docs/**/*.md`（`plugins/ff-dev-toolkit/docs-template/` は含まない）または `.version-claims/**` | `docs-version-changelog` / `docs-frontmatter-repo` |
 | E. 断片内容（Bへの条件付き追加） | `changelog.d/*.md` が staged（ACMR）。README.md と下位ディレクトリは除く | `changelog-fragments` |
+| F. fixture consumer（判定器で決まる条件付き追加。削除だけの回も判定する） | staged（ACDMRT）の `*.sh` のうち、index か HEAD の内容が fixture lib（`tests/lib/git-fixture.sh`）の consumer であるもの、または判定器自身。判定は下の「fixture consumer の判定」 | `git-fixture-isolation` |
 
 - 種別 B の `skill-count-consistency` は、公開面の正本 `PUBLIC-SURFACE.md` が列挙する skills / hooks / `FF_*` 環境変数と実体の一致を見る。新しい `FF_*` 名を足して公開面へ分類し忘れた状態を commit 前に拾う
 - 種別 D は frontmatter の `version` を bump したときの随伴漏れ（Changelog 節の `### [x.y.z]` 欠落 = `docs-version-changelog`、bump 幅と `changeImpact` の不一致 = `docs-frontmatter-repo`）を拾う（OBS-259 / OBS-142）。version claim の再生成漏れは suite ではなく下の「version claim と changelog 断片」で見る
 
 #### プリフライトの実行手順
 
-まず `git diff --cached --name-only --diff-filter=ACMR` で staged パスの一覧を取る（手順 7 と同じ入力）。一覧を上表の 5 種別へ振り分ける。1 ファイルが複数種別に該当してよい（`plugins/ff-dev-toolkit/skills/<名>/SKILL.md` は A と B、`plugins/ff-dev-toolkit/tests/<名>/verify.sh` は B と C に該当する）。該当した種別の suite を、重複を除いて 1 回ずつ単体で実行する:
+まず `git diff --cached --name-only --diff-filter=ACMR` で staged パスの一覧を取る（手順 7 と同じ入力）。一覧を上表の 6 種別へ振り分ける（F だけは一覧のパスではなく内容で決まるので、下の判定器の結果で振り分ける）。1 ファイルが複数種別に該当してよい（`plugins/ff-dev-toolkit/skills/<名>/SKILL.md` は A と B、`plugins/ff-dev-toolkit/tests/<名>/verify.sh` は B と C に該当する）。該当した種別の suite を、重複を除いて 1 回ずつ単体で実行する:
 
 ```bash
 bash plugins/ff-dev-toolkit/tests/docs-gates/verify.sh
@@ -181,6 +182,8 @@ bash plugins/ff-dev-toolkit/tests/docs-version-changelog/verify.sh
 bash plugins/ff-dev-toolkit/tests/docs-frontmatter-repo/verify.sh
 # E が当たった回だけ（断片が無い回は B に追加しない）
 bash plugins/ff-dev-toolkit/tests/changelog-fragments/verify.sh
+# F が当たった回だけ（判定器が git-fixture-isolation: none の回は C に追加しない）
+bash plugins/ff-dev-toolkit/tests/git-fixture-isolation/verify.sh
 ```
 
 判定順序は手順 7 と同じで、**実行できなかった**を先に切り分ける。suite ファイルが存在しない・依存コマンドが無い・suite 自身が「skip」と報告した場合は、終了コードが 0 でも**違反なしへ倒さない**。「実行できなかった」と「違反なし」を別の状態として報告し、緑扱いにせず commit へ進まない側の判定にする（fail-closed）。実行できた suite だけを終了コードで緑赤に分ける。
@@ -210,6 +213,20 @@ bash -c 'r="$(git rev-parse --show-toplevel)" || exit 2; f="$r/plugins/ff-dev-to
 | 2 | 定義/名簿の不在・空・書式変更・重複、index取得/測定失敗・未解決衝突・空blobは「SKILL容量未検査」。違反なしとは書かずcommit へ進まない |
 
 種別 E は断片の**内容**（raw HTML・箇条書き等）を単体suiteで検査する。ファイル名・行を含む診断を報告し、赤ならcommit へ進まない。対象断片をstageしていない回はEを回さずBの判定を変えない。suiteは全作業ツリーの断片とbase鮮度も見るため、内容違反と鮮度/実行不能を区別する。下の有無・帰属検査は引き続き実行し、Eの成功で置き換えない。
+
+#### fixture consumer の判定
+
+種別 F は、`ff_git_fixture_init` を呼ぶか fixture lib を source するテストの追加・利用開始・利用停止・削除を拾う。`git-fixture-isolation` は consumer 名簿を完全一致で照合するので、名簿の書き忘れは全件ゲート 1 周の末尾でしか赤にならなかった（OBS-237）。判定器は staged の `*.sh` について index の blob と HEAD の blob を読み、suite は実行しない。削除も見るので、ACMR の一覧が 0 件の回（consumer を消すだけの commit）も回す:
+
+```bash
+bash -c 'r="$(git rev-parse --show-toplevel)" || exit 2; f="$r/plugins/ff-dev-toolkit/tests/lib/precommit-git-fixture.sh"; if [ ! -d "$r/plugins/ff-dev-toolkit/tests" ]; then echo "git-fixture-isolation: none"; exit 0; fi; [ -s "$f" ] || { echo "git-fixture 未検査: $f がありません/空です" >&2; exit 2; }; . "$f" || exit 2; git_fixture_consumer_scan "$r"'
+```
+
+| 終了コード | 出力 | 報告 |
+|---|---|---|
+| 0 | `git-fixture consumer: <path>` と `git-fixture-isolation: run N` | 名指しされたパスを記録し、`git-fixture-isolation` を単体で回す。名簿不一致は suite が名簿へ足す名前・名簿から消す名前に分けて名指しする |
+| 0 | `git-fixture-isolation: none` | 対象なし。F の suite は回さず、A〜E の判定は変えない |
+| 2 | `git-fixture 未検査: <理由>` | 一覧・blob の取得失敗、未解決の衝突。「違反なし」とも「対象なし」とも書かず、commit へ進まない |
 
 #### version claim と changelog 断片
 
@@ -363,6 +380,12 @@ tests を持たない消費側プロジェクトでは「対象なし」。tests
 - ○ 対象なし（容量は `skill-byte: none`、断片をstageしていない回はEを未実行）
 - ❌ 容量超過はpath・実測B・上限B、断片違反はファイル名・行を列挙。判定不能/鮮度も違反なしとせず、commit へ進まない
 
+### fixture consumer（種別 F）
+- ✅ 違反なし（`git-fixture consumer:` で名指ししたパスと `git-fixture-isolation` の成功）
+- ○ 対象なし（`git-fixture-isolation: none`）
+- ❌ 赤（suite が名指しした名簿へ足す名前・消す名前などを列挙、commit へ進まない）
+- ❌ 未検査（判定器 rc=2、または suite の skip。「違反なし」とは書かず、commit へ進まない）
+
 ### 実行ビット（新規 suite / hook）
 - ✅ 違反なし（`exec-bit: ok N`）
   または
@@ -383,6 +406,10 @@ tests を持たない消費側プロジェクトでは「対象なし」。tests
 - ブロッカー: [あり/なし]
 - 推奨: [コミット可 / 修正後にコミット]
 ```
+
+### 処理系と CI イメージの版
+
+変更が決定文またはシェルコメントで処理系や CI イメージの版を名指すとき、この変更で測った版だけを書く。名指したまま測っていない版は「未実測」と書く。測った版を、測っていない実行条件の版と同じだと書かない。
 
 ## 重要ルール
 

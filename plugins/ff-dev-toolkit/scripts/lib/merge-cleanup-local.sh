@@ -12,14 +12,89 @@
 # Windows のパスは既定で 260 文字までで、node_modules を持つ worktree はそれを超える。
 # git は削除の途中で「Filename too long」で止まり、登録だけ外して実体を残す（Issue `#2479`）。
 # Windows の git に長いパスを扱わせる設定だけを足し、削除の判定（force なし）は変えない。
+#
+# Windows の git は worktree remove の途中でジャンクションをたどり、参照先の中身まで消す。
+# worktree の外を指していれば外のファイルが消え、pnpm の node_modules では削除の順序が崩れて
+# 「Directory not empty」で止まり、実体を残す（Issue `#2557`）。Git Bash はジャンクションを
+# symlink として見せるので、ignored のリンクだけを先にリンクごと外してから git に消させる。
+# 外すのは、従来も worktree remove が clean 扱いのまま消していた ignored の中身に限る。
+# ignored でないリンクは残すので、確認の後に足されたものは git 自身が拒否する（TOCTOU の安全網）。
+# ただし status.showUntrackedFiles=no の設定では、未追跡のリンクは clean の確認にも git の確認にも
+# 出ない。外した後に追跡していないリンクが 1 本でも残っていれば、削除へ進まずに止める。
+# 防げないのは、外した後から worktree remove までの間に ignored の下へ足されたリンク
+# （並行する pnpm install など）だけで、この窓は残る。
 WT_REMOVE_GIT=(git)
 WT_REMOVE_NOTE=""
+WT_UNLINK_IGNORED_LINKS=0
 case "${OSTYPE:-}" in
   msys* | cygwin*)
     WT_REMOVE_GIT=(git -c core.longpaths=true)
-    WT_REMOVE_NOTE="Windows の 260 文字を超えるパスも消すため git -c core.longpaths=true worktree remove で削除"
+    WT_UNLINK_IGNORED_LINKS=1
+    WT_REMOVE_NOTE="Windows のため ignored のリンク（ジャンクション）をリンクだけ先に外し、260 文字を超えるパスも消すため git -c core.longpaths=true worktree remove で削除"
     ;;
 esac
+
+wt_unlink_ignored_links() { # <worktree>
+  # worktree の中の ignored なリンクを、リンクだけ外す。find はリンクの先へ降りないので、
+  # 参照先の中のリンクには触れない。列挙・判定・削除・残りの確認のどれかに失敗したら非 0 を返し、
+  # 呼び出し側は削除へ進まない（残ったジャンクションを git にたどらせない）。
+  local wt="$1" links="$WORK_TMP/wt_links.z" ignored="$WORK_TMP/wt_ignored_links.z"
+  local tracked="$WORK_TMP/wt_tracked_entries" left="$WORK_TMP/wt_left_links" rc=0 stray=""
+  if ! (cd "$wt" && find . -type l -print0) > "$links"; then
+    echo "worktree の中のリンクを列挙できませんでした: ${wt}"
+    return 1
+  fi
+  [ -s "$links" ] || return 0
+  # git check-ignore は ignored が 0 件のとき 1 を返す。追跡中のパスは ignored として返さない。
+  # 削除と同じ git の設定（長いパス）で判定する
+  "${WT_REMOVE_GIT[@]}" -C "$wt" check-ignore --stdin -z < "$links" > "$ignored" || rc=$?
+  case "$rc" in
+    0)
+      # rm に -r を付けない。リンクの代わりに実体のディレクトリが置かれていたら消さずに失敗する
+      if ! (cd "$wt" && xargs -0 rm -- < "$ignored"); then
+        echo "ignored のリンクを外せませんでした（外し終えたリンクは pnpm install などで作り直せます）: ${wt}"
+        return 1
+      fi
+      ;;
+    1) ;;
+    *)
+      echo "リンクが ignored かを判定できませんでした（git check-ignore rc=${rc}）: ${wt}"
+      return 1
+      ;;
+  esac
+  # 残ってよいのは追跡中のリンク（git がリンクとして消す）だけ。追跡していないリンクが残るのは
+  # status.showUntrackedFiles=no などで clean の確認をすり抜けた回で、git はそれもたどる。
+  # 照合は改行区切りで行う（NUL を区切りにできない awk がある）。改行を含む名前は分かれて
+  # 追跡中の名前と一致しなくなるので、止める側に倒れる
+  if ! (cd "$wt" && find . -type l) > "$left"; then
+    echo "外した後のリンクを列挙できませんでした: ${wt}"
+    return 1
+  fi
+  [ -s "$left" ] || return 0
+  if ! "${WT_REMOVE_GIT[@]}" -C "$wt" ls-files -s -z > "$tracked.z" \
+    || ! tr '\000' '\n' < "$tracked.z" > "$tracked"; then
+    echo "追跡中のリンクを取得できませんでした: ${wt}"
+    return 1
+  fi
+  if ! stray="$(awk '
+      FILENAME == ARGV[1] { if ($1 == "120000") { sub(/^[^\t]*\t/, ""); tracked["./" $0] = 1 }; next }
+      !($0 in tracked) { print; exit }
+    ' "$tracked" "$left")"; then
+    echo "残ったリンクを照合できませんでした: ${wt}"
+    return 1
+  fi
+  if [ -n "$stray" ]; then
+    echo "追跡していないリンクが残っています（git にたどらせないため削除しません）: ${wt}/${stray#./}"
+    return 1
+  fi
+}
+
+wt_remove() { # <worktree>
+  if [ "$WT_UNLINK_IGNORED_LINKS" = "1" ]; then
+    wt_unlink_ignored_links "$1" || return 1
+  fi
+  "${WT_REMOVE_GIT[@]}" worktree remove "$1"
+}
 
 # grep は「マッチ 0 件」で exit 1 を返すが、[gone] ゼロ件は正常系なので || true で許容する
 GONE_BRANCHES="$(git for-each-ref \
@@ -252,8 +327,11 @@ else
       WORKTREE_RM_OUT=""
       if [ "$DRY_RUN" = "1" ]; then
         # clean 確認・ロック判定は実行時と同じ条件を通過済み。削除だけ見送る。
+        if [ "$WT_UNLINK_IGNORED_LINKS" = "1" ]; then
+          dry_run_skip "ignored のリンク（ジャンクション）をリンクだけ外す: ${WORKTREE_PATH}"
+        fi
         dry_run_skip "${WT_REMOVE_GIT[*]} worktree remove ${WORKTREE_PATH}"
-      elif ! WORKTREE_RM_OUT="$("${WT_REMOVE_GIT[@]}" worktree remove "$WORKTREE_PATH" 2>&1)"; then
+      elif ! WORKTREE_RM_OUT="$(wt_remove "$WORKTREE_PATH" 2>&1)"; then
         echo "  ❌ worktree 削除に失敗: $WORKTREE_RM_OUT"
         echo "     ブランチ削除もスキップします。手動対応してください。"
         if [ "$WT_AGENT_PATH" = "1" ]; then

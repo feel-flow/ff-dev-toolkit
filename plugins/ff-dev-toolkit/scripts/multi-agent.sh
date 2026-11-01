@@ -1082,10 +1082,13 @@ main() {
     for delegated_entry in $DELEGATED_TASKS; do
       echo "     ${delegated_entry}" >&2
     done
-    echo "   1) Run each prompt below in this host's own session (read-only; do not touch the worktree)." >&2
+    echo "   1) Pass each prompt-file path, not its body, into this host's own session (read-only;" >&2
+    echo "      do not touch the worktree). The subagent reads that file. Passing the path is enough." >&2
     echo "      Keep the line 'FF-REVIEW-DELEGATED: <prompt-file>' AT THE START OF ITS OWN LINE in" >&2
     echo "      the prompt you hand to the subagent, with the prompt-file path exactly as printed" >&2
-    echo "      below. The review-in-flight guard identifies this path by what is handed over, not" >&2
+    echo "      below. Bind the returned result to the perspective and output-file named at this" >&2
+    echo "      launch. Do not re-associate them from logs, and do not transcribe the body by hand." >&2
+    echo "      The review-in-flight guard identifies this path by what is handed over, not" >&2
     echo "      by subagent type (a generic type is used here), and freezes edits while the review" >&2
     echo "      runs. It requires the line anchor and an existing prompt file, so a mention of the" >&2
     echo "      marker inside prose does not freeze anything. Dropping the line only loses that" >&2
@@ -1093,7 +1096,8 @@ main() {
     echo "      The lane is released when the launch is denied, or by its own age limit — a" >&2
     echo "      subagent-stop event carries no correlation id, so a generic type cannot be matched" >&2
     echo "      back to this review without risking the release of someone else's lane." >&2
-    echo "   2) Write each result to the output-file path named with it." >&2
+    echo "   2) The parent writes each returned result, unmodified, to the output-file bound at launch." >&2
+    echo "      The subagent does not create or modify files." >&2
     if [[ -n "$REVIEW_EVIDENCE_PRIOR" || -n "$REVIEW_EVIDENCE_PARENT" ]]; then
       echo "   3) Wait until ALL pending delegated responses have been written, then re-run the" >&2
       echo "      original command below WITHOUT --resume. Prior/continued evidence forbids --resume" >&2

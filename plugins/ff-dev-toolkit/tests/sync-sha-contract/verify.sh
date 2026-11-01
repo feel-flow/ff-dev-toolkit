@@ -511,9 +511,9 @@ contains '| `ff-media-toolkit/tests/render-smoke`: FF_MEDIA_RENDER=1 が未設�
 # どちらもこの針の更新（= レビュー）を経る。grep が失敗して空になった回も一致しないので赤になる
 _os_emitters="$(grep -rlF -- 'Windows の Git Bash でだけ成立する検査のため未実行' "$REPO_ROOT"/plugins/*/tests 2>/dev/null \
   | grep -v '/tests/sync-sha-contract/' | sed "s|^$REPO_ROOT/||" | sort)" || true
-_os_emitters_want="$(printf '%s\n' plugins/ff-dev-toolkit/tests/ace-curate-commit/verify.sh plugins/ff-dev-toolkit/tests/guard-review-in-flight/verify.sh plugins/ff-dev-toolkit/tests/knowledge-lookup/windows-acl.sh plugins/ff-dev-toolkit/tests/multi-agent-stale-outputs/windows-boundary-cases.sh)"
+_os_emitters_want="$(printf '%s\n' plugins/ff-dev-toolkit/tests/ace-curate-commit/verify.sh plugins/ff-dev-toolkit/tests/guard-review-in-flight/verify.sh plugins/ff-dev-toolkit/tests/guard-shell-save/verify.sh plugins/ff-dev-toolkit/tests/knowledge-lookup/windows-acl.sh plugins/ff-dev-toolkit/tests/merge-cleanup/windows-junctions.sh plugins/ff-dev-toolkit/tests/multi-agent-stale-outputs/windows-boundary-cases.sh)"
 if [[ "$_os_emitters" == "$_os_emitters_want" ]]; then
-  ok "OS 限定の理由文を出す suite が guard-review-in-flight・ace-curate-commit・knowledge-lookup・multi-agent-stale-outputs だけである（表の文言が実出力にある）"
+  ok "OS 限定の理由文を出す suite が guard-review-in-flight・guard-shell-save・ace-curate-commit・knowledge-lookup・merge-cleanup・multi-agent-stale-outputs だけである（表の文言が実出力にある）"
 else
   bad "OS 限定の理由文を出す suite の集合が想定と違う（文言の変更か使い回し。許容表と SKILL.md の表を見直す）: [${_os_emitters}]"
 fi
@@ -523,6 +523,10 @@ contains '| `ace-curate-commit`: Windows の Git Bash でだけ成立する検�
   "手順 0b の許容表に OS 限定（ace-curate-commit の 6b の別名ケース）の行がある"
 contains '| `knowledge-lookup`: Windows の Git Bash でだけ成立する検査のため未実行 | OS 限定 |' \
   "手順 0b の許容表に OS 限定（knowledge-lookup の W8〜W9）の行がある"
+contains '| `merge-cleanup`: Windows の Git Bash でだけ成立する検査のため未実行 | OS 限定 |' \
+  "手順 0b の許容表に OS 限定（merge-cleanup の windows-junctions.sh）の行がある"
+contains '| `guard-shell-save`: Windows の Git Bash でだけ成立する検査のため未実行 | OS 限定 |' \
+  "手順 0b の許容表に OS 限定（guard-shell-save の T 節）の行がある"
 contains '| `multi-agent-stale-outputs`: 実 ACL helper の回は Windows の Git Bash でだけ成立する検査のため未実行 | OS 限定 |' \
   "手順 0b の許容表に OS 限定（multi-agent-stale-outputs の実 ACL helper の回）の行がある"
 contains '| `knowledge-lookup`: K32（起動回数の上限は Windows と Linux でだけ固定する検査のため未実行） | OS 限定 |' \

@@ -16,6 +16,9 @@ SOURCE_NODE_MODULES="$PLUGIN_ROOT/mcp/node_modules"
 for file in \
   "$SOURCE_VERIFY" \
   "$SOURCE_SCRIPTS/check-category-size.ts" \
+  "$SOURCE_SCRIPTS/check-category-size-text.ts" \
+  "$SOURCE_SCRIPTS/check-category-size-analysis.ts" \
+  "$SOURCE_SCRIPTS/check-refine-invariants-evaluate.ts" \
   "$SOURCE_SCRIPTS/changelog-layout.ts" \
   "$SOURCE_SCRIPTS/knowledge-read-boundary.ts" \
   "$SOURCE_SCRIPTS/ace-domain.ts" \
@@ -80,6 +83,9 @@ cp "$SOURCE_VERIFY" "$FIXTURE_PLUGIN/tests/live-ace-gates/verify.sh"
 chmod +x "$FIXTURE_PLUGIN/tests/live-ace-gates/verify.sh"
 ln -s "$SOURCE_NODE_MODULES" "$FIXTURE_PLUGIN/mcp/node_modules"
 cp "$SOURCE_SCRIPTS/check-category-size.ts" "$FIXTURE_REPO/scripts/ace/"
+cp "$SOURCE_SCRIPTS/check-category-size-text.ts" "$FIXTURE_REPO/scripts/ace/"
+cp "$SOURCE_SCRIPTS/check-category-size-analysis.ts" "$FIXTURE_REPO/scripts/ace/"
+cp "$SOURCE_SCRIPTS/check-refine-invariants-evaluate.ts" "$FIXTURE_REPO/scripts/ace/"
 cp "$SOURCE_SCRIPTS/changelog-layout.ts" "$FIXTURE_REPO/scripts/ace/"
 cp "$SOURCE_SCRIPTS/knowledge-read-boundary.ts" "$FIXTURE_REPO/scripts/ace/"
 cp "$SOURCE_SCRIPTS/ace-domain.ts" "$FIXTURE_REPO/scripts/ace/"

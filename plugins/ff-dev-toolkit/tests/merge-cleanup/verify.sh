@@ -4,6 +4,7 @@
 # 空振り検出: detached linked caller の判定を除いた mutant は独立 fixture の dry-run 検査で赤になる。
 # 空振り検出: agent branch専用fixtureが削除処理の欠落・祖先判定欠落・worktree判定欠落・remote判定欠落を赤にする。
 # 空振り検出: msys の core.longpaths=true を外した mutant は long-paths.sh の呼び出し記録の照合で赤になる。Windows の実機では、深い node_modules の削除が git の「Filename too long」で失敗して赤になる（2026-10-30 実測、Issue `#2479`）。
+# 空振り検出: msys で ignored のリンクを外す工程を除いた mutant は、long-paths.sh の「worktree remove の時点のリンク数」が 1 になって赤になる（リンクを数えられない回は印の行で 0 にならない）。Windows の実機では windows-junctions.sh の outside の回が参照先の keep.txt の消失で、pnpm の回が単独でも「Directory not empty」で赤になる。残ったリンクの確認を除いた mutant は long-paths.sh の hidden-untracked の回が赤にする。ジャンクションを作れない回と、登録の照合が実行前に当たらない回も赤（2026-10-31 実測、Issue `#2557`）。
 # 空振り検出: 入口の「ファイルが無い」分岐を外した写しを与えると、「構成ファイルを読めない入口が削除前に止まっていない（mode=missing）」の 1 件だけが赤になる（2026-10-21 実測。成功は残り全部。判定は exit 1 のまま、針「がありません」が外れ、次の分岐の「が 0 バイトです」になる。削除へは進まない）。
 # worktree一覧の不在・空・警告とremote照合失敗はfixtureでskip理由と残存を実測する。
 #
@@ -4229,6 +4230,65 @@ if bash "$SCRIPT_DIR/long-paths.sh" "$TMP/longpaths-mutant/merge-cleanup.sh" > "
   exit 1
 else
   ok "core.longpaths を外した mutant を fixture が赤にする"
+fi
+
+# Issue `#2557`: Windows の git は worktree remove でジャンクションをたどるので、ignored のリンクを先に外す
+if bash "$SCRIPT_DIR/windows-junctions.sh" "$TARGET"; then
+  ok "Windows のジャンクションの参照先が残り、pnpm と同じ形の worktree が消え、確認後に足したリンクは git が拒否する（他の OS は理由つきの部分 skip）"
+else
+  bad "Windows のジャンクションを置いた worktree の削除の回帰"
+  exit 1
+fi
+stage_cleanup_mutant "$TMP/junction-mutant"
+awk '
+  /wt_unlink_ignored_links "\$1" \|\| return 1/ { print "    :"; next }
+  { print }
+' "$TMP/junction-mutant/lib/merge-cleanup-local.sh" > "$TMP/junction-mutant/lib/merge-cleanup-local.new"
+mv "$TMP/junction-mutant/lib/merge-cleanup-local.new" "$TMP/junction-mutant/lib/merge-cleanup-local.sh"
+if cmp -s "$PLUGIN_ROOT/scripts/lib/merge-cleanup-local.sh" "$TMP/junction-mutant/lib/merge-cleanup-local.sh"; then
+  bad "junction mutant が原本と同一（空振り）"
+  exit 1
+fi
+if bash "$SCRIPT_DIR/long-paths.sh" "$TMP/junction-mutant/merge-cleanup.sh" > "$TMP/junction-mutant.log" 2>&1; then
+  bad "リンクを外す工程の欠落を fixture が検出できない"
+  exit 1
+elif ! grep -qF 'the ignored link was still in the worktree' "$TMP/junction-mutant.log"; then
+  bad "リンクを外す工程を除いた mutant は赤だが、針（呼び出し時点のリンク数）以外の理由で落ちた"
+  exit 1
+else
+  ok "リンクを外す工程を除いた mutant を long-paths.sh の呼び出し時点のリンク数が赤にする"
+fi
+case "${OSTYPE:-}" in
+  msys* | cygwin*)
+    # 回ごとに確かめる（最初の回の失敗で後の回が走らず、pnpm の回の検出力が隠れないように）
+    for junction_case in outside pnpm; do
+      if JUNC_CASES="$junction_case" bash "$SCRIPT_DIR/windows-junctions.sh" "$TMP/junction-mutant/merge-cleanup.sh" > "$TMP/junction-mutant-$junction_case.log" 2>&1; then
+        bad "リンクを外す工程の欠落を Windows の実物のジャンクション（${junction_case} の回）が検出できない"
+        exit 1
+      else
+        ok "リンクを外す工程を除いた mutant を windows-junctions.sh の ${junction_case} の回が実物のジャンクションで赤にする"
+      fi
+    done
+    ;;
+esac
+stage_cleanup_mutant "$TMP/stray-mutant"
+awk '
+  /if \[ -n "\$stray" \]; then/ { print "  if false; then"; next }
+  { print }
+' "$TMP/stray-mutant/lib/merge-cleanup-local.sh" > "$TMP/stray-mutant/lib/merge-cleanup-local.new"
+mv "$TMP/stray-mutant/lib/merge-cleanup-local.new" "$TMP/stray-mutant/lib/merge-cleanup-local.sh"
+if cmp -s "$PLUGIN_ROOT/scripts/lib/merge-cleanup-local.sh" "$TMP/stray-mutant/lib/merge-cleanup-local.sh"; then
+  bad "stray mutant が原本と同一（空振り）"
+  exit 1
+fi
+if bash "$SCRIPT_DIR/long-paths.sh" "$TMP/stray-mutant/merge-cleanup.sh" > "$TMP/stray-mutant.log" 2>&1; then
+  bad "追跡していないリンクが残る回の停止の欠落を fixture が検出できない"
+  exit 1
+elif ! grep -qF '(stop hidden-untracked)' "$TMP/stray-mutant.log"; then
+  bad "残ったリンクの確認を除いた mutant は赤だが、hidden-untracked の回以外の理由で落ちた"
+  exit 1
+else
+  ok "残ったリンクの確認を除いた mutant を long-paths.sh の hidden-untracked の回が赤にする"
 fi
 
 echo "✓ merge-cleanup verify: 全 $PASS 件 pass"

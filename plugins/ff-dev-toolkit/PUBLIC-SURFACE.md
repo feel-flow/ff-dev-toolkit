@@ -81,6 +81,7 @@
 
 - `PermissionDenied :: - :: hooks/guard-review-in-flight.sh`
 - `PostToolUse :: Bash :: hooks/guard-zsh-glob.sh`
+- `PostToolUse :: Bash :: hooks/warn-missing-ff-effort.sh`
 - `PreToolUse :: Bash :: hooks/guard-background-cwd.sh`
 - `PreToolUse :: Bash :: hooks/guard-checkout-restore.sh`
 - `PreToolUse :: Bash :: hooks/guard-credential-output.sh`

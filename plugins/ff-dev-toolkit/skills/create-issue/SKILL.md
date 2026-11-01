@@ -50,7 +50,7 @@ fi
 | 読む条件 | ファイル | 中身 |
 |---|---|---|
 | 手順 3 で工数ブロックを書くとき | [references/estimation.md](references/estimation.md) | 過去実績の 3 層参照・工数の目安表・積み方と補正 |
-| 手順 5 で priority を判定するときから手順 6 の起票まで | [references/filing.md](references/filing.md) | ラベルの照合規則・priority の判定基準・報告の書き分け・ISSUE_TEMPLATE の pre-flight・起票 3 ステップ |
+| 手順 5 で priority を判定するときから手順 6 の起票まで | [references/filing.md](references/filing.md) | ラベルの照合規則・priority の判定基準・報告の書き分け・ISSUE_TEMPLATE の pre-flight・各論点の既定値 |
 
 ## 手順
 

@@ -51,6 +51,7 @@
 # 空振り検出: finish.sh の gh_pr_view_or_die から未知の JSON field の分岐を消すと (B2b) が赤になる（2026-10-20 実測。gh 不通の汎用文へ落ちてパスと版が出ない）。
 # 変異検出: shebang 行の CR で止まる exit 2 を exit 0 にすると (S1) が赤、成功時の exit 0 を exit 2 にすると LF の写しを止めて (S2) が赤になる（2026-10-19 実測）。
 # 空振り検出: finish.sh と knowledge-commit.sh の assert_bundled_shebang_lf で、shebang 行の CR の exit 2 を return 0 にすると (S7 / S8) が赤になる（2026-10-21 実測。S7 は rc 2 のまま exec まで進み、stderr に /usr/bin/env の ‘bash\r’（バックスラッシュと r）と「version claim を再生成できません」が出る。S8 は source して syntax error を出し rc 0 になる）。
+# 空振り検出: knowledge-commit 構成ファイル（scripts/lib/finish-knowledge-commit-functions.sh）を S6 の走査から外すと件数 6 で赤になる（2026-10-30 実測。移した 5 起動が見えず、残る 6 件に欠落行は無い）。A4 の走査を finish.sh だけに戻すとマーカー不在で赤になる（同日実測。マーカーは構成ファイルの 72 行と 123 行）。
 # 空振り検出: kc_restore_default の開始 branch ガードを外すと H14（別 worktree 保持）と H14b/chore の成功・push 失敗・upstream 不一致・PR 作成失敗の4件が赤、復帰処理を return 0 で無効化すると H8 と H14b/default の3失敗経路および H14c が赤になる。H14b の行列を空にすると7件の実行数照合が赤になる（2026-10-22 実測。各 fault の到達・PR 呼出数・remote ref も照合し、針が当たらない stub を緑にしない）。
 # 変異検出: knowledge-commit.sh の commit で混入コミットの自動の取り消しを外すと H12b が赤（混入したコミットが HEAD に残り、続く push が origin へ送る）（2026-10-29 実測。Issue `#2494`）。
 # 空振り検出: default 開始の branch -f を実 Git の develop.lock で失敗させる H14c は、kc_restore_default の失敗時 return 1 を return 0 へ倒すと赤になる（2026-10-22 実測。PR 作成後の rc 1・failed・残存 ref・復帰案内と local/remote の知見 SHA を照合する）。
@@ -70,6 +71,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 TARGET="$PLUGIN_ROOT/scripts/finish.sh"
 PRECHECK_TARGET="$PLUGIN_ROOT/scripts/lib/finish-precheck.sh"
+KC_LIB="$PLUGIN_ROOT/scripts/lib/finish-knowledge-commit-functions.sh"
 SKILLS_DIR="$PLUGIN_ROOT/skills"
 
 # shellcheck source=../lib/git-fixture.sh
@@ -361,11 +363,11 @@ else
     }
     { line[NR] = $0 }
     END { printf "%d\n", launches + 0 }
-  ' "$TARGET" "$PRECHECK_TARGET")"
+  ' "$TARGET" "$PRECHECK_TARGET" "$KC_LIB")"
   launch_n="${launch_gaps%%$'\n'*}"
   launch_rest="${launch_gaps#*$'\n'}"
   if [ "$launch_n" -eq 11 ] && [ "$launch_rest" = "$launch_n" ]; then
-    ok "S6: finish.sh の同梱スクリプト起動 11 件は、直前 4 行以内に shebang 検査がある"
+    ok "S6: finish.sh と knowledge-commit 構成ファイルの同梱スクリプト起動 11 件は、直前 4 行以内に shebang 検査がある"
   else
     bad "S6: finish.sh の起動が検査の直前に無い、または件数が 11 でない（件数=${launch_n} 欠落行=${launch_rest})"
   fi
@@ -417,7 +419,7 @@ if awk '/ff-dev-toolkit-script-root-guard:start/ { s = 1 } /ff-dev-toolkit-scrip
 else
   bad "A3: plugin root 固定ガードの block が無い"
 fi
-if awk '/ff-ace-protection-probe:start/ { s = 1 } /ff-ace-protection-probe:end/ { e = 1 } END { exit (s && e) ? 0 : 1 }' "$TARGET"; then
+if awk '/ff-ace-protection-probe:start/ { s = 1 } /ff-ace-protection-probe:end/ { e = 1 } END { exit (s && e) ? 0 : 1 }' "$TARGET" "$KC_LIB"; then
   ok "A4: 保護判定 block（ff-ace-protection-probe マーカー）を持つ（tests/ace-curate-commit が抽出する）"
 else
   bad "A4: 保護判定 block のマーカーが無い"

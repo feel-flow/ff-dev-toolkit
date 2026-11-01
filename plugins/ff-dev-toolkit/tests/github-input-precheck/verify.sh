@@ -430,7 +430,7 @@ scripts/knowledge-commit.sh|ff_path_is_absolute "$p"|case "$p" in /*)
 scripts/workflow-doctor.sh|ff_path_is_absolute "$path"|case "$path" in /*)
 hooks/guard-merge-closing-keyword.sh|ff_path_is_absolute "$body_file"|case "$body_file" in /*)
 scripts/lib/adapter-common-git.sh|ff_path_is_absolute "$staging_dir"|case "$staging_dir" in
-scripts/finish.sh|if ff_path_is_absolute "$p"; then claim_paths+=("$p")|case "$p" in /*) claim_paths
+scripts/lib/finish-knowledge-commit-functions.sh|if ff_path_is_absolute "$p"; then claim_paths+=("$p")|case "$p" in /*) claim_paths
 SITES
 [ "$ABS_SITES" -eq 7 ] || bad "absolute-path site table read $ABS_SITES rows"
 if [ -s "$PLUGIN/scripts/lib/abs-path.sh" ] && grep -qF 'ff_path_is_absolute() {' "$PLUGIN/scripts/lib/abs-path.sh"; then

@@ -18,6 +18,11 @@
 #   C. 判定不能は fail-closed（理由付き deny）: 検出器の不在 / awk の失敗 / 検出器出力の
 #      解釈不能 / Edit 対象を読めない・NUL を含む / old_string が一致しない / ASDD ヘルパ不在 /
 #      deny の JSON を作れない（exit 2）。ただし `.sh` 以外は検出器が壊れていても止めない
+#   E. 保存前を読めない Edit の縮退検査（Issue `#2560`）: 作業ディレクトリ（project）の外の `.sh` は
+#      ファイルを読まず old_string → new_string の断片で検査し、違反なしは systemMessage の 1 行付きで
+#      通し、違反は deny する。断片の外へ続く行継続は判定不能。結果がファイルの中身に依存しない
+#   T. Windows の `%TEMP%` の下を project にした Edit（祖先の ACL で境界が read-unverifiable を返す経路。
+#      Windows 以外では skip）
 #   D. stdin の drain（PATH 空・ASDD ゲートの早期終了経路でも書き手へ EPIPE を返さない）
 #   R. hooks.json の PreToolUse（Write|Edit matcher）登録と description の言及
 #   M. 変異検出（コピーへ当てる）
@@ -36,6 +41,8 @@
 # 空振り検出: consumer保存回帰の集合を0件へ替えると、実ケースのfocused集合境界が1件赤・rc=1。正常は4/0、共有検出器への宣言受渡しを外す単独変異は宣言あり危険形だけ1件赤・rc=1（構文はいずれも0、2026-10-22）。
 # 空振り検出: 現行正常対照88/0。認可rootを全filesystemへ広げるとleaf/parentの2針、診断をraw行へ戻すとinternalのJSON/stderrの2針、privacy集合の空化でcensusの1針が赤。3変異とも構文0の後suite rc=1を確認（2026-10-29、私有workspaceと文字列検査追加後に再実測）。
 # 空振り検出: 保存前の読み取りの stderr を 2>/dev/null へ戻す変異で C6b だけが赤（suite rc=1、他 93 件成功。2026-10-29 WSL 実測、Issue `#2461`）。
+# 空振り検出: 縮退検査（Issue `#2560`。2026-10-31 に Windows の Git Bash で実測、変異なしは 122 件緑）。FF_GUARD_SHELL_SAVE_TARGET で差し替えた hook に対し、場所の拒否を縮退させない → E1〜E8・E11・E12・T1〜T4・P-leaf・P-parent の 27 件赤、全拒否を縮退させる → C6・C6b・E10・E13 赤、場所の行が無い read-unverifiable も縮退させる → E10 赤、継承宣言を外す → E2〜E4 赤、断片の CR を残す → E3b 赤、通した回の注記を消す → E1・E5・E7・E8・E11・E12・T3・P-leaf ほか 13 件赤、行継続の判定を外す → E6〜E6d 赤、パイプ・論理演算子の行継続だけを外す → E6b〜E6d 赤、develop の旧 hook → E1〜E8・E11・E12・T1〜T4・P-write ほか 28 件赤（D4 は差し替えた実体の隣に ASDD ゲートが無いため、M5・M6 は自前の変異のアンカーが消えるため、差し替え時は赤）。
+# 空振り検出: 針が当たらない入力（Issue `#2560`）。%TEMP% の祖先の ACL で read-unverifiable を再現できない環境の T1 は ok に数えず skip と名指しし、境界の種別の行の書式が変わる（大文字など）と種別を読めず E13 のとおり判定不能の deny になる（緑へ倒さない）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -64,17 +71,38 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 0
 fi
 
-if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ff-guard-shell-save.XXXXXX" 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
+case "$(uname -s 2>/dev/null)" in
+  MSYS* | MINGW* | CYGWIN*) ON_WINDOWS=1 ;;
+  *) ON_WINDOWS=0 ;;
+esac
+# Windows の `%TEMP%` は祖先に本人以外が書ける ACE を持つことがあり、そこへ WORK（認可された project）を
+# 置くと境界が project 自体を read-unverifiable で拒否して、project 内の判定を測る節がすべて縮退側へ
+# 倒れる。境界と同じ移し先の規則（ff_knowledge_job_directory: TMPDIR が検査を通らなければ toolkit の
+# 状態ディレクトリへ移す）で置き場を決める。`%TEMP%` の経路そのものは T 節が別に測る（Issue `#2560`）。
+_ff_win_err="${TMPDIR:-/tmp}/ff-guard-shell-save-err.$$"
+if [ "$ON_WINDOWS" -eq 1 ] \
+  && _ff_mktemp_out="$(bash -c '. "$1" && ff_knowledge_job_directory ff-guard-shell-save' _ "$PLUGIN_ROOT/scripts/lib/knowledge-read-boundary.sh" 2>"$_ff_win_err")" \
+  && [ -d "$_ff_mktemp_out" ]; then
+  rm -f "$_ff_win_err"
+  TEST_TMP="$_ff_mktemp_out"
+elif [ "$ON_WINDOWS" -eq 1 ]; then
+  # 境界の診断（止めた場所・SID）を理由として出す
+  echo "✗ 一時ディレクトリを作成できません: $(cat "$_ff_win_err" 2>/dev/null)" >&2
+  rm -f "$_ff_win_err"
+  exit 1
+elif [ "$ON_WINDOWS" -eq 0 ] && _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ff-guard-shell-save.XXXXXX" 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
   TEST_TMP="$_ff_mktemp_out"
 else
   echo "✗ 一時ディレクトリを作成できません: ${_ff_mktemp_out}" >&2
   exit 1
 fi
 REACHED_END=0
+WIN_TEMP_DIR=""
 cleanup() {
   local rc=$?
   chmod -R u+rwX "$TEST_TMP" 2>/dev/null || true
   rm -rf "$TEST_TMP"
+  if [ -n "$WIN_TEMP_DIR" ]; then rm -rf "$WIN_TEMP_DIR"; fi
   if [ "$REACHED_END" -ne 1 ] && [ "$rc" -eq 0 ]; then
     echo "✗ guard-shell-save: 最後まで到達しませんでした" >&2
     rc=1
@@ -168,6 +196,30 @@ assert_unavailable() { # <label>
   esac
   bad "$1: exit=${RC} decision=[${DECISION}] reason=[${REASON}]"
 }
+# 縮退検査で通した回: deny ではなく、systemMessage の 1 行で縮退を残す（Issue `#2560`）。
+assert_degraded_pass() { # <label>
+  local msg
+  msg="$(printf '%s' "$OUT" | jq -r '.systemMessage // empty' 2>/dev/null || true)"
+  case "$RC:$DECISION:$msg" in
+    0::*縮退検査*)
+      case "$msg" in
+        *"$nl"*) bad "$1: 縮退の注記が 1 行でない: [${msg}]" ;;
+        *) ok "$1" ;;
+      esac ;;
+    *) bad "$1: exit=${RC} decision=[${DECISION}] out=[${OUT}]" ;;
+  esac
+}
+# 縮退検査で止めた回: 判定不能の deny ではなく、縮退の注記と規則名を本文に持つ deny（修正前の hook の
+# 判定不能の deny と区別する）。
+assert_degraded_fire() { # <label> <rule>
+  case "$RC:$DECISION:$REASON" in
+    *判定不能*) bad "$1: 縮退検査ではなく判定不能の deny: [${REASON}]" ;;
+    0:deny:*縮退検査*"$2"*) ok "$1" ;;
+    *) bad "$1: exit=${RC} decision=[${DECISION}] reason=[${REASON}]" ;;
+  esac
+}
+nl='
+'
 
 # 既存ファイル（Edit の対象）。pipefail の設定行を持ち、既存違反を 1 件含む。
 EXISTING="$WORK/scripts/existing.sh"
@@ -392,14 +444,17 @@ fi
 chmod 644 "$UNREAD"
 run_json "$HOOK" "$(edit_json "$CLEAN" 'NOT-THERE' "$MB_BAD")"
 assert_unavailable "C5: CR 除去後も old_string がバイト一致しない Edit は判定不能の deny（引用符の正規化で保存されうる）"
-NULF="$WORK/scripts/nul.sh"
+# 名前を nul.sh にしない。Windows では NUL が予約デバイス名で、境界の ACL 照合（PowerShell）が
+# パスを解決できず read-unverifiable（場所の拒否）を返し、NUL を含む中身の拒否を測れなくなる。
+NULF="$WORK/scripts/with-nul-byte.sh"
 printf '#!/usr/bin/env bash\n\000PLACEHOLDER\n' > "$NULF"
 run_json "$HOOK" "$(edit_json "$NULF" '#!/usr/bin/env bash' '#!/bin/bash')"
 assert_unavailable "C6: NUL を含み全体を読めない Edit 対象は判定不能の deny"
 # 境界の拒否理由（knowledge-read: 行）を捨てず deny の理由へ載せる。Windows で止めた祖先と SID を
 # 利用者が知る唯一の経路なので、2>/dev/null へ戻すとここが赤になる（Issue `#2461`）
 case "$REASON" in
-  *'境界の診断: knowledge-read: incomplete-input'*) ok "C6b: 判定不能の deny の理由に境界の診断（NUL で読み切れない knowledge-read: incomplete-input）を載せる" ;;
+  # Windows では TMPDIR の移し先の案内行が種別の行より前に入るので、種別の位置は固定しない
+  *'境界の診断: '*'knowledge-read: incomplete-input'*) ok "C6b: 判定不能の deny の理由に境界の診断（NUL で読み切れない knowledge-read: incomplete-input）を載せる" ;;
   *) bad "C6b: 境界の診断が deny の理由に無い: reason=[${REASON}]" ;;
 esac
 NOGATE="$TEST_TMP/nogate"
@@ -479,15 +534,20 @@ if command -v node >/dev/null 2>&1; then
 else
   echo "  ○ skip: node が無いため features.hooks=false 経路は未検査（guard-shell-save の ASDD ゲート無効判定）"
 fi
-NODELESS="$TEST_TMP/nodeless-bin"
-mkdir -p "$NODELESS"
-for t in jq bash awk wc cat; do
-  tp="$(command -v "$t" 2>/dev/null)" && ln -s "$tp" "$NODELESS/$t"
-done
-RC=0
-OUT="$(cd "$ASDD_ON" && printf '%s' "$(write_json "$WORK/tests/x/verify.sh" "$MB_GOOD")" | PATH="$NODELESS" bash "$HOOK" 2>/dev/null)" || RC=$?
-_decode
-assert_unavailable "D5: .asdd 設定あり + node 不在（検証不能）での .sh 保存は判定不能の deny"
+if [ "$ON_WINDOWS" -eq 1 ]; then
+  # 最小 PATH へ symlink した MSYS の exe は msys-2.0.dll を見つけられず rc=127 で起動しない。
+  echo "  ○ skip: Windows（Git Bash）では最小 PATH へ置いた bash.exe 等が msys-2.0.dll を見つけられず起動しないため、D5（node 不在の ASDD 検証不能）は未検査（POSIX で検査する）"
+else
+  NODELESS="$TEST_TMP/nodeless-bin"
+  mkdir -p "$NODELESS"
+  for t in jq bash awk wc cat; do
+    tp="$(command -v "$t" 2>/dev/null)" && ln -s "$tp" "$NODELESS/$t"
+  done
+  RC=0
+  OUT="$(cd "$ASDD_ON" && printf '%s' "$(write_json "$WORK/tests/x/verify.sh" "$MB_GOOD")" | PATH="$NODELESS" bash "$HOOK" 2>/dev/null)" || RC=$?
+  _decode
+  assert_unavailable "D5: .asdd 設定あり + node 不在（検証不能）での .sh 保存は判定不能の deny"
+fi
 RC=0
 OUT="$(printf '%s' "$(write_json "$WORK/tests/x/verify.sh" "$MB_BAD")" | PATH="/nonexistent" /bin/bash "$HOOK" 2>/dev/null)" || RC=$?
 _decode
@@ -618,7 +678,16 @@ ln -s "$READ_SHARED/config.sh" "$WORK/scripts/external-link.sh"
 ln -s "$READ_SHARED" "$WORK/linked-dir"
 cp "$READ_SHARED/config.sh" "$WORK/scripts/internal-canary.sh"
 PRIVACY_CASES=0
-for read_case in leaf parent internal; do
+PRIVACY_EXPECTED=3
+PRIVACY_SET="leaf parent internal"
+if [ ! -L "$WORK/scripts/external-link.sh" ] || [ ! -L "$WORK/linked-dir" ]; then
+  # Git Bash の既定（MSYS が winsymlinks:nativestrict でない）は ln -s を複製にするので、外へ解決するリンクを作れない。
+  echo "  ○ skip: ln -s が symlink を作らない環境（Windows の Git Bash で MSYS=winsymlinks:nativestrict でない等）のため P-leaf / P-parent は未検査"
+  PRIVACY_EXPECTED=1
+  PRIVACY_SET="internal"
+fi
+LEAF_OUT=""
+for read_case in $PRIVACY_SET; do
   PRIVACY_CASES=$((PRIVACY_CASES + 1))
   case "$read_case" in
     leaf) read_target="$WORK/scripts/external-link.sh" ;;
@@ -631,26 +700,182 @@ for read_case in leaf parent internal; do
     assert_fire "P-$read_case: 認可内の通常shell診断はdenyを維持"
     case "$REASON" in *'2:mbcs'*) ok "P-internal: 規則と開始行は有用な診断として維持" ;; *) bad "P-internal: 規則/行の診断が欠落" ;; esac
   else
-    assert_unavailable "P-$read_case: キー名だけを知る外部リンクEditをbefore-image読取り前に拒否"
+    # 外へ解決するリンクは before-image を読まず、断片（old_string → new_string）だけで判定する（Issue `#2560`）。
+    assert_degraded_pass "P-$read_case: 外部へ解決するリンクへの Edit は before-image を読まず断片だけで判定（縮退）"
+    [ "$read_case" = leaf ] && LEAF_OUT="$OUT"
   fi
   case "$OUT:$REASON" in *"$SHELL_CANARY"*) bad "P-$read_case: JSON診断へ合成機密値が漏れた" ;; *) ok "P-$read_case: JSON診断に合成機密値なし" ;; esac
   if cmp -s "$read_target" "$TEST_TMP/read-protected-before"; then ok "P-$read_case: 元ファイル不変"; else bad "P-$read_case: 元ファイルが変化"; fi
   RC=0
   ERR="$(cd "$WORK" && printf '%s' "$read_payload" | PATH="$JQ_SHIM:$PATH" bash "$HOOK" 2>&1 >/dev/null)" || RC=$?
-  case "$RC:$ERR" in
+  case "$read_case:$RC:$ERR" in
     *"$SHELL_CANARY"*) bad "P-$read_case: stderr fallbackへ合成機密値が漏れた" ;;
-    2:*) ok "P-$read_case: JSON生成失敗時もexit2/stderrに合成機密値なし" ;;
+    internal:2:*) ok "P-$read_case: JSON生成失敗時もexit2/stderrに合成機密値なし" ;;
+    # 縮退の注記は判定ではないので、JSON を作れないときは stderr へ出して止めない
+    leaf:0:*縮退検査* | parent:0:*縮退検査*) ok "P-$read_case: JSON生成失敗時も注記をstderrへ残し、合成機密値なし" ;;
     *) bad "P-$read_case: stderr fallback未到達（rc=${RC}）" ;;
   esac
 done
-if [ "$PRIVACY_CASES" -eq 3 ]; then ok "P-census: leaf/parent/internalの実ケース3件を実行"; else bad "P-census: privacy実ケースが空または欠落"; fi
+if [ "$PRIVACY_CASES" -eq "$PRIVACY_EXPECTED" ] && [ "$PRIVACY_CASES" -gt 0 ]; then ok "P-census: 実ケース${PRIVACY_CASES}件（${PRIVACY_SET}）を実行"; else bad "P-census: privacy実ケースが空または欠落"; fi
+# 判定がファイルの中身に依存しない（中身を当てる手がかりにならない）: 外部ファイルに無い old_string でも同じ出力。
+if [ -n "$LEAF_OUT" ]; then
+  run_json "$HOOK" "$(edit_json "$WORK/scripts/external-link.sh" 'KEY_NOT_IN_THE_FILE' 'RENAMED_KEY')"
+  if [ "$OUT" = "$LEAF_OUT" ]; then ok "P-oracle: 外部ファイルに在る / 無い old_string で出力が同一（中身を読まない）"
+  else bad "P-oracle: old_string の有無で出力が変わった: [${OUT}] / [${LEAF_OUT}]"; fi
+fi
 run_json "$HOOK" "$(write_json "$READ_SHARED/config.sh" 'echo safe')"
 assert_pass 'P-write: project外の既存ファイルはbeforeを読まず提案全文を走査して通す'
 run_json "$HOOK" "$(write_json "$READ_SHARED/config.sh" "$MB_BAD")"
 assert_fire 'P-write: project外でも危険な提案全文はdeny'
 case "$REASON" in *'1:mbcs'*) ok 'P-write: 元ファイルの拒否で代用せず提案全文のrule/行を診断' ;; *) bad 'P-write: 提案全文の走査に到達していない' ;; esac
+case "$REASON" in *'すべて新規として数えています'*) ok 'P-write: 保存前を読めず全違反を新規と数えたことを deny 本文に残す' ;; *) bad "P-write: 縮退の注記が deny 本文に無い: [${REASON}]" ;; esac
 case "$OUT:$REASON" in *"$SHELL_CANARY"*) bad 'P-write: 保存前の合成機密が漏れた' ;; *) ok 'P-write: beforeの値は診断へ出ない' ;; esac
 if cmp -s "$READ_SHARED/config.sh" "$TEST_TMP/read-protected-before"; then ok 'P-write: 保存前の外部ファイル不変'; else bad 'P-write: 外部ファイルが変化'; fi
+
+echo "guard-shell-save: 保存前を読めない Edit の縮退検査（E。作業ディレクトリの外）"
+# WORK（run_json の cwd = 認可された project）の外。境界は outside-authority で拒否する。
+OUTSIDE="$TEST_TMP/outside"
+mkdir -p "$OUTSIDE"
+OUT_SH="$OUTSIDE/tool.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'set -o pipefail' "$MB_BAD" 'PLACEHOLDER' > "$OUT_SH"
+run_json "$HOOK" "$(edit_json "$OUT_SH" 'PLACEHOLDER' 'echo ok')"
+assert_degraded_pass "E1: 作業ディレクトリの外の .sh へ違反を含まない Edit は止めず、縮退を 1 行残す"
+case "$OUT" in *outside-authority*) ok "E1: 縮退の注記が拒否の種別（outside-authority）を示す" ;; *) bad "E1: 注記に拒否の種別が無い: [${OUT}]" ;; esac
+E1_OUT="$OUT"
+run_json "$HOOK" "$(edit_json "$OUT_SH" 'PLACEHOLDER' "$EC_BAD")"
+assert_degraded_fire "E2: 同じ場所への終了コードの握り潰しを含む Edit は縮退検査で deny" exit-code
+case "$REASON" in
+  *縮退検査*'1:exit-code'*'new_string の中の行'*) ok "E2: deny 本文が縮退と new_string の中の行番号を示す" ;;
+  *) bad "E2: deny 本文に縮退・行番号の案内が無い: [${REASON}]" ;;
+esac
+run_json "$HOOK" "$(edit_json "$OUT_SH" 'PLACEHOLDER' "$PF_BAD")"
+assert_degraded_fire "E3: 断片に pipefail の設定行が無くても、pipefail を仮定してパイプ下流の quiet grep を deny" pipefail-grep-q
+# E3b: Windows の jq.exe は文字列の中の改行も CRLF で出す。CR が残ると `\` の行継続を検出器が見落とすので、
+# CRLF の 2 行に分けた違反でも deny になること（縮退経路は断片の CR を除く）。
+run_json "$HOOK" "$(edit_json "$OUT_SH" 'PLACEHOLDER' "$(printf '%s\r\n%s' 'printf "%s" "$v" \' "  | ${GQ} y")")"
+assert_degraded_fire "E3b: CRLF の行継続で 2 行に分けたパイプ下流の quiet grep も deny（断片の CR を除く）" pipefail-grep-q
+run_json "$HOOK" "$(edit_json "$OUT_SH" 'PLACEHOLDER' "$(printf '%s\n%s' 'echo ok' "$MB_BAD")")"
+case "$DECISION:$REASON" in
+  deny:*'2:mbcs'*) ok "E4: 断片の 2 行目の違反を、継承宣言の分を引いた new_string の中の行で報告" ;;
+  *) bad "E4: 行番号がずれた: decision=[${DECISION}] reason=[${REASON}]" ;;
+esac
+run_json "$HOOK" "$(edit_json "$OUT_SH" "$MB_BAD" "$(printf '%s\n%s' "$MB_BAD" 'echo ok')")"
+assert_degraded_pass "E5: old_string に在った違反を new_string が持ち越すだけなら通す（件数の突き合わせ）"
+for cont_case in 'E6:echo a \' 'E6b:printf x |' 'E6c:true &&  ' 'E6d:false ||'; do
+  run_json "$HOOK" "$(edit_json "$OUT_SH" 'PLACEHOLDER' "${cont_case#*:}")"
+  case "$RC:$DECISION:$REASON" in
+    0:deny:*判定不能*行継続*) ok "${cont_case%%:*}: new_string の末尾が行継続（${cont_case#*:}）なら論理行が断片の外へ続くので判定不能の deny" ;;
+    *) bad "${cont_case%%:*}: 行継続（${cont_case#*:}）を判定不能にしない: exit=${RC} decision=[${DECISION}] reason=[${REASON}]" ;;
+  esac
+done
+run_json "$HOOK" "$(edit_json "$OUT_SH" 'PLACEHOLDER' 'echo a \\')"
+assert_degraded_pass "E7: 偶数個の \\ で終わる行は行継続ではないので通す"
+run_json "$HOOK" "$(edit_json "$OUT_SH" 'PLACEHOLDER' 'echo ok' true)"
+assert_degraded_pass "E8: replace_all でも断片の組で判定する"
+run_json "$HOOK" "$(edit_json "$OUT_SH" 'NOT-THERE' 'echo ok')"
+if [ "$OUT" = "$E1_OUT" ]; then ok "E9: ファイルに無い old_string でも E1 と同じ出力（中身を読まず、一致の有無を漏らさない）"
+else bad "E9: old_string の有無で出力が変わった: [${OUT}]"; fi
+if cmp -s "$OUT_SH" <(printf '%s\n' '#!/usr/bin/env bash' 'set -o pipefail' "$MB_BAD" 'PLACEHOLDER'); then ok "E: 外のファイルは不変"; else bad "E: 外のファイルが変化"; fi
+# E10〜E13: 拒否の種別ごとの分岐を全 OS で通す。写した境界の snapshot を差し替え、project の中の
+# ファイルに対して指定した種別（と、種別の行の後の「止めた場所:」の行）で拒否させる。
+# read-unverifiable は ACL ヘルパのタイムアウトや開けない権限でも出るので、場所の行を伴うときだけ縮退する。
+STUB_READ="$TEST_TMP/stub-read"
+make_plugin "$STUB_READ" "$LIB_SRC"
+cat >> "$STUB_READ/scripts/lib/knowledge-read-boundary.sh" <<'STUB'
+ff_knowledge_snapshot() {
+  printf 'knowledge-read: %s\n' "${GUARD_STUB_READ_CODE:-}" >&2
+  if [ -n "${GUARD_STUB_READ_PLACE:-}" ]; then printf 'knowledge-read: 止めた場所: %s — test\n' "${GUARD_STUB_READ_PLACE}" >&2; fi
+  return 2
+}
+STUB
+STUB_SH="$WORK/scripts/stub-read.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'PLACEHOLDER' > "$STUB_SH"
+STUB_EDIT="$(edit_json "$STUB_SH" 'PLACEHOLDER' 'echo ok')"
+run_json "$STUB_READ/hooks/guard-shell-save.sh" "$STUB_EDIT" GUARD_STUB_READ_CODE=read-unverifiable
+assert_unavailable "E10: 場所の行を伴わない read-unverifiable（ACL ヘルパのタイムアウト・開けない権限）は縮退せず判定不能"
+run_json "$STUB_READ/hooks/guard-shell-save.sh" "$STUB_EDIT" GUARD_STUB_READ_CODE=read-unverifiable "GUARD_STUB_READ_PLACE=$WORK"
+assert_degraded_pass "E11: 種別の行の後に止めた場所が続く read-unverifiable（祖先の ACL）は縮退して通す"
+run_json "$STUB_READ/hooks/guard-shell-save.sh" "$(edit_json "$STUB_SH" 'PLACEHOLDER' "$EC_BAD")" GUARD_STUB_READ_CODE=read-unverifiable "GUARD_STUB_READ_PLACE=$WORK"
+assert_degraded_fire "E11: 同じ経路で終了コードの握り潰しは縮退検査で deny" exit-code
+run_json "$STUB_READ/hooks/guard-shell-save.sh" "$STUB_EDIT" GUARD_STUB_READ_CODE=replaceable-storage
+assert_degraded_pass "E12: replaceable-storage（祖先を本人以外が置き換えられる）は縮退して通す"
+run_json "$STUB_READ/hooks/guard-shell-save.sh" "$STUB_EDIT" GUARD_STUB_READ_CODE=incomplete-input "GUARD_STUB_READ_PLACE=$WORK"
+assert_unavailable "E13: 中身の拒否（incomplete-input）は場所の行があっても縮退しない"
+run_json "$STUB_READ/hooks/guard-shell-save.sh" "$STUB_EDIT" GUARD_STUB_READ_CODE=READ-UNVERIFIABLE "GUARD_STUB_READ_PLACE=$WORK"
+assert_unavailable "E13: 種別の行の書式が変わる（大文字）と種別を読めず判定不能（緑へ倒さない）"
+
+echo "guard-shell-save: Windows の %TEMP% の下（T）"
+if [ "$ON_WINDOWS" -eq 1 ]; then
+  win_temp="$(cygpath -u "${TEMP:-}" 2>/dev/null || true)"
+  if [ -n "$win_temp" ] && [ -d "$win_temp" ] && WIN_TEMP_DIR="$(mktemp -d "$win_temp/ff-guard-shell-save-temp.XXXXXX")"; then
+    mkdir -p "$WIN_TEMP_DIR/proj"
+    T_SH="$WIN_TEMP_DIR/proj/scratch.sh"
+    printf '%s\n' '#!/usr/bin/env bash' 'set -o pipefail' 'PLACEHOLDER' > "$T_SH"
+    run_in() { # <cwd> <json>
+      RC=0
+      OUT="$(cd "$1" && printf '%s' "$2" | bash "$HOOK" 2>/dev/null)" || RC=$?
+      _decode
+    }
+    # T1 / T2: scratchpad のように %TEMP% の下を作業ディレクトリにした Edit。
+    run_in "$WIN_TEMP_DIR/proj" "$(edit_json "$T_SH" 'PLACEHOLDER' 'echo ok')"
+    T_ACL=0
+    case "$RC:$OUT" in
+      0:*read-unverifiable*) T_ACL=1; assert_degraded_pass "T1: %TEMP% の祖先の ACL で読めない .sh への違反なしの Edit は止めず、縮退を残す" ;;
+      0:)
+        # 止まらないことは確かめたが、ACL の経路は通っていないので ok に数えない（その経路は E11 が stub で見る）
+        echo "  ○ skip: この機の %TEMP% は境界の ACL 検査を通るため、T1 の read-unverifiable の経路は未再現（全体を読んで検査し、止まらなかった）" ;;
+      *) bad "T1: %TEMP% の下への違反なしの Edit: exit=${RC} out=[${OUT}]" ;;
+    esac
+    run_in "$WIN_TEMP_DIR/proj" "$(edit_json "$T_SH" 'PLACEHOLDER' "$EC_BAD")"
+    if [ "$T_ACL" -eq 1 ]; then
+      assert_degraded_fire "T2: %TEMP% の祖先の ACL で読めない .sh への終了コードの握り潰しは縮退検査で deny" exit-code
+    else
+      assert_fire "T2: %TEMP% の下の .sh への終了コードの握り潰しは deny"
+    fi
+    # T3 / T4: 作業ディレクトリは別の project で、%TEMP% の下の scratchpad を Edit する（OBS-452 の実測の形）。
+    run_json "$HOOK" "$(edit_json "$T_SH" 'PLACEHOLDER' 'echo ok')"
+    assert_degraded_pass "T3: 作業ディレクトリの外の %TEMP% の .sh への違反なしの Edit は止めない"
+    run_json "$HOOK" "$(edit_json "$T_SH" 'PLACEHOLDER' "$EC_BAD")"
+    assert_degraded_fire "T4: 作業ディレクトリの外の %TEMP% の .sh への終了コードの握り潰しは縮退検査で deny" exit-code
+  else
+    bad "T: %TEMP%（${TEMP:-未設定}）の下に一時ディレクトリを作れない"
+  fi
+else
+  # 理由文はリリースの部分 skip 許容表（scripts/release-dev-toolkit.sh の ALLOWED_SKIP_PATTERNS）の OS 限定の文言に合わせる。
+  # 表に無い理由行は、Windows 以外で回すリリースの gate 段を止める（OBS-434）
+  echo "  ○ skip: Windows の Git Bash でだけ成立する検査のため未実行（T 節: %TEMP% の祖先の ACL の経路。作業ディレクトリの外は E 節が見る）"
+fi
+
+echo "guard-shell-save: 縮退検査の変異検出（M5 / M6）"
+# 変異 5: 場所の拒否を縮退させず、従来どおり判定不能で止める
+sed 's/^        outside-authority:\* | replaceable-storage:\* | read-unverifiable:1) degraded=1 ;;$/        __never__) degraded=1 ;;/' "$TARGET" > "$MUT_SRC"
+if cmp -s "$TARGET" "$MUT_SRC"; then
+  bad "M5: 変異 5 が適用されていない（アンカー不一致）"
+else
+  MUT5="$TEST_TMP/mut5"
+  make_plugin "$MUT5" "$LIB_SRC" "$MUT_SRC"
+  run_json "$MUT5/hooks/guard-shell-save.sh" "$(edit_json "$OUT_SH" 'PLACEHOLDER' 'echo ok')"
+  if [ "$DECISION" = "deny" ]; then
+    ok "M5: 場所の拒否を縮退させないと E1 と同形の Edit が判定不能で止まり、E1 は赤になる"
+  else
+    bad "M5: 縮退を外しても止まらない: exit=${RC} out=[${OUT}]"
+  fi
+fi
+# 変異 6: 断片の先頭へ pipefail の継承宣言を足さない
+sed -e 's/^  before="\${pf_decl}\${nl}\${old}"$/  before="${old}"/' \
+    -e 's/^  after="\${pf_decl}\${nl}\${new}"$/  after="${new}"/' "$TARGET" > "$MUT_SRC"
+if cmp -s "$TARGET" "$MUT_SRC"; then
+  bad "M6: 変異 6 が適用されていない（アンカー不一致）"
+else
+  MUT6="$TEST_TMP/mut6"
+  make_plugin "$MUT6" "$LIB_SRC" "$MUT_SRC"
+  run_json "$MUT6/hooks/guard-shell-save.sh" "$(edit_json "$OUT_SH" 'PLACEHOLDER' "$PF_BAD")"
+  if [ "$DECISION" != "deny" ]; then
+    ok "M6: pipefail の継承宣言を外すと E3 と同形の Edit が素通りし、E3 は赤になる"
+  else
+    bad "M6: 継承宣言を外しても deny のまま: reason=[${REASON}]"
+  fi
+fi
 
 echo
 if [ "$FAIL" -gt 0 ]; then

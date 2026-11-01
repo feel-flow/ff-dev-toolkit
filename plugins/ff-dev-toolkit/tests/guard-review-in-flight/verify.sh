@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: review 本体の exit 4 を exit 0 へ変えると (n16) の経由・直接と (n21) の証跡取り直し・Critical 残存の 4 件が赤になる（682/4）。無変異は全 686/0（2026-10-30 実測）。
 # 空振り検出: archive-onlyの2形を巡の対象外から外す独立変異で(n16 archive)4件赤（580/4）、そのcase集合を空にすると下限照合が1件赤（577/1）。無変異は全584/0、通常reviewの3巡目denyを対照として維持（2026-10-22実測）。
 # Runtime contract for the review in-flight / dirty guard hook.
 # 空振り検出: 採用前oldbodyをcat返却直前で止めるlocal/foreign追加2件を含む対照44/0。pathだけのcacheへ戻すとforeignが43/1、stale/done削除のcurrentbody再照合を外すとlocalが43/1へ赤転し、いずれも採用済みbytesと後続denyを照合する。claim列挙・TTL・私有親・空集合を含む独立6変異は全検出（同期timeout無し、2026-10-28実測、Issue `#2429`）。
@@ -3316,6 +3317,50 @@ else
   if [ "$(n_heads)" = "1" ]; then ok "(n20) 異常終了した回も巡を記録する（無音の出口と同じ）"; else bad "(n20) 異常終了した回の巡が記録されない: heads=[$(n_heads)]"; fi
 fi
 rm -rf "$N20_DIR"
+n_reset
+
+# (n21) 決定 A。祖先 HEAD の 3 巡目は、証跡の取り直しでも既出 Critical が残る起動でも
+# 出荷スクリプトが rc=4 で止まる。規則の写しは持たず、multi-review.sh / multi-agent.sh の
+# 終了コードを見る。exit 4 を外すと両方が赤になる。
+mkdir -p "$N_STUB"
+printf '#!/bin/sh\nexit 1\n' > "$N_STUB/codex"
+chmod +x "$N_STUB/codex"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+n_commit "n21 evidence r2"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+n_commit "n21 evidence retake"
+# shellcheck disable=SC2086
+n_ma -- multi-review.sh $N_MA_ARGS
+case "$N_MA_ERR" in
+  *'レビュー巡回の上限'*)
+    if [ "$RC" -eq 4 ] && [ ! -e "$LOCK" ]; then
+      ok "(n21) fix 後の HEAD に束縛した証跡の取り直し（祖先の 3 巡目）は multi-review.sh が rc=4 で止める"
+    else
+      bad "(n21) 証跡取り直し rc=$RC"
+    fi
+    ;;
+  *) bad "(n21) 証跡取り直しが巡回上限で止まらない: rc=$RC err=[$N_MA_ERR]" ;;
+esac
+n_reset
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+n_commit "n21 critical r2"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+n_commit "n21 critical remains"
+mkdir -p "$REPO/.review-results"
+printf '%s\n' 'previous critical remains' '- verdict: severity=critical failure_scenario=yes confidence=90 file=src/a.sh line=1' > "$REPO/.review-results/critical-remains.md"
+# shellcheck disable=SC2086
+n_ma -- multi-agent.sh --task review $N_MA_ARGS
+case "$N_MA_ERR" in
+  *'レビュー巡回の上限'*)
+    if [ "$RC" -eq 4 ] && [ ! -e "$LOCK" ]; then
+      ok "(n21) 直前の Critical が残る祖先の 3 巡目は multi-agent.sh が上限の rc=4 で先に止める"
+    else
+      bad "(n21) Critical 残存の起動 rc=$RC"
+    fi
+    ;;
+  *) bad "(n21) Critical 残存の起動が巡回上限で止まらない: rc=$RC err=[$N_MA_ERR]" ;;
+esac
+rm -f "$REPO/.review-results/critical-remains.md"
 n_reset
 
 echo

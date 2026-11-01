@@ -263,6 +263,12 @@ ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF
 
 **fix 後の再検証**: 同じ PR で全観点のフルレビューを 1 度通過した後の fix は、それが単一観点の指摘に閉じている場合に限り、その観点だけの**部分再検証**（`--reviewers` / `--perspective` 限定再実行）でよい。ブロック観点の Critical を修正した場合・修正が複数観点にまたがる場合・レビュー対象 diff の土台が変わった場合はフル再実行する。適用条件と結果ファイル（統合レポート・`CRITICAL_BLOCK` マーカー）の整合ルールは [Multi-CLI Review Orchestration](./multi-cli-review-orchestration.md#fix-ループの部分再検証--reviewers-限定再実行) を参照。
 
+### 高リスク PR の検証 agent（任意）
+
+認可・課金・個人情報・データの整合性に触れる PR だけ、`/multi-review` の後に読み取り専用の検証 agent を 1 本足してよい。毎 PR の必須の 2 本目ではない。渡すのは Issue 固有の主張の一覧（「X が起きない」の形）と、その反証を試みる指示である。Critical / Warning は、file:line と具体的な失敗シナリオがあるときだけ付けさせる。修正後は、修正差分に対してもう一度だけ回し、同じ型が別の箇所に無いかも見させる。
+
+記録・知見（制作記録、ADR、Playbook、観測台帳、PR 本文、手順書）を主に書く PR の 1 巡目には、comment-analysis の事実精度の確認（主張を一次の根拠と照合する項目）を含める。記録を直した fix の再検証で実測値の一覧を渡す手順は [部分再検証](./multi-cli-review-orchestration.md#fix-ループの部分再検証--reviewers-限定再実行) を参照する。一次情報確認の契約は [委譲プロンプトへ載せる事実主張の一次情報確認](./multi-cli-agent-orchestration.md#委譲プロンプトへ載せる事実主張の一次情報確認) を参照し、ここへ複製しない。
+
 詳細なパターン（Parallel Task Suggestion、Second Opinion）については [Multi-CLI Review Orchestration](./multi-cli-review-orchestration.md#クロスモデルレビュー推奨パターン) を参照してください。
 
 ---

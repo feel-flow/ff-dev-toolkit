@@ -101,6 +101,12 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-zsh-glob.sh\"",
             "timeout": 10,
             "statusMessage": "zshの未引用変数の注意点を通知"
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/warn-missing-ff-effort.sh\"",
+            "timeout": 10,
+            "statusMessage": "工数ブロックの無いブランチ名を通知"
           }
         ]
       }

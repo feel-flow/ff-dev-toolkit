@@ -9,6 +9,7 @@
 #   claim block（§1）を commit block（§2）の後ろへ移す変異、commit.md の読む条件（R3-e のゲートが exit 0
 #   になった後に読む）を消す変異、claim helper の起動行を commit の後ろへもう 1 本足す変異、本線 R3-e
 #   手順 7 を手順 5 のゲートより前へ移す変異は、いずれも順序検査 1 件が赤（2026-09-24 実測）。
+# 空振り検出: claim 生成の針を finish.sh だけに戻すと、claim 不在の拒否と既存 claim の再利用の 2 件が赤になる（2026-10-30 実測。suite rc=1、fail=2。文字列は scripts/lib/finish-knowledge-commit-functions.sh にある）。
 set -euo pipefail
 # check-version-claims.sh は GITHUB_ACTIONS=true で「fetch せず job 開始時点の remote-tracking ref を
 # 基準にする」CI 分岐へ入る（Issue #1336）。fixture ベースの検査はランナーの環境変数に左右されず
@@ -82,11 +83,11 @@ read_frontmatter_version() {
 }
 
 # ace-curate の共有値ガードのフェンス・claim の規則・non-fast-forward の再試行・chore PR のフェンスは
-# 条件付き reference（references/curate.md）にあり、claim の生成と検証は scripts/finish.sh
-# knowledge-commit add --claim が実行する。本線の SKILL.md は派生値の規定だけを持つ。
+# 条件付き reference（references/curate.md）にあり、claim の生成は finish.sh の knowledge-commit が
+# 読む構成ファイルが実行する。本線の SKILL.md は派生値の規定だけを持つ。
 ACE_CURATE="$PLUGIN_ROOT/skills/ace-curate/references/curate.md"
 ACE_CURATE_MAIN="$PLUGIN_ROOT/skills/ace-curate/SKILL.md"
-FINISH="$PLUGIN_ROOT/scripts/finish.sh"
+KC_LIB="$PLUGIN_ROOT/scripts/lib/finish-knowledge-commit-functions.sh"
 ACE_REFINE="$PLUGIN_ROOT/skills/ace-refine/SKILL.md"
 # ace-refine の claim 生成とコミット（PR / 直 push・再試行）は本線から references/commit.md へ移した
 # （R3-e のゲートが exit 0 になった後にだけ読む）。claim 契約の針はそちらへ張る。
@@ -123,9 +124,9 @@ contains "$SPEC_VC" '.version-claims/' "spec-driven は文書別 version claim �
 contains "$SPEC_VC" '`.version-claims/` が無い利用先ではこの手順だけを省略する' "spec-driven は claim contract 未導入先を停止させない"
 contains "$ACE_CURATE" '.version-claims/docs/08-knowledge/PLAYBOOK.md.claim' "ace-curate は PLAYBOOK claim を要求"
 contains "$ACE_REFINE" '.version-claims/' "ace-refine は変更文書 claim を要求"
-contains "$FINISH" '.version-claims/${doc}.claim" ]] || die_env' "ace-curate PR は claim 不在を拒否（finish.sh knowledge-commit add --claim）"
+contains "$KC_LIB" '.version-claims/${doc}.claim" ]] || die_env' "ace-curate PR は claim 不在を拒否（finish.sh knowledge-commit add --claim）"
 ace_curate_pr_block="$(sed -n '/\*\*任意エスカレーション — chore PR\*\*/,/gh pr create/p' "$ACE_CURATE")"
-if [[ "$ace_curate_pr_block" == *'if ! git diff --quiet HEAD -- docs/08-knowledge/PLAYBOOK.md; then ACE_CLAIM_ARGS=(--claim docs/08-knowledge/PLAYBOOK.md); fi'* && "$ace_curate_pr_block" == *'knowledge-commit add ${ACE_CLAIM_ARGS[@]+"${ACE_CLAIM_ARGS[@]}"}'* ]] && grep -qF -- 'update-version-claim.sh" --base "origin/${default_branch}"' "$FINISH"; then ok "ace-curate PR は最新 base から claim を生成（add --claim → update-version-claim.sh --base origin/default）"; else bad "ace-curate PR が既存 claim を再利用"; fi
+if [[ "$ace_curate_pr_block" == *'if ! git diff --quiet HEAD -- docs/08-knowledge/PLAYBOOK.md; then ACE_CLAIM_ARGS=(--claim docs/08-knowledge/PLAYBOOK.md); fi'* && "$ace_curate_pr_block" == *'knowledge-commit add ${ACE_CLAIM_ARGS[@]+"${ACE_CLAIM_ARGS[@]}"}'* ]] && grep -qF -- 'update-version-claim.sh" --base "origin/${default_branch}"' "$KC_LIB"; then ok "ace-curate PR は最新 base から claim を生成（add --claim → update-version-claim.sh --base origin/default）"; else bad "ace-curate PR が既存 claim を再利用"; fi
 contains "$ACE_REFINE_COMMIT" '[[ -f .version-claims/docs/08-knowledge/PLAYBOOK.md.claim ]] ||' "ace-refine PR は PLAYBOOK claim 不在を拒否"
 contains "$ACE_REFINE_COMMIT" '[[ -f .version-claims/docs/03-implementation/PATTERNS.md.claim ]] ||' "ace-refine は PATTERNS 変更時の claim 不在を拒否"
 contains "$ACE_CURATE" 'scripts/update-version-claim.sh' "ace-curate は共通 claim helper を実行"

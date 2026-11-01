@@ -42,12 +42,15 @@ fi
 for file in \
   "$PLAYBOOK" \
   "$ACE_SCRIPTS/check-category-size.ts" \
+  "$ACE_SCRIPTS/check-category-size-text.ts" \
+  "$ACE_SCRIPTS/check-category-size-analysis.ts" \
   "$ACE_SCRIPTS/ace-domain.ts" \
   "$ACE_SCRIPTS/knowledge-read-boundary.ts" \
   "$ACE_SCRIPTS/check-entry-format.ts" \
   "$ACE_SCRIPTS/sync-playbook-frontmatter.ts" \
   "$ACE_SCRIPTS/check-archive-links.ts" \
   "$ACE_SCRIPTS/check-refine-invariants.ts" \
+  "$ACE_SCRIPTS/check-refine-invariants-evaluate.ts" \
   "$ACE_SCRIPTS/ace-reuse-report.ts" \
   "$ACE_SCRIPTS/ace-refine-report.ts"; do
   if [[ ! -s "$file" ]]; then
@@ -102,6 +105,12 @@ transpile_shared() {
   cp "$dest" "$dest.js"
 }
 transpile_shared "$ACE_SCRIPTS/check-category-size.ts"
+transpile_shared "$ACE_SCRIPTS/check-category-size-text.ts"
+transpile_shared "$ACE_SCRIPTS/check-category-size-analysis.ts"
+transpile_shared "$ACE_SCRIPTS/check-refine-invariants-evaluate.ts"
+# evaluate は ./check-refine-invariants を拡張子なしで読む。entry の .mjs とは別に
+# extensionless を置かないと Node は解決せず、.mjs へは落ちない。
+transpile_shared "$ACE_SCRIPTS/check-refine-invariants.ts"
 transpile_shared "$ACE_SCRIPTS/changelog-layout.ts"
 transpile_shared "$ACE_SCRIPTS/knowledge-read-boundary.ts"
 transpile_shared "$ACE_SCRIPTS/ace-domain.ts"

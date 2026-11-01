@@ -272,13 +272,37 @@ else
   bad "pre-commit-check — 手順 8 が読む断片検査 lib がありません: tests/lib/changelog-fragment-guard.sh"
 fi
 
+# 手順 8 の種別 F（fixture consumer。OBS-237）。F 行が git-fixture-isolation を名指しすること、
+# 判定器の呼び出しと「対象なし」「未検査」の状態を pin する。判定器の振る舞い（追加・利用停止・
+# 削除で起動し、使わない *.sh では起動しない）は tests/git-fixture-isolation が fixture で固定する。
+PRE_COMMIT_FIXTURE_HEADING='#### fixture consumer の判定'
+check_pre_commit_shell_step "$PRE_COMMIT_TABLE_HEADING" '| F. fixture consumer（判定器で決まる条件付き追加。削除だけの回も判定する） |' \
+  '固定表の種別 F（fixture consumer の条件付き追加）'
+check_pre_commit_shell_step "$PRE_COMMIT_CONSISTENCY_HEADING" '「fixture consumer の判定」は 1) が 0 件でも回す' \
+  '削除だけの commit でも種別 F の判定器を回す規定（ACMR 一覧 0 件の「対象なし」から外す）'
+check_pre_commit_shell_step "$PRE_COMMIT_TABLE_HEADING" '| `git-fixture-isolation` |' \
+  '種別 F が git-fixture-isolation を名指しする'
+check_pre_commit_shell_step "$PRE_COMMIT_FIXTURE_HEADING" '. "$f" || exit 2; git_fixture_consumer_scan "$r"' \
+  'fixture consumer 判定器の呼び出しコマンド（git_fixture_consumer_scan）'
+check_pre_commit_shell_step "$PRE_COMMIT_FIXTURE_HEADING" '| 0 | `git-fixture-isolation: none` | 対象なし' \
+  '判定器が consumer を見つけない回は F の suite を回さない規定'
+check_pre_commit_shell_step "$PRE_COMMIT_FIXTURE_HEADING" '| 2 | `git-fixture 未検査: <理由>` |' \
+  '判定器が読めない回を「対象なし」へ倒さない規定'
+check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '### fixture consumer（種別 F）' \
+  '出力テンプレートの fixture consumer 節'
+if [ -f "$PLUGIN_ROOT/tests/lib/precommit-git-fixture.sh" ]; then
+  ok "pre-commit-check — 手順 8 が読む fixture consumer 判定器が実在する: tests/lib/precommit-git-fixture.sh"
+else
+  bad "pre-commit-check — 手順 8 が読む fixture consumer 判定器がありません: tests/lib/precommit-git-fixture.sh"
+fi
+
 # 固定表（| 種別 | staged パスの条件 | 単体で回す suite |）の 3 列目が名指しする suite 名を
 # 実体（tests/<name>/verify.sh）と機械照合する。表が空・行が減った・suite 名を 1 つも
 # 持たない行があるときは「照合対象ゼロで緑」にならないよう fail-closed で赤にする。
 # 外部コマンドは awk だけを使う（本 suite は一時領域も jq 以外の外部コマンドも要らない
 # 純粋なファイル検査である。here-doc / here-string は一時ファイルを要求するので使わない）。
-# 種別 A〜E（断片内容の追加は対象断片をstageした回だけ）。
-PRE_COMMIT_TABLE_MIN_ROWS=5
+# 種別 A〜F（断片内容の追加は対象断片をstageした回だけ、fixture consumer の追加は判定器が当てた回だけ）。
+PRE_COMMIT_TABLE_MIN_ROWS=6
 
 # want=rows: データ行数 / want=empty: suite 名を 1 つも持たない行番号 / want=names:
 # 重複除去した suite 名（空白区切り）。いずれも 1 行だけを返す。

@@ -102,12 +102,13 @@ STUB
   mc_test_run 'echo "gh pr merge 7 --squash $VAR"'; mc_test_assert silent '説明文字列はコマンドではない'
   mc_test_run $'cat <<\'DOC\'\ngh pr merge 7 --squash\nDOC'; mc_test_assert silent 'heredoc本文はデータ'
   mc_test_run '# gh pr merge 7 --squash'; mc_test_assert silent 'コメントはデータ'
-  mc_test_run 'gh pr merge "$PR" --squash'; mc_test_assert note '未解決変数は推測しない'
+  mc_test_run 'gh pr merge "$PR" --squash'; mc_test_assert deny '未解決変数のmergeは件名を検査できないので止める'
+  if [ ! -s "$tmp/gh-calls" ]; then ok 'merge hook: 未解決変数のmergeは照会しない'; else bad 'merge hook: 未解決変数のmergeを照会した'; fi
   mc_test_run "gh pr merge 7 --squash --subject safe --body fi'x: ${ref} literal'"; mc_test_assert deny '引用を連結したliteral値も検査'
   mc_test_run 'command gh pr merge 7 --squash'; mc_test_assert deny 'command wrapperの実行位置'
-  mc_test_run 'env -u GH_TOKEN gh pr merge 7 --squash'; mc_test_assert note 'env optionの未解決環境を通知'
-  mc_test_run 'command -p gh pr merge 7 --squash'; mc_test_assert note 'command optionの未解決環境を通知'
-  mc_test_run '/another/bin/gh pr merge 7 --squash'; mc_test_assert note '別path ghの照会実体を推測しない'
+  mc_test_run 'env -u GH_TOKEN gh pr merge 7 --squash'; mc_test_assert deny 'env optionの未解決環境ではmergeを止める'
+  mc_test_run 'command -p gh pr merge 7 --squash'; mc_test_assert deny 'command optionの未解決環境ではmergeを止める'
+  mc_test_run '/another/bin/gh pr merge 7 --squash'; mc_test_assert deny '別path ghのmergeは照会実体を確定できないので止める'
   mc_test_run 'command -p echo "gh pr merge 7 --squash"'; mc_test_assert silent 'wrapper越しの説明文字列もデータ'
   mc_test_run 'env FF_MERGE_CLOSING_ACK=1 gh pr merge 7 --squash'; mc_test_assert note '同じ実行位置のACK'
   mc_test_run 'echo FF_MERGE_CLOSING_ACK=1; gh pr merge 7 --squash'; mc_test_assert deny '前段echoのACKは無効'
@@ -140,7 +141,18 @@ STUB
   esac
   mc_test_run 'touch body.txt; gh pr merge 7 --squash --subject safe --body-file body.txt'; mc_test_assert note '先行生成のbody-fileは不明'
   mc_test_run 'gh pr merge 7 --squash --body-file -'; mc_test_assert note 'stdin bodyは未確定'
-  mc_test_run 'cd /tmp && gh pr merge 7 --squash'; mc_test_assert note '先行cwd変更を推測しない'
+  mc_test_run 'cd /tmp && gh pr merge 7 --squash'; mc_test_assert deny '先行cwd変更のsquashは件名を検査できないので止める'
+  if [ ! -s "$tmp/gh-calls" ]; then ok 'merge hook: 先行cwd変更は照会しない'; else bad 'merge hook: 先行cwd変更を照会した'; fi
+  mc_test_run 'ROOT=/tmp; cd "$ROOT" && gh pr merge 7 --squash --delete-branch'; mc_test_assert deny '代入と先行cdのsquashは通さない'
+  if [ ! -s "$tmp/gh-calls" ]; then ok 'merge hook: 代入と先行cdは照会しない'; else bad 'merge hook: 代入と先行cdを照会した'; fi
+  mc_test_run 'cd /tmp && gh pr merge 7 --squash --repo owner/repo'; mc_test_assert deny '明示repoは先行cdの後も件名を検査する'
+  if [ -s "$tmp/gh-calls" ]; then ok 'merge hook: 明示repoは先行cdの後も照会する'; else bad 'merge hook: 明示repoが先行cdで照会されなかった'; fi
+  mc_test_run 'gh --repo owner/repo pr merge 7 --squash'; mc_test_assert deny 'global flagの後ろのmergeは止める'
+  if [ ! -s "$tmp/gh-calls" ]; then ok 'merge hook: global flagのmergeは照会しない'; else bad 'merge hook: global flagのmergeを照会した'; fi
+  mc_test_run 'FF_MERGE_CLOSING_ACK=1 cd /tmp && gh pr merge 7 --squash'; mc_test_assert deny '別セグメントのACKは先行cdのmergeを通さない'
+  mc_test_run 'cd /tmp && FF_MERGE_CLOSING_ACK=1 gh pr merge 7 --squash'; mc_test_assert note '同じmergeのACKは先行cdでも通す'
+  mc_test_run 'timeout 10 gh pr merge 7 --squash'; mc_test_assert deny 'timeoutの中のmergeは止める'
+  mc_test_run 'echo "cd \"$ROOT\" && gh pr merge 7 --squash"'; mc_test_assert silent '引用の中の複合mergeは実行ではない'
   # Both repository polarities prevent a safe original PR from hiding an unsafe target,
   # or an unsafe original PR from creating a recovery command for the wrong target.
   local polarity transition context_count=0 transition_count=0 wrapper_count=0 wrapper_case
@@ -159,7 +171,7 @@ STUB
     for transition in 'cd "$TARGET"' 'pushd "$TARGET"' 'popd "$COUNT"' 'command cd "$TARGET"' 'export GH_REPO=owner/other' 'export GH_REPO="$TARGET"' 'unset GH_REPO' 'GH_REPO=owner/other' 'GH_REPO="$TARGET"' 'HARMLESS="$VALUE" cd "$TARGET"' 'HARMLESS="$VALUE" export GH_REPO=owner/other' '"$PREFIX" cd "$TARGET"'; do
       transition_count=$((transition_count+1))
       mc_test_run "$transition; gh pr merge 7 --squash"
-      mc_test_assert note "$polarity: $transition 後は理由付き未検査"
+      mc_test_assert deny "$polarity: $transition 後のmergeは止める"
       if [ ! -s "$tmp/gh-calls" ] && case "$out" in *MERGE_COMMAND_BEGIN*) false ;; *) true ;; esac; then ok "merge hook: $polarity: $transition は元repoを照会/復旧しない"; else bad "merge hook: $polarity: $transition が元repoを照会/復旧した"; fi
     done
     mc_test_run 'gh pr merge 7 --squash --repo owner/other'
@@ -170,7 +182,7 @@ STUB
     if [ "$polarity" = original-safe ]; then mc_test_assert silent '明示repoは先行GH_REPOより優先して安全'; else mc_test_assert deny '明示repoは先行GH_REPOより優先して抵触'; fi
     mc_test_run 'cd "$TARGET"; gh pr merge 7 --squash --repo owner/repo'
     if [ "$polarity" = original-safe ]; then mc_test_assert silent '未解決cwd後も明示repoを検査して安全'; else mc_test_assert deny '未解決cwd後も明示repoを検査して抵触'; fi
-    mc_test_run 'HARMLESS="$VALUE" cd "$TARGET"; gh pr merge 7 --squash --repo owner/repo'; mc_test_assert note '未解決prefix後は明示repoでも元環境を推測しない'
+    mc_test_run 'HARMLESS="$VALUE" cd "$TARGET"; gh pr merge 7 --squash --repo owner/repo'; mc_test_assert deny '未解決prefix後は明示repoでもmergeを止める'
     if [ ! -s "$tmp/gh-calls" ]; then ok 'merge hook: 未解決prefix後の明示repoも照会しない'; else bad 'merge hook: 未解決prefix後の明示repoを元環境で照会した'; fi
     mc_test_run 'HARMLESS=value gh pr merge 7 --squash --repo owner/repo'
     if [ "$polarity" = original-safe ]; then mc_test_assert silent '確定した無関係prefixと明示repoは安全'; else mc_test_assert deny '確定した無関係prefixと明示repoも抵触を検査'; fi
@@ -183,7 +195,7 @@ STUB
     # R2 wrapper composition: classify the executable before restoring its arguments.
     for wrapper_case in 'command -p cd "$TARGET"' 'command -- cd "$TARGET"' 'command -p -- cd "$TARGET"' "command -p cd '$tmp/other'" "command -- cd '$tmp/other'" 'command -p pushd "$TARGET"' 'command -- popd "$COUNT"' 'command -p export GH_REPO=owner/other'; do
       wrapper_count=$((wrapper_count+1))
-      mc_test_run "$wrapper_case; gh pr merge 7 --squash"; mc_test_assert note "$polarity: wrapper $wrapper_case 後は理由付き未検査"
+      mc_test_run "$wrapper_case; gh pr merge 7 --squash"; mc_test_assert deny "$polarity: wrapper $wrapper_case 後のmergeは止める"
       if [ ! -s "$tmp/gh-calls" ] && case "$out" in *MERGE_COMMAND_BEGIN*) false ;; *) true ;; esac; then ok "merge hook: $polarity: wrapperは元repoを照会/復旧しない"; else bad "merge hook: $polarity: wrapperが元repoを照会/復旧した"; fi
     done
     for wrapper_case in 'command -p echo "cd $TARGET; gh pr merge 7 --squash"' 'command -- echo "gh pr merge 7 --squash $VALUE"' 'command -v cd "$TARGET"' 'command -V cd "$TARGET"' 'command -pv cd "$TARGET"' 'env -u cd echo "gh pr merge 7 --squash"' 'env -u gh echo "gh pr merge 7 --squash"' 'env -u "$NAME" echo "gh pr merge 7 --squash"' 'env -u GH_REPO cd "$TARGET"' 'env cd "$TARGET"' 'env GH_REPO=owner/other' 'command -v export GH_REPO=owner/other'; do
@@ -208,13 +220,49 @@ STUB
   if [ "$context_count" -eq 2 ] && [ "$transition_count" -eq 24 ]; then ok 'merge hook: contextの2極性/24遷移を実走'; else bad 'merge hook: contextの極性/遷移集合が空/欠落'; fi
   if [ "$wrapper_count" -eq 48 ]; then ok 'merge hook: wrapperの2極性48ケースを実走'; else bad 'merge hook: wrapperのcase集合が空/欠落'; fi
   mode=""; cp "$tmp/base.json" "$response"
+  # Argument text is not an executed merge. builtin and grouping see a prior cd.
+  mc_test_run 'timeout 10 echo "gh pr merge 7 --squash"'; mc_test_assert silent 'timeout越しの説明文字列は実行ではない'
+  mc_test_run 'sudo echo "gh pr merge 7 --squash"'; mc_test_assert silent 'sudo越しの説明文字列は実行ではない'
+  mc_test_run 'gh issue create --body "gh pr merge 7 --squash"'; mc_test_assert silent '別サブコマンドの引数はmergeではない'
+  mc_test_run 'gh issue edit 1 --body "gh pr merge はまだ"'; mc_test_assert silent 'issue editの本文はmergeではない'
+  mc_test_run 'GH_PAGER=cat gh issue edit 1 --body "gh pr merge はまだ"'; mc_test_assert note 'gh環境の前置代入はmergeでなければ通知して通す'
+  if [ ! -s "$tmp/gh-calls" ]; then ok 'merge hook: gh環境の前置代入は照会しない'; else bad 'merge hook: gh環境の前置代入を照会した'; fi
+  mc_test_run 'gh "pr" merge "$PR" --squash'; mc_test_assert deny '引用したprでも未解決変数のmergeは止める'
+  if [ ! -s "$tmp/gh-calls" ]; then ok 'merge hook: 引用したprの未解決mergeは照会しない'; else bad 'merge hook: 引用したprの未解決mergeを照会した'; fi
+  mc_test_run 'gh "pr" merge 7 --squash'; mc_test_assert deny '引用したprのsquashも件名を検査する'
+  if [ -s "$tmp/gh-calls" ]; then ok 'merge hook: 引用したprのsquashは照会する'; else bad 'merge hook: 引用したprのsquashを照会しなかった'; fi
+  mc_test_run 'builtin cd /other && gh pr merge 7 --squash --delete-branch'; mc_test_assert deny 'builtin cdのsquashは件名を検査できないので止める'
+  if [ ! -s "$tmp/gh-calls" ]; then ok 'merge hook: builtin cdは照会しない'; else bad 'merge hook: builtin cdを照会した'; fi
+  mc_test_run '{ cd /other && gh pr merge 7 --squash --delete-branch; }'; mc_test_assert deny 'ブレース内の先行cdは件名を検査できないので止める'
+  if [ ! -s "$tmp/gh-calls" ]; then ok 'merge hook: ブレース内の先行cdは照会しない'; else bad 'merge hook: ブレース内の先行cdを照会した'; fi
+  mc_test_run '( cd /other && gh pr merge 7 --squash --delete-branch )'; mc_test_assert deny '括弧内の先行cdは件名を検査できないので止める'
+  if [ ! -s "$tmp/gh-calls" ]; then ok 'merge hook: 括弧内の先行cdは照会しない'; else bad 'merge hook: 括弧内の先行cdを照会した'; fi
+  mc_test_run 'builtin cd /other && gh pr merge 7 --squash --repo owner/repo'; mc_test_assert deny '明示repoはbuiltin cdの後も件名を検査する'
+  if [ -s "$tmp/gh-calls" ]; then ok 'merge hook: 明示repoはbuiltin cdの後も照会する'; else bad 'merge hook: 明示repoがbuiltin cdで照会されなかった'; fi
+  mc_test_run '{ cd /other && gh pr merge 7 --squash --repo owner/repo; }'; mc_test_assert deny '明示repoはブレース内の先行cdの後も件名を検査する'
+  if [ -s "$tmp/gh-calls" ]; then ok 'merge hook: 明示repoはブレース内の先行cdの後も照会する'; else bad 'merge hook: 明示repoがブレース内の先行cdで照会されなかった'; fi
+  mc_test_run 'bash -c "gh pr merge 7 --squash"'; mc_test_assert deny 'bash -cの中のmergeは止める'
+  if [ ! -s "$tmp/gh-calls" ]; then ok 'merge hook: bash -cのmergeは照会しない'; else bad 'merge hook: bash -cのmergeを照会した'; fi
+  mc_test_run 'bash -c "echo \"gh pr merge 7 --squash\""'; mc_test_assert silent 'bash -cの説明文字列は実行ではない'
+  mc_test_run 'bash -lc "gh pr merge 7 --squash"'; mc_test_assert deny 'bash -lcの中のmergeは止める'
+  if [ ! -s "$tmp/gh-calls" ]; then ok 'merge hook: bash -lcのmergeは照会しない'; else bad 'merge hook: bash -lcのmergeを照会した'; fi
+  mc_test_run 'bash -c "echo ready; gh pr merge 7 --squash"'; mc_test_assert deny 'bash -cの複文にあるmergeは止める'
+  if [ ! -s "$tmp/gh-calls" ]; then ok 'merge hook: bash -cの複文は照会しない'; else bad 'merge hook: bash -cの複文を照会した'; fi
+  mc_test_run 'bash -c "echo ready; echo done"'; mc_test_assert silent 'bash -cの複文echoは実行mergeではない'
+  mc_test_run 'bash -lc "echo ready"'; mc_test_assert silent 'bash -lcのechoは実行mergeではない'
+  mc_test_run 'bash -o pipefail -c "gh pr merge 7 --squash"'; mc_test_assert deny 'bash -oの後のmergeは止める'
+  if [ ! -s "$tmp/gh-calls" ]; then ok 'merge hook: bash -oのmergeは照会しない'; else bad 'merge hook: bash -oのmergeを照会した'; fi
+  mc_test_run 'bash -o pipefail -c "echo \"gh pr merge 7 --squash\""'; mc_test_assert silent 'bash -oの後の説明文字列は実行ではない'
+  mc_test_run 'gh pr merge 7 --merge --json'; mc_test_assert silent 'squash以外の未知flagは止めない'
+  mc_test_run 'gh pr merge 7 --squash --json'; mc_test_assert deny 'squashの未知flagは照会前に止める'
+  if [ ! -s "$tmp/gh-calls" ]; then ok 'merge hook: squashの未知flagは照会しない'; else bad 'merge hook: squashの未知flagを照会した'; fi
   for wrapper_case in 'command -v gh pr merge 7 --squash' 'command -V gh pr merge 7 --squash'; do
     mc_test_run "$wrapper_case"; mc_test_assert silent 'command lookupだけならmergeを実行しない'
     if [ ! -s "$tmp/gh-calls" ]; then ok 'merge hook: command lookupはgh照会しない'; else bad 'merge hook: command lookupをmergeと混同'; fi
   done
   mc_test_run 'echo "export GH_REPO=owner/other; cd \"$TARGET\""; gh pr merge 7 --squash'; mc_test_assert deny 'echo内の環境/cwd説明は状態を変えない'
   mc_test_run 'export HARMLESS=value; gh pr merge 7 --squash'; mc_test_assert deny '無関係なexportは検査を妨げない'
-  mc_test_run 'export GH_HOST=other.example; gh pr merge 7 --squash --repo owner/repo'; mc_test_assert note 'GH_HOST未確定はowner/repo指定でも未検査'
+  mc_test_run 'export GH_HOST=other.example; gh pr merge 7 --squash --repo owner/repo'; mc_test_assert deny 'GH_HOST未確定はowner/repo指定でもmergeを止める'
   jq '.data.node.commits.totalCount=2 | .data.node.commits.nodes += [{commit:{oid:("c"*40),messageHeadline:"safe neighbor",messageBody:""}}]' "$tmp/base.json" >"$response"
   mc_test_run 'gh pr merge 7 --squash'; mc_test_assert deny '複数commit中の抵触を拒否'
   if case "$out" in *commit:cccccccc*) false ;; *commit:bbbbbbbb*) true ;; *) false ;; esac; then ok 'merge hook: 抵触行に一致するcommitだけを供給源表示'; else bad 'merge hook: 非抵触の隣接commitを混同/抵触元欠落'; fi

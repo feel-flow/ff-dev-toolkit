@@ -29,6 +29,7 @@
 #           R3 の「fence をもう一度実行する」一文を削ると 2 件、R3 から operations.md への経路を削ると
 #           1 件、operations.md の R3-a 見出しを崩すと 2 件が赤。
 #
+# 空振り検出: check-category-size-text.ts と check-category-size-analysis.ts の esbuild 行を外すと facade の extensionless import が ERR_MODULE_NOT_FOUND で rc=1 になる（2026-10-30 実測。ace-refine の目安以下 fixture と check-entry-format --list-entry-ids の両方が赤）。
 # 空振り検出: 本線 SKILL.md を 20,001 B にすると 1 件が赤、references/operations.md を空にすると検査対象の
 #             存在検査で中断して赤になる（2026-09-24 実測。本線が上限を超える・操作別手順の置き場所が
 #             空になる変更を「契約あり」へ倒さない）。
@@ -719,12 +720,18 @@ else
     set +e
     # bundle すると import 先の `import.meta.url` も同じ出力ファイルを
     # 指し、check-category-size の direct-execution guard まで誤爆する。
-    # 2 ファイルを個別 transpile し、extensionless import は type=module で解決する。
+    # facade は check-category-size-text と check-category-size-analysis を
+    # 拡張子なしで読む。Node は .mjs へ落ちないので、同じディレクトリへ
+    # extensionless outfile を個別 transpile する。
     BUILD_OUTPUT="$(
       set -e
       printf '%s\n' '{"type":"module"}' > "$BUNDLE_DIR/package.json"
       "$ESBUILD_BIN" "$CHECK_SIZE_SCRIPT" --platform=node --format=esm \
         --log-level=error --outfile="$BUNDLE_DIR/check-category-size"
+      "$ESBUILD_BIN" "$PLUGIN_ROOT/docs-template/scripts/ace/check-category-size-text.ts" --platform=node --format=esm \
+        --log-level=error --outfile="$BUNDLE_DIR/check-category-size-text"
+      "$ESBUILD_BIN" "$PLUGIN_ROOT/docs-template/scripts/ace/check-category-size-analysis.ts" --platform=node --format=esm \
+        --log-level=error --outfile="$BUNDLE_DIR/check-category-size-analysis"
       "$ESBUILD_BIN" "$PLUGIN_ROOT/docs-template/scripts/ace/ace-domain.ts" --platform=node --format=esm \
         --log-level=error --outfile="$BUNDLE_DIR/ace-domain"
       "$ESBUILD_BIN" "$PLUGIN_ROOT/docs-template/scripts/ace/knowledge-read-boundary.ts" --platform=node --format=esm \

@@ -239,7 +239,7 @@ Codex の Bash 相当ツールでの実発火は未実測。
 - 復旧は検査済みの非空 subject / body と同じ repo・PR・head を固定したコマンドで案内する。前段を含む呼び出し全体が未実行である点に注意する。
 - その merge だけを通すには直前へ `FF_MERGE_CLOSING_ACK=1`、全体の無効化は `FF_DEV_TOOLKIT_SKIP_MERGE_CLOSING_GUARD=1`。工数ガードの ACK とは独立する。
 - 依存は gh / jq / awk / Perl。Perl は gh の照会に上限を掛けるために使う（各照会 1 秒。gh の起動だけで約 1 秒かかる Windows の Git Bash では各照会 3 秒・最初の照会から 8 秒まで）。不在時は自動インストールせず、`systemMessage` と `additionalContext` で未検査を知らせて通す。照会は1呼び出し4回まで・全体の時間枠の中までで、以後の merge は未検査と通知する。 command / 実効message / body-file は8KiB、照会応答は64KiB、Refsは32件まで。復旧の置換は4巡までで、既知の抵触は停止を保ち、復旧できなければ手動precheckを案内する。各上限超過も理由付きで知らせる。
-- プレビューは取得時点の snapshot。queue（admin bypassなし）は message 指定を無視し、遅延 auto merge は将来の既定を保証できないため、いずれも理由付きで通す。`--disable-auto` / `--merge` / `--rebase` は対象外。取得不能、未解決の変数・置換・wrapper/cwd、stdinや先行生成の body-file も推測せず理由を知らせる。MCP merge は対象外。全ホストの実セッション発火を保証するものではない。
+- プレビューは取得時点の snapshot。queue（admin bypassなし）は message 指定を無視し、遅延 auto merge は将来の既定を保証できないため、いずれも理由付きで通す。`--disable-auto` / `--merge` / `--rebase` は対象外。取得不能（gh の失敗・時間枠・Perl 不在・不完全な応答）、queue、遅延 auto、stdin や先行生成の body-file は推測せず理由を知らせて通す。実行される gh pr merge で、先行する cwd の変更・未解決の変数・wrapper・global flag のために件名を検査できないときは停止する。説明文字列、heredoc、コメントの中の同じ綴りは実行ではないので止めない。書き直しは、先行の cd や未解決の値を含めない単独の gh pr merge。通す場合は同じ merge の直前の FF_MERGE_CLOSING_ACK=1。MCP merge は対象外。全ホストの実セッション発火を保証するものではない。
 
 **起票ラベル契約ガード（`guard-issue-labels.sh`）** — 素の `gh issue create` に種別・優先度のいずれかのラベルが付いていない場合に停止する。起票スキルの verify-then-skip 契約（実在確認のうえラベルを付与する手順）を直接の `gh issue create` で迂回するのを機械的に捕まえるのが目的。`follow-up` ラベルの欠落は起票が PR レビュー由来かどうかを機械的に判定できないため、`systemMessage` の案内のみに留める（停止しない）。
 
@@ -309,9 +309,10 @@ Codex の Bash 相当ツールでの実発火は未実測。
 - `pipefail` 配下でパイプの下流に置いた `grep -q`（`tests/lib/pipefail-grep-q.sh`）: 一致が不一致へ反転しうる。here-string / `case` / ファイルを直接渡す形へ書き換える（原理的に小さい payload だけ行末の `# pipefail-safe: <根拠>` で除外できる）
 - 終了コードの誤読・握り潰し（`tests/lib/exit-code-guard.sh`）: `| tail` の直後の `$?`、`PIPESTATUS`、ゲート起動の握り潰し。出力をファイルへ受けて `rc=$?` → `exit $rc` まで書く
 - 走査するのは保存後のファイル全体で、Edit は現在のファイルへ置換を当てた結果を組み立てる（`pipefail` の設定行が編集箇所の外にあっても判定できる）。既存の違反の持ち越しでは止めない
-- `.sh` 以外・JSON でない入力・`jq` 不在では素通しする。`.sh` なのに検出器を読めない・走査が失敗する・Edit 対象を読めないなど**判定を完了できないときは理由付きで止める**（fail-closed。面は `.sh` の保存に限る）
+- `.sh` 以外・JSON でない入力・`jq` 不在では素通しする。`.sh` なのに検出器を読めない・走査が失敗する・Edit 対象の中身を検証できない（NUL を含む・上限超過など）など**判定を完了できないときは理由付きで止める**（fail-closed。面は `.sh` の保存に限る）
+- 作業ディレクトリの project の外や、祖先の ACL を検証できない場所（Windows の `%TEMP%` の下の scratchpad など）の `.sh` は、保存前の内容を読み取り境界で読めない。Edit はそこで止めず、**ファイルを読まずに** `old_string` → `new_string` の断片だけを同じ検出器で検査する（`pipefail` は設定ありと仮定）。違反なしは「縮退検査」の 1 行（`systemMessage`。利用者向けの表示で、エージェントには届かない）を残して通し、違反は縮退の旨を本文に添えて deny する。`new_string` の末尾が行継続（`\` / `|` / `&&` / `||`）で終わるときと、境界が場所以外の理由（NUL を含む・開けない権限・ACL を照合できない等）で拒否したときは判定不能で止める。断片の外の綴りと繋がってできる違反は見えないので、追跡対象の `.sh` はコミット前検査と全件ゲートが引き続き見る。作業ディレクトリ自体が `%TEMP%` の下にあると、その中の Edit もすべて縮退検査になる。Write は保存前を空として全文を検査する
 - 抜け道: Write / Edit にはコマンド先頭の環境代入が無いため、hook のプロセス環境（ホストの env 設定・起動時の export）へ `FF_SHELL_SAVE_ACK=1` を渡す
-- 既知の限界: Bash 経由の書き込み（heredoc・スクリプトからの文字列置換・`sed -i`）は Write / Edit ではないので届かない。その経路はコミット前検査と全件ゲートが受け持つ。パスが `.sh` で終わらない shell スクリプト（拡張子なし・`.bash`）と MultiEdit は対象外。Edit の `old_string` が現在の内容にバイト一致しない（改行コードの差を除いても一致しない）ときは判定不能として止まるので、ファイルの現在の内容から写し直す
+- 既知の限界: Bash 経由の書き込み（heredoc・スクリプトからの文字列置換・`sed -i`）は Write / Edit ではないので届かない。その経路はコミット前検査と全件ゲートが受け持つ。パスが `.sh` で終わらない shell スクリプト（拡張子なし・`.bash`）と MultiEdit は対象外。Edit の `old_string` が現在の内容にバイト一致しない（改行コードの差を除いても一致しない）ときは判定不能として止まるので、ファイルの現在の内容から写し直す（保存前を読めない縮退検査では照合しない）
 
 ## 前提
 

@@ -869,6 +869,9 @@ else
     # 3 帯すべてを覆うこと。マージ直前の窓（Issue 本文の書き換え）を守る契約なので
     # merge-freshness の隣に置く。jq と一時領域を要する。
     "$SCRIPT_DIR/effort-contract/verify.sh"
+    # ブランチ名の Issue に ff-effort ブロックが無いときの注意（PostToolUse）。
+    # 配布 hook を直接駆動し、注意句を消すと赤になる。effort-contract の隣に置く。
+    "$SCRIPT_DIR/warn-missing-ff-effort/verify.sh"
     # PR の尾の固定手順（scripts/finish.sh precheck / cleanup / knowledge-commit）の振る舞い契約と、
     # 本線を 20 KB 以下へ畳んだスキルの本線バイト上限の名簿。precheck は stub gh + 本物の記録で
     # 前提崩れ（PR 不在 / gh 不通 / 記録不在）が非 0 で名指しされることを、knowledge-commit は

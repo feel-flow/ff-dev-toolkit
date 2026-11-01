@@ -7,6 +7,7 @@
 # 時間境界: stdin+stub ghの実hookで通常0.44s、1MiB metadata0.49s、64KiB command通知0.03s、累積timeout4.23s、1MiB+6KiB literal+2PR+0.8sの4照会で2個目deny4.34s。旧上限なしの64KiBは18.14sで不採用、最終版は各照会1秒/計4回と固定入力・復旧上限で通知へ戻す（Issue `#2377` 以降、MSYS / Cygwin だけ各照会3秒・最初の照会から8秒、他の OS は各照会1秒で、最初の照会から5秒の枠は4回の照会を切らない）。実gh merge/native発火の測定ではない。
 # 変異検出: gh 照会の上限（Issue `#2377`。2026-10-27 WSL 実測、基準 377 件緑）。MSYS / Cygwin の上限を他の OS と同じ各 1 秒へ戻すと MSYS と Cygwin の 2 秒の照会の 2 件が赤、時間枠の判定を外すと時間枠の通知の名指しと戻り時間の 2 件が赤。引用も展開も含まない語の速い経路（mc_literal_var）の結果を変えると 91 件が赤。
 # 空振り検出: 抽出先 scripts/lib/finish-precheck.sh を空にすると必須ファイル非空の確認で rc1 になる（2026-10-22 実測。入口に名前だけが残っても参照抽出を検査したことにしない）。
+# 空振り検出: mc_stop の本体を return 0 だけにすると（関数名は残し、MC_STOP_REASON も同じセグメントの ACK 通知も出さない）、未解決変数・env/command option・path gh・先行 cwd・代入と先行 cd・global flag・別セグメントの ACK・timeout wrapper・cwd/環境の遷移・wrapper 後続・GH_HOST・引用した pr の未解決変数・builtin と grouping の先行 cd・bash -c・bash -lc・bash -c の複文・bash -o の後続・squash の未知 flag の停止検査 61 件が赤になる（363 件成功、suite rc=1。2026-10-31 macOS 実測。説明文字列・別サブコマンドの引数・引用した pr の照会・bash -lc の echo・複文 echo・bash -o の説明文字列は緑のまま）。
 #
 # closing keyword 抵触検査の回帰テスト。
 #
