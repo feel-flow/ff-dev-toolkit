@@ -51,8 +51,10 @@ printf x >>"$read_input"
 read_rc=0; read_snapshot="$(ff_knowledge_snapshot "$read_input" "$read_probe/project" "$read_probe/job" 2>"$read_probe/error")" || read_rc=$?
 [[ "$read_rc" -eq 2 && -z "$read_snapshot" ]] && ok 'K31: Bash 4 MiB + 1 refused' || bad 'K31: oversized input accepted'
 printf normal >"$read_input"
-# A copied executable in the minimal PATH cannot load its DLLs (rc=127), so the copy does not stand in.
-if ! kl_skip_no_symlink 'K31 の最小 PATH（コピーした実行ファイルは DLL を読めない）'; then
+# MSYS executables look up msys-2.0.dll through PATH, so neither a copy nor a native symlink
+# starts in the minimal PATH (rc=127; Issue `#2566` measured the symlink on Windows 11). The
+# MSYS reader also calls cygpath on every request, which this PATH does not carry either.
+if ! kl_skip_msys 'K31 の最小 PATH（MSYS の実行ファイルはコピーでも symlink でも PATH から DLL を探すので、最小 PATH の下では起動できない。MSYS の reader が毎回呼ぶ cygpath も無い）'; then
   read_bin="$read_probe/no-node-bin"; mkdir "$read_bin"
   for read_command in awk uname stat mktemp chmod rm readlink head tr; do
     ln -s "$(command -v "$read_command")" "$read_bin/$read_command"

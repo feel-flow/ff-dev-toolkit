@@ -153,6 +153,16 @@ export function inspectWindowsReadAcl(output: string, count: number): void {
   if (lines.length !== count || lines.some((line, index) => line !== `${index}|1|0`)) refuse("read-unverifiable");
 }
 
+/**
+ * A host started from PowerShell 7 exports its own PSModulePath; Windows PowerShell 5.1
+ * then loads the 7.x Microsoft.PowerShell.Security and loses Get-Acl. Without the
+ * variable, 5.1 rebuilds its default path. Any casing is dropped: a copy of the
+ * environment keeps the host's spelling.
+ */
+export function windowsAclEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([name]) => name.toLowerCase() !== "psmodulepath"));
+}
+
 function windowsReadAcl(paths: readonly string[]): void {
   const systemRoot = process.env.SystemRoot;
   if (!systemRoot || !path.isAbsolute(systemRoot)) refuse("read-unverifiable");
@@ -161,6 +171,7 @@ function windowsReadAcl(paths: readonly string[]): void {
     const output = execFileSync(program, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(WINDOWS_KNOWLEDGE_ACL_SOURCE, "utf16le").toString("base64")], {
       input: "inspect" + String.fromCharCode(10) + paths.join(String.fromCharCode(10)) + String.fromCharCode(10),
       encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], windowsHide: true, timeout: 10000, maxBuffer: 128 * 1024,
+      env: windowsAclEnvironment(process.env),
     });
     inspectWindowsReadAcl(output.charCodeAt(0) === 65279 ? output.slice(1) : output, paths.length);
   } catch { refuse("read-unverifiable"); }

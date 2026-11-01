@@ -23,6 +23,7 @@ EOF
 cat >"$win_root/Windows/System32/WindowsPowerShell/v1.0/powershell.exe" <<'EOF'
 #!/usr/bin/env bash
 printf 'start\n' >>"$WIN_FAKE_STARTS"
+printf '%s\n' "${PSModulePath-<unset>}|${PSMODULEPATH-<unset>}" >>"$WIN_FAKE_MODULES"
 request=()
 answer() {
   local header="${request[0]}" tag="" prefix="" position=0 path
@@ -51,6 +52,7 @@ win_tmp="$(cd -P "$win_root/tmp" && pwd -P)"
 win_state="$(cd -P "$win_root/state" && pwd -P)"
 
 win_slow=""; win_error="" # per run: seconds per reply line, and a path the helper fails on
+win_env=() # per run: NAME=value pairs in place before the reader is sourced
 # Probe the same bash executable win_run will invoke, independently of the reader's
 # state. Bash 3.2 has neither coproc nor dynamic descriptors and uses one-shot ACLs.
 # A failed/empty/unknown probe is a broken test input, not an unsupported capability.
@@ -70,17 +72,19 @@ win_runs=0
 win_initial_fail="$FAIL"
 win_run() { # <snippet> [dangerous paths...]: stub Windows without SystemRoot in any spelling
   win_runs=$((win_runs + 1))
-  : >"$win_root/starts"; : >"$win_root/requests"; : >"$win_root/danger"; : >"$win_root/error"
+  : >"$win_root/starts"; : >"$win_root/requests"; : >"$win_root/danger"; : >"$win_root/error"; : >"$win_root/modules"
   [[ $# -lt 2 ]] || printf '%s\n' "${@:2}" >"$win_root/danger"
   [[ -z "$win_error" ]] || printf '%s\n' "$win_error" >"$win_root/error"
   win_rc=0; win_began="$SECONDS"
-  env -u SystemRoot -u SYSTEMROOT -u windir -u WINDIR PATH="$win_bin:$PATH" \
+  env -u SystemRoot -u SYSTEMROOT -u windir -u WINDIR -u PSModulePath -u PSMODULEPATH PATH="$win_bin:$PATH" \
+    ${win_env[@]+"${win_env[@]}"} \
     WIN_FAKE_WINDOWS="$win_root/Windows" WIN_FAKE_STARTS="$win_root/starts" WIN_FAKE_REQUESTS="$win_root/requests" \
+    WIN_FAKE_MODULES="$win_root/modules" \
     WIN_FAKE_DANGER="$win_root/danger" WIN_FAKE_ERROR="$win_root/error" WIN_FAKE_SLOW="$win_slow" \
     TMPDIR="$win_tmp" FF_DEV_TOOLKIT_STATE_DIR="$win_state" WIN_PROJECT="$win_project" \
     WIN_LIB="$PLUGIN_ROOT/scripts/lib/knowledge-read-boundary.sh" \
     bash -c '. "$WIN_LIB"; '"$1" >"$win_root/out" 2>"$win_root/err" || win_rc=$?
-  win_elapsed=$((SECONDS - win_began)); win_slow=""; win_error=""
+  win_elapsed=$((SECONDS - win_began)); win_slow=""; win_error=""; win_env=()
   win_out="$(cat "$win_root/out")"; win_err="$(cat "$win_root/err")"
   win_starts="$(awk 'END { print NR + 0 }' "$win_root/starts")"
   win_requests="$(awk 'END { print NR + 0 }' "$win_root/requests")"
@@ -164,6 +168,30 @@ win_run 'ff_knowledge_job_directory w12'
   && ok 'W12: TMPDIR を ACL の判定以外の理由で通せないときは、代替先へ移さずに理由を出して止める' \
   || bad "W12: ACL の判定でない拒否で作業場所を移した（rc=${win_rc} out=${win_out} err=${win_err}）"
 
+# Issue `#2566`: a host started from PowerShell 7 hands its PSModulePath down; the helper
+# must start without it on both the resident and the one-shot path, and the caller keeps it.
+# The value is in place before sourcing: sourcing the reader is what starts the resident helper.
+win_has_timeout=0; ! command -v timeout >/dev/null 2>&1 || win_has_timeout=1
+if [[ "$win_coproc" == supported ]]; then
+  win_expected_starts=$((1 + win_has_timeout)); win_expect_out="first rc=0"$'\n'"second rc=$((2 - 2 * win_has_timeout))"
+else
+  win_expected_starts=$((2 * win_has_timeout)); win_expect_out="first rc=$((2 - 2 * win_has_timeout))"$'\n'"second rc=$((2 - 2 * win_has_timeout))"
+fi
+win_env=('PSModulePath=D:\home\u\PowerShell\Modules;c:\program files\powershell\7\Modules' 'PSMODULEPATH=D:\x')
+win_run 'rc=0; ff_knowledge_storage "$WIN_PROJECT" dir || rc=$?; echo "first rc=${rc}"
+  if [[ "${ff_knowledge_acl_state:-}" == on ]]; then printf "quit\n" >&"$ff_knowledge_acl_out"; wait "$ff_knowledge_acl_service_PID" 2>/dev/null; fi
+  rc=0; ff_knowledge_storage "$WIN_PROJECT" dir || rc=$?; echo "second rc=${rc}"
+  echo "caller=${PSModulePath}|${PSMODULEPATH}"'
+win_modules_unset="$(awk '$0 != "<unset>|<unset>" { bad = 1 } END { print (bad ? "no" : "yes") }' "$win_root/modules")"
+if [[ "$win_expected_starts" -eq 0 ]]; then
+  echo '  ○ skip: W16 は bash 4 以上でだけ成立する検査のため未実行（起動 shell に coproc/動的 FD が無く、1 回きりの起動に要る timeout(1) も無い）'
+else
+  [[ "$win_out" == "${win_expect_out}"$'\ncaller=D:\\home\\u\\PowerShell\\Modules;c:\\program files\\powershell\\7\\Modules|D:\\x' \
+    && "$win_starts" -eq "$win_expected_starts" && "$win_modules_unset" == yes ]] \
+    && ok "W16: helper は常駐・1 回きりの起動のどちらでも PSModulePath を受け取らず、呼び出し元の値は変わらない（起動 ${win_starts} 回）" \
+    || bad "W16: helper へ PSModulePath が渡った、または呼び出し元の値が変わった（capability=${win_coproc} starts=${win_starts} modules=$(tr '\n' ' ' <"$win_root/modules") out=${win_out} err=${win_err}）"
+fi
+
 # Issue `#2530`: Windows hosts hand the plugin root over as C:/…; a reader sourced by that
 # spelling keeps the helper path as is instead of joining it to the cwd.
 case "$(uname -s 2>/dev/null)" in
@@ -210,6 +238,17 @@ case "$(uname -s 2>/dev/null)" in
       [[ "$win_rc" -eq 2 && "$win_err" == *"止めた場所: $(cygpath -am "$win_real/app") — "*"$win_sid"* ]] \
         && ok 'W9: 実機: 祖先を通る通常ディレクトリは通し、capability SID が書き込めるディレクトリはその SID を名指して止める' \
         || bad "W9: 実機の ACL 判定（rc=${win_rc} err=${win_err}）"
+      # Issue `#2566`: the PSModulePath that PowerShell 7 exports to its children.
+      win_pwsh_modules="$(cygpath -F 38 2>/dev/null)/PowerShell/7/Modules"
+      if [[ -d "${win_pwsh_modules}/Microsoft.PowerShell.Security" ]]; then
+        win_rc=0; win_err="$(env -u SystemRoot SYSTEMROOT='C:\Windows' PSModulePath="$(cygpath -w "$win_pwsh_modules");C:\Windows\system32\WindowsPowerShell\v1.0\Modules" \
+          bash -c '. "$1"; ff_knowledge_storage "$(ff_knowledge_canonical_dir "$2")" dir' _ "$PLUGIN_ROOT/scripts/lib/knowledge-read-boundary.sh" "$win_real/clean" 2>&1)" || win_rc=$?
+        [[ "$win_rc" -eq 0 && -z "$win_err" ]] \
+          && ok 'W17: 実機: PowerShell 7 の PSModulePath を受け継いだ環境でも、実 ACL の検査が判定を返して通す' \
+          || bad "W17: 実機: PowerShell 7 の PSModulePath の下で ACL の検査が判定を返さない（rc=${win_rc} err=${win_err}）"
+      else
+        echo '  ○ skip: W17 は PowerShell 7 を入れた Windows でだけ成立する検査のため未実行（Microsoft.PowerShell.Security の 7 版が無い）'
+      fi
       rm -rf -- "$win_real"
     else
       bad "W8: 実機: SYSTEMROOT だけの環境で作業場所を作れない（rc=${win_real_rc}）"
@@ -218,8 +257,8 @@ case "$(uname -s 2>/dev/null)" in
   *) echo '  ○ skip: W8〜W9 は Windows の Git Bash でだけ成立する検査のため未実行（実 ACL と powershell.exe を使う）' ;;
 esac
 
-win_expected_runs=11
-[[ "$win_coproc" == supported ]] || win_expected_runs=9
+win_expected_runs=12
+[[ "$win_coproc" == supported ]] || win_expected_runs=10
 if [[ "$win_runs" -eq "$win_expected_runs" ]]; then
   ok "Windows ACL: ${win_coproc} shell の合成 case ${win_expected_runs} 件を実行した"
 else

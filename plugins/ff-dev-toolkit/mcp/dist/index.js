@@ -36949,6 +36949,9 @@ function inspectWindowsReadAcl(output2, count) {
   const lines = output2.split(String.fromCharCode(10)).map((line) => line.replaceAll(String.fromCharCode(13), "")).filter(Boolean);
   if (lines.length !== count || lines.some((line, index) => line !== `${index}|1|0`)) refuse("read-unverifiable");
 }
+function windowsAclEnvironment(env) {
+  return Object.fromEntries(Object.entries(env).filter(([name]) => name.toLowerCase() !== "psmodulepath"));
+}
 function windowsReadAcl(paths) {
   const systemRoot = process.env.SystemRoot;
   if (!systemRoot || !path.isAbsolute(systemRoot)) refuse("read-unverifiable");
@@ -36960,7 +36963,8 @@ function windowsReadAcl(paths) {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       timeout: 1e4,
-      maxBuffer: 128 * 1024
+      maxBuffer: 128 * 1024,
+      env: windowsAclEnvironment(process.env)
     });
     inspectWindowsReadAcl(output2.charCodeAt(0) === 65279 ? output2.slice(1) : output2, paths.length);
   } catch {

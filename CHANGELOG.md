@@ -20,6 +20,12 @@
 
 ## [Unreleased]
 
+## [0.174.1] - 2026-11-01
+
+### 修正
+
+- Windows で PowerShell 7 の端末から Claude Code を起動したとき、既存の `.sh` への Edit / Write が shell 保存時のガードに「判定不能」で止められ、`/knowledge-lookup` と `/ace-curate` が `knowledge-read: read-unverifiable` で止まる問題を直しました。PowerShell 7 が子のプロセスへ渡す `PSModulePath` を、ACL を確かめる Windows PowerShell 5.1 の helper が受け継ぎ、`Get-Acl` を読み込めなくなっていました。helper を起動するときだけ `PSModulePath` を外します。Claude Desktop から起動したセッションと macOS / Linux の振る舞いは変わりません。
+
 ## [0.174.0] - 2026-11-01
 
 ### 追加

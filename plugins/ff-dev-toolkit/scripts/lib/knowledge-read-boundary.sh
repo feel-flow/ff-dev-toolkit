@@ -132,11 +132,14 @@ ff_knowledge_acl_command() { # sets ff_knowledge_acl_program / ff_knowledge_acl_
 # and {fd} redirections away from the Bash 3.2 parser; the duplicated
 # descriptors stay open in subshells, unlike the coproc's own, which are closed.
 # disown keeps a caller's bare wait from waiting on the helper.
+# A host started from PowerShell 7 exports its own PSModulePath; Windows
+# PowerShell 5.1 then loads the 7.x Microsoft.PowerShell.Security and loses
+# Get-Acl. Unset in the helper's subshell only, 5.1 rebuilds its default path.
 ff_knowledge_acl_service_start() {
   [[ -z "${ff_knowledge_acl_state:-}" ]] || return 0
   ff_knowledge_acl_state=off
   ff_knowledge_acl_command || return 0
-  eval 'coproc ff_knowledge_acl_service { MSYS2_ARG_CONV_EXCL="*" exec "$ff_knowledge_acl_program" -NoProfile -NonInteractive -File "$ff_knowledge_acl_native" 2>/dev/null; }' 2>/dev/null || return 0
+  eval 'coproc ff_knowledge_acl_service { unset PSModulePath PSMODULEPATH; MSYS2_ARG_CONV_EXCL="*" exec "$ff_knowledge_acl_program" -NoProfile -NonInteractive -File "$ff_knowledge_acl_native" 2>/dev/null; }' 2>/dev/null || return 0
   eval 'exec {ff_knowledge_acl_in}<&"${ff_knowledge_acl_service[0]}" {ff_knowledge_acl_out}>&"${ff_knowledge_acl_service[1]}"' 2>/dev/null || return 0
   eval 'ff_knowledge_acl_pid="$ff_knowledge_acl_service_PID"'
   case "${ff_knowledge_acl_service[0]:-}:${ff_knowledge_acl_service[1]:-}" in
@@ -209,7 +212,7 @@ ff_knowledge_windows_acl() { # <inspect|private|private-staging> <canonical path
     [[ "$answered" -eq 1 ]] || { ff_knowledge_acl_service_stop; ff_knowledge_refuse read-unverifiable; return 2; }
   else
     command -v timeout >/dev/null 2>&1 || { ff_knowledge_refuse read-unverifiable; return 2; }
-    converted="$(set -o pipefail; printf '%s' "$request" | MSYS2_ARG_CONV_EXCL='*' timeout --foreground 10 "$ff_knowledge_acl_program" -NoProfile -NonInteractive -File "$ff_knowledge_acl_native" 2>/dev/null)" \
+    converted="$(set -o pipefail; unset PSModulePath PSMODULEPATH; printf '%s' "$request" | MSYS2_ARG_CONV_EXCL='*' timeout --foreground 10 "$ff_knowledge_acl_program" -NoProfile -NonInteractive -File "$ff_knowledge_acl_native" 2>/dev/null)" \
       || { ff_knowledge_refuse read-unverifiable; return 2; }
     while IFS= read -r line; do
       line="${line%"$cr"}"

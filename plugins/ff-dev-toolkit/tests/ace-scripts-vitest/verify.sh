@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 空振り検出: skip拒否除去・陰性fixture不在・空化は本suiteでrc=1。Linuxの通常skip混入もrc=1、修正後Linux/Darwinの開発元は1049/1050件passでskipなし（2026-10-29実測）。
 # 空振り検出: allowlist認識器を厳密shape検査へ戻す変異はVite読込み後にinit再実行の針が赤（rc=1）。check-entry-format正常対照110件pass（2026-10-29実測）。
+# 空振り検出: knowledge-read-boundary の Windows ACL helper から PSModulePath を外す検査（Issue `#2566`）は、execFileSync の env 受け渡しを消す・絞り込みを消す・綴りの完全一致だけに狭めるの 3 変異がそれぞれ 1 件赤（rc=1）、正常対照は 39 件 pass（2026-11-01 WSL 実測）。helper は win32 でしか走らないので、呼び出しは形で見る。
 # 空振り検出: 共通root検査除去・allowlist caller読取bypass・9caller集合空化の3変異はfocused reader検査でrc=1。通常は39件pass、配布3配置は1040/1040/1028pass+導入先のみ12既定skip（2026-10-29実測）。
 #
 # ace-scripts-vitest: docs-template と本体 mirror の ace vitest スイートを run-all.sh へ配線する。

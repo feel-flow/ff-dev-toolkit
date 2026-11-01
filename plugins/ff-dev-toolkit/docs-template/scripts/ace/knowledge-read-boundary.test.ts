@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { KnowledgeReadBoundary, KNOWLEDGE_READ_MAX_BYTES, inspectDarwinReadAcl, inspectWindowsReadAcl, knowledgeReaderForSelection } from "./knowledge-read-boundary.js";
+import { KnowledgeReadBoundary, KNOWLEDGE_READ_MAX_BYTES, inspectDarwinReadAcl, inspectWindowsReadAcl, knowledgeReaderForSelection, windowsAclEnvironment } from "./knowledge-read-boundary.js";
 import { main as categoryMain } from "./check-category-size";
 import { main as entryMain, parseAllowlist } from "./check-entry-format";
 import { main as archiveMain } from "./check-archive-links";
@@ -227,5 +227,18 @@ describe("ACL capability evidence", () => {
       expect(() => inspectWindowsReadAcl(output, 2)).toThrow("read-unverifiable");
     }
     expect(() => inspectWindowsReadAcl("", 0)).toThrow("read-unverifiable");
+  });
+  // Issue `#2566`: PowerShell 7 hands its PSModulePath down and 5.1 then loses Get-Acl.
+  it("starts the Windows ACL helper without PSModulePath in any casing", () => {
+    const host = { PSModulePath: "D:\\ps7\\Modules", PSMODULEPATH: "D:\\x", psmodulepath: "D:\\y", Path: "C:\\Windows", SystemRoot: "C:\\Windows" };
+    const env = windowsAclEnvironment(host);
+    expect(Object.keys(env).filter(name => name.toLowerCase() === "psmodulepath")).toEqual([]);
+    expect(env).toEqual({ Path: "C:\\Windows", SystemRoot: "C:\\Windows" });
+    expect(host.PSModulePath).toBe("D:\\ps7\\Modules");
+    // The helper runs only on win32, so the call site is checked by shape on every platform.
+    const source = fs.readFileSync(new URL("./knowledge-read-boundary.ts", import.meta.url), "utf8");
+    const body = source.slice(source.indexOf("function windowsReadAcl("), source.indexOf("export function knowledgeProjectRoot("));
+    expect(body).toContain("execFileSync(program,");
+    expect(body).toContain("env: windowsAclEnvironment(process.env),");
   });
 });
