@@ -105,7 +105,7 @@ expect_contains_in() { # <file> <needle> <label>
 echo "== ace-curate knowledge commit 契約検査 =="
 
 expect_fixed_count_routes \
-  'finish.sh" knowledge-commit add ${ACE_CLAIM_ARGS[@]+"${ACE_CLAIM_ARGS[@]}"} --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" --category "<category[, category...]>"' \
+  'finish.sh" knowledge-commit add --ace-playbook docs/08-knowledge/PLAYBOOK.md --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" --category "<category[, category...]>"' \
   2 \
   "既定・PR 両経路が共通の書き込み口へ ACE_ID・要約・カテゴリを渡す（件名は書き込み口が短い形式で作る）"
 
@@ -168,7 +168,7 @@ expect_fixed_count_routes \
   "helper の実際の検査と呼出側の検査を区別する"
 
 expect_fixed_count_routes \
-  '--type "${commit_type}" -- "${ACE_KNOWLEDGE_PATHS[@]}"' \
+  '--category "<category[, category...]>" --type "${commit_type}" || exit 1' \
   2 \
   "commit type を add で保留へ記録する（合流先の commit が既定の knowledge で上書きしない）"
 

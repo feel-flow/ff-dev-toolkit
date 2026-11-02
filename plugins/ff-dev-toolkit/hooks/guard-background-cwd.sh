@@ -384,6 +384,22 @@ segment_is_cwd_independent() { # <segment>
 
 # ---- 判定 1: コマンド全体の先頭が絶対パスの cd か -------------------------------
 # 以降のセグメントも同じツリーで走るので、ここで無音にする。
+# 先頭の `setopt <オプション名…>;`（または改行で終わる文）は cwd を変えないので読み飛ばす。guard-zsh-glob.sh の
+# 単語分割の書き換え（Issue `#2491`）が `setopt SH_WORD_SPLIT; ` を前置するため、前置後の `cd /abs && …` を
+# 「先頭が cd でない」と誤警告しないように。読み飛ばすのは語がオプション名だけの setopt に限る
+# （引用・展開・区切り記号を含む文、setopt 以外の先頭文は従来どおり）。
+case "$cmd" in
+  setopt[[:space:]]*)
+    setopt_stmt="${cmd%%[;${nl}]*}"
+    if [ "$setopt_stmt" != "$cmd" ]; then
+      case "$setopt_stmt" in
+        *[!A-Za-z0-9_[:blank:]]*) : ;;
+        *) cmd="${cmd#"$setopt_stmt"}"; cmd="${cmd#?}" ;;
+      esac
+    fi
+    unset setopt_stmt
+    ;;
+esac
 parse_head "$cmd"
 head_cmd="$HEAD_CMD"
 head_word="$HEAD_WORD"
@@ -440,7 +456,7 @@ case "$heredoc_first_line" in
               body_line=""
               continue
               ;;
-            set | export)
+            set | export | setopt)
               body_line=""
               continue
               ;;

@@ -2,6 +2,8 @@
 # zsh の equals 展開を deny、未引用 scalar を警告する。
 # 判定本体は既存 lexer を共有する。入力コマンドは評価しない。
 # 値不明の scalar は警告だけ。同一呼び出しの直前代入が一覧を示す形だけ事前停止する。
+# 入力書き換えに対応した Claude Code 環境で permission_mode が bypassPermissions のときだけ、guard-zsh-glob.sh が scalar / scalar-list の呼び出しの先頭へ
+# `setopt SH_WORD_SPLIT; ` を付けて通す（Issue `#2491`）。最初の文がその setopt の呼び出しは scalar を対象にしない。
 # heredoc 本文と引用された子シェルのプログラムは対象外。
 # FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1 で無効化。
 # 呼び出し先頭の FF_ZSH_EXPANSION_ACK=1 / FF_ZSH_GLOB_ACK=1 は今回だけ両方を免除する。
@@ -75,6 +77,12 @@ rc=0
 code="$(ff_heredoc_strip "$cmd")" || rc=$?
 case "$rc" in 0 | 3) ;; *) unavailable 'heredoc 走査未完了' ;; esac
 hits="$(ff_zsh_expansion_scan "$code")" || unavailable '引用・展開の走査未完了'
+# 呼び出しの最初の文が setopt SH_WORD_SPLIT なら（guard-zsh-glob.sh の書き換え後の形。Issue `#2491`）、
+# 未引用の変数は bash と同じ規則で分割されるので scalar / scalar-list は警告・停止の対象でない。equals は残す。
+# 判定関数が無い（古いヘルパ）ときは前置を認めない側（従来どおり警告する側）に倒す。
+if [ "$(type -t ff_zsh_word_split_prefixed)" = function ] && ff_zsh_word_split_prefixed "$cmd"; then
+  case "$hits" in *equals*) hits=equals ;; *) hits="" ;; esac
+fi
 # PostToolUse は scalar だけを見る（equals の停止は PreToolUse の担当で、ここで equals を
 # 先に当てると同じ呼び出しの scalar 警告を落とす）。
 scalar_prefix=""

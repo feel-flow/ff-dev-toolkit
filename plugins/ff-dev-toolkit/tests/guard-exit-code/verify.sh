@@ -63,6 +63,7 @@
 # 空振り検出: consumer candidate helper の不在・不可読・同名0byte・名前だけ残す集合0は、実source境界を抜いたfocusedで各1件赤・rc=1（2026-10-22）。正常は25/0。
 # 変異検出 (1421e65b時点): decoded full-prefixを旧先頭語へ戻すと8件赤、cmd門削除3件/ASDD後へ遅延2件、code_only旧門1件、rawをfull-prefixへ過剰限定4件（tab/escaped slash/Unicode ASCII escape）が赤。全変異は構文0・focused rc=1（2026-10-22）。
 # 変異検出: Unicode command名をJSON ASCII escapeした実hookもdenyする。候補対照27/0、raw Unicode候補を外す単独変異は該当1件だけ赤・rc=1、構文0（2026-10-22）。
+# 空振り検出: 検索パスの無い rg（Issue `#2136`）は rg-stdin.sh が持つ。判定ヘルパの不在・awk 失敗・完了印なし・関数不在は rg の起動語を含む呼び出しを判定不能の deny にすることを要求し、常に 0 件を返すヘルパでは RF 系がすべて素通しになって赤になる（2026-11-02 実測）。rg-stdin.sh の失敗はこの suite の失敗として数える。
 # 空振り検出: 背景の名簿外分岐を if (0) にする、または待ちタグの print を別名にする（名前だけ残して中身が変わる）と、該当の deny は素通しになり赤（2026-10-30 実測: 変異 13/14/15 は各 1 件が pass へ落ち、変異検出がそれを赤として数える。正常は 259/0）。
 set -euo pipefail
 
@@ -1321,6 +1322,13 @@ else
   run_hook "$GATE > log 2>&1; rc=\$?; echo \"EXIT=\$rc\"; exit \$rc"
   assert_pass "CRLF の jq でも、推奨形（診断を出してから伝播）は素通し"
   PATH="$SAVED_PATH"
+fi
+
+echo "guard-exit-code: rg の標準入力待ち（行列・判定不能・変異は rg-stdin.sh）"
+if bash "$SCRIPT_DIR/rg-stdin.sh"; then
+  ok "rg-stdin.sh（検索パスの無い rg の deny / allow 行列・判定不能・変異検出）が緑"
+else
+  bad "rg-stdin.sh が失敗しました（上の ✗ 行）"
 fi
 
 echo

@@ -161,18 +161,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 commit_type="knowledge"
 probe_out="$(FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit probe)" || { echo "保護判定が成立しない（rc=$?）。停止" >&2; exit 1; }
 case "$probe_out" in *"protection=protected"*) protected=1 ;; *) protected=0 ;; esac
-ACE_KNOWLEDGE_PATHS=(docs/08-knowledge/PLAYBOOK.md)
-. "${FF_DEV_TOOLKIT_ROOT}/scripts/lib/playbook-changelog-functions.sh" || exit 2
-ACE_CHANGELOG_FILE="$(ff_playbook_changelog_select docs/08-knowledge/PLAYBOOK.md)" || { printf '%s\n' "$ACE_CHANGELOG_FILE" >&2; exit 2; }
-ACE_CHANGELOG_REL="$(git -C "${ACE_CHANGELOG_FILE%/*}" rev-parse --show-prefix)${ACE_CHANGELOG_FILE##*/}" || exit 2
-if [[ "$ACE_CHANGELOG_REL" != docs/08-knowledge/PLAYBOOK.md ]] && { ! git diff --quiet HEAD -- "$ACE_CHANGELOG_REL" || ! git ls-files --error-unmatch -- "$ACE_CHANGELOG_REL" >/dev/null 2>&1; }; then
-  ACE_KNOWLEDGE_PATHS+=("$ACE_CHANGELOG_REL")
-fi
-while IFS= read -r kpath; do ACE_KNOWLEDGE_PATHS+=("$kpath"); done < <(git ls-files -mo --exclude-standard docs/08-knowledge/playbook)
-if [ -f docs/08-knowledge/PENDING_CANDIDATES.md ]; then ACE_KNOWLEDGE_PATHS+=(docs/08-knowledge/PENDING_CANDIDATES.md); fi
-ACE_CLAIM_ARGS=()
-if ! git diff --quiet HEAD -- docs/08-knowledge/PLAYBOOK.md; then ACE_CLAIM_ARGS=(--claim docs/08-knowledge/PLAYBOOK.md); fi
-FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit add ${ACE_CLAIM_ARGS[@]+"${ACE_CLAIM_ARGS[@]}"} --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" --category "<category[, category...]>" --type "${commit_type}" -- "${ACE_KNOWLEDGE_PATHS[@]}" || exit 1
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit add --ace-playbook docs/08-knowledge/PLAYBOOK.md --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" --category "<category[, category...]>" --type "${commit_type}" || exit 1
 ace_defer="${ACE_DEFER_TO_RETRO:-0}"   # 事前注入 hook が 1 を指示した回だけ add で止め /retrospective へ合流
 if [[ "$ace_defer" == 1 ]]; then echo "commit と push は /retrospective の書き込みへ合流させます"; exit 0; fi
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit commit --type "${commit_type}" || exit 1

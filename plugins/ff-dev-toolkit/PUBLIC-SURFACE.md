@@ -202,6 +202,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_EXIT_CODE_ACK`
 - `FF_TIMEOUT_ACK`（`hooks/guard-exit-code.sh` で、command -v で見つからない timeout / gtimeout の停止だけを通すコマンド先頭の環境代入）
 - `FF_UNBOUNDED_WAIT_ACK`（同 hook で、背景実行の上限の無い sleep 待ちの停止だけを通す。until / while の前は独立した文 `FF_UNBOUNDED_WAIT_ACK=1;` とする）
+- `FF_RG_STDIN_ACK`（同 hook で、検索パスの無い rg が標準入力を待ち続ける形の停止だけを通すコマンド先頭の環境代入。先頭に並ぶ代入のどれでもよい）
 - `FF_CREDENTIAL_OUTPUT_ACK`
 - `FF_LITERAL_WRITE_ACK`
 - `FF_LONG_GATE_BACKGROUND_ACK`
@@ -362,6 +363,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_RELEASE_CHECK_PUBLIC_URL`（`/pre-commit-check` の断片帰属照合が公開側 clone の無い回に最新タグを引く公開リポジトリの URL。既定は ff-dev-toolkit の公開リポジトリ）
 - `FF_RETRO_PROFILE`
 - `FF_RETRO_SELFTEST_JOBS`
+- `FF_RG_STDIN_AWK`
 - `FF_RUN_ALL_ALLOW_DIRTY`
 - `FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS`
 - `FF_RUN_ALL_CHANGED`
@@ -502,6 +504,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_TOOLKIT_MANIFEST`
 - `FF_TOOLKIT_SCRIPTS`
 - `FF_TOOLKIT_SIDECAR`
+- `FF_ZSH_WORD_SPLIT_PREFIX`（guard-zsh-glob.sh が未引用 scalar の呼び出しの先頭へ付ける文。判定ヘルパと hook の受け渡し値）
 
 ## 公開面 5: 環境変数（`FF_` で始まらないもの）
 

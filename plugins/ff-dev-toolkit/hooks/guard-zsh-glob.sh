@@ -73,6 +73,14 @@
 # 入力書き換えに対応した Claude hook 環境では、nomatch と equals（`=` だけの語）の書き換え案が
 # 一意に決まる呼び出しに限り、deny の代わりに updatedInput（引用した語）と additionalContext を
 # 1 つの JSON で返す（Issue `#2255`。条件は try_rewrite の注記、契約は guard-exit-code.sh の Issue `#2182` と同じ。公開 https://github.com/feel-flow/ff-dev-toolkit/issues/142）。
+# 同じ環境で、hook 入力の permission_mode が bypassPermissions のときだけ、未引用の名前付き変数（scalar。一覧値の
+# scalar-list を含む）を含む呼び出しの先頭へ `setopt SH_WORD_SPLIT; ` を付けて bash と同じ単語分割規則にそろえる
+# （Issue `#2491`。他の権限モードでは、書き換え後の入力の各文に権限ルールが当たり、read-only の一覧に無い setopt が
+# 承認待ち・拒否を増やすので付けない）。位置引数（`$1`）だけの呼び出しは既存の scalar 検出が数えないので付かない。書き換えた呼び出しの scalar は
+# 警告せず、PostToolUse も scalar を返さない（最初の文が setopt SH_WORD_SPLIT の呼び出しは zsh-expansion-guard.sh が
+# scalar の対象から外す）。入力書き換えに対応しない環境（Codex / grok / 対応前の Claude Code）は従来の警告・deny のまま。
+# `bash <<'EOF'` へ包み直す案（Issue `#2491` の案 B）は採らない — 包んだ本文はホストの権限判定・安全確認が中身を
+# 読めない形になり、同じ集約入口の終了コードガードの bash -c 書き換えがホストの安全確認で拒否された実測がある。
 #   - この呼び出しだけ通す: Bash ツールへ渡すコマンドの**先頭の語**を環境代入 `FF_ZSH_GLOB_ACK=1`
 #     にする（前に別の環境代入・文があると無効。引用値の中や途中の文に現れるだけでも無効）。
 #     効く単位は Bash ツールの 1 呼び出しで、先頭に置けば改行で続く文にも効く（guard-exit-code.sh
@@ -208,7 +216,7 @@ case "$input" in
   *'*'* | *'?'* | *'['*) : ;;
   *) glob_candidate=0 ;;
 esac
-[ "$glob_candidate" -eq 1 ] || [ -n "$expansion_deny" ] || exit 0
+[ "$glob_candidate" -eq 1 ] || [ -n "$expansion_deny" ] || [ -n "$expansion_warning" ] || exit 0
 
 command -v jq >/dev/null 2>&1 || exit 0
 
@@ -270,30 +278,61 @@ try_rewrite() {
   # 引用の中の CR まで消えてデータが変わるので書き換えない。
   printf '%s' "$input" | jq -e '.tool_input.command | contains("\r") | not' >/dev/null 2>&1 || return 1
   [ "$asdd_unverifiable" -eq 0 ] || return 1
-  local helper fn stripped eq_on exp_hits fixes glob_fix eq_fix line word fix total n rest rewritten listed ordered out
+  local helper fn stripped eq_on exp_hits fixes glob_fix eq_fix line word fix total n rest rewritten listed ordered out split_on has_heredoc context permission_mode
+  # 公式の hook 入力の共通フィールド（default / plan / acceptEdits / auto / dontAsk / bypassPermissions）。
+  # 集約入口の再投入は tool_input だけを差し替えるので、再検査の入力にもそのまま残る。
+  permission_mode="$(printf '%s' "$input" | jq -r '.permission_mode // empty | select(type == "string")' 2>/dev/null)" || permission_mode=""
+  permission_mode="${permission_mode//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
   for helper in heredoc-strip.sh zsh-glob-nomatch.sh; do
     [ -r "$HELPER_DIR/$helper" ] || return 1
     . "$HELPER_DIR/$helper" 2>/dev/null || return 1
   done
-  for fn in ff_heredoc_strip ff_zsh_glob_scan ff_zsh_expansion_scan ff_zsh_equals_fix_scan; do
+  for fn in ff_heredoc_strip ff_zsh_glob_scan ff_zsh_expansion_scan ff_zsh_equals_fix_scan ff_zsh_word_split_prefixed; do
     [ "$(type -t "$fn" 2>/dev/null)" = function ] || return 1
   done
+  # heredoc の本文はデータとして落としてから走査する（未終端の rc 3 は書き換えない）。語の置換は本文の
+  # 同じ綴りまで書き換えるので heredoc を含む呼び出しでは行わないが、先頭へ文を足すだけの単語分割の
+  # 書き換えは本文に触れないので行う。
   stripped="$(ff_heredoc_strip "$cmd")" || return 1
-  [ "$stripped" = "$cmd" ] || return 1
-  glob_fix="$(ff_zsh_glob_scan "$cmd")" || return 1
+  has_heredoc=0
+  [ "$stripped" = "$cmd" ] || has_heredoc=1
+  glob_fix="$(ff_zsh_glob_scan "$stripped")" || return 1
   eq_fix=""
   eq_on=0
-  # equals の検出を止めている回（無効化・ACK）は equals の語に触れない。
+  split_on=0
+  # equals / scalar の検出を止めている回（無効化・ACK）は、equals の語にも単語分割にも触れない。
   if [ "${FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD:-0}" != 1 ] && [ "$ack_probe" = "${ack_probe#FF_ZSH_EXPANSION_ACK=1}" ]; then
     eq_on=1
-    exp_hits="$(ff_zsh_expansion_scan "$cmd")" || return 1
-    case "$exp_hits" in *scalar-list*) return 1 ;; esac
-    eq_fix="$(ff_zsh_equals_fix_scan "$cmd")" || return 1
+    exp_hits="$(ff_zsh_expansion_scan "$stripped")" || return 1
+    # 未引用の名前付き変数（scalar。一覧値の scalar-list を含む）を含む呼び出しは、先頭へ setopt SH_WORD_SPLIT を
+    # 付けて bash と同じ分割規則にそろえる（Issue `#2491`）。ただし付けるのは hook 入力の permission_mode が
+    # bypassPermissions のときだけ — Claude Code は書き換え後の入力に権限ルールを当て、`;` で区切った各文に許可を
+    # 求めるので、read-only の一覧に無い setopt を前置すると、他のモードでは承認なしで通っていた呼び出し
+    # （`ls -la $TMPDIR` など）が毎回の承認待ち（dontAsk / claude -p では拒否）に変わる。欠落・他の値は付けない
+    # （従来の警告 / deny のまま。fail-safe）。既に付いている呼び出しと、別のガードの ACK（先頭の語であることが
+    # 条件）を持つ呼び出しにも付けない — 前置すると ACK が先頭の語でなくなり、再検査でそのガードが止める。
+    # 付けない回も glob / equals の引用の書き換えは続ける。
+    case "$exp_hits" in *scalar*) split_on=1 ;; esac
+    if [ "$split_on" -eq 1 ]; then
+      if ff_zsh_word_split_prefixed "$cmd"; then
+        split_on=0
+      elif [ "${cmd#"$FF_ZSH_WORD_SPLIT_PREFIX"}" != "$cmd" ]; then
+        # この hook が前置した文で始まるのに有効と読めない（後ろで unsetopt する等）呼び出しへ重ねて付けない
+        # （再検査のたびに書き換えを求めて集約入口の停止へ落ちるのを防ぐ）
+        split_on=0
+      elif [ "$permission_mode" != bypassPermissions ]; then
+        split_on=0
+      else
+        case "$cmd" in *FF_*_ACK=*) split_on=0 ;; esac
+      fi
+    fi
+    eq_fix="$(ff_zsh_equals_fix_scan "$stripped")" || return 1
   fi
   fixes="$glob_fix"
   [ -z "$eq_fix" ] || fixes="${fixes:+$fixes
 }$eq_fix"
-  [ -n "$fixes" ] || return 1
+  [ -n "$fixes" ] || [ "$split_on" -eq 1 ] || return 1
+  [ -z "$fixes" ] || [ "$has_heredoc" -eq 0 ] || return 1
   rewritten="$cmd"
   listed=""
   ordered=""
@@ -329,15 +368,33 @@ ${word} → ${fix}"
   done <<EOF
 $ordered
 EOF
+  [ "$split_on" -eq 0 ] || rewritten="${FF_ZSH_WORD_SPLIT_PREFIX}${rewritten}"
   [ "$rewritten" != "$cmd" ] || return 1
-  [ -z "$(ff_zsh_glob_scan "$rewritten")" ] || return 1
+  stripped="$(ff_heredoc_strip "$rewritten")" || return 1
+  [ -z "$(ff_zsh_glob_scan "$stripped")" ] || return 1
   if [ "$eq_on" -eq 1 ]; then
-    [ -z "$(ff_zsh_equals_fix_scan "$rewritten")" ] || return 1
-    case "$(ff_zsh_expansion_scan "$rewritten")" in *equals* | *scalar-list*) return 1 ;; esac
+    [ -z "$(ff_zsh_equals_fix_scan "$stripped")" ] || return 1
+    case "$(ff_zsh_expansion_scan "$stripped")" in *equals*) return 1 ;; esac
+    # 単語分割を前置した回は scalar が解消済み（setopt で分割される）。前置していない回に一覧 scalar が残るなら書き換えない
+    if ! ff_zsh_word_split_prefixed "$rewritten"; then
+      case "$(ff_zsh_expansion_scan "$stripped")" in *scalar-list*) return 1 ;; esac
+    fi
   fi
-  out="$(printf '%s' "$input" | jq -c --arg command "$rewritten" --arg words "${listed#?}" --arg warning "$expansion_warning" '
+  context=""
+  if [ -n "$listed" ]; then
+    listed="${listed#?}"
+    listed="${listed//
+/、}"
+    context="zsh ガード（zsh-nomatch-glob / equals 展開）: zsh で実行されない未引用の語を引用して書き換える候補を作成しました（${listed}）。次の呼び出しからは最初から引用して書いてください。"
+  fi
+  if [ "$split_on" -eq 1 ]; then
+    context="${context}zsh 単語分割ガード: 未引用の名前付き変数（\${NAME} の形）を含む呼び出しを bash と同じ規則で単語分割させるため、呼び出しの先頭に ${FF_ZSH_WORD_SPLIT_PREFIX% } を付ける書き換え候補を作成しました（権限モードが bypassPermissions のときだけ付けます。位置引数の \$1 などだけを含む呼び出しには付きません。外す場合は先頭へ FF_ZSH_EXPANSION_ACK=1）。"
+    # 前置で解消する未引用 scalar の警告は出さず、書き換えたことを利用者の画面へ知らせる
+    expansion_warning="zsh 単語分割ガード: 未引用の変数を bash と同じ規則で単語分割させるため、呼び出しの先頭に ${FF_ZSH_WORD_SPLIT_PREFIX% } を付けました（書き換え候補。採用・実行は再検査と通常の権限判定に従います）。"
+  fi
+  out="$(printf '%s' "$input" | jq -c --arg command "$rewritten" --arg context "$context" --arg warning "$expansion_warning" '
     {hookSpecificOutput: {hookEventName: "PreToolUse", updatedInput: (.tool_input + {command: $command}),
-      additionalContext: ("zsh ガード（zsh-nomatch-glob / equals 展開）: zsh で実行されない未引用の語を引用して書き換える候補を作成しました（" + ($words | split("\n") | join("、")) + "）。次の呼び出しからは最初から引用して書いてください。採用・実行は再検査と通常の権限判定に従います。")}}
+      additionalContext: ($context + "採用・実行は再検査と通常の権限判定に従います。")}}
     + (if $warning != "" then {systemMessage: $warning} else {} end)' 2>/dev/null)" || return 1
   [ -n "$out" ] || return 1
   expansion_warning=""
@@ -366,7 +423,7 @@ if ! [[ $cmd =~ $query_re ]]; then
     *) glob_candidate=0 ;;
   esac
 fi
-[ "$glob_candidate" -eq 1 ] || [ -n "$expansion_deny" ] || exit 0
+[ "$glob_candidate" -eq 1 ] || [ -n "$expansion_deny" ] || [ -n "$expansion_warning" ] || exit 0
 
 # ---- 抜け道: コマンドの先頭（先頭の空白・タブ・改行だけを剥がす）の FF_ZSH_GLOB_ACK=1 --------
 # 先頭の語そのものに限る（guard-exit-code.sh の ACK と同じリテラル判定）。先頭に連なる環境代入を
@@ -424,7 +481,8 @@ case "$scan_rc" in
   *) deny_unavailable "判定ヘルパの走査（awk）が失敗しました（rc=${scan_rc}）" ;;
 esac
 fi
-[ -n "$hits" ] || [ -n "$expansion_deny" ] || exit 0
+# 未引用 scalar の警告だけの呼び出しも、単語分割の書き換え（Issue `#2491`）を試すために先へ進める。
+[ -n "$hits" ] || [ -n "$expansion_deny" ] || [ -n "$expansion_warning" ] || exit 0
 
 try_rewrite || true
 # 書き換えられなかった equals は、保留していた従来の deny をそのまま返す。
@@ -432,6 +490,8 @@ if [ -n "$expansion_deny" ]; then
   expansion_warning=""
   exit 0  # EXIT trap が保留した deny を出す
 fi
+# glob の検出が無い（scalar の警告だけの）呼び出しは、書き換えられなかったら従来どおり警告だけを出す。
+[ -n "$hits" ] || exit 0  # EXIT trap が警告を出す
 
 # ---- deny 文（検出した実値と書き換え案。最大 5 語） ---------------------------------
 listed=""

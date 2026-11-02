@@ -310,18 +310,80 @@ kc_pr() {
   return 0
 }
 
+# `add --ace-playbook <PLAYBOOK>`: /ace-curate のコミット手順がスキル本文の fence で組み立てていた記録パスと
+# claim の有無をここで決める（Issue `#2454`）。fence で lib/playbook-changelog-functions.sh を source すると、
+# Bash ツールの対話シェルが zsh の回は BASH_SOURCE が空になり、隣の reader を探せず止まる。記録するのは
+# PLAYBOOK・選択した Changelog（PLAYBOOK と別のファイルで、変更か未追跡のとき）・同階層 playbook/ の変更と
+# 未追跡・PENDING_CANDIDATES.md（在るとき）。PLAYBOOK が HEAD から変わったときだけ同じ文書の --claim を足す
+# （保留候補だけの回は claim を再生成しない）。kc_add の local（pathspecs / claim_docs）へ追記する
+kc_ace_playbook_collect() { # <PLAYBOOK>
+  local book="$1" book_abs book_dir book_top book_prefix book_rel changelog changelog_rel rc doc listing kpath
+  [[ -n "$book" ]] || die_env "--ace-playbook の PLAYBOOK パスが空です" "解決済みの PLAYBOOK パスを渡す"
+  need_bundled lib/abs-path.sh
+  need_bundled lib/git-literal-pathspec.sh
+  need_bundled lib/playbook-changelog-functions.sh
+  need_bundled lib/knowledge-read-boundary.sh
+  # shellcheck source=lib/abs-path.sh
+  . "$self_dir/lib/abs-path.sh" || die_env "絶対パスの判定 lib を読めません: $self_dir/lib/abs-path.sh" "ff-dev-toolkit を再導入してから skill を呼び直す"
+  assert_bundled_shebang_lf "$self_dir/lib/git-literal-pathspec.sh"
+  # shellcheck source=lib/git-literal-pathspec.sh
+  . "$self_dir/lib/git-literal-pathspec.sh" || die_env "literal Git lib を読めません" "plugin の同梱 lib を確かめる"
+  assert_bundled_shebang_lf "$self_dir/lib/playbook-changelog-functions.sh"
+  # shellcheck source=lib/playbook-changelog-functions.sh
+  . "$self_dir/lib/playbook-changelog-functions.sh" || die_env "PLAYBOOK Changelog 判定 lib を読めません" "plugin の同梱 lib を確かめる"
+  if ff_path_is_absolute "$book"; then book_abs="$book"; else book_abs="$PWD/$book"; fi
+  [[ -f "$book_abs" && ! -L "$book_abs" ]] || die_env "PLAYBOOK が無いか symlink です: ${book}" "解決済みの PLAYBOOK パスを渡す"
+  book_dir="${book_abs%/*}"
+  book_top="$(git -C "$book_dir" rev-parse --show-toplevel 2>/dev/null)" \
+    && book_top="$(CDPATH='' cd -P -- "$book_top" && pwd -P)" && [[ "$book_top" == "$repo_root" ]] \
+    || die_env "PLAYBOOK が作業中のリポジトリの外です: ${book}" "対象リポジトリの PLAYBOOK を渡す"
+  book_prefix="$(git -C "$book_dir" rev-parse --show-prefix)" || die_env "PLAYBOOK のリポジトリ位置を確認できません: ${book}" "作業ツリーの実体パスで再実行する"
+  book_rel="${book_prefix}${book_abs##*/}"
+  pathspecs+=("$repo_root/$book_rel")
+  changelog="$(ff_playbook_changelog_select "$book_abs" "$repo_root")" || die_env "${changelog:-Changelog を選べません: ${book}}" "PLAYBOOK と Changelog の配置を直してから再実行する"
+  changelog_rel="$(git -C "${changelog%/*}" rev-parse --show-prefix)${changelog##*/}" || die_env "Changelog のリポジトリ位置を確認できません: ${changelog}" "作業ツリーの実体パスで再実行する"
+  if [[ "$changelog_rel" != "$book_rel" ]]; then
+    rc=0; ff_git_literal "$repo_root" diff --quiet HEAD -- "$changelog_rel" || rc=$?
+    case "$rc" in
+      0) rc=0; ff_git_literal "$repo_root" ls-files --error-unmatch -- "$changelog_rel" >/dev/null 2>&1 || rc=$?
+         [[ "$rc" -eq 0 ]] || pathspecs+=("$repo_root/$changelog_rel") ;;
+      1) pathspecs+=("$repo_root/$changelog_rel") ;;
+      *) die_env "Changelog の差分を確認できません: ${changelog_rel}" "git の状態（HEAD の有無・GIT_ICASE_PATHSPECS）を確かめて再実行する" ;;
+    esac
+  fi
+  if [[ -d "$book_dir/playbook" ]]; then
+    listing="$(mktemp)" || die_env "一時ファイルを作れません" "TMPDIR を書ける場所へ向けて再実行する"
+    if ! ff_git_literal "$repo_root" ls-files -z -mo --exclude-standard -- "${book_prefix}playbook" >"$listing"; then
+      rm -f -- "$listing"; die_env "playbook/ の変更を列挙できません: ${book_prefix}playbook" "git の状態（HEAD の有無・GIT_ICASE_PATHSPECS）を確かめて再実行する"
+    fi
+    while IFS= read -r -d '' kpath; do pathspecs+=("$repo_root/$kpath"); done <"$listing"
+    rm -f -- "$listing"
+  fi
+  [[ ! -f "$book_dir/PENDING_CANDIDATES.md" ]] || pathspecs+=("$repo_root/${book_prefix}PENDING_CANDIDATES.md")
+  rc=0; ff_git_literal "$repo_root" diff --quiet HEAD -- "$book_rel" || rc=$?
+  case "$rc" in
+    0) ;;
+    1) for doc in ${claim_docs[@]+"${claim_docs[@]}"}; do [[ "$doc" != "$book_rel" ]] || return 0; done
+       claim_docs+=("$book_rel") ;;
+    *) die_env "PLAYBOOK の差分を確認できません: ${book_rel}" "git の状態（HEAD の有無・GIT_ICASE_PATHSPECS）を確かめて再実行する" ;;
+  esac
+  return 0
+}
+
 kc_add() {
   # `--` より前（書き込み口のオプションと値）と後（明示 pathspec）を別配列に分ける。オプションの値
   # （--category docs 等）を path と取り違えて stage しないため
-  local claim_docs=() args=() pathspecs=() file_args=() default_branch doc
+  local claim_docs=() args=() pathspecs=() file_args=() default_branch doc ace_playbook=""
   [[ -z "$github_input" ]] || file_args=(--github-input "$github_input")
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --claim) [[ $# -ge 2 ]] || usage; claim_docs+=("$2"); shift 2 ;;
+      --ace-playbook) [[ $# -ge 2 ]] || usage; ace_playbook="$2"; shift 2 ;;
       --) shift; pathspecs=("$@"); break ;;
       *) args+=("$1"); shift ;;
     esac
   done
+  [[ -z "$ace_playbook" ]] || kc_ace_playbook_collect "$ace_playbook"
   if [[ ${#claim_docs[@]} -gt 0 && -d "$repo_root/.version-claims" ]]; then
     # default branch の鮮度は claim の再生成・stage より前に確かめる（遅れていれば何も変えずに止まる。
     # claim の無い add は書き込み口の add 自身が先頭で同じ検査をする）
@@ -381,7 +443,7 @@ cmd_knowledge_commit() {
     case "$1" in
       --) args+=("$@"); break ;;
       --github-input) [[ $# -ge 2 && -n "$2" ]] || usage; github_input="$2"; shift 2 ;;
-      --source|--id|--summary|--category|--type|--claim|--branch|--title|--body)
+      --source|--id|--summary|--category|--type|--claim|--ace-playbook|--branch|--title|--body)
         [[ $# -ge 2 ]] || usage; args+=("$1" "$2"); shift 2 ;;
       *) args+=("$1"); shift ;;
     esac

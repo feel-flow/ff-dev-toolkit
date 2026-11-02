@@ -20,6 +20,18 @@
 
 ## [Unreleased]
 
+## [0.174.2] - 2026-11-02
+
+### 修正
+
+- Claude Code の Bash ツールの対話シェルが zsh の環境で、`/ace-curate` のコミット手順が `knowledge-read: missing-reader`（rc 2）で止まる問題を直しました。手順の fence が bash 専用の Changelog 判定 lib を source しており、zsh では `BASH_SOURCE` が空になって隣のファイルを探せませんでした。記録パスの列挙（PLAYBOOK・選択した Changelog・`playbook/` 配下の変更と追加・保留候補）と claim の有無の判定を `finish.sh knowledge-commit add --ace-playbook`（値は PLAYBOOK のパス）へ移し、手順は 1 呼び出しになります。スキル本文の bash 系ブロックで同梱 lib を source すると `tests/skill-bash-blocks` が赤になります。
+- zsh ホストで未引用の名前付き変数（`$NAME` / `${NAME}`。`for t in $list` の反復・`set -- $t` など）を含む Bash 呼び出しは、Claude Code の権限モードが bypassPermissions のときに限り、先頭へ `setopt SH_WORD_SPLIT; ` を付けた書き換え候補になり、bash と同じ単語分割で実行されるようになりました。ほかの権限モードでは、書き換え後の入力の各文に権限ルールが当たり承認待ち・拒否が増えるので前置せず、従来の警告のままです（判定は権限モードだけを見るので、許可ルールを足しても他のモードでは前置されません）。位置引数（`$1`）だけを含む呼び出し、別のガードの抜け道を先頭に持つ呼び出し、入力書き換えに対応しないホストも前置しません。
+- インタプリタ（python / node / perl / ruby）へ引用付き heredoc で渡すプログラムに二重バックスラッシュの escape（`\\n` / `\\0` など）を書いた Bash 呼び出しを、Claude Code 上では literal-write ガードが実行前に止めるようになりました。Claude Code の Bash ツールは 2 本のバックスラッシュを 1 本に解釈するので、書き込む本文に実際の改行・NUL が無音で入っていました。スクリプト引数が `/dev/stdin` の起動と、引数なしの `cat` の heredoc をパイプで受ける起動も見ます。案内は Write / Edit ツールで書いたファイルからの実行です。
+- `pwsh` / `powershell` の `-Command` に渡す本文で、二重引用符の文字列（部分式 `$( … )` の中の文字列を含む）の中にバッククォート + エスケープ文字（`` `b `` / `` `n `` / `` `0 `` など）がある Bash 呼び出しを、literal-write ガードが実行前に止めるようになりました。Markdown のインラインコードを含む置換文字列がバックスペースなどに化けて、照合も書き込みも黙って変わっていました。単一引用符の文字列・`@'…'@`・`-File` は止めません。
+- パターンはあるのに検索パスの無い `rg`（ripgrep）を、終了コードガードが実行前に止めるようになりました。標準入力が端末でない Bash ツールでは、ripgrep が標準入力を読み続けて timeout まで無言で止まっていました。案内は検索パスの明示（`rg … .`）か、標準入力を `/dev/null` から読ませる指定で、パイプの受け側・標準入力のリダイレクト・`--files`・パターンの無い `rg`・`command -v rg` は止めません。このコマンドに限って通すときは先頭へ `FF_RG_STDIN_ACK=1` を付けます。
+- 同梱テスト `knowledge-lookup` の Windows 実機分岐（W9）が、PowerShell 7 の端末から回すと `Get-Acl` を読み込めずに誤って赤になる問題を直しました。テスト自身が ACE を付けるために起動する Windows PowerShell 5.1 からも `PSModulePath` を外します。製品の振る舞いは変わりません。
+- `/create-issue` の工数見積もり（`skills/create-issue/references/estimation.md`）で、bundle に束ねるときの「遡及付与しない」を、既存の予定値と effort_basis を書き換えない範囲に限るようにしました。工数ブロックの無い既存 Issue へ着手するときの見積もり追記は、Git Workflow のブランチ作成手順に従います。
+
 ## [0.174.1] - 2026-11-01
 
 ### 修正

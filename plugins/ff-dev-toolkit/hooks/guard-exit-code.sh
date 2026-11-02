@@ -31,6 +31,9 @@
 # **終了コードのどの形を違反とみなすかの判定を 1 つも持たない**。タグの意味・誤検出の除外条件・
 # 対象フィルタの集合はすべて検出器側の正本に従う。背景実行の待ちの上限と、
 # command -v で見つからない timeout / gtimeout の分類は `tests/lib/wait-bounds.sh` に置く。
+# 検索パスの無い rg（ripgrep）が非 TTY の標準入力を読み続けて無言で止まる形（Issue `#2136`）も
+# 同じ「上限の無い待ち」として扱い、判定は `tests/lib/rg-stdin-scan.sh` に置く。抜け道は先頭に並ぶ
+# 代入の `FF_RG_STDIN_ACK=1`。rg の起動語を含む呼び出しに限り、ヘルパの不在・走査の失敗は判定不能として止める。
 #
 # **例外は下の既定名簿 `GATE_NAME`** — 候補の前置フィルタは検出器を source する前に走る必要が
 # あり（後述の fail-closed の面を候補コマンドへ限るため）、そのとき検出器の関数はまだ
@@ -269,6 +272,12 @@ has_consumer_gate_candidate() {
   return 1
 }
 
+# rg（ripgrep）の起動語の候補。語の一部（merge / args）には当てない。生の入力（JSON）にも
+# コマンド本文にも同じ形で当てる（Issue `#2136`。判定本体は tests/lib/rg-stdin-scan.sh）。
+# 生の入力では改行・タブの後ろの rg が `\nrg` / `\trg` と escape されて届くので、その形も前の区切りに数える。
+rg_word_re='(^|[^A-Za-z0-9_.-]|\\[nrt])rg(\.[Ee][Xx][Ee])?([^A-Za-z0-9_.-]|$)'
+rg_word_candidate() { [[ $1 =~ $rg_word_re ]]; }
+
 # 安価な前置フィルタ。ここを通らない入力は検出器を読まずに無音で通すので、
 # fail-closed の面が全 Bash 呼び出しへ広がらない。
 case "$input" in
@@ -278,6 +287,7 @@ esac
 case "$input" in
   *'$?'*|*PIPESTATUS*|*"$GATE_NAME"*) : ;;
   *timeout*|*gtimeout*|*sleep*) : ;;
+  *rg*) rg_word_candidate "$input" || has_raw_consumer_gate_candidate "$input" || exit 0 ;;
   *) has_raw_consumer_gate_candidate "$input" || exit 0 ;;
 esac
 
@@ -367,6 +377,7 @@ done
 # 終了コードの承認は下の既存分岐のまま（最初の語だけ）で、待ちの検査より後に置く。
 ff_ack_timeout=0
 ff_ack_unbounded=0
+ff_ack_rg=0
 ff_ack_rest="$ack_probe"
 while [ -n "$ff_ack_rest" ]; do
   ff_ack_word="${ff_ack_rest%% *}"
@@ -379,6 +390,7 @@ while [ -n "$ff_ack_rest" ]; do
   case "$ff_ack_bare" in
     FF_TIMEOUT_ACK=1) ff_ack_timeout=1 ;;
     FF_UNBOUNDED_WAIT_ACK=1) ff_ack_unbounded=1 ;;
+    FF_RG_STDIN_ACK=1) ff_ack_rg=1 ;;
     [A-Za-z_]*=*) : ;;
     *) break ;;
   esac
@@ -410,6 +422,41 @@ if [ "$(type -t ff_wait_bounds_reason 2>/dev/null)" = function ]; then
   fi
 fi
 unset wait_reason wait_rc
+# 検索パスの無い rg は非 TTY の標準入力を読み続けて無言で止まる（Issue `#2136`）。判定本体は
+# tests/lib/rg-stdin-scan.sh。rg の起動語を含む呼び出しに限り、ヘルパの不在・走査の失敗・未終端は
+# 判定不能として止める（素通しすると、止めようとしている無言の待ちを通す）。
+rg_unavailable() { # <理由>
+  deny "⚠️ ff-dev-toolkit guard（rg の標準入力待ち）: **判定不能**のため停止しました（$1）。
+このコマンドは rg（ripgrep）の起動を含む候補ですが、検索パスの有無を判定できませんでした。
+次のいずれかで進めてください:
+  1) rg に検索パスを明示する（rg <パターン> .）か、標準入力を閉じる（rg <パターン> </dev/null）
+  2) このコマンドに限って通す: コマンドの**先頭**へ環境代入 FF_RG_STDIN_ACK=1 を付けて再実行する
+  3) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1 を設定する"
+}
+if [ "$ff_ack_rg" -ne 1 ] && rg_word_candidate "$cmd"; then
+  RG_LIB="${BASH_SOURCE[0]%/*}/../tests/lib/rg-stdin-scan.sh"
+  [ -f "$RG_LIB" ] && [ -r "$RG_LIB" ] || rg_unavailable "判定ヘルパのファイルが無いか読めません（tests/lib/rg-stdin-scan.sh）"
+  # shellcheck source=../tests/lib/rg-stdin-scan.sh
+  . "$RG_LIB" 2>/dev/null || rg_unavailable "判定ヘルパの読み込みに失敗しました"
+  [ "$(type -t ff_rg_stdin_hits 2>/dev/null)" = function ] || rg_unavailable "判定ヘルパに ff_rg_stdin_hits がありません"
+  rg_rc=0
+  rg_hits="$(ff_rg_stdin_hits "$cmd")" || rg_rc=$?
+  case "$rg_rc" in
+    0) : ;;
+    4) rg_unavailable "引用・展開・heredoc が閉じないまま入力が終わったため、走査を完了できません" ;;
+    *) rg_unavailable "判定ヘルパの走査が失敗しました（rc=${rg_rc}）" ;;
+  esac
+  if [ -n "$rg_hits" ]; then
+    rg_first="${rg_hits%%"$nl"*}"
+    deny "⚠️ ff-dev-toolkit guard（rg の標準入力待ち）: 検索パスの無い rg（\`${rg_first}\`）は、標準入力が端末でないとき cwd ではなく**標準入力**を検索します。Bash ツールの標準入力は端末でなく EOF も来ないので、出力の無いまま待ち続け、timeout（既定 120 秒）で background へ移されます（実測: 検索パスの無い rg は timeout まで返らず、検索パスか </dev/null を付けると即座に終わる。導入先の観測台帳 OBS-028）。
+次のどちらかへ書き換えて再実行してください:
+  ${rg_first} .            （cwd を検索する。検索パスを明示する）
+  ${rg_first} </dev/null   （標準入力を閉じる）
+パイプの受け側（cmd | rg …）・標準入力のリダイレクト（< file / <<< … / heredoc）・--files / --type-list / --version は止めません。
+このコマンドに限って通す: コマンドの**先頭**へ環境代入 FF_RG_STDIN_ACK=1 を付けて再実行する"
+  fi
+  unset rg_hits rg_rc rg_first
+fi
 case "$ack_probe" in
   'FF_EXIT_CODE_ACK=1 '*|'FF_EXIT_CODE_ACK=1	'*) exit 0 ;;
 esac

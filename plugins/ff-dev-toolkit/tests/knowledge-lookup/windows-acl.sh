@@ -230,7 +230,8 @@ case "$(uname -s 2>/dev/null)" in
     if [[ "$win_real_rc" -eq 0 && -d "$win_real" ]]; then
       ok 'W8: 実機: SYSTEMROOT だけの環境で、実 ACL の検査を通る作業場所を作る'
       mkdir "$win_real/clean" "$win_real/app"
-      WIN_TARGET="$(cygpath -w "$win_real/app")" WIN_SID="$win_sid" MSYS2_ARG_CONV_EXCL='*' \
+      # Issue `#2568`: this fixture's own Get-Acl / Set-Acl also loses its module under PowerShell 7's PSModulePath.
+      env -u PSModulePath -u PSMODULEPATH WIN_TARGET="$(cygpath -w "$win_real/app")" WIN_SID="$win_sid" MSYS2_ARG_CONV_EXCL='*' \
         "$(cygpath -W)/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -NonInteractive -Command \
         '$a = Get-Acl -LiteralPath $env:WIN_TARGET; $s = New-Object System.Security.Principal.SecurityIdentifier($env:WIN_SID); $a.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($s, "Modify", "ContainerInherit,ObjectInherit", "None", "Allow"))); Set-Acl -LiteralPath $env:WIN_TARGET -AclObject $a' \
         >/dev/null 2>&1 || bad 'W9: 実機: capability SID の ACE を付けられない'

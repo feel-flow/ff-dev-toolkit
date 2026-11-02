@@ -24,6 +24,29 @@
 #      子プロセスへ渡らないので、値は空文字 / `undefined` になる。前置代入（`NAME=… perl`・
 #      `env NAME=… perl`）・`export` / `declare -x` / `set -a`・この hook の環境に既にある名前
 #      （既に export 済みの変数への代入は環境へ反映される）は除く
+#   D（interp-double-backslash。Issue `#2450` / 観測台帳 OBS-324）: インタプリタ（python / python3 /
+#      py / node / perl / ruby）へ**引用付き** heredoc（`<<'PY'`）でプログラムを渡し、その本文に二重
+#      バックスラッシュ + 英数字（`\\n` / `\\0` / `\\000` / `\\x41` …）がある形（python は文字列リテラルが escape と
+#      して解釈する文字 `0-7 a b f n r t v x N u U` に限る。`\\d` / `\\s` は解釈の前後で値が同じなので対象外）。Claude Code の Bash ツールは
+#      コマンド文字列の `\\` を bash へ渡す前に `\` へ解釈するので（実測 2026-11-02: `printf '%s\n' 'a\\b'` が
+#      `a\b` を出す）、プログラムには `\n` が届き、文字列リテラルの中で実際の改行・NUL に変わって書き込まれる
+#      （Issue `#2450` に記録された、確証した真陽性 3 件と同形）。同じ実測で、トランスクリプトに記録された tool_input の
+#      コマンドは `\\` の 2 文字のままだった（変換は記録より後の実行層で起きる）。PreToolUse の hook が
+#      受け取るのはこの tool_input なので、変換より前の `\\` を読める。
+#      引用しない heredoc（`<<PY`）は bash 自身も `\\` を `\` に畳むので、書き手の意図と届く値が変わらず
+#      対象外。プログラムを標準入力から読む形として、スクリプト引数の無い / `-` / `/dev/stdin` の起動と、
+#      引数なしの `cat` の引用付き heredoc をパイプで受ける起動（`cat <<'PY' | python3 -`）を読む。
+#      前提の `\\` の解釈は Claude Code の Bash ツール固有なので、hook は Claude Code 以外のホスト
+#      （`CLAUDECODE` が 1 でない）では D の検出を落とす。`-c` / `-e` の引数で渡すプログラム・`bash <<'EOF'` の本文（`printf '\\134'` で値を組み立てる形）は
+#      対象外（誤検知を抑えるため Issue の射程どおりに絞る。既知の限界）
+#   P（powershell-backtick。Issue `#2496` / 導入先 OBS-037）: `pwsh` / `powershell` の `-Command`（`-c` と
+#      その短縮形。Windows PowerShell は位置引数も）に渡すプログラムで、**二重引用符の文字列**（`"…"` /
+#      ヒアストリング `@"…"@`）の中に `` ` `` + PowerShell のエスケープ文字（`0 a b e f n r t u v`）がある形。
+#      Markdown のインラインコード（`` `b2821ed` ``）を含む置換文字列を二重引用符で書くと `` `b `` が
+#      バックスペースになり、照合する文字列と書き込む本文が黙って変わる。二重引用符の中の部分式 `$( … )` は
+#      コードとして読み、内側の二重引用符の文字列も走査する（内側の `"` で外側を閉じない）。単一引用符の文字列・`@'…'@`・
+#      コメント・文字列の外のバッククォート（行継続・次の 1 文字のエスケープ）は対象外。`-File` /
+#      `-EncodedCommand` / pwsh の位置引数（スクリプトファイル）は読まない。`-Command -` は heredoc の本文を読む
 #
 # プログラムとして読むのは: perl の `-e` / `-E`（`-pe` / `-0pi -e` などの束ね・`-e<本文>` の
 # 直付けを含む）と、`-e` が無いときの heredoc（`perl - <<'EOF'`）/ node の `-e` / `--eval` /
@@ -38,6 +61,8 @@
 #     stdout: 1 件 1 行。
 #       `A<TAB><NAME><TAB>perl`             述語 A の検出
 #       `B<TAB><NAME><TAB><perl|node>`      述語 B の検出
+#       `D<TAB><\\x の 3 文字><TAB><言語>`   述語 D の検出（言語は python / node / perl / ruby。言語ごとに 1 件）
+#       `P<TAB><`x の 2 文字><TAB>powershell` 述語 P の検出（エスケープ文字ごとに 1 件）
 #       `S<TAB><入れ子のコマンド>`            `bash -c` 等の入れ子。改行は \002 に置き換えて 1 行に
 #                                            収める（呼び出し側がデコードして再走査する）
 #       `E<TAB>done`                        走査を最後まで終えた印（最終行）
@@ -47,7 +72,7 @@
 #         その他 = awk が失敗した（不在 127・破損）。stdout は信用しない
 #     第 2 引数: 親で export されずに代入された名前（空白区切り）。入れ子の走査で使う
 #   ff_literal_write_scan_all <コマンド文字列>
-#     入れ子（`S` 行）を最大 3 段まで再走査し、`A` / `B` 行だけを返す。親で export されずに代入された
+#     入れ子（`S` 行）を最大 3 段まで再走査し、`A` / `B` / `D` / `P` 行だけを返す。親で export されずに代入された
 #     名前は子の走査へ引き継ぐ（子の環境には無いので、子が `$ENV{NAME}` で読めば述語 B に当たる）。
 #     rc は ff_literal_write_scan と同じ契約で、入れ子のどこかが 0 以外なら最初の非 0 を返す。
 #     3 段を超える入れ子は rc 4、awk が 0 で終わったのに完了印（`E` 行）が無いときは rc 5
@@ -208,6 +233,8 @@ function read_bodies(   k, e, line, cmp, body) {
       if (cmp == pdelim[k]) break
       body = body line "\n"
     }
+    # 引用付きの本文は、述語 D 用にシェルが何も解釈しない原文のまま残す
+    if (pquoted[k]) hraw[pcmd[k]] = hraw[pcmd[k]] body
     if (!pquoted[k]) body = expand_body(body)
     hbody[pcmd[k]] = hbody[pcmd[k]] body
     if (pcmd[k] in hquoted) hquoted[pcmd[k]] = hquoted[pcmd[k]] && pquoted[k]
@@ -325,6 +352,8 @@ function tokenize(   ch, nx, j, d, q, t, r) {
       endcmd(); j = skip_paren(i + 1, 1); if (!j) { rc = 4; return }
       i = j; continue
     }
+    # 単独の | はパイプ: 受け側のコマンドへ送り側を記録する（述語 D の cat の heredoc を受けるインタプリタ）
+    if (ch == "|" && nx != "|" && substr(src, i - 1, 1) != "|") { pp = cur; endcmd(); if (cur != pp) pfrom[cur] = pp; i++; continue }
     if (ch == ";" || ch == "&" || ch == "|" || ch == "(" || ch == ")") { endcmd(); i++; continue }
     w = w ch; inw = 1; i++
   }
@@ -373,6 +402,89 @@ function rule_b(p, lang,   rest, s, nm, e, bs, b) {
     rest = substr(rest, RSTART + RLENGTH)
     sub(/^process\.env[.[]?[ \t]*/, "", s); sub(/[ \t]*\]?$/, "", s); gsub(qre, "", s)
     if (unexported(s) && !((lang, s) in seen_b)) { seen_b[lang, s] = 1; printf "B\t%s\t%s\n", s, lang }
+  }
+}
+# 述語 D: インタプリタへ引用付き heredoc で渡すプログラムの、二重バックスラッシュ + 英数字（\\n / \\0 / \\x …）。
+# body はシェルが何も解釈しない原文（引用付き heredoc の本文）。python は文字列リテラルが解釈する escape の文字
+# （0-7 a b f n r t v x N u U）に限る — それ以外（\\d / \\s / \\w …）は \d と \\d が同じ値（バックスラッシュ + 文字）に
+# なるので、ホストの解釈で値が変わらない。node / perl / ruby は未知の escape でバックスラッシュを落とす文脈が
+# あるので英数字すべてを対象にする
+function rule_d(body, lang,   s) {
+  if (lang == "python") { if (!match(body, /\\\\[0-7abfnrtvxNuU]/)) return }
+  else if (!match(body, /\\\\[0-9A-Za-z]/)) return
+  s = substr(body, RSTART, RLENGTH)
+  if (!(lang in seen_d)) { seen_d[lang] = 1; printf "D\t%s\t%s\n", s, lang }
+}
+# 標準入力からプログラムを読むインタプリタ（スクリプト引数が無い / - / /dev/stdin）へ届く引用付き heredoc の原文に
+# 述語 D を当てる。自身の heredoc が無ければ、パイプの送り側が引数なしの cat の引用付き heredoc
+# （cat <<EOF の区切り語を引用した形 | python3 -）なら、その本文を読む
+function d_stdin(id, lang,   j) {
+  if (id in hraw) { rule_d(hraw[id], lang); return }
+  if (!(id in pfrom)) return
+  j = pfrom[id]
+  if (cwn[j] == 1 && base(cw[j, 1]) == "cat" && (j in hraw)) rule_d(hraw[j], lang)
+}
+# 述語 P: PowerShell のプログラムの二重引用符の文字列（"…" / @"…"@）の中の、バッククォート + エスケープ文字
+function ps_hit(ch) { if (!(ch in seen_p)) { seen_p[ch] = 1; printf "P\t`%s\tpowershell\n", ch } }
+# p の k から二重引用符の文字列の中身を読む。here=1 はヒアストリングの本文（閉じの " を持たない）。戻り値は閉じの次
+function ps_dq(p, k, m, here,   ch, nx) {
+  while (k <= m) {
+    ch = substr(p, k, 1); nx = substr(p, k + 1, 1)
+    if (ch == "`") { if (nx ~ /^[0abefnrtuv]$/) ps_hit(nx); k += 2; continue }
+    # 部分式 $( … ) の中はコードとして読む（中の二重引用符で外側を閉じない。中の文字列も走査する）
+    if (ch == "$" && nx == "(") { k = ps_sub(p, k + 2, m); continue }
+    if (!here && ch == "\"") { if (nx == "\"") { k += 2; continue } return k + 1 }
+    k++
+  }
+  return k
+}
+# 二重引用符の中の部分式 $( … ) を読み、閉じ括弧の次の位置を返す（未終端は m + 1）
+function ps_sub(p, k, m,   ch, depth) {
+  depth = 1
+  while (k <= m) {
+    ch = substr(p, k, 1)
+    if (ch == sq) {
+      k++
+      while (k <= m) { if (substr(p, k, 1) == sq) { if (substr(p, k + 1, 1) == sq) { k += 2; continue } k++; break } k++ }
+      continue
+    }
+    if (ch == "\"") { k = ps_dq(p, k + 1, m, 0); continue }
+    if (ch == "`") { k += 2; continue }
+    if (ch == "(") depth++
+    else if (ch == ")") { depth--; if (depth == 0) return k + 1 }
+    k++
+  }
+  return k
+}
+function rule_p(p,   k, m, ch, nx, pv, j, e) {
+  m = length(p); k = 1
+  while (k <= m) {
+    ch = substr(p, k, 1); nx = substr(p, k + 1, 1)
+    pv = (k > 1) ? substr(p, k - 1, 1) : " "
+    # ブロックコメント <# … #> と行コメント（語の先頭の #）は読み飛ばす
+    if (ch == "<" && nx == "#") { j = index(substr(p, k + 2), "#>"); k = (j ? k + j + 3 : m + 1); continue }
+    if (ch == "#" && pv ~ /[ \t\n;(){|]/) { j = index(substr(p, k), "\n"); k = (j ? k + j : m + 1); continue }
+    # ヒアストリング（開きは @ + 引用符で、後ろは行末まで空白だけ。閉じは行頭の引用符 + @）
+    if (ch == "@" && (nx == sq || nx == "\"")) {
+      j = k + 2
+      while (j <= m && substr(p, j, 1) ~ /[ \t\r]/) j++
+      if (j <= m && substr(p, j, 1) == "\n") {
+        e = index(substr(p, j), "\n" nx "@")
+        if (nx == "\"") ps_dq(substr(p, j, (e ? e : m - j + 1)), 1, (e ? e : m - j + 1), 1)
+        k = (e ? j + e + 2 : m + 1)
+        continue
+      }
+    }
+    # 単一引用符の文字列（単一引用符 2 つは中の 1 文字）。中のバッククォートはリテラル
+    if (ch == sq) {
+      k++
+      while (k <= m) { if (substr(p, k, 1) == sq) { if (substr(p, k + 1, 1) == sq) { k += 2; continue } k++; break } k++ }
+      continue
+    }
+    if (ch == "\"") { k = ps_dq(p, k + 1, m, 0); continue }
+    # 文字列の外のバッククォートは次の 1 文字をそのまま渡す（エスケープ文字として解釈しない）
+    if (ch == "`") { k += 2; continue }
+    k++
   }
 }
 # 入れ子のシェルへ渡す: この時点で export されずに代入済みの名前（子の環境には無い）を 1 列目に載せる
@@ -477,6 +589,7 @@ function process(id,   k, m, c, a, np, prog, inplace, stop, cl, ch, q, hasprog, 
       }
     }
     if (a <= m) script = cw[id, a]
+    if (np == 0 && (script == "" || script == "-" || script == "/dev/stdin")) d_stdin(id, "perl")
     if (np == 0 && (script == "" || script == "-") && (id in hbody)) prog[++np] = hbody[id]
     for (q = 1; q <= np; q++) {
       if (inplace) rule_a(prog[q])
@@ -500,8 +613,56 @@ function process(id,   k, m, c, a, np, prog, inplace, stop, cl, ch, q, hasprog, 
       if (cl ~ /^(-r|--require|--import|--loader|--experimental-loader|-C|--conditions)$/) a++
     }
     if (a <= m) script = cw[id, a]
+    if (np == 0 && (script == "" || script == "-" || script == "/dev/stdin")) d_stdin(id, "node")
     if (np == 0 && (script == "" || script == "-") && (id in hbody)) prog[++np] = hbody[id]
     for (q = 1; q <= np; q++) rule_b(prog[q], "node")
+    return
+  }
+  # 述語 D の python / ruby（-c / -m / -e のプログラム・モジュールが無く、heredoc をプログラムとして読む形）
+  lc = c; sub(/\.[Ee][Xx][Ee]$/, "", lc)
+  if (lc ~ /^python[0-9.]*$/ || lc == "py" || lc == "ruby") {
+    lang = (lc == "ruby") ? "ruby" : "python"
+    for (a = k + 1; a <= m; a++) {
+      cl = cw[id, a]
+      if (cl == "-") break
+      if (cl == "--") { a++; break }
+      if (cl !~ /^-/) break
+      if (lang == "python") {
+        if (cl ~ /^-[XW]/) { if (cl ~ /^-[XW]$/) a++; continue }
+        if (cl ~ /^-[A-Za-z]*[cm]/) return
+      } else {
+        if (cl ~ /^-[A-Za-z]*e/) return
+        if (cl ~ /^-[IrCE]$/) a++
+      }
+    }
+    if (a <= m) script = cw[id, a]
+    if (script == "" || script == "-" || script == "/dev/stdin") d_stdin(id, lang)
+    return
+  }
+  # 述語 P: pwsh / powershell の -Command（Windows PowerShell は位置引数も -Command）。-File / -EncodedCommand は読まない
+  lc = tolower(lc)
+  if (lc == "pwsh" || lc == "powershell") {
+    cmdat = 0
+    for (a = k + 1; a <= m; a++) {
+      cl = tolower(cw[id, a])
+      if (cl ~ /^-c(o(m(m(a(n(d)?)?)?)?)?)?$/) { cmdat = a + 1; break }
+      if (cl ~ /^-f(i(l(e)?)?)?$/ || cl ~ /^-e(c|n[a-z]*)?$/) return
+      # 値を取るパラメーター（ExecutionPolicy / WorkingDirectory / WindowStyle / OutputFormat / InputFormat /
+      # ConfigurationName / Version / SettingsFile / PSConsoleFile / CustomPipeName とその短縮形）は次の語を飛ばす
+      if (cl ~ /^-(ex[a-z]*|ep|wo[a-z]*|wd|wi[a-z]*|w|ou[a-z]*|of|o|inp[a-z]*|if|conf[a-z]*|cnf|v|ve[a-z]*|se[a-z]*|ps[a-z]*|cu[a-z]*)$/) { a++; continue }
+      if (cl ~ /^-/) continue
+      if (lc == "powershell") cmdat = a
+      break
+    }
+    if (!cmdat || cmdat > m) return
+    ps = ""
+    for (a = cmdat; a <= m; a++) ps = ps (ps == "" ? "" : " ") cw[id, a]
+    if (ps == "-") {
+      if (id in hraw) ps = hraw[id]
+      else if (id in hbody) ps = hbody[id]
+      else return
+    }
+    rule_p(ps)
     return
   }
 }
@@ -566,7 +727,7 @@ ff_literal_write_scan_all() { # <cmd>
             next="${next:+${next}${sep}}${names}${fsep}${hit}"
             ;;
           E"	done") done_seen=1 ;;
-          A"	"* | B"	"*) out="${out:+${out}
+          A"	"* | B"	"* | D"	"* | P"	"*) out="${out:+${out}
 }${hit}" ;;
         esac
       done <<EOF

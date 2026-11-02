@@ -51,6 +51,7 @@
 # 変異検出: 空の単位宣言（`- effort_unit:`）を旧ブロックとして読むと 検査 4f の excluded_malformed=2 / population=6 が赤になる（mutation/mut-empty-unit.py）。
 # 変異検出: record-effort-wallclock.sh の Issue 番号抽出の `#` を任意に戻すと 検査 14c（`chore/2026-09-23-cleanup` を Issue として記録する）が赤になる（mutation/mut-hash-optional.py）。
 # 空振り検出: bundle 規定の欠落・同じ針の写し残存は一致行数 0 / 2 以上で赤。規定 13 行を個別削除して各 exit 1、写し 1 行追加も exit 1（2026-09-28 実測）。
+# 空振り検出: references/estimation.md から「遡及付与しないのはこの書き換えに限る」を消すと 1 件、git-workflow ステップ2 のリンク行を消すと 1 件、着手時追記の行を「ブロックの無い既存 Issue へは遡及付与しない」へ戻すと 2 件が赤になる。正常は 355/0・既存 skip 2 件（2026-11-02 実測）。
 # 空振り検出: create-issue の references/estimation.md を消すと検査対象不在で exit 1、3 層参照の表を本線 SKILL.md へ戻して estimation.md から消すと 検査 9 の 3 件が赤になる（`--state closed` は補正手順の照会にも在るので残る）（2026-09-24 実測。置き場所を移した針が移動元の写しに当たって緑になる形を塞ぐ）。
 # 変異検出: effort-report.sh の中央値の位置の判定を `vmed >= upper` へ倒すと 検査 4h の median-edge（上限ちょうど 2.00 は in_band）、`vmed <= lower` へ倒すと median-lower-edge（下限ちょうど 0.50 は in_band）、母集団 0 件の (unmeasured) 分岐を外すと空入力がそれぞれ 1 件赤になる（mutation/mut-median-edge.py / mut-median-lower-edge.py / mut-median-empty.py）。
 # 空振り検出: references/estimation.md から既定値の表の「再置換で済む」行を消すと 検査 9b の 3 件、ガード新設の行を消すと 2 件、分岐の問い・同額の行・補正元優先の段落・並列・再掲文書・静的検出器の行を消すとそれぞれ 1 件、retrospective の較正トリガ行を消すと 3 件、close-issue の較正手順 2 を消すと 1 件が赤になる（2026-09-27 実測。規定を足した行が消えても緑のままになる形を塞ぐ）。
@@ -812,6 +813,11 @@ bundle_rule_once "$CREATE_ESTIMATION" '固定費（ブランチ作成・PR 作�
 bundle_rule_once "$CREATE_ESTIMATION" '子は実装分 + レビュー対応分に留める' '子の見積もり範囲'
 bundle_rule_once "$CREATE_ESTIMATION" 'bundle 親の工数ブロックには固定費だけ、子には各自の実装分だけを記録する' '親子の二重計上を避ける'
 bundle_rule_once "$CREATE_ESTIMATION" '既存 Issue の予定値と `effort_basis` は遡って書き換えない' '過去予定を保持'
+bundle_rule_once "$CREATE_ESTIMATION" '遡及付与しないのはこの書き換えに限る' '遡及付与しない範囲'
+bundle_rule_once "$CREATE_ESTIMATION" 'git-workflow.md#ステップ2-ブランチ作成' '着手時追記はステップ2'
+absent "$CREATE_ESTIMATION" 'ff-effort` ブロックの無い既存 Issue へは遡及付与しない' \
+  '旧い遡及付与しない文は estimation に無い' \
+  '旧い遡及付与しない文が estimation に戻っている'
 bundle_rule_once "$CLOSE" '実装分だけを子の見積もり比で配り、固定費は束ね全体で 1 回分として扱う' '実績の固定費分離'
 bundle_rule_once "$CLOSE" '親には固定費だけ、子には配分した実装分だけを書き戻す' '実績の親子二重計上を避ける'
 bundle_rule_once "$CLOSE" 'ブロックを持つ子が 1 件だけ、または全子の実装分の比を確定できない場合は、編集面・作業記録など何の比で配ったかを `effort_evidence` に書く' '比を引けない場合の根拠'

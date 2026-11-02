@@ -350,3 +350,60 @@ ff_zsh_expansion_scan() {
 ff_zsh_equals_fix_scan() {
   printf '%s\n' "$1" | "${FF_ZSH_GLOB_AWK:-awk}" -v mode=equals-fix "$_FF_ZSH_GLOB_AWK_PROG"
 }
+
+# 単語分割の書き換え（Issue `#2491`）で前置する文。未引用の `$VAR` / `${VAR}` を bash と同じ規則で
+# 単語分割させる（`for t in $list` / `set -- $t` / 関数引数など、形を問わず効く）。
+FF_ZSH_WORD_SPLIT_PREFIX='setopt SH_WORD_SPLIT; '
+
+# rc 0: コマンドの最初の文（先頭の空白・改行を除く）が `setopt … SH_WORD_SPLIT …` で、`;` か改行で
+# 後ろの文と区切られている（呼び出し全体で単語分割が bash と同じになる）。zsh のオプション名は大文字小文字と
+# `_` を区別しないので、`setopt shwordsplit` / `setopt sh_word_split` も同じに扱う。rc 1: それ以外。
+# 値やコマンドは評価しない。
+ff_zsh_word_split_prefixed() { # <cmd>
+  local s="$1" first w found rest stmt nl='
+'
+  while :; do
+    case "$s" in
+      ' '* | '	'* | "$nl"*) s="${s#?}" ;;
+      *) break ;;
+    esac
+  done
+  case "$s" in
+    setopt' '* | setopt'	'*) : ;;
+    *) return 1 ;;
+  esac
+  first="${s%%[;${nl}]*}"
+  [ "$first" != "$s" ] || return 1
+  # Windows の jq.exe は改行を \r\n で出すので、文の末尾の CR は区切りの一部として落とす（Issue `#2017`）
+  first="${first%"$(printf '\r')"}"
+  # 引用・展開・glob・リダイレクトを含む文は読まない（語の分割と glob を起こさずに名前だけを比べるため）
+  case "$first" in *[\'\"\\\$\`\(\)\{\}\<\>\|\&\*\?\[]*) return 1 ;; esac
+  # `+` で始まる語（`setopt +o shwordsplit` は無効化）を含む文は有効化と読まない
+  case " ${first#setopt}" in *[[:blank:]]+*) return 1 ;; esac
+  found=1
+  for w in ${first#setopt}; do
+    case "${w//_/}" in
+      [Ss][Hh][Ww][Oo][Rr][Dd][Ss][Pp][Ll][Ii][Tt]) found=0 ;;
+    esac
+  done
+  [ "$found" -eq 0 ] || return 1
+  # 後ろの文で無効化し直す呼び出し（unsetopt … / setopt no_sh_word_split / setopt +o … / set +o …）は有効と読まない。
+  # 照合するのは先頭の語（then / do / else / ! の後ろを含む）が setopt / unsetopt / set の文だけ — `grep -n unsetopt docs $X`
+  # の引数のようにデータとして書いた綴りでは外さない（外すと実際は分割される呼び出しへ事実と違う警告が出る）。
+  rest="$(printf '%s' "${s#"$first"}" | tr ';&|(){}' '\n\n\n\n\n\n\n' | tr -d '_' | tr 'A-Z' 'a-z')"
+  while IFS= read -r stmt; do
+    while :; do
+      stmt="${stmt#"${stmt%%[![:blank:]]*}"}"
+      case "$stmt" in
+        then[[:blank:]]* | do[[:blank:]]* | else[[:blank:]]* | '!'[[:blank:]]*) stmt="${stmt#*[[:blank:]]}" ;;
+        *) break ;;
+      esac
+    done
+    case "$stmt" in
+      unsetopt[[:blank:]]*shwordsplit* | setopt[[:blank:]]*noshwordsplit* | setopt[[:blank:]]*+o*shwordsplit* | set[[:blank:]]*+o*shwordsplit*) return 1 ;;
+    esac
+  done <<EOF
+$rest
+EOF
+  return 0
+}

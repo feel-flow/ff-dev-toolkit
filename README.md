@@ -269,6 +269,7 @@ Codex の Bash 相当ツールでの実発火は未実測。
 - 背景実行では、名簿に無いコマンドが診断の echo で終わり、失敗が 0 として報告される形も止める。前景の同じ形は止めない。通し方は診断の後に終了コードを保存して `exit $rc` まで書く
 - 背景実行の `until` / `while true` / `while !` が `sleep` だけで終わる待ちは止める。回数で抜ける繰り返しへ案内する。`timeout` / `gtimeout` を上限として数えるのは `command -v` で見つかるときだけ。このコマンドに限って通すときは直前の文として `FF_UNBOUNDED_WAIT_ACK=1;` を置く（until / while の直前へ空白だけで付けると構文エラーになる）
 - `command -v` で見つからない `timeout` / `gtimeout` は実行前に止める。案内は perl の alarm。このコマンドに限って通すときは先頭に `FF_TIMEOUT_ACK=1` を付ける
+- パターンはあるのに検索パスの無い `rg`（`rg -n 'pat' -g '!node_modules'`）は実行前に止める（パターンの無い `rg` は使い方の誤りで即座に終わり、`command -v rg` は起動ではないので止めない）。ripgrep は検索パスを省くと、標準入力が端末でないとき cwd ではなく標準入力を検索するので、Bash ツール（標準入力が端末でなく EOF も来ない）では出力の無いまま timeout まで待ち続ける。案内は検索パスの明示（`rg … .`）か `</dev/null`。パイプの受け側（`cmd | rg …`）・標準入力のリダイレクト・`--files` / `--type-list` / `--version` は止めない。`$(…)` の中の `rg` も外の標準入力を受け継ぐので走査する。判定の正本は `tests/lib/rg-stdin-scan.sh`。このコマンドに限って通すときは先頭に並ぶ代入として `FF_RG_STDIN_ACK=1` を付ける。`rg` の起動語を含む呼び出しに限り、判定ヘルパの不在・走査の失敗は判定不能として止める
 - セミコロンで繋いだ一意なパイプの並びは、区間のどれかが非 0 なら非 0 で終わる書き換え候補にする。一意でない区間、関数、サブシェル、背景起動は書き換えず止める
 - 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1`
 - **このガードだけは判定を完了できないとき fail-closed**（判定不能である旨を出して止める）。対象は検出器の欠落・破損、heredoc 除去ヘルパの欠落・破損、走査 `awk` の失敗、`jq` フィルタの実行失敗、検出器出力の解釈不能、ASDD ゲートの検証不能（`.asdd/config.json` があるのに node が無い・設定を読めない。機能を無効にした場合は従来どおり無音で通る）。ただしその面は `$?` / `PIPESTATUS` / ゲート綴りを含む**候補コマンドに限る**ので、検出器が壊れても無関係な Bash 呼び出しは止まらない
@@ -277,6 +278,8 @@ Codex の Bash 相当ツールでの実発火は未実測。
 - 既知の限界（素通しする形）: 末尾が裸の `&` で終わる background 起動の後続行（終了コードは `wait` が運ぶため追わない）・変数展開やコマンド置換で組み立てた綴り・heredoc 本文（データとして落とす）。改行で区切った 2 行目以降は `gate-exit-dropped` が行をまたいで判定する（`pipe-exit-read` も同様）
 
 **zsh 展開ガード（`guard-zsh-glob.sh` の追加検出）** — zsh ホスト（`CLAUDE_CODE_SHELL`、無ければ `SHELL`）で未引用の `$VAR` / `${VAR}` を `systemMessage` で警告する。実値・配列型・シェル設定を推測しないため、この警告では停止しない。複数引数は配列と `"${args[@]}"`、単一引数は `"$VAR"` を使う。未引用の `=` 始まりの語（`echo ===` / `[ a == b ]`）はコマンドパス展開になるため deny し、語を引用する案を示す。
+
+- 入力書き換えに対応した Claude Code 環境で、**権限モードが bypassPermissions のときだけ**、未引用の名前付き変数（`$NAME` / `${NAME}`。一覧値を代入した変数の形を含む）を含む呼び出しの先頭へ `setopt SH_WORD_SPLIT; ` を付けた書き換え候補を返し、bash と同じ単語分割規則にそろえる（`for t in "a b" "c d"; do set -- $t; …` の `set -- $t` や `$(…)` の中の `$NAME` など）。書き換えた呼び出しには scalar の警告を出さない。ほかの権限モード（default / plan / acceptEdits / auto / dontAsk と、hook 入力に権限モードが無い場合）では前置しない — Claude Code は書き換え後の入力に権限ルールを当て、`;` で区切った各文に許可を求めるので、read-only の一覧に無い `setopt` を前置すると、承認なしで通っていた呼び出し（`ls -la $TMPDIR` など）が毎回の承認待ち（dontAsk / `claude -p` では拒否）に変わるため。判定は権限モードだけを見るので、許可ルールを足しても他のモードでは前置されない。位置引数（`$1`）だけを含む呼び出し（`f() { for w in $1; do …; done; }; f "a b c"`）は既存の scalar 検出が数えないので前置されない。別のガードの抜け道（`FF_*_ACK=1`）を先頭に持つ呼び出しは、前置すると抜け道が先頭の語でなくなるので前置せず従来の警告に留める（glob / equals の引用の書き換えは続ける）。入力書き換えに対応しないホスト（Codex / grok）は従来の警告のまま。外すときは先頭の `FF_ZSH_EXPANSION_ACK=1`
 
 - 引用・エスケープ・代入値・`[[ ]]`・case パターン・コメント・heredoc 本文は除外。`$(…)` / バッククォートのコマンドは走査する。`noglob` は equals 展開を止めないので除外しない
 - bash ホストでは発火しない。先頭の `FF_ZSH_EXPANSION_ACK=1` は呼び出し単位の免除、`FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1` は無効化。意図的な `=cmd` や `NO_EQUALS` 設定には免除を使う。既存の `FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1` は追加検出も含む hook 全体を無効化する
@@ -293,10 +296,10 @@ Codex の Bash 相当ツールでの実発火は未実測。
 - `jq` 不在・JSON でない入力は素通しする。候補コマンド（`=` の右に glob 文字を含む）でヘルパを読めない・走査が失敗する・引用や展開が閉じないまま終わる・ASDD 設定を検証できないときは理由付きで停止する（fail-closed。面は候補コマンドに限る）
 - 既知の限界: 未引用 `$VAR` が単語分割されない形・語頭の `=word`・`$name:修飾子` など、glob 以外の zsh 固有の展開は対象外。変数やコマンド置換で組み立てた語の中身は見えない。区切り語を引用しない heredoc（`<<EOF`）の本文に書いた `$(…)` の中のコマンドも、heredoc 本文をデータとして落とすため見えない
 
-**literal-write ガード（`guard-literal-write.sh`）** — シェルの値が別言語のプログラムへ届かず、ファイル本文が**無音で**変わる Bash 呼び出しを実行前に停止する。止めるのは 2 形: `perl -i` の単一引用符プログラムに入ったシェル変数の綴り（`perl -pi -e 's/x/"$REPO"/' f` の `$REPO` は Perl 変数として展開され、空文字になる）と、perl / node が `$ENV{NAME}` / `process.env.NAME` で読む名前を同じ呼び出しが `export` せずに代入している形（`ROW=…; perl -i -pe 'BEGIN{$r=$ENV{ROW}} …'` は空行を挿入する）。停止文は Write / Edit ツールか引用付き heredoc（`cat > <file> <<'EOF'`）への書き換えを案内する。
+**literal-write ガード（`guard-literal-write.sh`）** — シェルの値が別言語のプログラムへ届かず、ファイル本文が**無音で**変わる Bash 呼び出しを実行前に停止する。止めるのは 4 形: `perl -i` の単一引用符プログラムに入ったシェル変数の綴り（`perl -pi -e 's/x/"$REPO"/' f` の `$REPO` は Perl 変数として展開され、空文字になる）、perl / node が `$ENV{NAME}` / `process.env.NAME` で読む名前を同じ呼び出しが `export` せずに代入している形（`ROW=…; perl -i -pe 'BEGIN{$r=$ENV{ROW}} …'` は空行を挿入する）、インタプリタ（python / node / perl / ruby）へ引用付き heredoc（`python3 - <<'PY'`。`/dev/stdin` の起動と、引数なしの `cat` の heredoc をパイプで受ける起動を含む）で渡すプログラムの二重バックスラッシュの escape（この形は Claude Code 上だけで止める。Claude Code の Bash ツールは 2 本のバックスラッシュを bash へ渡す前に 1 本へ解釈するので、文字列リテラルの中で実際の改行・NUL になって書き込まれる。python は escape として解釈される文字だけを対象にする）、`pwsh` / `powershell` の `-Command` の本文の二重引用符の文字列（`"…"` / `@"…"@`。部分式 `$( … )` の中の文字列を含む）の中のバッククォート + エスケープ文字（`0 a b e f n r t u v`。Markdown のインラインコードを含む置換文字列で `` `b `` がバックスペースになり、照合も書き込みも黙って変わる）。停止文は Write / Edit ツールか引用付き heredoc（`cat > <file> <<'EOF'`）への書き換えを案内する。
 
 - 判定の正本は同梱の共有ヘルパ `tests/lib/literal-write-scan.sh`。エスケープ済みの `\$NAME`、二重引用符のプログラム（シェルが先に展開する）、Perl 組み込み変数、`export` / 前置代入 / `set -a` 済みの名前、引数・PR 本文・コメントの中の綴りは止めない。`bash -c '…'` と `bash <<'EOF'` の中は入れ子として走査する
-- バッククォート・バックスラッシュ・非 ASCII で構文エラーになる型は対象外（書き込み前に大きな音で落ちる。導入先の実測で誤検知を抑えられなかった）
+- バッククォート・バックスラッシュ・非 ASCII で構文エラーになる型は対象外（書き込み前に大きな音で落ちる。導入先の実測で誤検知を抑えられなかった）。二重バックスラッシュは引用付き heredoc でインタプリタへ渡す形、バッククォートは PowerShell の二重引用符の中に限って止める。引用しない heredoc（bash 自身も 2 本を 1 本に畳む）・`-c` / `-e` で渡すプログラム・データ行きの heredoc（`cat > f <<'EOF'`）・PowerShell の単一引用符の文字列と `@'…'@`・`-File` / `-EncodedCommand` は止めない
 - 通し方: 誤検知の場合（大文字始まりの Perl 変数を意図して書いた等）は、コマンドの**先頭**へ環境代入 `FF_LITERAL_WRITE_ACK=1` を付けて再実行する。無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD=1`
 - `jq` 不在・JSON でない入力は素通しする。候補コマンドでヘルパを読めない・走査が失敗する・引用や heredoc が閉じないまま終わるときは理由付きで停止する（fail-closed。面は候補コマンドに限る）
 - 既知の限界: `$(…)` の中・`xargs` / `find -exec` の引数として起動する perl / node、ファイルや変数から読むプログラム、python（`os.environ[...]` は未定義なら `KeyError` で落ちる）は走査しない

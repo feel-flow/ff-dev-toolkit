@@ -39,6 +39,6 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ## knowledge commitと報告
 
-通常のコミット節の `ACE_KNOWLEDGE_PATHS` に候補ファイルを含める（独自配置ならresolverの親へ置換）。存在しないファイルをaddへ渡さない。PLAYBOOKが変わらない候補だけの回はclaim/版/count/Changelogを増やさず、`ACE_CLAIM_ARGS` は空にする。helperへ渡す記録用 `ACE_ID` は候補IDの `PENDING-` を `ACE-pending-` へ置換した識別子を使い、要約には「保留保存/棄却」と元候補ID・理由を書く。この記録用IDを正式ACEの索引へ追加しない。送信前の許可パスはPLAYBOOK・カテゴリ本文・候補・台帳・対応claimに限る。
+通常のコミット節の `knowledge-commit add --ace-playbook` が、PLAYBOOKと同階層の候補ファイルを在るときだけ記録パスへ含める（独自配置ならresolverの結果を渡す）。PLAYBOOKが変わらない候補だけの回はclaim/版/count/Changelogを増やさず、`--ace-playbook` も claim を足さない。helperへ渡す記録用 `ACE_ID` は候補IDの `PENDING-` を `ACE-pending-` へ置換した識別子を使い、要約には「保留保存/棄却」と元候補ID・理由を書く。この記録用IDを正式ACEの索引へ追加しない。送信前の許可パスはPLAYBOOK・カテゴリ本文・候補・台帳・対応claimに限る。
 
 候補だけでも通常のfreshness・commitlint・pre-commit-check・保護判定・同一knowledge commit・push/PR経路に従う。再試行では候補本文を保全し、同IDを二重投入しない。4-fのliveゲートも省略せず、非0なら「通常追記は停止、保留 N 件（実パス）」と未解消の検証を報告する。保存成功とcurate全体の完了は区別する。refineを自動承認しない。

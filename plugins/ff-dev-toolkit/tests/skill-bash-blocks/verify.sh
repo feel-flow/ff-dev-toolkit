@@ -4,6 +4,7 @@
 #
 # 空振り検出: 走査対象から `skills/*/references/*.md` のグロブを外した写しを与えると、references のコントロール（retrospective/references/filing.md が対象に入っていること）の 1 件が赤になる（2026-09-23 実測。13 件中 1 件失敗。切り出し先の bash ブロックが検査から黙って外れる形を緑にしない）。
 # 空振り検出: 名前リストを空にした写しは違反 fixture の期待行照合が actual 空で赤、名前判定をリスト参照から外して定数に焼き付けると空リストの自己検証が赤、argv だけ外すと readonly argv と read -d の行が期待から外れて赤（2026-10-26 実測）。非検出 fixture のデコイ欠落も赤。
+# 空振り検出: lib source 検査（Issue `#2454`）は、修正前の ace-curate/SKILL.md:165 と references/curate.md:187 の `. "${FF_DEV_TOOLKIT_ROOT}/scripts/lib/playbook-changelog-functions.sh"` の 2 件で赤になった（2026-11-01 実測）。違反 fixture の期待行（17 行）と照合し、検出 regex の `/lib/` を外す・コマンド位置の判定を外す・区切り判定を引用符を潰す前の原文で行うと期待行または非検出 fixture の照合が赤になる。デコイの欠落も赤にする。
 # 空振り検出: zsh scanner の LC_ALL=C を外した写しは、UTF-8 呼び出し環境で日本語の引用値を含む非検出 fixture の走査が失敗し赤になる。日本語デコイの削除も赤にする。
 #
 # SKILL.md の bash ブロックはエージェントがそのまま実行する。`set -euo pipefail` の
@@ -53,6 +54,9 @@
 #     禁止例を書くときは行頭コメントに置くこと）
 #   - 言語タグは小文字完全一致（bash / sh / shell / zsh）。タグ無しブロックは対象外
 #     （grep -q* / MBCS 検査のみ。$0 検査はフェンス抽出をせず全行を見る）
+#   - lib source 検査は物理行単位で、`\` 継続で次行へ送った source のオペランドと、
+#     変数へ入れた lib パスを `. "$lib"` で読む形は非検出（どちらも実在しない書き方）。
+#     コマンド位置の前置きは列挙した語だけで、`time` / `eval` / `exec` などの後ろは見ない
 #   - 閉じられないままファイル末尾に達したフェンスは UNCLOSED_FENCE として構造違反に
 #     する（後続の bash ブロックが静かに未検査になるのを防ぐ）
 #
@@ -168,6 +172,80 @@ scan_skill_dollar0() {
   awk '
     { sub(/\r$/, "") }
     /\$0|\$\{0/ { print FNR ":" $0 }
+  ' "$1"
+}
+
+# bash / sh / shell / zsh ブロックで同梱 lib（`…/lib/*.sh`）を `.` / `source` する行を「行番号:行」で
+# 出力する（Issue `#2454`）。lib は `${BASH_SOURCE[0]}` で隣のファイルを探す bash 専用の作りで、Bash ツールの
+# 対話シェルが zsh だと BASH_SOURCE が空になり、source の時点で止まる。処理は同梱スクリプトの 1 呼び出しへ
+# 寄せ、スキル本文からは呼ばせない。コマンド位置（行頭・; & | ( { ! の後ろ・then / do / else / elif /
+# if / while / until / command / builtin の後ろ）の `.` / `source` だけを見る。区切りの判定は引用符の中身を
+# 潰した写しで行うので、引用符の中の ; や && は区切りにしない。オペランドは引用符の外の空白・; & | ( ) < > までの
+# 1 語で、引用符を外した語が …/lib/*.sh なら検出する（"${ROOT}"/scripts/lib/x.sh のような分割引用も同じ）。
+# 行頭コメントと引用符の中の言及は非検出。
+scan_skill_lib_source() {
+  LC_ALL=C awk '
+    # 引用符の中身を x に潰した写し（引用符そのものと長さは保つ）。コマンド位置の判定はこの写しで行い、
+    # オペランドの照合は同じ位置の原文で行う（引用内の ; や && を区切りと取り違えない）
+    function mask(s,    out, i, c, sq, dq) {
+      out = ""; sq = 0; dq = 0
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (sq) { if (c == "\047") { sq = 0; out = out c } else out = out "x"; continue }
+        if (dq) {
+          if (c == "\\") { out = out "xx"; i++; continue }
+          if (c == "\"") { dq = 0; out = out c } else out = out "x"
+          continue
+        }
+        if (c == "\\") { out = out "xx"; i++; continue }
+        if (c == "\047") sq = 1
+        if (c == "\"") dq = 1
+        out = out c
+      }
+      return out
+    }
+    # オペランドは引用符の外の空白・; & | ( ) < > までの 1 語。引用符を外した語が …/lib/*.sh なら lib の source
+    function operand_is_lib(s,    tok, mtok) {
+      mtok = mask(s)
+      if (match(mtok, /^[^[:space:];&|()<>]+/)) tok = substr(s, 1, RLENGTH); else return 0
+      gsub(/["\047]/, "", tok)
+      return tok ~ /(^|\/)lib\/[^\/]*\.sh$/
+    }
+    function check(line, original, lineno,    m, off, mrest) {
+      m = mask(line)
+      off = 0
+      mrest = m
+      while (match(mrest, /(^|[;&|({!][[:space:]]*|(^|[[:space:];&|({!])(then|do|else|elif|if|while|until|command|builtin)[[:space:]]+)(\.|source)[[:space:]]+/)) {
+        if (operand_is_lib(substr(line, off + RSTART + RLENGTH))) { print lineno ":" original; return }
+        off += RSTART + RLENGTH - 1
+        mrest = substr(m, off + 1)
+        if (mrest == "") return
+      }
+    }
+    { sub(/\r$/, "") }
+    in_block == 0 {
+      if ($0 ~ /^[[:space:]]*(```|~~~)/) {
+        fence = $0
+        sub(/^[[:space:]]*/, "", fence)
+        fence_char = substr(fence, 1, 1)
+        fence_len = 0
+        while (substr(fence, fence_len + 1, 1) == fence_char) fence_len++
+        info = substr(fence, fence_len + 1)
+        sub(/^[[:space:]]*/, "", info)
+        sub(/[[:space:]].*$/, "", info)
+        in_block = 1
+        is_bash = (info ~ /^(bash|sh|shell|zsh)$/) ? 1 : 0
+      }
+      next
+    }
+    {
+      stripped = $0
+      sub(/^[[:space:]]*/, "", stripped)
+      sub(/[[:space:]]*$/, "", stripped)
+      if (stripped ~ /^(`+|~+)$/ && substr(stripped, 1, 1) == fence_char && length(stripped) >= fence_len) { in_block = 0; next }
+      if (is_bash == 0 || stripped ~ /^#/) next
+      check(stripped, $0, FNR)
+    }
   ' "$1"
 }
 
@@ -482,6 +560,51 @@ if [ "$zsh_decoy_ok" -eq 1 ]; then
   ok "zsh 特殊パラメータ非検出 fixture のデコイ（別名・参照・行頭コメント・コマンド区切り）が実在する"
 fi
 
+# ---- 自己検証: 同梱 lib の source（Issue `#2454`） -------------------------------
+[ -f "$FIXTURES_DIR/lib-source-violation.md" ] || { echo "✗ fixture がありません: $FIXTURES_DIR/lib-source-violation.md" >&2; exit 1; }
+[ -f "$FIXTURES_DIR/lib-source-clean.md" ] || { echo "✗ fixture がありません: $FIXTURES_DIR/lib-source-clean.md" >&2; exit 1; }
+
+# 行番号: `. "${ROOT}/…"` / source / インデント / ; の後ろ / && の後ろ / then の後ろ /
+# ( の後ろ / sh / zsh / shell の { の後ろ / 引用の後の ; / if / ! / while / command / 分割引用 /
+# 空白なしのリダイレクト
+EXPECTED_LIB_SOURCE_LINES="4 5 6 7 8 9 10 14 18 22 26 27 28 29 30 31 32"
+actual_lib_source_lines="$(scan_skill_lib_source "$FIXTURES_DIR/lib-source-violation.md" | awk -F: '{ print $1 }' | paste -sd' ' -)" \
+  || { echo "✗ lib source 自己検証の scan が失敗しました（lib-source-violation.md）" >&2; exit 1; }
+if [ "$actual_lib_source_lines" = "$EXPECTED_LIB_SOURCE_LINES" ]; then
+  ok "lib source 違反 fixture の全違反を期待行で検出（${EXPECTED_LIB_SOURCE_LINES}）"
+else
+  bad "lib source 違反 fixture の検出結果が期待と不一致（expected: '${EXPECTED_LIB_SOURCE_LINES}' / actual: '${actual_lib_source_lines}'）"
+fi
+
+lib_source_clean_hits="$(scan_skill_lib_source "$FIXTURES_DIR/lib-source-clean.md")" \
+  || { echo "✗ lib source 自己検証の scan が失敗しました（lib-source-clean.md）" >&2; exit 1; }
+if [ -z "$lib_source_clean_hits" ]; then
+  ok "lib source 非検出 fixture（散文・非 bash・行頭コメント・引用内・lib 以外・実行）を誤検出しない"
+else
+  bad "lib source 非検出 fixture を誤検出した:"
+  printf '%s\n' "$lib_source_clean_hits" | sed 's/^/    | /' >&2
+fi
+
+lib_source_decoy_ok=1
+for lib_source_decoy in \
+  '# 行頭コメントは対象外: . "${FF_DEV_TOOLKIT_ROOT}/scripts/lib/abs-path.sh"' \
+  'echo ". scripts/lib/abs-path.sh"' \
+  "printf '%s\\n' 'source scripts/lib/abs-path.sh'" \
+  'source "$ROOT/mylib/x.sh"' \
+  './scripts/lib/run.sh' \
+  '. "$ROOT/scripts/lib/readme.md"' \
+  "echo 'example; source scripts/lib/abs-path.sh'" \
+  'gif . lib/x.sh'
+do
+  if ! grep -F -- "$lib_source_decoy" "$FIXTURES_DIR/lib-source-clean.md" >/dev/null; then
+    bad "lib source 非検出 fixture のデコイが欠落しています: ${lib_source_decoy}"
+    lib_source_decoy_ok=0
+  fi
+done
+if [ "$lib_source_decoy_ok" -eq 1 ]; then
+  ok "lib source 非検出 fixture のデコイ（行頭コメント・引用内・lib 以外・実行・.sh 以外）が実在する"
+fi
+
 if [ "$FAIL" -gt 0 ]; then
   echo ""
   echo "✗ skill-bash-blocks verify: 検出器の自己検証に失敗（横断検査は実行しない）" >&2
@@ -536,6 +659,7 @@ violation_files=0
 mbcs_violation_files=0
 dollar0_violation_files=0
 zsh_violation_files=0
+lib_source_violation_files=0
 for file in "${SKILL_FILES[@]}"; do
   hits="$(scan_skill_bash_blocks "$file")" \
     || { echo "✗ scanner 自体が失敗しました: $file" >&2; exit 1; }
@@ -560,6 +684,14 @@ for file in "${SKILL_FILES[@]}"; do
     bad "${file#"$REPO_ROOT"/} の bash ブロックで zsh の特殊パラメータを代入・read・for・宣言の対象にしている:"
     printf '%s\n' "$zsh_hits" | sed 's/^/    | /' >&2
     echo "    変数名を zsh の特殊パラメータ以外へ変えてください" >&2
+  fi
+  lib_source_hits="$(scan_skill_lib_source "$file")" \
+    || { echo "✗ lib source scanner 自体が失敗しました: $file" >&2; exit 1; }
+  if [ -n "$lib_source_hits" ]; then
+    lib_source_violation_files=$((lib_source_violation_files + 1))
+    bad "${file#"$REPO_ROOT"/} の bash ブロックで同梱 lib を source している（zsh の Bash ツールでは BASH_SOURCE が空で止まる）:"
+    printf '%s\n' "$lib_source_hits" | sed 's/^/    | /' >&2
+    echo "    lib の関数は同梱スクリプトのサブコマンド・オプションへ移し、本文からはその 1 呼び出しにしてください（Issue `#2454`）" >&2
   fi
 done
 
@@ -597,6 +729,9 @@ if [ "$dollar0_violation_files" -eq 0 ]; then
 fi
 if [ "$zsh_violation_files" -eq 0 ]; then
   ok "全 ${#SKILL_FILES[@]} 件の SKILL.md の bash ブロックに zsh 特殊パラメータの代入・read・for・宣言が無い"
+fi
+if [ "$lib_source_violation_files" -eq 0 ]; then
+  ok "全 ${#SKILL_FILES[@]} 件の SKILL.md の bash ブロックに同梱 lib の source が無い"
 fi
 
 echo ""

@@ -16,6 +16,13 @@
 #   R. hooks.json の集約入口への登録
 #   P. 述語が真陽性とした形は、実際に走らせると本文が意図と違う値になる（perl / node 実行）
 #   M. 変異検出
+#   DF / DN / DP. 述語 D（Issue `#2450`）: インタプリタへ引用付き heredoc で渡すプログラムの二重バックスラッシュの
+#      回避形行列（deny / allow）と、解釈の前後の値の差の実測（python3）
+#   PF / PN / PP. 述語 P（Issue `#2496`）: pwsh / powershell の -Command の二重引用符の中のバッククォートの
+#      回避形行列（deny / allow）と、二重引用符・単一引用符の実測（pwsh / powershell が在れば）
+#
+# 変異検出: 述語 D の判定を空にする（M14）・引用付き heredoc の原文を残さない（M15）と DF1 が素通しになり、python の escape 文字の絞り込みを外すと DN2 が deny になる（M19）。述語 P の検出を消す（M16）・hook の前置フィルタから pwsh を外す（M18）と PF1 が素通しになり、PowerShell の単一引用符を読み飛ばさないと PN1 が deny になる（M17。いずれも実測 2026-11-02 Windows Git Bash）。
+# 変異検出: パイプの送り側を記録しない（M20）と DF19、/dev/stdin をスクリプト引数として読まない（M23）と DF20、二重引用符の中の部分式を追わない（M21）と PF15 が素通しになり、Claude Code 以外のホストで述語 D を落とす分岐を消す（M22）と DN13 が、CLAUDECODE だけで Claude Code と決める（M24。レビュー 2 巡目）と DN15 が deny になる（レビュー 1 巡目の対応後に実測 2026-11-02）。
 #
 # 変異検出: 判定ヘルパの述語 A の呼び出し（if (inplace) rule_a(...)）を消したコピーは F1 と同形の perl -i を素通しし、F の検査が赤になる（M1。実測 2026-09-28）。
 # 変異検出: 述語 A のエスケープ判定（奇数個の \ を読み飛ばす行）を消したコピーは N1（`\$SCRIPT_DIR` の形）を deny し、N の検査が赤になる（M2）。
@@ -83,14 +90,15 @@ RC=0
 DECISION=""
 REASON=""
 
-# run_on <hook> <command> [NAME=VALUE ...]
+# run_on <hook> <command> [NAME=VALUE ...] — RUN_EXTRA（JSON オブジェクト）を入力へ足せる（例: {"model":"codex"}）
 run_on() {
-  local hook="$1" cmd="$2" json
+  local hook="$1" cmd="$2" json extra="${RUN_EXTRA:-}"
   shift 2
-  json="$(jq -n --arg c "$cmd" --arg d "$TEST_TMP" \
-    '{tool_name: "Bash", tool_input: {command: $c}, cwd: $d, hook_event_name: "PreToolUse"}')"
+  [ -n "$extra" ] || extra='{}'
+  json="$(jq -n --arg c "$cmd" --arg d "$TEST_TMP" --argjson x "$extra" \
+    '{tool_name: "Bash", tool_input: {command: $c}, cwd: $d, hook_event_name: "PreToolUse"} + $x')"
   RC=0
-  OUT="$(printf '%s' "$json" | env "$@" bash "$hook" 2>/dev/null)" || RC=$?
+  OUT="$(printf '%s' "$json" | env -u GROK_PLUGIN_ROOT "$@" bash "$hook" 2>/dev/null)" || RC=$?
   DECISION="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)"
   REASON="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null || true)"
 }
@@ -435,6 +443,439 @@ else
   echo "  ○ skip: node が無いため P5 は未検査"
 fi
 
+# ---- 述語 D / P（Issue `#2450` / `#2496`）の回避形行列 -------------------------------------
+# 各ケースは引用付き heredoc から読むので、suite のシェルはバックスラッシュ・バッククォートを解釈しない
+# （OBS-324。このファイルは Write / Edit で書き、保存バイトを od -c で確かめてある）。
+# 軸（TESTING.md「コマンド文字列ガードの回避形行列」）: 引用（heredoc の区切り語の引用の 3 形・引用しない形 /
+# PowerShell の二重引用符・単一引用符・ヒアストリング 2 形）、文脈を決める語の変形（引用したコマンド名・パス付き・
+# .exe・大文字・env 前置・-Command の短縮形・値を取るオプション）、区切りと構文（&& / ; / 単独 & / 継続行 /
+# 入れ子の bash <<'EOF' と bash -c / データ行きの heredoc / コメント / 引数の中）、免除語（本文の中の ACK・先頭の ACK）。
+# case パターンと [[ ]] の軸は、どちらもインタプリタ・pwsh の起動位置にならないので置かない。
+# LW_ENV: hook へ渡す環境（述語 D は Claude Code のホストだけで発火するので D の節は CLAUDECODE=1 を渡す）
+LW_ENV=()
+lw_fire() { # <label>  (stdin: コマンド文字列)
+  run_hook "$(cat)" ${LW_ENV[@]+"${LW_ENV[@]}"}
+  assert_fire "$1"
+}
+lw_pass() { # <label>  (stdin: コマンド文字列)
+  run_hook "$(cat)" ${LW_ENV[@]+"${LW_ENV[@]}"}
+  assert_pass "$1"
+}
+
+echo "guard-literal-write: D 述語（インタプリタへ引用付き heredoc で渡すプログラムの二重バックスラッシュ）"
+LW_ENV=(CLAUDECODE=1)
+D_FIRE_PY="$(cat <<'CASE'
+python3 - <<'PY'
+open('f', 'w').write('a\\nb')
+PY
+CASE
+)"
+run_hook "$D_FIRE_PY" CLAUDECODE=1
+assert_fire "DF1: python3 - <<'PY' の本文の \\\\n（確証した真陽性と同形）"
+for needle in 'python' 'OBS-324' 'Write / Edit' 'リテラル書き込みの既定経路' 'FF_LITERAL_WRITE_ACK=1'; do
+  case "$REASON" in
+    *"$needle"*) ok "DF1 の停止文が [$needle] を含む" ;;
+    *) bad "DF1 の停止文に [$needle] が無い: [$REASON]" ;;
+  esac
+done
+lw_fire 'DF2: 区切り語を二重引用符で引用した heredoc（<<"PY"）の \\0' <<'CASE'
+python - f <<"PY"
+x = 'a\\0b'
+PY
+CASE
+lw_fire 'DF3: 区切り語をバックスラッシュで引用した heredoc（<<\PY）の \\000' <<'CASE'
+python3 - <<\PY
+x = '\\000'
+PY
+CASE
+lw_fire 'DF4: node - へ渡す heredoc の \\t' <<'CASE'
+node - <<'EOF'
+require('fs').writeFileSync('o', 'a\\tb')
+EOF
+CASE
+lw_fire 'DF5: スクリプト引数の無い node へ渡す heredoc の \\x41' <<'CASE'
+node <<'EOF'
+const s = 'a\\x41'
+EOF
+CASE
+lw_fire 'DF6: perl - へ渡す heredoc' <<'CASE'
+perl - <<'EOF'
+print "a\\nb"
+EOF
+CASE
+lw_fire 'DF7: ruby - へ渡す heredoc' <<'CASE'
+ruby - <<'RB'
+puts 'a\\nb'
+RB
+CASE
+lw_fire 'DF8: Windows の py ランチャー（py -3 -）' <<'CASE'
+py -3 - <<'PY'
+x = '\\n'
+PY
+CASE
+lw_fire 'DF9: パス付き・.exe 付きのコマンド名' <<'CASE'
+/c/Python311/python3.11.exe - <<'PY'
+x = '\\n'
+PY
+CASE
+lw_fire 'DF10: 引用したコマンド名（"python3"）' <<'CASE'
+"python3" - <<'PY'
+x = '\\n'
+PY
+CASE
+lw_fire 'DF11: env 前置・値を取るオプション（-X utf8）・- の後ろのスクリプト引数' <<'CASE'
+env PYTHONUTF8=1 python3 -X utf8 - "$ROOT" <<'PY'
+x = '\\n'
+PY
+CASE
+lw_fire 'DF12: 先行コマンド（&&）の後ろ' <<'CASE'
+cd /tmp && python3 - <<'PY'
+x = '\\n'
+PY
+CASE
+lw_fire 'DF13: 単独の & の後ろ' <<'CASE'
+true & python3 - <<'PY'
+x = '\\n'
+PY
+CASE
+lw_fire 'DF14: 継続行で分けた起動' <<'CASE'
+python3 \
+  - <<'PY'
+x = '\\n'
+PY
+CASE
+lw_fire "DF15: 入れ子の bash <<'EOF' の中の python heredoc" <<'CASE'
+bash <<'EOF'
+python3 - <<'PY'
+x = '\\n'
+PY
+EOF
+CASE
+lw_fire 'DF16: タブを剥がす heredoc（<<-）' <<'CASE'
+python3 - <<-'PY'
+	x = '\\n'
+	PY
+CASE
+lw_fire 'DF17: 本文の中の ACK の綴りは免除にならない' <<'CASE'
+python3 - <<'PY'
+# FF_LITERAL_WRITE_ACK=1
+x = '\\n'
+PY
+CASE
+lw_pass 'DN1: 引用しない heredoc（<<PY）は bash 自身も \\ を畳むので書き手の意図と届く値が変わらない' <<'CASE'
+python3 - <<PY
+x = '\\n'
+PY
+CASE
+D_PASS_PY="$(cat <<'CASE'
+python3 - <<'PY'
+x = '\n'
+y = '\\'
+z = '\\.'
+w = re.compile('^\\s*\\d+')
+PY
+CASE
+)"
+run_hook "$D_PASS_PY" CLAUDECODE=1
+assert_pass 'DN2: 1 本のバックスラッシュの escape と、英数字が続かない \\ と、python が escape として読まない \\d / \\s は止めない'
+lw_fire 'DF18: node は未知の escape（\\d）でもバックスラッシュを落とすので止める（python の DN2 と対照）' <<'CASE'
+node - <<'EOF'
+const r = new RegExp('^\\d+')
+EOF
+CASE
+lw_pass 'DN3: -c でプログラムを渡したときの heredoc は標準入力のデータ' <<'CASE'
+python3 -c 'import sys; sys.stdout.write(sys.stdin.read())' <<'PY'
+x = '\\n'
+PY
+CASE
+lw_pass 'DN4: データ行きの heredoc（cat > f.py。Write ツールと同じ効果）' <<'CASE'
+cat > f.py <<'PY'
+x = '\\n'
+PY
+CASE
+lw_pass "DN5: bash <<'EOF' の本文の printf '\\\\134'（値を文字コードから組み立てる形）" <<'CASE'
+bash <<'EOF'
+printf '\\134'
+EOF
+CASE
+lw_pass 'DN6: スクリプトファイルを実行するときの heredoc は標準入力のデータ' <<'CASE'
+python3 script.py <<'PY'
+x = '\\n'
+PY
+CASE
+lw_pass 'DN7: -m のモジュールへ渡す heredoc は標準入力のデータ' <<'CASE'
+python3 -m json.tool <<'PY'
+{"a": "\\n"}
+PY
+CASE
+lw_pass 'DN8: 引数・コメント・コミットメッセージの中の綴り' <<'CASE'
+echo 'python3 - <<PY \\n'
+# python3 - <<'PY' \\n
+git commit -m "python3 - <<'PY' \\n"
+CASE
+lw_pass 'DN9: 先頭の ACK で通る' <<'CASE'
+FF_LITERAL_WRITE_ACK=1 python3 - <<'PY'
+x = '\\n'
+PY
+CASE
+D_FIRE_CATPIPE="$(cat <<'CASE'
+cat <<'PY' | python3 -
+print("a\\nb")
+PY
+CASE
+)"
+run_hook "$D_FIRE_CATPIPE" CLAUDECODE=1
+assert_fire 'DF19: 引数なしの cat の引用付き heredoc をパイプで受けるインタプリタ（cat <<PY | python3 -）'
+D_FIRE_DEVSTDIN="$(cat <<'CASE'
+python3 /dev/stdin <<'PY'
+print("a\\nb")
+PY
+CASE
+)"
+run_hook "$D_FIRE_DEVSTDIN" CLAUDECODE=1
+assert_fire 'DF20: スクリプト引数が /dev/stdin のインタプリタへ渡す heredoc'
+lw_fire 'DF21: パイプの受け側の node -（cat の heredoc）' <<'CASE'
+cat <<'EOF' | node -
+console.log('a\\tb')
+EOF
+CASE
+lw_pass 'DN10: パイプの送り側が引数付きの cat（ファイルも読む）は heredoc の本文だけを読む形と断定できないので止めない' <<'CASE'
+cat header.py - <<'PY' | python3 -
+print("a\\nb")
+PY
+CASE
+lw_pass 'DN11: パイプの受け側がスクリプトファイルを実行する（heredoc は標準入力のデータ）' <<'CASE'
+cat <<'PY' | python3 script.py
+print("a\\nb")
+PY
+CASE
+lw_pass 'DN12: || の右（パイプではない）のインタプリタは cat の heredoc を受けない' <<'CASE'
+cat <<'PY' || python3 -
+print("a\\nb")
+PY
+CASE
+run_hook "$D_FIRE_PY" -u CLAUDECODE
+assert_pass 'DN13: Claude Code 以外のホスト（CLAUDECODE が無い）では述語 D を発火させない（\\ が縮むのは Claude Code の Bash ツール固有）'
+run_hook "$D_FIRE_PY" CLAUDECODE=0
+assert_pass 'DN14: CLAUDECODE が 1 以外でも発火させない'
+RUN_EXTRA='{"model":"gpt-5"}' run_hook "$D_FIRE_PY" CLAUDECODE=1
+assert_pass 'DN15: CLAUDECODE=1 を受け継いだ別ホスト（入力に model がある。Claude Code から起動した codex exec）では発火させない'
+run_hook "$D_FIRE_PY" CLAUDECODE=1 GROK_PLUGIN_ROOT=/opt/grok
+assert_pass 'DN16: grok root がある環境では CLAUDECODE=1 でも発火させない'
+LW_ENV=()
+
+echo "guard-literal-write: P 述語（pwsh / powershell の -Command の二重引用符の中のバッククォート）"
+P_FIRE_CMD="$(cat <<'CASE'
+pwsh -NoProfile -Command '$s = "| 版 | `b2821ed |"; (Get-Content f.md -Raw).Replace($s, "x")'
+CASE
+)"
+run_hook "$P_FIRE_CMD"
+assert_fire 'PF1: Markdown のインラインコードを含む二重引用符の置換文字列（導入先 OBS-037 と同形）'
+for needle in 'PowerShell' 'OBS-037' "@'" 'ReadAllText' '-File' 'FF_LITERAL_WRITE_ACK=1'; do
+  case "$REASON" in
+    *"$needle"*) ok "PF1 の停止文が [$needle] を含む" ;;
+    *) bad "PF1 の停止文に [$needle] が無い: [$REASON]" ;;
+  esac
+done
+lw_fire 'PF2: -c（-Command の別名）' <<'CASE'
+pwsh -c '"a`nb"'
+CASE
+lw_fire 'PF3: Windows PowerShell の -Command' <<'CASE'
+powershell -Command 'Write-Host "x`0y"'
+CASE
+lw_fire 'PF4: .exe 付き・値を取るオプション（-ExecutionPolicy Bypass）の後ろ' <<'CASE'
+pwsh.exe -NoProfile -ExecutionPolicy Bypass -Command '"`t"'
+CASE
+lw_fire 'PF5: Windows PowerShell の位置引数（-Command として読まれる）' <<'CASE'
+powershell 'Write-Host "`e[31m"'
+CASE
+lw_fire 'PF6: 大文字のコマンド名・パラメーター名' <<'CASE'
+PWSH -COMMAND '"`v"'
+CASE
+lw_fire 'PF7: -Command - へ渡す引用付き heredoc' <<'CASE'
+pwsh -Command - <<'EOF'
+$a = "x`by"
+EOF
+CASE
+lw_fire 'PF8: 二重引用符のヒアストリング（@"…"@）' <<'CASE'
+pwsh -Command '$a = @"
+x`ry
+"@'
+CASE
+lw_fire 'PF9: bash の二重引用符の中でエスケープしたバッククォート' <<'CASE'
+pwsh -Command "Write-Host \"a\`nb\""
+CASE
+lw_fire 'PF10: 入れ子の bash -c の中' <<'CASE'
+bash -c 'pwsh -c "\"x\`by\""'
+CASE
+lw_fire 'PF11: 二重引用符の中の "" の後ろ' <<'CASE'
+pwsh -Command '"a""`fb"'
+CASE
+lw_fire 'PF12: env 前置と先行コマンド（&&）の後ろ・-Command の短縮形（-Com）' <<'CASE'
+cd /tmp && env A=1 pwsh -Com '"`u{1F600}"'
+CASE
+lw_fire 'PF13: 引用したコマンド名・空白をエスケープしたパス' <<'CASE'
+"pwsh" -c '"`r"'; /c/Program\ Files/PowerShell/7/pwsh -c '"`a"'
+CASE
+lw_fire 'PF14: 本文の中の ACK の綴りは免除にならない' <<'CASE'
+pwsh -c '"`b"  # FF_LITERAL_WRITE_ACK=1'
+CASE
+lw_pass 'PN1: PowerShell の単一引用符の文字列の中（二重引用符を含んでもリテラル）' <<'CASE'
+pwsh -Command 'Write-Host '"'"'say "x`by"'"'"''
+CASE
+lw_pass "PN2: 単一引用符のヒアストリング（@'…'@）" <<'CASE'
+pwsh -Command '$a = @'"'"'
+x`by
+'"'"'@'
+CASE
+lw_pass 'PN3: -File で渡すスクリプト（引数は文字列として渡る）' <<'CASE'
+pwsh -File script.ps1 '"`b"'
+CASE
+lw_pass 'PN4: pwsh の位置引数はスクリプトファイル' <<'CASE'
+pwsh script.ps1 'x"`b"'
+CASE
+lw_pass 'PN5: -EncodedCommand' <<'CASE'
+pwsh -EncodedCommand ZQBjAGgAbwA=
+CASE
+lw_pass 'PN6: エスケープ文字でないバッククォート（`` / `" / `$ / `q）' <<'CASE'
+pwsh -Command '"a``b"; "a`"b"; "a`$b"; "a`qb"'
+CASE
+lw_pass 'PN7: 行コメント・ブロックコメントの中' <<'CASE'
+pwsh -Command 'Get-Item x # "`b"
+<# "`n" #> Get-Item y'
+CASE
+lw_pass 'PN8: 文字列の外のバッククォート（次の 1 文字をそのまま渡す）' <<'CASE'
+pwsh -Command 'Write-Host `b'
+CASE
+lw_pass 'PN9: 引数・コミットメッセージの中の綴り' <<'CASE'
+echo pwsh -c '"`b"'; git commit -m 'pwsh -c "`b"'
+CASE
+lw_pass 'PN10: 先頭の ACK で通る' <<'CASE'
+FF_LITERAL_WRITE_ACK=1 pwsh -c '"`b"'
+CASE
+P_FIRE_SUB="$(cat <<'CASE'
+pwsh -c 'Write-Host "$("`n")"'
+CASE
+)"
+run_hook "$P_FIRE_SUB"
+assert_fire 'PF15: 二重引用符の中の部分式 $( … ) の内側の二重引用符の文字列（内側の " で外側を閉じない）'
+lw_fire 'PF16: 部分式の後ろに続く外側の文字列' <<'CASE'
+pwsh -c 'Write-Host "$(Get-Date) `t done"'
+CASE
+lw_pass 'PN11: 部分式の中の単一引用符の文字列・部分式の外のエスケープでないバッククォート' <<'CASE'
+pwsh -c 'Write-Host "$(Write-Output '"'"'`b'"'"') ``x"'
+CASE
+
+echo "guard-literal-write: D / P の性質を実処理系で確かめる"
+if command -v python3 >/dev/null 2>&1; then
+  # Bash ツールが \\ を \ に解釈した後の形（1 本の \n）は実改行になり、元の形（\\n）は 2 文字のまま。
+  # ホストの解釈そのものは suite の中では起こせないので、解釈の前後の 2 形を python に渡して差を測る。
+  d_after="$(python3 - <<'PY'
+import sys
+sys.stdout.write(str(len('a\nb')))
+PY
+)"
+  d_before="$(python3 - <<'PY'
+import sys
+sys.stdout.write(str(len('a\\nb')))
+PY
+)"
+  if [ "$d_after" = 3 ] && [ "$d_before" = 4 ]; then
+    ok "DP1: 解釈後の '\\n' は 1 文字（実改行）、解釈前の '\\\\n' は 2 文字（述語 D の根拠）"
+  else
+    bad "DP1: after=[$d_after] before=[$d_before]"
+  fi
+else
+  echo "  ○ skip: python3 が無いため DP1 は未検査"
+fi
+ps_exe=""
+for c in pwsh powershell; do
+  if command -v "$c" >/dev/null 2>&1; then ps_exe="$c"; break; fi
+done
+if [ -n "$ps_exe" ]; then
+  p_dq="$("$ps_exe" -NoProfile -Command '[Console]::Out.Write("a`bc")' 2>/dev/null | od -An -tx1 | tr -d ' \n')" || p_dq=""
+  p_sq="$("$ps_exe" -NoProfile -Command '[Console]::Out.Write('"'"'a`bc'"'"')' 2>/dev/null | od -An -tx1 | tr -d ' \n')" || p_sq=""
+  if [ "$p_dq" = 610863 ] && [ "$p_sq" = 61606263 ]; then
+    ok "PP1: ${ps_exe} の二重引用符の \`b はバックスペース（0x08）、単一引用符の中はリテラル（述語 P の根拠）"
+  else
+    bad "PP1: ${ps_exe}: dq=[$p_dq] sq=[$p_sq]"
+  fi
+else
+  echo "  ○ skip: pwsh / powershell が無いため PP1 は未検査"
+fi
+
+echo "guard-literal-write: D / P の変異検出"
+MUTDP="$TEST_TMP/mutdp"
+make_tree "$MUTDP"
+mutate_dp() { # <sed-script> <label>
+  sed "$1" "$SCAN_LIB" > "$MUTDP/tests/lib/literal-write-scan.sh"
+  if cmp -s "$SCAN_LIB" "$MUTDP/tests/lib/literal-write-scan.sh"; then
+    bad "$2: sed が当たらず変異が注入されていない（針が古い）"
+    return 1
+  fi
+  return 0
+}
+if mutate_dp 's/^function rule_d(body, lang,   s) {$/function rule_d(body, lang,   s) { return/' M14; then
+  run_on "$MUTDP/hooks/guard-literal-write.sh" "$D_FIRE_PY" CLAUDECODE=1
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "M14: 述語 D の判定を空にした変異は DF1 を素通しし、D の検査が赤になる"; else bad "M14: 変異が効いていない: decision=[$DECISION]"; fi
+fi
+if mutate_dp '/hraw\[pcmd\[k\]\] = hraw/d' M15; then
+  run_on "$MUTDP/hooks/guard-literal-write.sh" "$D_FIRE_PY" CLAUDECODE=1
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "M15: 引用付き heredoc の原文を残さない変異は DF1 を素通しし、D の検査が赤になる"; else bad "M15: 変異が効いていない: decision=[$DECISION]"; fi
+fi
+if mutate_dp 's/0-7abfnrtvxNuU/0-9A-Za-z/' M19; then
+  run_on "$MUTDP/hooks/guard-literal-write.sh" "$D_PASS_PY" CLAUDECODE=1
+  if [ "$DECISION" = "deny" ]; then ok "M19: python の escape 文字の絞り込みを外した変異は DN2（\\\\d / \\\\s）を deny し、D の検査が赤になる"; else bad "M19: 変異が効いていない: out=[$OUT]"; fi
+fi
+if mutate_dp 's/ps_hit(nx);/k = k;/' M16; then
+  run_on "$MUTDP/hooks/guard-literal-write.sh" "$P_FIRE_CMD"
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "M16: 述語 P の検出を消した変異は PF1 を素通しし、P の検査が赤になる"; else bad "M16: 変異が効いていない: decision=[$DECISION]"; fi
+fi
+P_PASS_SQ="$(cat <<'CASE'
+pwsh -Command 'Write-Host '"'"'say "x`by"'"'"''
+CASE
+)"
+if mutate_dp '/while (k <= m) { if (substr(p, k, 1) == sq)/d' M17; then
+  run_on "$MUTDP/hooks/guard-literal-write.sh" "$P_PASS_SQ"
+  if [ "$DECISION" = "deny" ]; then ok "M17: PowerShell の単一引用符を読み飛ばさない変異は PN1 を deny し、P の検査が赤になる"; else bad "M17: 変異が効いていない: out=[$OUT]"; fi
+fi
+cp "$SCAN_LIB" "$MUTDP/tests/lib/literal-write-scan.sh"
+sed 's/^    \*\[Pp\]\[Ww\]\[Ss\]\[Hh\]\* | /    *NO_SUCH_SPELLING_X* | /' "$TARGET" > "$MUTDP/hooks/guard-literal-write.sh"
+if cmp -s "$TARGET" "$MUTDP/hooks/guard-literal-write.sh"; then
+  bad "M18: sed が当たらず変異が注入されていない（針が古い）"
+else
+  run_on "$MUTDP/hooks/guard-literal-write.sh" "$P_FIRE_CMD"
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "M18: hook の前置フィルタから pwsh を外した変異は PF1 を素通しし、P の検査が赤になる（前置フィルタも針の一部）"; else bad "M18: 変異が効いていない: decision=[$DECISION]"; fi
+fi
+sed 's/^if \[ "$d_host" != 1 \]; then$/if false; then/' "$TARGET" > "$MUTDP/hooks/guard-literal-write.sh"
+if cmp -s "$TARGET" "$MUTDP/hooks/guard-literal-write.sh"; then
+  bad "M22: sed が当たらず変異が注入されていない（針が古い）"
+else
+  run_on "$MUTDP/hooks/guard-literal-write.sh" "$D_FIRE_PY" -u CLAUDECODE
+  if [ "$DECISION" = "deny" ]; then ok "M22: Claude Code 以外のホストで述語 D を落とす分岐を消した変異は DN13 を deny し、D の検査が赤になる"; else bad "M22: 変異が効いていない: out=[$OUT]"; fi
+fi
+cp "$TARGET" "$MUTDP/hooks/guard-literal-write.sh"
+sed 's/^if \[ -n "${GROK_PLUGIN_ROOT:-}" \] || ! printf/if false \&\& ! printf/' "$TARGET" > "$MUTDP/hooks/guard-literal-write.sh"
+if cmp -s "$TARGET" "$MUTDP/hooks/guard-literal-write.sh"; then
+  bad "M24: sed が当たらず変異が注入されていない（針が古い）"
+else
+  RUN_EXTRA='{"model":"gpt-5"}' run_on "$MUTDP/hooks/guard-literal-write.sh" "$D_FIRE_PY" CLAUDECODE=1
+  if [ "$DECISION" = "deny" ]; then ok "M24: CLAUDECODE だけで Claude Code と決める変異は DN15 を deny し、D の検査が赤になる"; else bad "M24: 変異が効いていない: out=[$OUT]"; fi
+fi
+cp "$TARGET" "$MUTDP/hooks/guard-literal-write.sh"
+if mutate_dp '/pfrom\[cur\] = pp; i++; continue }$/d' M20; then
+  run_on "$MUTDP/hooks/guard-literal-write.sh" "$D_FIRE_CATPIPE" CLAUDECODE=1
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "M20: パイプの送り側を記録しない変異は DF19（cat <<PY | python3 -）を素通しし、D の検査が赤になる"; else bad "M20: 変異が効いていない: decision=[$DECISION]"; fi
+fi
+if mutate_dp 's/ || script == "\/dev\/stdin") d_stdin(id, lang)$/) d_stdin(id, lang)/' M23; then
+  run_on "$MUTDP/hooks/guard-literal-write.sh" "$D_FIRE_DEVSTDIN" CLAUDECODE=1
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "M23: /dev/stdin をスクリプト引数として読まない変異は DF20 を素通しし、D の検査が赤になる"; else bad "M23: 変異が効いていない: decision=[$DECISION]"; fi
+fi
+if mutate_dp '/if (ch == "\$" \&\& nx == "(") { k = ps_sub(p, k + 2, m); continue }$/d' M21; then
+  run_on "$MUTDP/hooks/guard-literal-write.sh" "$P_FIRE_SUB"
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "M21: 二重引用符の中の部分式を追わない変異は PF15 を素通しし、P の検査が赤になる"; else bad "M21: 変異が効いていない: decision=[$DECISION]"; fi
+fi
+
 echo "guard-literal-write: M 変異検出（コピーへ当て、本番検査と同形の針が赤になること）"
 MUT="$TEST_TMP/mut"
 make_tree "$MUT"
@@ -477,7 +918,7 @@ if mutate_lib '/if (r) continue; w = w ch; i++; continue }$/s/r = dollar(); if (
   run_on "$MUT/hooks/guard-literal-write.sh" "${PASS_CASES[1]}"
   if [ "$DECISION" = "deny" ]; then ok "M6: 二重引用符の中の \$ を展開として読む分岐を消した変異は N2 を deny し、N の検査が赤になる"; else bad "M6: 変異が効いていない: out=[$OUT]"; fi
 fi
-if mutate_lib 's/^    if (np == 0 \&\& (script == "" || script == "-") \&\& (id in hbody)) prog\[++np\] = hbody\[id\]$/    np = np/' M7; then
+if mutate_lib 's/) prog\[++np\] = hbody\[id\]$/) np = np/' M7; then
   run_on "$MUT/hooks/guard-literal-write.sh" "${FIRE_CASES[10]}"
   if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "M7: heredoc をプログラムとして読まない変異は F11（heredoc → node）を素通しし、F の検査が赤になる"; else bad "M7: 変異が効いていない: decision=[$DECISION]"; fi
 fi

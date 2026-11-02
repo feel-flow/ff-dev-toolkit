@@ -275,16 +275,20 @@ git -C "$REPO" commit -qm claim-seed
 defer >"$TMP/out"
 (
   CDPATH='' cd -P -- "$REPO" || exit 1
-  # 実際の両経路のadd直前フェンスをBash 3.2 + nounsetで実行する。
+  # 実際の両経路のadd行をBash 3.2 + nounsetで実行する。Bash ツールの対話シェルが zsh の回と同じ形で
+  # zsh -f でも実行する（fence が bash 専用 lib を source していた頃は zsh で止まった。Issue `#2454`）
   for route in "$PLUGIN/skills/ace-curate/SKILL.md" "$PLUGIN/skills/ace-curate/references/curate.md"; do
     awk '
-      /^ACE_KNOWLEDGE_PATHS=/ { emit=1 }
-      emit { print }
-      emit && /knowledge-commit add / { done=1; exit }
+      /knowledge-commit add --ace-playbook / { print; done=1; exit }
       END { if (!done) exit 1 }
     ' "$route" >"$TMP/add-snippet.sh" || exit 1
     FF_DEV_TOOLKIT_ROOT="$PLUGIN" ACE_ID=ACE-pending-PR-900-1 ACE_SUMMARY='保留保存 PENDING-PR-900-1' commit_type=knowledge \
       /bin/bash -u "$TMP/add-snippet.sh" || exit $?
+    if command -v zsh >/dev/null 2>&1; then
+      FF_DEV_TOOLKIT_ROOT="$PLUGIN" ACE_ID=ACE-pending-PR-900-1 ACE_SUMMARY='保留保存 PENDING-PR-900-1' commit_type=knowledge \
+        zsh -f "$TMP/add-snippet.sh" || exit $?
+      : >"$TMP/zsh-add-ran"
+    fi
   done
   FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 bash "$PLUGIN/scripts/knowledge-commit.sh" commit --type knowledge || exit $?
 ) >"$TMP/pending-only-out" 2>"$TMP/pending-only-err" || { cat "$TMP/pending-only-out" "$TMP/pending-only-err"; bad '保留だけのknowledge commit'; }
@@ -293,6 +297,23 @@ printf 'docs/08-knowledge/PENDING_CANDIDATES.md\n' >"$TMP/expected-paths"
 same "$TMP/expected-paths" "$TMP/pending-only-paths" '保留だけのcommitはPLAYBOOK/claimを変更しない'
 same "$TMP/original-claim" "$claim" '既存claimのbytesを保全'
 if grep -Fq 'CLAIM_UPDATED=' "$TMP/pending-only-out"; then bad '保留だけなのにclaimを再生成した'; else ok '保留だけの回はclaimを再生成しない'; fi
+if [ -e "$TMP/zsh-add-ran" ]; then ok '両経路のadd行が zsh -f でも rc=0（lib の source を持たない）'; else echo '  - zsh が無いので zsh 経路の add を省略'; fi
+# PLAYBOOK を変えた回: --ace-playbook が claim を再生成し、playbook/ の未追跡ファイルも記録する。
+sed 's/| Helpful | 1 |/| Helpful | 2 |/' "$BOOK" >"$TMP/updated-book-2"
+cp "$TMP/updated-book-2" "$BOOK"
+mkdir -p "${BOOK%/*}/playbook"
+printf '# 追加カテゴリ\n' >"${BOOK%/*}/playbook/added.md"
+(
+  CDPATH='' cd -P -- "$REPO" || exit 1
+  ace_shell=/bin/bash; if command -v zsh >/dev/null 2>&1; then ace_shell=zsh; fi
+  FF_DEV_TOOLKIT_ROOT="$PLUGIN" ACE_ID=ACE-1-1 ACE_SUMMARY='Helpful 更新' commit_type=knowledge \
+    "$ace_shell" "$TMP/add-snippet.sh" || exit $?
+  FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 bash "$PLUGIN/scripts/knowledge-commit.sh" commit --type knowledge || exit $?
+) >"$TMP/playbook-change-out" 2>"$TMP/playbook-change-err" || { cat "$TMP/playbook-change-out" "$TMP/playbook-change-err"; bad 'PLAYBOOK変更のknowledge commit'; }
+git -C "$REPO" show --pretty=format: --name-only HEAD | sort >"$TMP/playbook-change-paths"
+printf '%s\n' .version-claims/docs/08-knowledge/PLAYBOOK.md.claim docs/08-knowledge/PLAYBOOK.md docs/08-knowledge/playbook/added.md | sort >"$TMP/expected-change-paths"
+same "$TMP/expected-change-paths" "$TMP/playbook-change-paths" 'PLAYBOOK変更の回は PLAYBOOK・claim・playbook/ の未追跡を同じcommitへ含める'
+contains "$TMP/playbook-change-out" 'CLAIM_UPDATED=.version-claims/docs/08-knowledge/PLAYBOOK.md.claim' 'PLAYBOOK変更の回は --ace-playbook が claim を再生成する'
 
 
 echo '== 実件数ゲートと同じ容量で保留を分離する =='
@@ -339,8 +360,9 @@ echo '== スキルの保存/再評価/同一commit導線 =='
 contains "$PLUGIN/skills/ace-curate/SKILL.md" '新規PRの候補が0件でも保留を同じ新規性ゲートへ掛け直す' '候補0でもPhase 2が再評価する'
 contains "$PLUGIN/skills/ace-curate/SKILL.md" '通常の追記を止めたまま[保留候補の保存]' '容量停止後に保存経路へ進む'
 for route in "$PLUGIN/skills/ace-curate/SKILL.md" "$PLUGIN/skills/ace-curate/references/curate.md"; do
-  contains "$route" 'ACE_KNOWLEDGE_PATHS+=(docs/08-knowledge/PENDING_CANDIDATES.md)' '両commit経路が保留を同梱する'
+  contains "$route" 'knowledge-commit add --ace-playbook docs/08-knowledge/PLAYBOOK.md --source ace' '両commit経路が --ace-playbook で記録パスを helper に決めさせる'
 done
+contains "$PLUGIN/scripts/lib/finish-knowledge-commit-functions.sh" '[[ ! -f "$book_dir/PENDING_CANDIDATES.md" ]] || pathspecs+=("$repo_root/${book_prefix}PENDING_CANDIDATES.md")' '--ace-playbook が保留を同梱する'
 contains "$PLUGIN/skills/ace-curate/references/pending.md" '正式ACEの変更・Helpful更新と候補の除去を同じknowledge commitへ含める' '再評価結果と保留除去のcommit境界'
 
 printf 'ace-pending: passed=%s failed=%s\n' "$PASS" "$FAIL"

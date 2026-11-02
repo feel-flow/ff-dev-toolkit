@@ -33,6 +33,7 @@
 #           deny の締めへ警告用の文（「ブロックしません」）を流用すると 2 件が赤
 #           — 届けたい唯一のチャネルの中で「止めていない」と自称する形（レビューで実測）。
 #           絶対パス・コマンド置換・変数展開を相対と誤判定すると 6 件が赤。
+#           先頭の setopt（オプション名だけの文）の読み飛ばしを外すと S1 が警告になり赤（S8 が suite の中で確かめる。2026-11-02）。
 #           良性: 改行の切り落としだけを外しても緑、空白読み飛ばしを [[:space:]] へ戻すだけでも緑。
 #           この 2 つは同じ危険（`cd<改行><次行>` を相対 cd と読む）を独立に塞ぐ冗長化で、
 #           **両方を同時に外すと 1 件が赤**になる。検査は実装の片側ではなく振る舞いを固定している。
@@ -661,6 +662,38 @@ else
     echo "  ○ skip: linked worktree の fixture を作れないため、CRLF の jq での経路 B は未実行"
   fi
   PATH="$SAVED_PATH"
+fi
+
+echo "guard-background-cwd: 先頭の setopt（guard-zsh-glob.sh の単語分割の前置で書き換えた後の形）"
+run_hook "setopt SH_WORD_SPLIT; cd $MONO/packages/app && npm test" "$MONO"
+assert_silent "S1: 先頭の setopt SH_WORD_SPLIT; の後ろが絶対パスの cd なら無音"
+run_hook "setopt shwordsplit nonomatch
+cd $MONO/packages/app && npm test" "$MONO"
+assert_silent "S2: 改行で終わる setopt（オプション名だけ）の後ろの絶対パスの cd も無音"
+run_hook 'setopt SH_WORD_SPLIT; npm test' "$MONO"
+assert_warn "S3: setopt の後ろが cd でない呼び出しは従来どおり警告（読み飛ばしが判定を消さない）"
+run_hook "setopt \"SH_WORD_SPLIT\"; cd $MONO/packages/app && npm test" "$MONO"
+assert_warn "S4: 引用を含む setopt の文は読み飛ばさない（オプション名だけの文に限る）"
+run_hook "set -e; cd $MONO/packages/app && npm test" "$MONO"
+assert_warn "S5: setopt 以外の先頭文（set）は巻き込まない（修正前と同じ警告）"
+run_hook "true; cd $MONO/packages/app && npm test" "$MONO"
+assert_warn "S6: setopt 以外の先頭文（true）も巻き込まない"
+run_hook "setopt SH_WORD_SPLIT && cd $MONO/packages/app && npm test" "$MONO"
+assert_warn "S7: && で続く setopt は文の区切りとして読まない（; と改行だけ）"
+SETOPT_MUT="$TEST_TMP/setopt-mut"
+mkdir -p "$SETOPT_MUT/hooks"
+cp "$PLUGIN_ROOT/hooks/"*.sh "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$SETOPT_MUT/hooks/"
+sed 's/^  setopt\[\[:space:\]\]\*)$/  NO_SUCH_SETOPT_X)/' "$TARGET" > "$SETOPT_MUT/hooks/guard-background-cwd.sh"
+if cmp -s "$TARGET" "$SETOPT_MUT/hooks/guard-background-cwd.sh"; then
+  bad "S8: sed が当たらず変異が注入されていない（針が古い）"
+else
+  json_s8="$(jq -n --arg c "setopt SH_WORD_SPLIT; cd $MONO/packages/app && npm test" --arg d "$MONO" \
+    '{tool_name: "Bash", tool_input: {command: $c, run_in_background: true}, cwd: $d, hook_event_name: "PreToolUse"}')"
+  out_s8="$(printf '%s' "$json_s8" | bash "$SETOPT_MUT/hooks/guard-background-cwd.sh" 2>/dev/null || true)"
+  case "$out_s8" in
+    *systemMessage*) ok "S8: setopt の読み飛ばしを外した変異は S1 を警告し、S1 の検査が赤になる" ;;
+    *) bad "S8: 変異が効いていない: out=[$out_s8]" ;;
+  esac
 fi
 
 echo

@@ -7,7 +7,7 @@
 # 使い方:
 #   finish.sh precheck <PR番号> [--subject <件名> --body <本文>] [--gate-record <記録のパス>] [--merge-method squash|merge]
 #   finish.sh cleanup [--dry-run] <PR番号>
-#   finish.sh knowledge-commit add    [--claim <文書>] <knowledge-commit.sh add の引数>
+#   finish.sh knowledge-commit add    [--claim <文書>] [--ace-playbook <PLAYBOOK>] <knowledge-commit.sh add の引数>
 #   finish.sh knowledge-commit commit [--type <type>] [--force]
 #   finish.sh knowledge-commit status | discard
 #   finish.sh knowledge-commit probe
@@ -109,6 +109,9 @@
 # knowledge-commit: 共通の書き込み口 scripts/knowledge-commit.sh（add / commit / status / discard。
 #   fixture identity ガード内蔵）を呼ぶ。`add --claim <文書>` は `.version-claims/` を持つリポジトリで
 #   claim を再生成し、記録パスへ claim を足してから検証（scripts/check-version-claims.sh）する。
+#   `add --ace-playbook <PLAYBOOK>` は /ace-curate の記録パス（PLAYBOOK・選択した Changelog・playbook/ の
+#   変更と未追跡・PENDING_CANDIDATES.md）を列挙し、PLAYBOOK が HEAD から変わっていれば --claim を足す
+#   （スキル本文で bash 専用 lib を source させないため。Issue `#2454`）。
 #   probe は default branch の保護判定（`protection=protected|unprotected|unknown`。gh が無ければ API を
 #   呼ばず unknown。classic の保護は PR 必須・必須チェック・push 制限・署名必須・読み取り専用のどれかが
 #   あるときだけ protected、force push の禁止だけなら `classic=protected-no-pr` で rulesets の判定へ）、push は直 push の
@@ -310,7 +313,7 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: finish.sh precheck <PR番号> [--subject <件名> --body <本文>] [--gate-record <記録のパス>] [--merge-method squash|merge]
        finish.sh cleanup [--dry-run] <PR番号>
-       finish.sh knowledge-commit add [--claim <文書>] --source ace|obs --id <ID> --summary <要約> [--category <c>] [--type <t>] -- <path>...
+       finish.sh knowledge-commit add [--claim <文書>] [--ace-playbook <PLAYBOOK>] --source ace|obs --id <ID> --summary <要約> [--category <c>] [--type <t>] -- <path>...
        finish.sh knowledge-commit commit [--type <t>] [--force]
        finish.sh knowledge-commit status | discard | probe | push
        finish.sh knowledge-commit pr --branch <名> --title <件名> [--body <本文>]

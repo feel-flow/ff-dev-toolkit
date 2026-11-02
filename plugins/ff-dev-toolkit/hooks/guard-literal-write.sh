@@ -22,13 +22,18 @@
 #      展開されて `""`）
 #   B: perl / node が `$ENV{NAME}` / `process.env.NAME` で読む NAME を、同じ呼び出しが
 #      export せずに代入している（値が子プロセスへ渡らず空 / undefined）
+#   D: インタプリタ（python / node / perl / ruby）へ引用付き heredoc で渡すプログラムの二重バックスラッシュ
+#      + 英数字（Bash ツールが `\\` を `\` に解釈し、実際の改行・NUL が書き込まれる。Issue `#2450` / OBS-324）
+#   P: pwsh / powershell の -Command の本文の、二重引用符の文字列の中のバッククォート + エスケープ文字
+#      （`` `b `` がバックスペースになる。Issue `#2496` / 導入先 OBS-037）
 #
 # ## 針が当たらない入力の既定（TESTING.md の同名節）
 #
 # fail-open（無音 exit 0）にする面 — 判定の対象外であることが入力から確定している:
 #   - Bash 以外のツール / 空のコマンド / JSON でない入力（jq の rc=5）
 #   - `jq` 不在（コマンド本文を取り出せず、候補かどうかも決められない）
-#   - 生の入力が候補でない（`perl` の綴りと `$` の組も、`node` の綴りと `process.env` の組も無い）
+#   - 生の入力が候補でない（`perl` の綴りと `$` の組も、`node` の綴りと `process.env` の組も、
+#     `<<` と `\\` とインタプリタの綴りの組も、pwsh / powershell の綴りとバッククォートの組も無い）
 #
 # fail-closed（理由付き deny）にする面 — **候補コマンドに限る**。判定を完了できないのに
 # 通すと、守ろうとしている失敗（無音で本文が変わる）をそのまま通す:
@@ -83,12 +88,22 @@ esac
 # ---- 安価な前置フィルタ（候補でなければ何も読まずに抜ける） -------------------------
 # 候補: perl の綴りと `$` の両方がある（述語 A・B の perl 側）、または node の綴りと
 # `process.env` の両方がある（述語 B の node 側。`$` を含まずに成立する）
+# 述語 D は heredoc（`<<`）と二重バックスラッシュとインタプリタの綴り、述語 P は pwsh / powershell の綴りと
+# バッククォート。生の入力（JSON）では 1 文字の `\` が `\\` で現れるので、生の入力では上位集合になる。
 is_candidate() { # <text>
   case "$1" in
     *perl*) case "$1" in *'$'*) return 0 ;; esac ;;
   esac
   case "$1" in
     *node*) case "$1" in *process.env*) return 0 ;; esac ;;
+  esac
+  case "$1" in
+    *'<<'*'\\'*)
+      case "$1" in *py* | *node* | *perl* | *ruby*) return 0 ;; esac ;;
+  esac
+  case "$1" in
+    *[Pp][Ww][Ss][Hh]* | *[Pp][Oo][Ww][Ee][Rr][Ss][Hh][Ee][Ll][Ll]*)
+      case "$1" in *'`'*) return 0 ;; esac ;;
   esac
   return 1
 }
@@ -119,7 +134,7 @@ deny() { # <reason>
 
 deny_unavailable() { # <理由>
   deny "⚠️ ff-dev-toolkit guard（literal-write: シェルの値が別言語のプログラムへ届かない形）: **判定不能**のため停止しました（${1}）。
-このコマンドは perl と \`\$\`、または node と process.env を含む候補ですが、判定ヘルパ（${HELPER_DIR_SHOWN}/literal-write-scan.sh）で走査を完了できませんでした。判定できないまま通すと、ファイル本文が無音で変わる形を素通しします。
+このコマンドは perl と \`\$\`、node と process.env、heredoc と二重バックスラッシュとインタプリタ、または pwsh / powershell とバッククォートを含む候補ですが、判定ヘルパ（${HELPER_DIR_SHOWN}/literal-write-scan.sh）で走査を完了できませんでした。判定できないまま通すと、ファイル本文が無音で変わる形を素通しします。
 対処:
   1) ff-dev-toolkit を更新・再インストールしてヘルパを復旧する
   2) ファイル本文は Write / Edit ツールで直接書く（シェルを経由しない）
@@ -175,6 +190,28 @@ case "$scan_rc" in
   *) deny_unavailable "判定ヘルパの走査（awk）が失敗しました（rc=${scan_rc}）" ;;
 esac
 [ -n "$hits" ] || exit 0
+# 述語 D の前提（コマンド文字列の `\\` が bash へ渡る前に `\` へ縮む）は Claude Code の Bash ツール固有なので、
+# Claude Code 以外のホストでは D の検出を落とす（Codex / grok では書いたとおりに届く）。Claude Code の判定は
+# 書き換え系の hook（guard-exit-code.sh / guard-zsh-glob.sh）と同じく CLAUDECODE=1・grok root 無し・入力に model が
+# 無いこと — Claude Code の Bash ツールから起動した codex exec は CLAUDECODE=1 を受け継ぐので、CLAUDECODE だけで決めない。
+d_host="${CLAUDECODE:-}"
+if [ -n "${GROK_PLUGIN_ROOT:-}" ] || ! printf '%s' "$input" | jq -e 'has("model") | not' >/dev/null 2>&1; then
+  d_host=""
+fi
+if [ "$d_host" != 1 ]; then
+  kept=""
+  while IFS= read -r hit_line; do
+    case "$hit_line" in
+      "" | D"	"*) continue ;;
+    esac
+    kept="${kept:+${kept}
+}${hit_line}"
+  done <<EOF
+$hits
+EOF
+  hits="$kept"
+  [ -n "$hits" ] || exit 0
+fi
 
 # ---- deny 文（検出した名前と書き換え案。最大 5 件） ---------------------------------
 tab='	'
@@ -182,6 +219,8 @@ listed=""
 hit_n=0
 has_a=0
 has_b=0
+has_d=0
+has_p=0
 while IFS= read -r hit_line; do
   [ -n "$hit_line" ] || continue
   hit_n=$((hit_n + 1))
@@ -192,6 +231,8 @@ while IFS= read -r hit_line; do
   case "$kind" in
     A) has_a=1 ;;
     B) has_b=1 ;;
+    D) has_d=1 ;;
+    P) has_p=1 ;;
   esac
   [ "$hit_n" -le 5 ] || continue
   case "$kind" in
@@ -199,6 +240,10 @@ while IFS= read -r hit_line; do
   \$${name}（perl -i のプログラム）→ Perl 変数 \$${name} として展開され、未定義なので空文字になります" ;;
     B) listed="${listed}
   ${name}（${lang} が環境から読む）→ この呼び出しで export せずに代入しているので子プロセスへ渡らず、空 / undefined になります" ;;
+    D) listed="${listed}
+  ${name}（${lang} へ引用付き heredoc で渡すプログラム）→ Bash ツールが \\\\ を \\ に解釈するので、プログラムには 1 本のバックスラッシュの escape が届き、文字列リテラルの中で実際の改行・NUL などに変わります" ;;
+    P) listed="${listed}
+  ${name}（PowerShell の -Command に渡す本文の二重引用符の文字列）→ PowerShell のエスケープとして解釈され（\`b はバックスペース・\`n は改行・\`0 は NUL など）、照合する文字列や書き込む本文が変わります" ;;
   esac
 done <<EOF
 $hits
@@ -206,17 +251,28 @@ EOF
 [ "$hit_n" -le 5 ] || listed="${listed}
   （ほか $((hit_n - 5)) 件）"
 
+summary=""
+[ "$has_a" -eq 0 ] && [ "$has_b" -eq 0 ] || summary="${summary}この Bash 呼び出しは、シェルの変数を別言語（perl / node）のプログラムの中で読もうとしていますが、値がそのプログラムへ届きません。エラーにならずに**ファイル本文が無音で変わります**（空文字の挿入・\`\"\$REPO\"\` → \`\"\"\`。導入先の観測台帳 OBS-130 の再発機序）。"
+[ "$has_d" -eq 0 ] || summary="${summary}この Bash 呼び出しは、インタプリタ（python / node / perl / ruby）へ引用付き heredoc で渡すプログラムに二重バックスラッシュの escape（\\\\n / \\\\0 など）を含みます。Claude Code の Bash ツールはコマンド文字列の \\\\ を bash へ渡す前に \\ へ解釈するので、区切り語を引用した heredoc でも防げず、プログラムが書き込む本文に**実際の改行・NUL が無音で入ります**（観測台帳 OBS-324 の再発機序）。"
+[ "$has_p" -eq 0 ] || summary="${summary}この Bash 呼び出しは、pwsh / powershell の -Command に渡す本文の二重引用符の文字列の中に、バッククォート + PowerShell のエスケープ文字を含みます。PowerShell は二重引用符の中のバッククォートをエスケープとして読むので、Markdown のインラインコード（\`b2821ed\` など）を含む置換文字列は**照合する文字列も書き込む本文も無音で変わります**（導入先の観測台帳 OBS-037 の再発機序）。"
+
 advice=""
+[ "$has_a" -eq 0 ] && [ "$has_b" -eq 0 ] || advice="${advice}
+  - 新規ファイルや追記は、引用付き heredoc で置く: cat > <file> <<'EOF' … EOF（区切り語を引用すると本文は何も展開されない）"
 [ "$has_a" -eq 0 ] || advice="${advice}
   - 置換後の本文にシェル変数の値を入れたいなら: 本文を Write / Edit ツールで直接書く。perl に渡すなら export して \$ENV{NAME} で読むか、二重引用符のプログラムにしてシェルに展開させる
   - 本文へ \`\$NAME\` という文字列そのものを書きたいなら: Perl 側で \\\$NAME とエスケープする（単一引用符の中の \\\$ はそのまま perl へ届く）"
 [ "$has_b" -eq 0 ] || advice="${advice}
   - 環境経由で渡すなら: 代入を export NAME=… にする、またはコマンドの前置代入（NAME=… perl …）にする"
+[ "$has_d" -eq 0 ] || advice="${advice}
+  - プログラムは Write / Edit ツールでファイル（scratchpad の patch.py など）に書き、python3 <そのファイル> のように実行する。実行前に保存したバイトを期待値と照合する（markdown-patch-discipline.md「リテラル書き込みの既定経路」）"
+[ "$has_p" -eq 0 ] || advice="${advice}
+  - PowerShell の置換の値は Write ツールでファイルにし、[IO.File]::ReadAllText('<ファイル>') で読む
+  - 文字列を単一引用符（'…'）かヒアストリング @'…'@ にする（中のバッククォートをエスケープとして読まない）。スクリプトは Write で .ps1 に書いて -File で渡す"
 
-deny "⚠️ ff-dev-toolkit guard（literal-write: シェルの値が別言語のプログラムへ届かない形）: この Bash 呼び出しは、シェルの変数を別言語（perl / node）のプログラムの中で読もうとしていますが、値がそのプログラムへ届きません。エラーにならずに**ファイル本文が無音で変わります**（空文字の挿入・\`\"\$REPO\"\` → \`\"\"\`。導入先の観測台帳 OBS-130 の再発機序）。
+deny "⚠️ ff-dev-toolkit guard（literal-write: 書き込む本文がシェル・別言語の解釈で無音に変わる形）: ${summary}
 検出した箇所:${listed}
 次のいずれかで書き直してください:
-  - ファイル本文は Write / Edit ツールで直接書く（シェルも別言語のリテラルも経由しない。最も確実）
-  - 新規ファイルや追記は、引用付き heredoc で置く: cat > <file> <<'EOF' … EOF（区切り語を引用すると本文は何も展開されない）${advice}
-誤検知の場合（大文字始まりの Perl 変数を意図して書いた・呼び出しの外で export 済み等）は、コマンドの**先頭**へ環境代入を付けて再実行します: FF_LITERAL_WRITE_ACK=1 <コマンド>
+  - ファイル本文は Write / Edit ツールで直接書く（シェルも別言語のリテラルも経由しない。最も確実）${advice}
+誤検知の場合（大文字始まりの Perl 変数を意図して書いた・呼び出しの外で export 済み・バックスラッシュ / バッククォートの解釈を承知のうえで書いた等）は、コマンドの**先頭**へ環境代入を付けて再実行します: FF_LITERAL_WRITE_ACK=1 <コマンド>
 このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD=1 を設定します。判定の正本は ${HELPER_DIR_SHOWN}/literal-write-scan.sh です。"
