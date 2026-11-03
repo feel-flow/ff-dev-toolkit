@@ -6,7 +6,9 @@
 # with --task review.
 #
 # All options are passed through to multi-agent.sh, except --route below,
-# which this wrapper owns.
+# which this wrapper owns. One positive integer positional argument is a PR
+# number: multi-agent.sh resolves its base with gh (see multi-agent.sh --help).
+# Any other extra argument stays an unknown option.
 #
 # --route fast|full|none   変更クラス別のレーン数（`scripts/review-route.sh` の REVIEW_ROUTE を
 #                          そのまま渡す）。レーン構成を明示するので、既定の pair・利用者設定の

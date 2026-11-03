@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import stat
 import subprocess
@@ -18,6 +19,32 @@ spec = importlib.util.spec_from_file_location("measurement", SCRIPT)
 measurement = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(measurement)
 REPO = "example/project"
+# Runs the recorder with both of its clocks faked, so a wall clock step is reproduced, not
+# awaited: monotonic advances 0.01 s per reading (plus delay once, after the first reading:
+# the start snapshot write), and the wall clock follows it from a fixed start, shifted by the
+# step after its first reading. argv = script, step, delay, recorder args...
+STEPPED_CLOCK = '''
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("measurement", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+step, delay, readings = float(sys.argv[2]), float(sys.argv[3]), []
+class SteppedClock:
+    @staticmethod
+    def monotonic():
+        # delay: time spent between the first reading and the next (the start snapshot write).
+        readings.append(0.01 * len(readings) + (delay if readings else 0.0))
+        return readings[-1]
+    @staticmethod
+    def time():
+        if not hasattr(SteppedClock, "started"):
+            SteppedClock.started = True
+            return 1000000.0
+        return 1000000.0 + (readings[-1] if readings else 0.0) + step
+module.time = SteppedClock
+sys.argv = [sys.argv[1]] + sys.argv[4:]
+sys.exit(module.main())
+'''
 
 
 class MeasurementTest(unittest.TestCase):
@@ -30,9 +57,15 @@ class MeasurementTest(unittest.TestCase):
         self.fake.write_text('''#!/usr/bin/env python3
 import json, os, subprocess, sys, time
 from pathlib import Path
+def publish(suffix, pid):
+    # The tests poll for the file and then read it: publish it whole, never empty.
+    target = Path(__file__).with_suffix(suffix)
+    staging = target.with_name(target.name + ".staging")
+    staging.write_text(str(pid), encoding="utf-8")
+    os.replace(staging, target)
 if "--version" in sys.argv:
     if Path(__file__).with_suffix(".slow-version").exists():
-        Path(__file__).with_suffix(".version-pid").write_text(str(os.getpid()), encoding="utf-8")
+        publish(".version-pid", os.getpid())
         time.sleep(20)
     print("2.1.308 (Claude Code)")
     sys.exit(0)
@@ -47,12 +80,12 @@ if prompt == "controls":
     assert sys.argv[sys.argv.index("--model")+1] == "test-model"
     assert sys.argv[sys.argv.index("--max-turns")+1] == "3"
 if prompt == "sleep":
-    Path(__file__).with_suffix(".pid").write_text(str(os.getpid()), encoding="utf-8")
+    publish(".pid", os.getpid())
     time.sleep(20)
 if prompt == "descendant":
     code = "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(20)"
     child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.DEVNULL)
-    Path(__file__).with_suffix(".child-pid").write_text(str(child.pid), encoding="utf-8")
+    publish(".child-pid", child.pid)
     time.sleep(20)
 session = sys.argv[sys.argv.index("--session-id")+1]
 value = dict(type="result", subtype="success", is_error=False, session_id=session,
@@ -287,6 +320,32 @@ if prompt == "exit-one":
             if process.poll() is None:
                 process.kill()
                 process.communicate()
+
+    def test_wall_clock_step_within_tolerance_keeps_forward_interval(self):
+        # The wall clock can step back under load (about 0.65 s observed in WSL). A step within
+        # the 1 s tolerance keeps the interval (never reversed); a larger one drops it.
+        # A 2 s start snapshot write must count on both clocks, not on the wall clock alone.
+        for step, delay, kept in ((-0.65, 0.0, True), (0.65, 0.0, True), (-5.0, 0.0, False), (5.0, 0.0, False),
+                                  (0.0, 2.0, True)):
+            with self.subTest(step=step, delay=delay):
+                shutil.rmtree(self.store, ignore_errors=True)
+                result = subprocess.run([sys.executable, "-B", "-c", STEPPED_CLOCK, str(SCRIPT), str(step), str(delay),
+                                         "run", "--store", str(self.store), "--repo", REPO,
+                                         "--issue", "1676", "--claude", str(self.fake)],
+                                        input=b"task", capture_output=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                value = json.loads(next(self.store.glob("*/record.json")).read_text(encoding="utf-8"))
+                self.assertEqual(value["start_epoch"], 1000000.0)
+                if kept:
+                    self.assertIsNotNone(value["end_epoch"])
+                    self.assertGreaterEqual(value["end_epoch"], value["start_epoch"])
+                    # The kept interval is the monotonic span, not the stepped wall clock.
+                    self.assertAlmostEqual(value["end_epoch"] - value["start_epoch"],
+                                           value["process_seconds"] + delay, delta=0.05)
+                    self.assertEqual(self.report()["interval_missing"], 0)
+                else:
+                    self.assertIsNone(value["end_epoch"])
+                    self.assertEqual(self.report()["interval_missing"], 1)
 
     def test_concurrent_writes_are_distinct_runs(self):
         command = [sys.executable, str(SCRIPT), "run", "--store", str(self.store), "--repo", REPO,

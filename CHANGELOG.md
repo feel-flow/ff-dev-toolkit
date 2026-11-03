@@ -20,6 +20,15 @@
 
 ## [Unreleased]
 
+## [0.174.3] - 2026-11-03
+
+### 修正
+
+- レビュー証跡（`scripts/review-evidence.py`）の `begin` が記録する開始時刻を、読み込んだ prior / parent の終了時刻が 1 秒以内の先にあればそこまで寄せるようにしました。2 回のレビューの間に壁時計が巻き戻る環境（観測した WSL では負荷下で約 0.65 秒戻った）で、正しい順序の証跡を `verify` が `prior review order/subject mismatch` や `partial review has no matching full-review coverage` で拒否していました。1 秒を超えて先の終了時刻は寄せず、`begin` の後に受領書の prior / parent の終了時刻を書き換えた場合とともに、従来どおり `verify` が拒否します。
+- Claude Code の計測 PoC（`scripts/measurement/claude-measure.py`）で、1 秒以内の壁時計の巻き戻りや開始記録の書き込みの遅れによって終了 epoch が欠測になる問題を直しました。終了は開始 epoch と同時に読んだ monotonic 時計からの経過で出し、区間が逆転しません。1 秒を超える時計飛びは従来どおり欠測として `interval_missing` に数えます。
+- squash merge の closing keyword ガード（`hooks/guard-merge-closing-keyword.sh`）が gh 照会の時間枠を壁時計の経過だけで数えていたため、照会中に壁時計が巻き戻ると枠が 1 秒余分に残り、使い切りの通知が出ないことがありました。時間上限で打ち切った照会はその上限の秒数を必ず経過したものとして数え、壁時計の経過と大きい方で枠を減らします。
+- `/multi-review` に PR 番号だけを渡したとき、その番号を未知のオプションとして止めず、`gh pr view` で PR の base ブランチを解決して差分の起点にします。数字以外の未知の引数はこれまでどおりエラーです。
+
 ## [0.174.2] - 2026-11-02
 
 ### 修正
@@ -3747,7 +3756,8 @@
 
 <!-- 比較リンクは公開リポジトリに存在するタグ同士のみ。plugin version のうち未タグの版は見出しのみ。 -->
 
-[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.174.1...HEAD
+[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.174.2...HEAD
+[0.174.2]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.174.1...v0.174.2
 [0.174.1]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.174.0...v0.174.1
 [0.174.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.173.0...v0.174.0
 [0.173.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.172.0...v0.173.0

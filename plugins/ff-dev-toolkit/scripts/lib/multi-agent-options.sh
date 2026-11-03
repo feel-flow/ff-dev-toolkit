@@ -134,6 +134,8 @@ fi
 # 別系列と判定される（stale のまま 1 回目 → git pull 後の 2 回目が「another
 # branch/base/scope」となり、強制的にフルレビューへ落ちる）。
 BASE_BRANCH_IDENTITY="${BASE_BRANCH#origin/}"
+# 位置引数として渡された PR 番号。空は未指定。正の整数を 1 つだけ覚える。
+POSITIONAL_PR=""
 DRY_RUN=false
 RESUME=false
 FRESH=false
@@ -418,8 +420,62 @@ show_help() {
   exit 0
 }
 
+# 正の整数 1 つを PR 番号として受けたとき、gh pr view の baseRefName（ブランチ名）に
+# 常に origin/ を 1 つ付けて --base 相当にする。名前が origin/ で始まっていても
+# remote 接頭辞ではない（origin/release は origin/origin/release）。
+# --base / MULTI_AGENT_BASE_BRANCH が既にあるときは identity（origin/ を 1 つだけ
+# 落とした名前）が一致する必要があり、一致すれば呼び出し側の綴りと出所を維持する。
+# stdout だけを名前に使い、stderr は失敗のときだけ出す（stdout へ混ぜない）。
+resolve_positional_pr_base() {
+  local pr gh_err gh_out gh_rc trimmed base explicit_id pr_id
+  [[ -n "$POSITIONAL_PR" ]] || return 0
+  pr="$POSITIONAL_PR"
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "ERROR: cannot resolve base for PR #${pr} (gh is not on PATH). Pass --base origin/<branch>." >&2
+    exit 1
+  fi
+  gh_err="$(mktemp)" || {
+    echo "ERROR: cannot create a temp file to resolve PR #${pr}." >&2
+    exit 1
+  }
+  gh_rc=0
+  gh_out="$(gh pr view "$pr" --json baseRefName --jq .baseRefName 2>"$gh_err")" || gh_rc=$?
+  if [[ "$gh_rc" -ne 0 ]]; then
+    echo "ERROR: gh pr view failed for PR #${pr}." >&2
+    if [[ -s "$gh_err" ]]; then
+      cat "$gh_err" >&2
+    fi
+    rm -f "$gh_err"
+    exit 1
+  fi
+  rm -f "$gh_err"
+  trimmed="${gh_out#"${gh_out%%[![:space:]]*}"}"
+  trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+  if [[ -z "$trimmed" ]]; then
+    echo "ERROR: empty baseRefName for PR #${pr}." >&2
+    exit 1
+  fi
+  if ! git check-ref-format --branch "$trimmed" >/dev/null 2>&1; then
+    echo "ERROR: invalid baseRefName for PR #${pr}: ${trimmed}" >&2
+    exit 1
+  fi
+  base="origin/${trimmed}"
+  if [[ "$BASE_BRANCH_EXPLICIT" == true ]]; then
+    explicit_id="${BASE_BRANCH#origin/}"
+    pr_id="${base#origin/}"
+    if [[ "$explicit_id" != "$pr_id" ]]; then
+      echo "ERROR: base ${BASE_BRANCH} (${BASE_BRANCH_SOURCE}) does not match PR #${pr} base ${base}." >&2
+      exit 1
+    fi
+    return 0
+  fi
+  BASE_BRANCH="$base"
+  BASE_BRANCH_SOURCE="PR #${pr}"
+  BASE_BRANCH_EXPLICIT=true
+}
+
 # ── Argument Parsing ──
-# 最終的な base（env / 自動検出 / フォールバック / --base のいずれか）へ鮮度解決を
+# 最終的な base（env / 自動検出 / フォールバック / --base / PR 番号のいずれか）へ鮮度解決を
 # **1 回だけ**掛ける。呼び出しは parse_args の末尾 1 箇所だけに保つこと — 解決を
 # 複数箇所に置くと選択行が重複し、しかも「実際には使わなかった base」の行が混ざる。
 #
@@ -449,6 +505,7 @@ print_archive_recovery() { # [critical]: do not advertise a bare operation for k
 
 parse_args() {
   local archive_conflict="" option
+  POSITIONAL_PR=""
   for option in "$@"; do
     case "$option" in
       --description|--include-diff|--mode|--mode=*|--strategy|--cli|--cli=*|--perspective|--perspective=*|--exclude-cli|--exclude-cli=*|--exclude-perspective|--exclude-perspective=*|--parallel|--sequential|--timeout|--set-reviewers)
@@ -529,12 +586,33 @@ parse_args() {
       --timeout)     TIMEOUT="$2"; shift 2 ;;
       --help|-h)     show_help ;;
       *)
-        echo "Unknown option: $1" >&2
-        echo "Run with --help for usage" >&2
-        exit 1
+        # 数字だけを PR 番号にする。0 と先頭 0 は番号として拒否する（Unknown option にしない）。
+        # それ以外の余り引数は従来どおり Unknown option。
+        case "$1" in
+          ""|*[!0-9]*)
+            echo "Unknown option: $1" >&2
+            echo "Run with --help for usage" >&2
+            exit 1
+            ;;
+          0*)
+            echo "ERROR: invalid PR number: $1 (a positive integer without a leading zero)" >&2
+            exit 1
+            ;;
+          *)
+            if [[ -n "$POSITIONAL_PR" ]]; then
+              echo "ERROR: multiple PR numbers are not supported (${POSITIONAL_PR} and $1)" >&2
+              exit 1
+            fi
+            POSITIONAL_PR="$1"
+            shift
+            ;;
+        esac
         ;;
     esac
   done
+
+  # --staged との排他より前に解決し、番号がある実行を明示 base として扱う。
+  resolve_positional_pr_base
 
   if [[ "$ARCHIVE_ONLY" == true ]]; then
     if [[ "$TASK_TYPE" != review || "$FRESH" == true || "$RESUME" == true || "$DELEGATE_TO_HOST" == true \

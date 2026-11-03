@@ -10,7 +10,7 @@ macOS / Linux の Python 3 標準ライブラリと Claude Code を使う、明�
 | --- | --- | --- |
 | Issue / セッション / 成果 | 明示したリポジトリ（owner/name）と Issue 番号、生成した session UUID、任意の成果 URL | 1実行=1Issue。複数PRはURLを追記できる。親子spanは作らず、最上位CLIだけを記録 |
 | CLI経過秒 | Python の monotonic によるプロセス実行時間 | 起動・ツール・API・待機を含む。AI稼働時間ではない |
-| CLI区間の延べ/重複除去/全体経過 | UTC epoch の開始終了区間。和/区間和集合/最初から最後まで | 同一マシンでの比較。時計飛びは欠測。間の空白を待ち・人間時間へ分類しない |
+| CLI区間の延べ/重複除去/全体経過 | UTC epoch の開始終了区間（終了は開始 + monotonic の経過）。和/区間和集合/最初から最後まで | 同一マシンでの比較。1 秒を超える時計飛びは欠測（1 秒以内の巻き戻りでは区間を残し、逆転させない）。間の空白を待ち・人間時間へ分類しない |
 | duration_ms / duration_api_ms | Claude Code の result JSON の報告値 | API延べ時間はAI稼働の和集合ではない。子APIを別途足さない |
 | トークン | usage の input/output/cache creation/cache read のみ | 非負整数。欠落は null。モデル名は modelUsage のキーだけ |
 | コスト USD | total_cost_usd | CLI側推定額。サブスク費用の按分・請求実額ではない |
@@ -78,7 +78,7 @@ report は同じ repo/Issue の全実行を読み、重複区間を除く。繰�
 壊れた JSON / 不正スキーマを読み飛ばして完全な集計にせず、report 自体を非0で止める。
 不正な記録は安全な理由と run UUID を診断へ出す。ストア直下の `.DS_Store` 等も
 想定外の入力として停止するので、専用ストアに別ファイルを置かない。
-時計飛び等で終了epochが欠けた実行は `interval_missing` に数える。
+1 秒を超える時計飛び等で終了epochが欠けた実行は `interval_missing` に数える。
 空ストアも null と件数0で表し、実測ゼロとは区別する。
 失敗・権限拒否・max-turns・JSON不正は成功として報告せず、終了コード非0と状態を残す。
 

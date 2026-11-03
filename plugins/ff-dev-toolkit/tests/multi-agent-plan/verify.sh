@@ -13,6 +13,7 @@
 #
 # 空振り検出: sandbox probe の増分を数えられない入力（イベントログの置き場がディレクトリ・親ディレクトリを検索できない・probe 中にログが縮む・GROK_HOME も HOME も無い・probe の mktemp が失敗する）を黙る側へ倒すと「undetermined」系が赤になる。2026-09-25 実測（123 件中）: 不活性判定を目印 grep だけの旧形へ戻す（rc=0・目印なしで即 return 0）と 9 件（inert 4 件 + undetermined 5 件）、増分ではなく「ログに ProfileApplied があるか」で判定すると 1 件、未作成の判定から親ディレクトリの検索可否の確認を外すと 1 件、ProfileApplied 以外の行も数えると 1 件、縮みを合計でしか見ないと 1 件（旧置き場だけが縮むケース）、mktemp 失敗で黙ると 1 件が赤になる。親ディレクトリ検索不可のケースは root 等 chmod 000 を越えて検索できる実行者では部分 skip になる。
 # 空振り検出（Issue `#2113`）: --route の拒否は exit 2 だけでなく注記を要求する — 拒否メッセージから「nothing was run」の行か部分再検証の形の行を消した変異、部分再検証の形を委譲の拒否にも出す変異は、どれも注記照合が赤（実測）。注記が 1 形でも欠ければ、その形の名前を赤の理由に並べる。
+# 空振り検出（Issue `#2490`）: 正の整数の位置引数を Unknown option に戻す変異で、PR 番号を受理する検査が 13 件赤。空文字・非数字・未知オプション・0 と先頭 0 の 4 件は緑のまま。対照 159 件は緑（2026-11-02 Linux、実測）。
 #
 # run-all-required: no — 一時領域が無い環境の skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。必須へ昇格するなら REQUIRED_SUITES へ移す）
 
@@ -1695,6 +1696,266 @@ if python3 "$SCRIPT_DIR/headless-security.py" "$PLUGIN_ROOT" >"$TMP/headless-sec
 else
   bad 'headless security or recovery preservation failed'
   tail -40 "$TMP/headless-security.log" >&2
+fi
+
+echo ""
+echo "== positional PR number =="
+# スキルが渡す PR 番号の位置引数を、Unknown option ではなく base 解決として受ける。
+# gh はスタブ。非数字の余り引数は従来どおり Unknown option。
+GH_BIN="$TMP/gh-bin"
+mkdir -p "$GH_BIN"
+cat > "$GH_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${GH_PR_STUB_LOG:?}"
+if [ "${GH_PR_STUB_RC:-0}" -ne 0 ]; then
+  printf '%s\n' "${GH_PR_STUB_ERR:-stub gh failed}" >&2
+  exit "${GH_PR_STUB_RC}"
+fi
+printf '%s\n' "${GH_PR_STUB_BASE:-develop}"
+EOF
+chmod +x "$GH_BIN/gh"
+# gh の実体があるディレクトリだけを PATH から外す（同じディレクトリの他コマンドは残すため、
+# 不在検査は PATH のコピーに gh という名前の実行ファイルが無い状態を作る）。
+NO_GH_PATH=""
+gh_path_rest="${PATH}"
+while [ -n "$gh_path_rest" ]; do
+  case "$gh_path_rest" in
+    *:*) gh_dir="${gh_path_rest%%:*}"; gh_path_rest="${gh_path_rest#*:}" ;;
+    *) gh_dir="$gh_path_rest"; gh_path_rest="" ;;
+  esac
+  if [ -n "$gh_dir" ] && [ ! -x "$gh_dir/gh" ]; then
+    NO_GH_PATH="${NO_GH_PATH:+$NO_GH_PATH:}$gh_dir"
+  elif [ -n "$gh_dir" ] && [ -x "$gh_dir/gh" ]; then
+    mkdir -p "$TMP/no-gh-bin"
+    # ディレクトリごと落とすと隣の yq 等も消える。gh 以外をリンクして残す。
+    for gh_tool in "$gh_dir"/*; do
+      [ -e "$gh_tool" ] || continue
+      [ "$(basename "$gh_tool")" = gh ] && continue
+      ln -s "$gh_tool" "$TMP/no-gh-bin/$(basename "$gh_tool")" 2>/dev/null || true
+    done
+    NO_GH_PATH="${NO_GH_PATH:+$NO_GH_PATH:}$TMP/no-gh-bin"
+  fi
+done
+unset gh_path_rest gh_dir gh_tool
+run_pr() { # $1 log, $2 gh log, $3 stub base, $4 stub rc, $5.. multi-review args
+  local output="$1" ghlog="$2" ghbase="$3" ghrc="$4"
+  shift 4
+  : >"$ghlog"
+  (
+    cd "$REPO"
+    run_isolated \
+      -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT \
+      -u FF_DEV_TOOLKIT_SKILL_FILE -u FF_DEV_TOOLKIT_PROJECT_ROOT \
+      -u MULTI_AGENT_BASE_BRANCH \
+      PATH="$GH_BIN:$STUB:$PATH" \
+      FF_REVIEW_ROUND_LIMIT=0 \
+      GH_PR_STUB_LOG="$ghlog" \
+      GH_PR_STUB_BASE="$ghbase" \
+      GH_PR_STUB_RC="$ghrc" \
+      GH_PR_STUB_ERR="stub gh failed" \
+      bash "$MULTI_REVIEW" "$@"
+  ) >"$output" 2>&1
+}
+PR_LOG="$TMP/pr-number.log"
+PR_GH="$TMP/pr-number-gh.log"
+# 期待文字列の番号は変数で組む。追加行に bare な番号短縮形を書かない（公開同期の参照検査）。
+pr_full=7127
+pr_cross=7098
+pr_fast=7088
+pr_rc=0
+run_pr "$PR_LOG" "$PR_GH" develop 0 --dry-run --route full --delegate-to-host "$pr_full" || pr_rc=$?
+if [ "$pr_rc" -eq 0 ] && grep -Fq "Base branch: origin/develop (PR #${pr_full})" "$PR_LOG" \
+  && grep -Fq "pr view ${pr_full}" "$PR_GH" && ! grep -q 'Unknown option' "$PR_LOG"; then
+  ok "route full --delegate-to-host の PR 番号は Unknown option で止まらず origin/develop の PR base になる"
+else
+  bad "route full --delegate-to-host の PR 番号が base にならない rc=${pr_rc}"
+  cat "$PR_LOG" >&2
+  echo "--- gh log ---" >&2
+  cat "$PR_GH" >&2
+fi
+pr_rc=0
+run_pr "$PR_LOG" "$PR_GH" develop 0 --dry-run --mode cross-model --cli codex-cli --perspective comprehensive-review "$pr_cross" || pr_rc=$?
+if [ "$pr_rc" -eq 0 ] && grep -Fq "Base branch: origin/develop (PR #${pr_cross})" "$PR_LOG" \
+  && grep -Fq "pr view ${pr_cross}" "$PR_GH" && ! grep -q 'Unknown option' "$PR_LOG"; then
+  ok "cross-model の PR 番号は Unknown option で止まらず origin/develop の PR base になる"
+else
+  bad "cross-model の PR 番号が base にならない rc=${pr_rc}"
+  cat "$PR_LOG" >&2
+fi
+pr_rc=0
+run_pr "$PR_LOG" "$PR_GH" develop 0 --dry-run --route fast --base origin/develop "$pr_fast" || pr_rc=$?
+if [ "$pr_rc" -eq 0 ] && grep -Fq 'Base branch: origin/develop (--base flag)' "$PR_LOG" \
+  && grep -Fq "pr view ${pr_fast}" "$PR_GH" && ! grep -q 'Unknown option' "$PR_LOG"; then
+  ok "--base と一致する PR 番号は Unknown option で止まらず、base の出所は --base flag のまま"
+else
+  bad "--base と PR 番号の併用が期待どおりでない rc=${pr_rc}"
+  cat "$PR_LOG" >&2
+fi
+pr_rc=0
+run_pr "$PR_LOG" "$PR_GH" develop 0 --dry-run "" || pr_rc=$?
+if [ "$pr_rc" -eq 1 ] && grep -Fq 'Unknown option:' "$PR_LOG" && ! grep -q 'pr view' "$PR_GH"; then
+  ok "空の位置引数は Unknown option のまま（gh は呼ばない）"
+else
+  bad "空の位置引数が Unknown option にならない rc=${pr_rc}"
+  cat "$PR_LOG" >&2
+fi
+pr_rc=0
+run_pr "$PR_LOG" "$PR_GH" develop 0 --dry-run --route full --delegate-to-host not-a-pr || pr_rc=$?
+if [ "$pr_rc" -eq 1 ] && grep -Fq 'Unknown option: not-a-pr' "$PR_LOG" && ! grep -q 'pr view' "$PR_GH"; then
+  ok "非数字の余り引数は Unknown option のまま（gh は呼ばない）"
+else
+  bad "非数字の余り引数が Unknown option にならない rc=${pr_rc}"
+  cat "$PR_LOG" >&2
+fi
+pr_rc=0
+run_pr "$PR_LOG" "$PR_GH" develop 0 --dry-run --bogus || pr_rc=$?
+if [ "$pr_rc" -eq 1 ] && grep -Fq 'Unknown option: --bogus' "$PR_LOG"; then
+  ok "未知のオプションは Unknown option のまま"
+else
+  bad "未知のオプションが Unknown option にならない rc=${pr_rc}"
+  cat "$PR_LOG" >&2
+fi
+pr_rc=0
+run_pr "$PR_LOG" "$PR_GH" develop 0 --dry-run "$pr_full" "$pr_fast" || pr_rc=$?
+if [ "$pr_rc" -eq 1 ] && grep -Fq 'multiple PR numbers are not supported' "$PR_LOG" \
+  && ! grep -q 'Unknown option' "$PR_LOG" && ! grep -q 'pr view' "$PR_GH"; then
+  ok "PR 番号が 2 つあるときは名前付きエラー（Unknown option でも gh 呼び出しでもない）"
+else
+  bad "PR 番号 2 つの扱いが期待どおりでない rc=${pr_rc}"
+  cat "$PR_LOG" >&2
+fi
+pr_rc=0
+run_pr "$PR_LOG" "$PR_GH" develop 1 --dry-run "$pr_full" || pr_rc=$?
+if [ "$pr_rc" -eq 1 ] && grep -Fq "gh pr view failed for PR #${pr_full}" "$PR_LOG" \
+  && grep -Fq 'stub gh failed' "$PR_LOG" && ! grep -q 'Unknown option' "$PR_LOG"; then
+  ok "gh の失敗は名前付きエラーで、stderr を出し、Unknown option ではない"
+else
+  bad "gh 失敗の扱いが期待どおりでない rc=${pr_rc}"
+  cat "$PR_LOG" >&2
+fi
+pr_rc=0
+run_pr "$PR_LOG" "$PR_GH" develop 0 --dry-run 0 || pr_rc=$?
+pr0_ok=0
+if [ "$pr_rc" -eq 1 ] && grep -Fq 'invalid PR number: 0' "$PR_LOG" \
+  && ! grep -q 'Unknown option' "$PR_LOG" && ! grep -q 'pr view' "$PR_GH"; then
+  pr0_ok=1
+fi
+pr_rc=0
+run_pr "$PR_LOG" "$PR_GH" develop 0 --dry-run 0123 || pr_rc=$?
+if [ "$pr0_ok" -eq 1 ] && [ "$pr_rc" -eq 1 ] && grep -Fq 'invalid PR number: 0123' "$PR_LOG" \
+  && ! grep -q 'Unknown option' "$PR_LOG" && ! grep -q 'pr view' "$PR_GH"; then
+  ok "0 と先頭 0 の番号は名前付きエラーで、gh を呼ばない"
+else
+  bad "0 と先頭 0 の扱いが期待どおりでない rc=${pr_rc} zero_ok=${pr0_ok}"
+  cat "$PR_LOG" >&2
+fi
+pr_rc=0
+run_pr "$PR_LOG" "$PR_GH" develop 0 --dry-run --base origin/main "$pr_full" || pr_rc=$?
+if [ "$pr_rc" -eq 1 ] && grep -Fq "does not match PR #${pr_full} base origin/develop" "$PR_LOG" \
+  && grep -Fq "pr view ${pr_full}" "$PR_GH" && ! grep -q 'Unknown option' "$PR_LOG"; then
+  ok "--base と PR の base が違うときは両方の名前を出して止まる"
+else
+  bad "--base と PR の base 不一致が期待どおりでない rc=${pr_rc}"
+  cat "$PR_LOG" >&2
+fi
+pr_rc=0
+run_pr "$PR_LOG" "$PR_GH" "   " 0 --dry-run "$pr_full" || pr_rc=$?
+if [ "$pr_rc" -eq 1 ] && grep -Fq "empty baseRefName for PR #${pr_full}" "$PR_LOG" \
+  && ! grep -q 'Unknown option' "$PR_LOG"; then
+  ok "空白だけの baseRefName は名前付きエラー"
+else
+  bad "空の baseRefName の扱いが期待どおりでない rc=${pr_rc}"
+  cat "$PR_LOG" >&2
+fi
+pr_rc=0
+run_pr "$PR_LOG" "$PR_GH" 'bad..name' 0 --dry-run "$pr_full" || pr_rc=$?
+if [ "$pr_rc" -eq 1 ] && grep -Fq "invalid baseRefName for PR #${pr_full}" "$PR_LOG" \
+  && ! grep -q 'Unknown option' "$PR_LOG"; then
+  ok "不正な baseRefName は名前付きエラー"
+else
+  bad "不正な baseRefName の扱いが期待どおりでない rc=${pr_rc}"
+  cat "$PR_LOG" >&2
+fi
+pr_branch=release
+pr_rc=0
+run_pr "$PR_LOG" "$PR_GH" "origin/${pr_branch}" 0 --dry-run "$pr_full" || pr_rc=$?
+if [ "$pr_rc" -eq 0 ] && grep -Fq "Base branch: origin/origin/${pr_branch} (PR #${pr_full})" "$PR_LOG" \
+  && ! grep -q 'origin/origin/origin/' "$PR_LOG"; then
+  ok "origin/ で始まるブランチ名にも origin/ を 1 つだけ足す"
+else
+  bad "origin/ で始まる baseRefName の正規化が期待どおりでない rc=${pr_rc}"
+  cat "$PR_LOG" >&2
+fi
+pr_rc=0
+: >"$PR_GH"
+(
+  cd "$REPO"
+  run_isolated \
+    -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT \
+    -u FF_DEV_TOOLKIT_SKILL_FILE -u FF_DEV_TOOLKIT_PROJECT_ROOT \
+    PATH="$GH_BIN:$STUB:$PATH" \
+    FF_REVIEW_ROUND_LIMIT=0 \
+    GH_PR_STUB_LOG="$PR_GH" \
+    GH_PR_STUB_BASE=develop \
+    GH_PR_STUB_RC=0 \
+    GH_PR_STUB_ERR="stub gh failed" \
+    MULTI_AGENT_BASE_BRANCH=origin/develop \
+    bash "$MULTI_REVIEW" --dry-run "$pr_full"
+) >"$PR_LOG" 2>&1 || pr_rc=$?
+if [ "$pr_rc" -eq 0 ] && grep -Fq 'Base branch: origin/develop (MULTI_AGENT_BASE_BRANCH env)' "$PR_LOG" \
+  && grep -Fq "pr view ${pr_full}" "$PR_GH"; then
+  ok "環境変数の base と PR の base が一致するときは出所を env のままにする"
+else
+  bad "環境変数 base の一致が期待どおりでない rc=${pr_rc}"
+  cat "$PR_LOG" >&2
+fi
+pr_rc=0
+: >"$PR_GH"
+(
+  cd "$REPO"
+  run_isolated \
+    -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT \
+    -u FF_DEV_TOOLKIT_SKILL_FILE -u FF_DEV_TOOLKIT_PROJECT_ROOT \
+    PATH="$GH_BIN:$STUB:$PATH" \
+    FF_REVIEW_ROUND_LIMIT=0 \
+    GH_PR_STUB_LOG="$PR_GH" \
+    GH_PR_STUB_BASE=develop \
+    GH_PR_STUB_RC=0 \
+    GH_PR_STUB_ERR="stub gh failed" \
+    MULTI_AGENT_BASE_BRANCH=origin/main \
+    bash "$MULTI_REVIEW" --dry-run "$pr_full"
+) >"$PR_LOG" 2>&1 || pr_rc=$?
+if [ "$pr_rc" -eq 1 ] && grep -Fq "base origin/main (MULTI_AGENT_BASE_BRANCH env) does not match PR #${pr_full} base origin/develop" "$PR_LOG"; then
+  ok "環境変数の base と PR の base が違うときは出所を名指しして止まる"
+else
+  bad "環境変数 base の不一致が期待どおりでない rc=${pr_rc}"
+  cat "$PR_LOG" >&2
+fi
+pr_rc=0
+run_pr "$PR_LOG" "$PR_GH" develop 0 --dry-run --staged "$pr_full" || pr_rc=$?
+if [ "$pr_rc" -eq 2 ] && grep -Fq 'mutually exclusive' "$PR_LOG" \
+  && grep -Fq "pr view ${pr_full}" "$PR_GH" && ! grep -q 'Unknown option' "$PR_LOG"; then
+  ok "--staged と PR 番号は、番号を明示 base にしたあと既存の排他エラーになる"
+else
+  bad "--staged と PR 番号の扱いが期待どおりでない rc=${pr_rc}"
+  cat "$PR_LOG" >&2
+fi
+pr_rc=0
+(
+  cd "$REPO"
+  run_isolated \
+    -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT \
+    -u FF_DEV_TOOLKIT_SKILL_FILE -u FF_DEV_TOOLKIT_PROJECT_ROOT \
+    -u MULTI_AGENT_BASE_BRANCH \
+    PATH="$STUB:$NO_GH_PATH" \
+    FF_REVIEW_ROUND_LIMIT=0 \
+    bash "$MULTI_REVIEW" --dry-run "$pr_full"
+) >"$PR_LOG" 2>&1 || pr_rc=$?
+if [ "$pr_rc" -eq 1 ] && grep -Fq 'gh is not on PATH' "$PR_LOG" && ! grep -q 'Unknown option' "$PR_LOG"; then
+  ok "gh が無いときは --base の案内付きの名前付きエラー（Unknown option ではない）"
+else
+  bad "gh 不在の扱いが期待どおりでない rc=${pr_rc}"
+  cat "$PR_LOG" >&2
 fi
 
 echo ""

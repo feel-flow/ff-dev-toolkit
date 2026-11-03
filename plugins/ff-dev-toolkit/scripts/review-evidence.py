@@ -11,6 +11,11 @@ import time
 import uuid
 
 
+# The largest wall-clock step back that begin absorbs (the same 1 s as the tolerance in
+# measurement/claude-measure.py, which does not share this constant).
+CLOCK_STEP_NS = 10**9
+
+
 def git(*args, allow_empty=False):
     result = subprocess.run(['git', *args], capture_output=True, text=True)
     if result.returncode and not (allow_empty and result.returncode == 1):
@@ -200,9 +205,16 @@ def main():
         if not plan or len(set(plan)) != len(plan) or any(
                 len(task.split(':')) != 2 or not all(task.split(':')) for task in plan):
             raise ValueError('missing review plan')
+        # begin has just read prior/parent as finished records, so this review starts after
+        # them by causality. The wall clock can step back between two runs (observed under
+        # load in WSL), so a finish up to 1 s ahead raises the start. A larger gap is
+        # not a step: the start stays at the clock and verify refuses the order as before.
+        now = time.time_ns()
+        started_ns = max([now] + [r['finished_ns'] for r in (prior, parent)
+                                  if r and r['finished_ns'] - now <= CLOCK_STEP_NS])
         record = dict(schema=1, id=uuid.uuid4().hex,
                       subject=subject(args.base, args.output), plan=plan, main=args.main,
-                      prior=prior, parent=parent, started_ns=time.time_ns())
+                      prior=prior, parent=parent, started_ns=started_ns)
         if args.producer_sha256:
             record['producer_sha256'] = args.producer_sha256
         write(args.file, record)

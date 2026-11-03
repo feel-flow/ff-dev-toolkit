@@ -9,8 +9,9 @@
 # parsing in the 10-second child. On MSYS / Cygwin (Windows Git Bash) gh alone takes about 0.9 s and the
 # whole hook about 8.5 s, so a call gets 3 seconds, all calls share 8 seconds, and run-bash-hooks.sh
 # gives the child 25 seconds (Issue `#2377`). Worst case there: gh waits at most 8 s in total (elapsed time
-# is rounded up, so integer SECONDS never grants extra), plus about 6.5 s of parsing measured with full
-# inspection, about 14.5 s < 25 s. The shared window counts wall-clock time from the first gh call.
+# is rounded up, and calls cut at their alarm count their alarm even if the wall clock steps back; a step
+# back during a call that completes is not corrected), plus about 6.5 s of parsing measured with full
+# inspection, about 14.5 s < 25 s. The shared window counts from the first gh call.
 # Local optional-inspection bounds: command/message 8 KiB, response 64 KiB, 32 Refs, 4 sanitize passes.
 # No eval, repo settings changes, issue writes, or MCP handling.
 input=""
@@ -313,16 +314,22 @@ case "${OSTYPE:-}" in
   *) MC_GH_ALARM=1; MC_GH_BUDGET=5 ;;
 esac
 MC_GH_STARTED=""
+# Seconds that calls cut at their alarm have certainly taken. SECONDS follows the wall clock, which can
+# step back (observed under load in WSL), so the window takes the larger of the two.
+MC_GH_CUT=0
 mc_gh() { # response stays in a variable; a failed/partial response is never inspected.
   MC_RESPONSE=""
   if [ "$MC_GH_CALLS" -ge 4 ]; then mc_note '照会上限（4回）以後のmergeは未検査です。'; return 2; fi
   [ -n "$MC_GH_STARTED" ] || MC_GH_STARTED=$SECONDS
-  local left=$((MC_GH_BUDGET - (SECONDS - MC_GH_STARTED) - 1)) alarm="$MC_GH_ALARM"
+  local elapsed=$((SECONDS - MC_GH_STARTED))
+  [ "$elapsed" -ge "$MC_GH_CUT" ] || elapsed=$MC_GH_CUT
+  local left=$((MC_GH_BUDGET - elapsed - 1)) alarm="$MC_GH_ALARM"
   if [ "$left" -lt 1 ]; then mc_note "gh照会の時間枠（最初の照会から${MC_GH_BUDGET}秒）を使い切ったため、以後のmergeは未検査です。"; return 2; fi
   [ "$left" -ge "$alarm" ] || alarm="$left"
   MC_GH_CALLS=$((MC_GH_CALLS + 1))
   MC_RESPONSE="$(CDPATH='' cd -- "$cwd" 2>/dev/null && perl -e 'alarm shift @ARGV; exec @ARGV; exit 127' "$alarm" gh "$@" 2>/dev/null)"
   local rc=$?
+  [ "$rc" -ne 142 ] || MC_GH_CUT=$((MC_GH_CUT + alarm))
   if [ "$rc" -ne 0 ]; then mc_note "gh照会が失敗/${alarm}秒上限となったため検査を省略しました（rc=${rc}）。"; return 2; fi
   [ -n "$MC_RESPONSE" ] || { mc_note 'gh応答が空のため検査を省略しました。'; return 2; }
   [ "${#MC_RESPONSE}" -le 65536 ] || { mc_note 'gh応答が64KiB上限を超えるため未検査です。finish.sh precheckで確認してください。'; return 2; }

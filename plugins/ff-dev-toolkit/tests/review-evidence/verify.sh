@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # 空振り検出: 私有fixtureの旧パス化（evidence/run-all/shim）・GROK_HOME不在・shell入力空の6変異は全て赤。先取りした旧名のsentinelは正常対照2testで不変（2026-10-29 macOS実測）。shell入力不在も読取失敗で赤、cases入力の不在/空とprivacy test名の脱落は起動前に拒否する。
 # 空振り検出: retained-cacheの正常対照2testは通過。保存木の退避除外を外すと旧report参照がFileNotFound、保存木検査を空にするとunsafe6組と下限が7failure、入力case集合を空にすると下限1failure（全変異syntax0、2026-10-28実測）。UUID reportの保持と未知名・親/leafリンク・directory/FIFO・hardlinkの移動前拒否を実producer/archiverで測る。
+# 空振り検出: 壁時計の巻き戻り（time.time_ns を固定して再現）は begin の開始時刻を読んだ prior/parent の終了以上へ
+#   寄せる修正を外すと 3 test が prior order / partial coverage で赤（2026-11-02 WSL 実測。改変した順序は修正後も拒否）。
+#   寄せる対象から prior を外す変異は prior を含む 2 test、1 秒の上限を外す変異と上限を 4 秒に広げる変異は 1 秒超・5 秒先の prior を拒否する 1 test が赤
+#   （4 秒の変異は 1 秒をわずかに超える subTest だけが捕まえる。同日 WSL 実測）。
 # 空振り検出: evidence/schema/plan/task/report/required perspectives 不在は赤（cases.py で実測）。stub が root を消さなかった回（消去の印が無い）も赤。
 #   test_continued_host_delegation_adopts_all_from_the_advertised_command を単独実行し、
 #   report 分岐だけを旧 with --resume へ戻す変異と pending 案内を空にする変異は各 1 failure / 0 errors。

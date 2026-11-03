@@ -186,8 +186,11 @@ def run(args):
     # An interrupted version probe must not publish an empty run directory.
     args.store.mkdir(parents=True, exist_ok=True, mode=0o700)
     directory = args.store / session
+    # Read both clocks together: the epoch interval is checked against this monotonic span,
+    # so the start snapshot write below must be inside both or neither.
+    start_epoch, start_clock = time.time(), time.monotonic()
     record = dict(schema=SCHEMA, run_id=session, session_id=session, repo=args.repo, issue=args.issue,
-                  cli_version=version, safe_mode=args.safe_mode, state="running", start_epoch=time.time(), end_epoch=None,
+                  cli_version=version, safe_mode=args.safe_mode, state="running", start_epoch=start_epoch, end_epoch=None,
                   process_seconds=None, exit_code=None, models=[], permission_denials=None)
     record.update({k: None for k in METRICS})
     # Publish a complete start snapshot atomically; abandoned staging is outside the store.
@@ -227,10 +230,12 @@ def run(args):
         record["state"] = "interrupted"
     finally:
         record["process_seconds"] = time.monotonic() - start
-        end = time.time()
-        # Clock jumps invalidate the comparable epoch interval, not monotonic duration.
-        if end >= record["start_epoch"] and abs((end - record["start_epoch"]) - record["process_seconds"]) <= 1:
-            record["end_epoch"] = end
+        end, span = time.time(), time.monotonic() - start_clock
+        # Clock jumps over 1 s invalidate the comparable epoch interval, not monotonic duration.
+        # A smaller step (observed under load in WSL) keeps it; the end is start +
+        # monotonic span, so a step never yields a reversed interval.
+        if abs((end - start_epoch) - span) <= 1:
+            record["end_epoch"] = start_epoch + span
         metrics, response = sanitize_result(output, session)
         if metrics is not None:
             ok = metrics.pop("result_ok")

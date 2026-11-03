@@ -12,6 +12,12 @@ import unittest
 
 SCRIPT = Path(__file__).resolve().parents[2] / 'scripts/review-evidence.py'
 REPORT = '# Multi-CLI Review — Integrated Report\n\nvalid report\n'
+# Runs the producer with its wall clock (time.time_ns) pinned: argv = ns, script, args...
+CLOCK_AT = ('import runpy, sys, time\n'
+            'ns = int(sys.argv[1])\n'
+            'time.time_ns = lambda: ns\n'
+            'sys.argv = sys.argv[2:]\n'
+            'runpy.run_path(sys.argv[0], run_name="__main__")\n')
 
 
 def sha256(path):
@@ -57,19 +63,22 @@ class Evidence(unittest.TestCase):
     def git(self, *args):
         subprocess.check_call(['git', *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    def call(self, action, *args, success=True):
-        result = subprocess.run(['python3', str(SCRIPT), action, '--file', str(
+    def call(self, action, *args, success=True, clock_ns=None):
+        # clock_ns pins the producer's wall clock so clock steps are reproduced, not awaited.
+        entry = [str(SCRIPT)] if clock_ns is None else ['-c', CLOCK_AT, str(clock_ns), str(SCRIPT)]
+        result = subprocess.run(['python3', *entry, action, '--file', str(
             self.receipt if action == 'verify' else self.file), '--output', str(self.output),
             '--base', 'develop', *args], capture_output=True, text=True)
         self.assertEqual(result.returncode == 0, success, result.stderr)
         return result
 
     def record(self, plan='codex-cli:code-review', results='codex-cli:code-review\tcomplete\n',
-               extra=(), text='# Multi-CLI Review — Integrated Report\n\nvalid report\n'):
-        self.call('begin', '--plan', plan, *extra)
+               extra=(), text='# Multi-CLI Review — Integrated Report\n\nvalid report\n',
+               clock_ns=None):
+        self.call('begin', '--plan', plan, *extra, clock_ns=clock_ns)
         (self.output / 'integrated-report.md').write_text(text)
         (self.output / 'results').write_text(results)
-        self.call('finish', '--results', str(self.output / 'results'))
+        self.call('finish', '--results', str(self.output / 'results'), clock_ns=clock_ns)
 
     def mutate(self, fn, path=None):
         path = path or self.receipt
@@ -1027,6 +1036,57 @@ class Evidence(unittest.TestCase):
         self.git('commit', '-qm', 'fix', '--allow-empty')
         self.record(plan='codex-cli:test-analysis', results='codex-cli:test-analysis\tcomplete\n',
                     extra=('--parent', str(parent)))
+        self.call('verify', success=False)
+
+    def test_wall_clock_step_back_keeps_prior_and_parent_order(self):
+        # The wall clock can step back between two reviews (observed under load in WSL).
+        # begin read prior/parent as finished records, so the order must still verify.
+        # The prior finishes last, so only raising the start to the prior's finish passes.
+        self.record(clock_ns=1 * 10**9 + 500_000_000)
+        parent = self.output / 'parent.json'
+        shutil.copyfile(self.receipt, parent)
+        self.git('commit', '-qm', 'follow-up', '--allow-empty')
+        self.record(clock_ns=1 * 10**9 + 900_000_000)
+        prior = self.output / 'prior.json'
+        shutil.copyfile(self.receipt, prior)
+        self.record(extra=('--prior', str(prior), '--parent', str(parent)), clock_ns=10**9)
+        self.call('verify', '--required', 'code-review', '--prior-required', 'code-review')
+        # Tampering after begin stays visible: a prior finishing after this start is refused.
+        self.mutate(lambda r: r['prior'].update(finished_ns=r['started_ns'] + 1))
+        self.call('verify', success=False)
+
+    def test_wall_clock_step_back_keeps_prior_order_alone(self):
+        self.record(clock_ns=1 * 10**9 + 500_000_000)
+        prior = self.output / 'prior.json'
+        shutil.copyfile(self.receipt, prior)
+        self.record(extra=('--prior', str(prior)), clock_ns=10**9)
+        self.call('verify', '--required', 'code-review', '--prior-required', 'code-review')
+
+    def test_finish_far_ahead_of_the_clock_is_not_absorbed(self):
+        # Only a step up to 1 s is absorbed. A prior finishing further ahead of this review's
+        # clock (just over 1 s, or 5 s) is not a step: the start stays and verify refuses it.
+        for ahead in (10**9 + 1, 5 * 10**9):
+            with self.subTest(ahead=ahead):
+                self.record(clock_ns=10**9 + ahead)
+                prior = self.output / 'prior.json'
+                shutil.copyfile(self.receipt, prior)
+                self.record(extra=('--prior', str(prior)), clock_ns=10**9)
+                refused = self.call('verify', '--required', 'code-review', '--prior-required', 'code-review',
+                                    success=False)
+                self.assertIn('prior review order', refused.stderr)
+
+    def test_wall_clock_step_back_keeps_partial_lineage(self):
+        # The parent finishes exactly 1 s ahead: the upper edge of the absorbed step.
+        self.record(plan='codex-cli:code-review\ncodex-cli:comment-analysis',
+                    results='codex-cli:code-review\tcomplete\ncodex-cli:comment-analysis\tcomplete\n',
+                    clock_ns=2 * 10**9)
+        parent = self.output / 'parent.json'
+        shutil.copyfile(self.receipt, parent)
+        self.git('commit', '-qm', 'fix', '--allow-empty')
+        self.record(plan='codex-cli:comment-analysis', results='codex-cli:comment-analysis\tcomplete\n',
+                    extra=('--parent', str(parent)), clock_ns=10**9)
+        self.call('verify', '--required', 'code-review,comment-analysis')
+        self.mutate(lambda r: r['parent'].update(finished_ns=r['started_ns'] + 1))
         self.call('verify', success=False)
 
     def non_utf8_env(self):

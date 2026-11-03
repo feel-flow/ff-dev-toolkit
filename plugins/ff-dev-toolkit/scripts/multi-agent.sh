@@ -73,6 +73,15 @@
 #                           origin/<branch> to opt out of the local ref entirely. Review-series
 #                           identity and --resume identity use the requested name, not the resolved
 #                           one, so pulling the base does not restart the series.
+#   <pr-number>             One positive integer with no leading zero, as a positional
+#                           argument, is a pull request number. Its base is resolved with
+#                           `gh pr view <n> --json baseRefName --jq .baseRefName` and used
+#                           as origin/<baseRefName> (the same as --base). An explicit --base
+#                           or MULTI_AGENT_BASE_BRANCH must name the same branch after one
+#                           origin/ prefix is removed; a mismatch is an error. A missing gh,
+#                           a gh failure, an empty or invalid base name, zero, a leading
+#                           zero, or a second number is a named error. Any other extra
+#                           argument stays "Unknown option".
 #   --staged                Review only the staged index diff (review task only; mutually exclusive with --base)
 #   --resume                Reuse successful results from an identical prior input and
 #                           execute only failed, timed-out, missing, or corrupt tasks
