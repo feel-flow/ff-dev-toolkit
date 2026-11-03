@@ -37,6 +37,11 @@ grok_cli_adapter="grok-cli-adapter.sh"
 grok_cli_install_pkg="@xai-official/grok"
 grok_cli_registry_name="grok-cli"
 
+# ゲート識別子 `grok-session` はモデル slug ではない（ベンダー slug 検査の語幹と衝突する）。
+# ここが検出されるようになったら、verify.sh の GROKSESSIONIDENT 退避が壊れている。
+# 実 slug をこの説明へ書かないこと（コメントも検出対象。対は violation.sh）。
+gate="grok-session"
+
 # 語の途中に vendor 名が現れるだけの識別子は違反ではない（境界の誤検出ガード）
 preclaude_opus_helper="preclaude-opus-helper"
 deploy_target="deploy-sol"

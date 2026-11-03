@@ -4,6 +4,7 @@
 # 空振り検出: headless の計画時代替名簿から error-handler-hunt を外すと、security だけ除外した Grok 限定 dry-run が rc=0 へ倒れ1件赤。対照は302件pass（2026-10-27 Linux、実測）。名簿の明示除外後の成功も実オーケストレータと実perspective集合で測る。
 # 空振り検出: 公開可能な開発元表示を消す/裸の参照へ戻す/番号case集合を空にする/コメント抽出0行の各変異は各1件赤（bash-n rc0）。source template不在はrc1。開発元表示の無変異は公開同期検査rc0（2026-10-23 macOS実測）。
 # 空振り検出: 原因をID可否で決める変異5件赤、比較不能へ内容差文を足す変異5件赤、読取り失敗を不一致にする変異1件赤、拒否をrc0にする変異16件赤。model説明/上流Issue所属/rc2説明の単独退行は各1件赤。source template空はrc1、故障case集合空/コメント抽出0行は各1件赤。各bash-n rc0（2026-10-23 macOS実測）。
+# 空振り検出: 配置先シムが新しい版のときのダウングレード禁止は、検査を無効にする変異で2件赤（新しい版を上書き・版を読めない警告が出ない）、最大版でなく最初の一致で決める変異と候補templateの行末CRを落とさない変異で各1件赤、Codex / grok の走査を落とす変異と候補のオーケストレータ検査を落とす変異で各1件赤（2026-11-03 macOS実測）。一致0件・実行中の版不明は従来どおり配置を要求する。
 #
 # 同梱レビューラッパー（シム）の契約検査（Issue #406）。
 #
@@ -181,6 +182,9 @@ trap ff_cleanup EXIT
 # WORK は mktemp が排他的に確保した私有 root。空の実体をその配下に作る。
 export GROK_HOME="$WORK/no-grok"
 mkdir -m 700 "$GROK_HOME"
+# setup も配置先シムの版の推定で Codex / Claude の plugin cache を読む。ホストの導入実体が
+# 配置の判定へ混ざらないよう、既定の置き場も私有 root 配下の未作成のパスへ向ける。
+export CODEX_HOME="$WORK/no-codex-home" CLAUDE_CONFIG_DIR="$WORK/no-claude-home"
 
 PASS=0
 FAIL=0

@@ -75,12 +75,12 @@ Terminal 能力は [長時間ゲートの進捗表示](../../docs-template/05-op
 | 6 | 親無し Issue | open Issue の GraphQL `parent` | parent 無し・`epic` / `bundle` でもない Issue の件数（実測 32 件） | WARN |
 | 7 | 環境変数 | `RETROSPECTIVE_FILING` | 未設定なら既定（承認を待たない自動起票）を利用者が把握しているか | INFO |
 | 8 | Draft PR | 検査 1 と同じ入口文書 | 「Draft PR で作成」「`gh pr create --draft`」「open a draft PR」（「Draft にしない」等の否定・廃止の文は除く） | FAIL |
-| 9 | レビュー担当 | 検査 1 と同じ入口文書 + `<root>/package.json` | 特定 CLI のレビューを常に必須にする行（CLI 名・必須の語・レビューの語が同じ行。「使えるときだけ」等の条件付きは除く）は FAIL。入口文書が条件なしで指示するレビュー用 `npm run <script>` がルートの package.json に無ければ FAIL（同じ行に「script があるリポジトリでは」等の条件がある参照は INFO で数えない。package.json を解析できなければ FAIL で実在を判定しない。実測: `package.json` の無いリポジトリでグローバル CLAUDE.md が `npm run code-review:codex` を必須にしていた） | FAIL |
+| 9 | レビュー担当 | 検査 1 と同じ入口文書 + `<root>/package.json` | 特定 CLI のレビューを常に必須にする行（CLI 名・必須の語・レビューの語が同じ行。「使えるときだけ」等の条件付きと、「〜を追加の必須レビューとして重ねない」の禁止文は除く。禁止文は句だけを消して判定し直すので、同じ行の常時必須は FAIL のまま）は FAIL。入口文書が条件なしで指示するレビュー用 `npm run <script>` がルートの package.json に無ければ FAIL（同じ行に「script があるリポジトリでは」等の条件がある参照は INFO で数えない。package.json を解析できなければ FAIL で実在を判定しない。実測: `package.json` の無いリポジトリでグローバル CLAUDE.md が `npm run code-review:codex` を必須にしていた） | FAIL |
 | 10 | 入口のパリティ | `<root>/CLAUDE.md` と `<root>/AGENTS.md` | 両方があるとき、契約の必須語（`YAGNI` / `bundle`）が片方にしか無い（Claude Code は CLAUDE.md だけ、Codex / grok は AGENTS.md だけを読む） | WARN |
 | 11 | Draft の実態 | `gh pr list --draft --author @me` | 自分が author の open な Draft PR が残っている（`knowledge:` の ACE PR は自律フローの人の確認待ちなので除外し INFO） | WARN |
 | 12 | 長時間ゲートの表示 | 検査 1 と同じ入口文書（available 時だけ） | 長時間・ゲート・suite・push と background の固定規定が同じ行にある。条件付き fallback と background 禁止は除外。行位置と FIXTEXT を示す。文書の欠落・空・読取不能・検索失敗は FAIL | WARN / FAIL |
 
-<!--e3c2b31f0e94b32f-->
+<!--fd1330bd8bb5c506-->
 MCP: 取得値: MCP で同じ repo の labels / bundle / open Issues と parent、自分の Draft PR を取得。形式: doctor fixture の operation / scope / raw と全 page を index に保存。渡し先: workflow-doctor.sh --github-input /absolute/index.json へ渡す（repo 省略は origin）。表の旧文言は実行しない。不足時: 任意取得の不足は SKIP で継続。@me の実主体を照合し、403 を parent=null にしない。--offline は file も読まない。
 
 - 出力は 1 行 1 所見（`<LEVEL>\t<番号>\t<所見>`）。`FIXTEXT` 行は置換案。`SUGGEST` 行は提案（下の「提案」節）で、SUMMARY の直前にまとめて出る。末尾に `SUMMARY fail=<n> warn=<n> skip=<n>`

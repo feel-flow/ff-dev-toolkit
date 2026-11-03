@@ -353,6 +353,8 @@ verify_toolkit_identity() {
     echo "       content-id は行末の CR だけを除いた Git blob の識別子です。" >&2
     echo "       使用する toolkit を確認し、bash \"${root}/scripts/setup-multi-agent.sh\" を再実行してください。" >&2
     echo "       正規リリース版を使う場合は、対象版の toolkit を導入・明示して同じ setup を再実行してください。" >&2
+    echo "       setup は追跡ファイルの scripts/codex-review.sh を書き換えます。シムの同期は機能 PR へ混ぜず、単独の PR で行ってください。" >&2
+    echo "       作業ツリーのシムを変えずに進めるなら、シムと内容が一致する版の toolkit を FF_DEV_TOOLKIT_ROOT で渡してください。" >&2
     return 2
   fi
   if ! config_version="$(sed -nE 's/^toolkit_version:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' "$root/scripts/agent-config.yaml" 2>/dev/null)" \
@@ -418,6 +420,7 @@ resolve_toolkit() {
       if semver_is_newer "$CACHE_BEST_VERSION" "$CACHE_MATCH_VERSION"; then
         echo "WARNING: より新しい ff-dev-toolkit があります: version=${CACHE_BEST_VERSION} root=${CACHE_BEST_ROOT}。配置済み shim と内容一致する version=${CACHE_MATCH_VERSION} を使用します。" >&2
         echo "         シムを同期するには bash \"${CACHE_BEST_ROOT}/scripts/setup-multi-agent.sh\" を再実行してください。" >&2
+        echo "         setup は追跡ファイルの scripts/codex-review.sh を書き換えます。シムの同期は機能 PR へ混ぜず、単独の PR で行ってください。" >&2
       fi
       return 0
     fi

@@ -13,6 +13,7 @@
 # 空振り検出（Issue `#2089`）: 契約表の行が当たらない入力でも緑に倒さない — Draft / 特定 CLI の常時必須の旧文言は FAIL 8 / 9 を名指しで要求し（検査が無い旧実装では fixture 7 / 8 が赤）、否定・条件付きの文は OK を要求する。提案の根拠が 0 件の入力では「提案なし」の 1 行を要求し（空の提案節は 10c が赤）、gh が失敗した Draft 一覧は SKIP 11 を要求する（0 件の OK に畳む実装は 11 が赤）。
 # 空振り検出（Issue `#2111`）: 検査 9 の除外は 1 つずつ効きを固定する — 8b は 1 行が新しい除外 1 つだけに当たり、除外を 1 つ外した変異（exempt の在れば / 有れば、strip の `@` 必須）はそれぞれ対応する行だけが FAIL 9 になって 8b が赤（実測）。逆に除外を広げた変異（素の「のみ」/ `@` 単体を exempt へ / `@` 注記を strip ではなく exempt へ）は 8c が赤（実測）。
 # 空振り検出（Issue `#2101`）: strip のリダイレクト注記（`</dev/null` が必須）を外した変異は 8d の 1 本目が FAIL 9 になって赤、先頭文字の制限を外して英字始まりの code span まで消す変異（「`codex` 必須」を消す）は 8c と 8d の 2 本目が赤、助詞の `(が|は|を)?` を素の `が?` へ戻す変異は 8d の 1 本目の助詞の無い行と「は必須」の行が LC_ALL=C で strip されず赤、span の空白禁止を外す変異（`[^`[:space:]]*` を `[^`]*` へ）は 8d の 2 本目 3 行目（「`< /dev/null codex exec review` 必須」）が赤、半角スペースだけの禁止へ狭める変異（`[^` ]*`）は 8d のタブ区切りの行が赤（実測）。
+# 空振り検出: 重複レビューの禁止文（「を追加の必須レビューとして重ねない」）は strip で句だけを消す — strip から句を外す変異は 8e の 1 本目が FAIL 9 になって赤、句の代わりに「重ねない」を exempt へ足す変異は 8e の 2 本目（「Codex レビューは必須（他の CLI は重ねない）」と禁止文と同じ行の常時必須）が OK 9 に倒れて赤（2026-11-03 実測）。
 #
 # 変異検出（2026-10-02）: 追加語族の除去で 2d / 4c が赤。見出しを旧名限定へ戻すと 3b が赤、次のスコープ外節を連結すると 3c が赤。
 #
@@ -379,6 +380,16 @@ if [ "$rc" -eq 1 ] && grep -qE $'^FAIL\t9\t.*AGENTS\\.md:1:' <<<"$out" && grep -
 printf 'レビューは `<\t/dev/null\tcodex\texec\treview` 必須\n' > "$d/AGENTS.md"
 out="$(run_doctor "$d")"; rc=$?
 if [ "$rc" -eq 1 ] && grep -qE $'^FAIL\t9\t.*AGENTS\\.md:1:' <<<"$out"; then ok "タブ区切りのコマンド全体の必須 → FAIL 9 のまま（空白禁止はタブも含む）"; else bad "タブ区切りのコマンド全体の必須指定を strip が飲み込む（rc=${rc}）: $(grep -E $'\t9\t' <<<"$out" | head -2 | tr '\n' ' ')"; fi
+# 8e. 重複レビューの禁止文（導入先の入口文書で実測した形）: CLI 名・レビューの語・「必須」が同じ行に在るが、
+#     「必須」は否定された動詞「重ねない」の目的語に掛かる → strip で句だけを消して OK 9。
+d="$(make_root review-no-stack "$GOOD_CLAUDE" '`/pr-review-toolkit:review-pr` と `pnpm code-review:codex` を追加の必須レビューとして重ねない。Copilot review も plugin で明示的に opt-in した場合だけ使う')"
+out="$(run_doctor "$d")"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q $'^OK\t9\t旧文言' <<<"$out"; then ok "重複レビューの禁止文（追加の必須レビューとして重ねない） → OK 9（誤検出しない）"; else bad "重複レビューの禁止文を旧文言として誤検出（rc=${rc}）: $(grep -E $'^FAIL\t9\t' <<<"$out" | head -2 | tr '\n' ' ')"; fi
+#     「重ねない」を行ごとの除外にすると隠れる本物の常時必須と、禁止文と同じ行に並ぶ本物の常時必須は FAIL 9 のまま
+d="$(make_root review-no-stack-real "$GOOD_CLAUDE" 'Codex レビューは必須（他の CLI は重ねない）
+Codex レビューは必須。`pnpm code-review:codex` を追加の必須レビューとして重ねない')"
+out="$(run_doctor "$d")"; rc=$?
+if [ "$rc" -eq 1 ] && grep -qE $'^FAIL\t9\t.*AGENTS\\.md:1:' <<<"$out" && grep -qE $'^FAIL\t9\t.*AGENTS\\.md:2:' <<<"$out"; then ok "「重ねない」と同じ行の本物の常時必須 → FAIL 9 のまま（禁止文の除外が本物を飲み込まない）"; else bad "「重ねない」と同じ行の常時必須を見逃す（rc=${rc}）: $(grep -E $'\t9\t' <<<"$out" | head -3 | tr '\n' ' ')"; fi
 
 # 9. 検査 9 (b) と提案: レビュー用 npm script が package.json に無い → FAIL 9 + そのリポジトリの入口を挙げた SUGGEST 9
 d="$(make_root npm-missing "$GOOD_CLAUDE" '- クロスレビューは npm run code-review:codex -- --base develop で起動する

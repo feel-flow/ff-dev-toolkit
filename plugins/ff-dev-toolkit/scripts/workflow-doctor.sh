@@ -632,8 +632,11 @@ REVIEW_CLI_PATTERN='(codex|copilot|grok|gemini).*(必須|mandatory|always|必ず
 #     は消さない（クロスレビュー指摘。半角スペースだけを禁止するとタブ区切りがすり抜ける）。助詞の省略は `(が)?` と
 #     括る — 素の `が?` は C ロケールで多バイト文字の最後の 1 バイトだけが省略可能になり、助詞の無い形で strip が
 #     効かない（実測）。
+#     3 つ目の注記は「〜を追加の必須レビューとして重ねない」— 「必須」が否定された動詞の目的語に掛かる禁止文で、
+#     特定 CLI を常に必須にする文ではない（導入先の入口文書で実測）。この句だけを strip で消す。exempt に「重ねない」を
+#     足して行ごと落とすと、同じ行の本物の常時必須（「Codex レビューは必須（他の CLI は重ねない）」）まで隠れる（実測）。
 REVIEW_EXEMPT='使える|利用可能|available|あれば|在れば|有れば|任意|optional|廃止|しない|不要|使わない|ないとき|無いとき|fallback'
-REVIEW_STRIP='`?@`? ?必須|`[<>|&][^`[:space:]]*` ?(が|は|を)?必須'
+REVIEW_STRIP='`?@`? ?必須|`[<>|&][^`[:space:]]*` ?(が|は|を)?必須|を追加の必須レビューとして重ねない'
 scan_contract 9 "$REVIEW_CLI_PATTERN" "$REVIEW_EXEMPT" "特定 CLI のレビューを常に必須にする旧文言" \
   "レビューは主担当（作業しているホスト）がセルフレビューし、別 CLI が使えるときだけクロスレビューを 1 本足す — Claude が主担当ならホストのサブエージェント、Codex が主担当なら Codex（特定 CLI を常に必須にしない。正本: docs-template/05-operations/deployment/self-review.md「レビュー担当の選択と利用制限時の継続」）" \
   'review|レビュー' "$REVIEW_STRIP"

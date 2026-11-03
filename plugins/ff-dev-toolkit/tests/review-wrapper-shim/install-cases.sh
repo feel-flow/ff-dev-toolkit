@@ -701,3 +701,116 @@ if run_install_via_main "$_backup_target" \
 else
   bad "setup: backupリンクまたは私有中間の取り扱いが不正"
 fi
+
+# (12) 配置先シムが実行中の toolkit より新しい版の内容なら上書きしない（ダウングレード禁止）。
+# 配置先の版は、導入済み toolkit のうち template が配置先シムと行末 CR を除いて一致するものの
+# plugin.json の最大版で推定する。cache はホストの導入実体から切り離して $WORK 配下に作る。
+# Codex（先に走査）へ古い一致を、Claude へ新しい一致を置き、最初の一致で決める実装を赤にする。
+DG_NEWER="$WORK/dg-newer-shim.sh"
+{ cat "$SHIM"; printf '%s\n' '# より新しい toolkit が配置したシム（fixture）'; } > "$DG_NEWER"
+dg_cache_kit() { # <cache root> <version> <template> [crlf]
+  dg_kit "$1/test-market/ff-dev-toolkit/$2" "$2" "$3" "${4:-}"
+}
+dg_kit() { # <導入実体のルート> <version> <template> [crlf|no-orchestrator]
+  local kit="$1" version="$2" template="$3" mode="${4:-}"
+  mkdir -p "$kit/scripts/templates" "$kit/.claude-plugin"
+  [ "$mode" = no-orchestrator ] || cp "$FAKE/scripts/multi-agent.sh" "$kit/scripts/multi-agent.sh"
+  if [ "$mode" = crlf ]; then
+    awk '{ printf "%s\r\n", $0 }' "$template" > "$kit/scripts/templates/codex-review.sh"
+  else
+    cp "$template" "$kit/scripts/templates/codex-review.sh"
+  fi
+  printf '{\n  "name": "ff-dev-toolkit",\n  "version": "%s"\n}\n' "$version" > "$kit/.claude-plugin/plugin.json"
+}
+dg_install() { # <case 名> <toolkit> → 配置先は $WORK/dg-<case>/scripts、ログは $WORK/dg-<case>.log
+  local tgt="$WORK/dg-$1"
+  mkdir -p "$tgt/scripts"
+  cp "$DG_NEWER" "$tgt/scripts/codex-review.sh"
+  ( set +e
+    # shellcheck disable=SC1090
+    . "$2/scripts/setup-multi-agent.sh" >/dev/null 2>&1
+    CODEX_HOME="$WORK/dg-codex-$1" CLAUDE_CONFIG_DIR="$WORK/dg-claude-$1" GROK_HOME="$WORK/dg-grok-$1" \
+      INSTALL_WRAPPERS_TARGET="$tgt" install_review_wrappers
+  ) >"$WORK/dg-$1.log" 2>&1
+}
+
+# (12a) より新しい配置先（0.39.0 と一致。実行中は 0.38.0）→ 非 0、シム・サイドカーとも書かない
+dg_cache_kit "$WORK/dg-codex-newer/plugins/cache" 0.37.0 "$DG_NEWER"
+dg_cache_kit "$WORK/dg-claude-newer/plugins/cache" 0.39.0 "$DG_NEWER" crlf
+DG_RC=0; dg_install newer "$FAKE" || DG_RC=$?
+if [ "$DG_RC" -ne 0 ] && cmp -s "$DG_NEWER" "$WORK/dg-newer/scripts/codex-review.sh" \
+   && [ ! -e "$WORK/dg-newer/scripts/codex-review.sh.bak" ] \
+   && [ ! -e "$WORK/dg-newer/scripts/.ff-dev-toolkit-root" ] \
+   && grep -qF 'より新しい 0.39.0 の内容です' "$WORK/dg-newer.log" \
+   && grep -qF 'FF_DEV_TOOLKIT_ROOT' "$WORK/dg-newer.log"; then
+  ok "setup: 配置先シムが実行中より新しい版（最大の一致版）なら書き換えず非 0 で更新を案内する"
+else
+  bad "setup: より新しい配置先シムを古い版で上書きした・または案内が無い (rc=$DG_RC)"
+  sed 's/^/    | /' "$WORK/dg-newer.log" >&2
+fi
+
+# (12b) 同じか古い配置先（一致は 0.38.0 / 0.37.0）→ これまでどおり .bak 退避つきで配置し、書き換えを告げる
+dg_cache_kit "$WORK/dg-codex-older/plugins/cache" 0.37.0 "$DG_NEWER"
+dg_cache_kit "$WORK/dg-claude-older/plugins/cache" 0.38.0 "$DG_NEWER"
+DG_RC=0; dg_install older "$FAKE" || DG_RC=$?
+if [ "$DG_RC" -eq 0 ] && cmp -s "$SHIM" "$WORK/dg-older/scripts/codex-review.sh" \
+   && [ -e "$WORK/dg-older/scripts/codex-review.sh.bak" ] \
+   && grep -qF '追跡ファイル scripts/codex-review.sh を書き換えました' "$WORK/dg-older.log"; then
+  ok "setup: 配置先シムが同じか古い版なら従来どおり配置し、追跡ファイルの書き換えを告げる"
+else
+  bad "setup: 同じか古い配置先シムの配置が変わった (rc=$DG_RC)"
+  sed 's/^/    | /' "$WORK/dg-older.log" >&2
+fi
+
+# (12c) 版不明（新しい版の導入実体はあるが template が配置先シムと一致しない）→ 従来どおり配置
+dg_cache_kit "$WORK/dg-claude-unknown/plugins/cache" 0.39.0 "$SHIM"
+DG_RC=0; dg_install unknown "$FAKE" || DG_RC=$?
+if [ "$DG_RC" -eq 0 ] && cmp -s "$SHIM" "$WORK/dg-unknown/scripts/codex-review.sh"; then
+  ok "setup: 配置先シムと一致する導入実体が無い（版不明）なら従来どおり配置する"
+else
+  bad "setup: 版不明の配置先シムで配置が止まった (rc=$DG_RC)"
+  sed 's/^/    | /' "$WORK/dg-unknown.log" >&2
+fi
+
+# (12d) 実行中の toolkit の版を読めない → 比べずに警告つきで配置（版不明と同じ扱い）
+DG_NOVER_KIT="$WORK/dg-nover-toolkit"
+mkdir -p "$DG_NOVER_KIT/scripts/templates"
+copy_setup_script "$DG_NOVER_KIT/scripts"
+cp "$FAKE/scripts/multi-agent.sh" "$DG_NOVER_KIT/scripts/multi-agent.sh"
+cp "$SHIM" "$DG_NOVER_KIT/scripts/templates/codex-review.sh"
+dg_cache_kit "$WORK/dg-claude-nover/plugins/cache" 0.39.0 "$DG_NEWER"
+DG_RC=0; dg_install nover "$DG_NOVER_KIT" || DG_RC=$?
+if [ "$DG_RC" -eq 0 ] && cmp -s "$SHIM" "$WORK/dg-nover/scripts/codex-review.sh" \
+   && grep -qF '実行中の toolkit の版を読めない' "$WORK/dg-nover.log"; then
+  ok "setup: 実行中の版を読めないときは比べずに警告つきで配置する"
+else
+  bad "setup: 実行中の版が読めないときの扱いが不正 (rc=$DG_RC)"
+  sed 's/^/    | /' "$WORK/dg-nover.log" >&2
+fi
+
+# (12e) 走査先ごとの効き: 新しい一致が Codex cache だけ・grok の導入実体だけにある回も止まる
+# （どちらかの走査を落とした実装を赤にする）。
+for _dg_src in codex grok; do
+  case "$_dg_src" in
+    codex) dg_cache_kit "$WORK/dg-codex-only-$_dg_src/plugins/cache" 0.39.0 "$DG_NEWER" ;;
+    grok) dg_kit "$WORK/dg-grok-only-$_dg_src/installed-plugins/ff-dev-toolkit-0.39.0" 0.39.0 "$DG_NEWER" ;;
+  esac
+  DG_RC=0; dg_install "only-$_dg_src" "$FAKE" || DG_RC=$?
+  if [ "$DG_RC" -ne 0 ] && cmp -s "$DG_NEWER" "$WORK/dg-only-$_dg_src/scripts/codex-review.sh" \
+     && grep -qF 'より新しい 0.39.0 の内容です' "$WORK/dg-only-$_dg_src.log"; then
+    ok "setup: 新しい一致が ${_dg_src} の導入実体だけにある回も書き換えずに止める"
+  else
+    bad "setup: ${_dg_src} の導入実体を版の推定に使っていない (rc=$DG_RC)"
+    sed 's/^/    | /' "$WORK/dg-only-$_dg_src.log" >&2
+  fi
+done
+
+# (12f) 使えるオーケストレータの無い導入実体（シムの解決が拒否する候補）は版の根拠にしない → 従来どおり配置
+dg_cache_kit "$WORK/dg-claude-noorch/plugins/cache" 0.39.0 "$DG_NEWER" no-orchestrator
+DG_RC=0; dg_install noorch "$FAKE" || DG_RC=$?
+if [ "$DG_RC" -eq 0 ] && cmp -s "$SHIM" "$WORK/dg-noorch/scripts/codex-review.sh"; then
+  ok "setup: オーケストレータの無い導入実体は配置先シムの版の根拠にしない"
+else
+  bad "setup: シムの解決が拒否する導入実体を版の根拠にして配置を止めた (rc=$DG_RC)"
+  sed 's/^/    | /' "$WORK/dg-noorch.log" >&2
+fi

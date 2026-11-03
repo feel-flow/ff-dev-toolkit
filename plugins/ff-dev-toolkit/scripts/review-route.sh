@@ -30,17 +30,25 @@
 #       （Codex CLI が自身の起動するシェルへ渡す）/ GROK_AGENT から判定（2 つ以上立つ回・どれも無い回は unknown）
 #   REVIEW_SECURITY_BASE_CHECK=match|mismatch|no-origin-head|unchecked
 #       /security-review は origin/HEAD を基点に固定するので、差分モードの base と照合する
-#       （--files / --files-from は base を持たないので unchecked）。Codex Security の diff scan は
-#       base を明示で受けるので、codex-cli のゲートはこの照合で止めない
-#   REVIEW_SECURITY_GATE=security-review|codex-security|unverified|unsupported|off|none
+#       （--files / --files-from は base を持たないので unchecked）。Codex Security の diff scan と
+#       grok のセッション内レビューは base を明示で受けるので、この照合では止めない
+#   REVIEW_SECURITY_GATE=security-review|codex-security|grok-session|unverified|unsupported|off|none
 #       security-review … 主担当 claude-code が通常のレビューに加えて /security-review を実行する
-#       codex-security  … 主担当 codex-cli が通常のレビューに加えて Codex Security プラグインの
-#                         security-diff-scan を実行する（導入を ${CODEX_HOME:-~/.codex}/plugins/cache で確かめる）
+#       codex-security  … 主担当 codex-cli、または主担当 grok-cli でセッション内レビューが使えない回が、
+#                         通常のレビューに加えて Codex Security プラグインの security-diff-scan を実行する
+#                         （導入を ${CODEX_HOME:-~/.codex}/plugins/cache で確かめる。grok からの回は
+#                         加えて PATH に codex があること。報告行に担当: codex-cli を出す）
+#       grok-session    … 主担当 grok-cli が通常のレビューに加えて、同じセッションの spawn_subagent で
+#                         セキュリティレビューを実行する（GROK_SUBAGENTS が 0 / false / off / no のときは
+#                         使えない。headless の grok -p には回さない）
 #       unverified      … 主担当 claude-code だが基点（指すコミット）が食い違う / origin/HEAD が無い、
 #                         主担当 codex-cli だが security-diff-scan が導入されていない・差分モードで
-#                         diff scan の基点を解決できない（--base / WORKFLOW_TIER_BASE / origin/HEAD が無い）、または
+#                         diff scan の基点を解決できない（--base / WORKFLOW_TIER_BASE / origin/HEAD が無い）、
+#                         主担当 grok-cli だがセッション内レビューの基点を解決できない、または
+#                         セッション内レビューが無効で security-diff-scan も実行できない
+#                         （報告行は「実行できる CLI なし」。「指摘なし」にはしない）、または
 #                         決定木のルータが無く何も判定できない。走らせず未確認と記録する
-#       unsupported     … 主担当が claude-code / codex-cli 以外。専用ゲートは未対応として記録する（省略しない）
+#       unsupported     … 主担当を判定できない（印が無い・2 つ以上）。専用ゲートは未対応として記録する（省略しない）
 #       off             … security_review=off（判定は出すが専用ゲートを起動しない）
 #       none            … 該当なし（unknown は no へ倒さず、yes と同じくゲートの対象にする）
 #   REVIEW_SECURITY_REPORT_LINE=専用セキュリティゲート: …   … PR の Self-Review 欄へ転記する判定の 1 行
@@ -465,10 +473,11 @@ fi
 
 # Codex CLI 本体には /security-review に当たるコマンドが無いので、主担当 codex-cli の専用ゲートは
 # OpenAI の Codex Security プラグインの security-diff-scan スキルにする（base を明示で受ける）。
-# 導入の確認はファイルの存在だけにする — `codex plugin list` は remote marketplace へ通信する
-codex_security_skill=""
-codex_unverified=""
-if [ "$host" = "codex-cli" ]; then
+# 導入の確認はファイルの存在だけにする — `codex plugin list` は remote marketplace へ通信する。
+# 主担当 grok-cli でセッション内レビューが使えない回も、同じファイル確認に加えて PATH の codex を見る。
+lookup_codex_security_skill() {
+  codex_security_skill=""
+  codex_skill_missing=""
   codex_home="${CODEX_HOME:-}"
   [ -n "$codex_home" ] || { [ -z "${HOME:-}" ] || codex_home="${HOME}/.codex"; }
   if [ -n "$codex_home" ]; then
@@ -476,16 +485,39 @@ if [ "$host" = "codex-cli" ]; then
       [ -f "$f" ] && { codex_security_skill="$f"; break; }
     done
     [ -n "$codex_security_skill" ] \
-      || codex_unverified="Codex Security プラグインの security-diff-scan が ${codex_home}/plugins/cache にありません"
+      || codex_skill_missing="Codex Security プラグインの security-diff-scan が ${codex_home}/plugins/cache にありません"
   else
-    codex_unverified="CODEX_HOME も HOME も無いため Codex Security プラグインの導入を確かめられません"
+    codex_skill_missing="CODEX_HOME も HOME も無いため Codex Security プラグインの導入を確かめられません"
   fi
+}
+
+# grok の公式文書（user-guide 16-subagents.md）は GROK_SUBAGENTS=0 と --no-subagents と
+# [subagents] enabled=false を同じ無効化として書く。route が見られるのは子シェルの環境変数だけなので、
+# ここは GROK_SUBAGENTS の無効値だけを見る（利用者の config.toml は読まない）
+grok_subagents_off=0
+case "${GROK_SUBAGENTS:-}" in
+  0 | false | off | no | FALSE | OFF | NO | False | Off | No) grok_subagents_off=1 ;;
+esac
+codex_security_skill=""
+codex_skill_missing=""
+codex_unverified=""
+grok_unverified=""
+grok_fallback=0
+if [ "$host" = "codex-cli" ] || { [ "$host" = "grok-cli" ] && [ "$grok_subagents_off" -eq 1 ]; }; then
+  lookup_codex_security_skill
+fi
+if [ "$host" = "codex-cli" ]; then
+  codex_unverified="$codex_skill_missing"
   # 差分モードで基点を解決できない回（--base なし・WORKFLOW_TIER_BASE なし・origin/HEAD なし、または
   # 解決できない --base）は、diff scan へ渡す範囲を報告行に書けない。根は origin/develop 等へ戻って
   # 分類するので、範囲を決めないまま実行を指示すると根拠の path を含まない走査を「実施」と記録しうる
   if [ -z "$codex_unverified" ] && [ "$sec_files_mode" -eq 0 ] && [ -z "$sec_base_commit" ]; then
     codex_unverified="diff scan の基点${sec_base:+ ${sec_base} }を解決できません（--base で PR の base を渡す）"
   fi
+fi
+codex_bin=""
+if [ "$host" = "grok-cli" ] && [ "$grok_subagents_off" -eq 1 ]; then
+  codex_bin="$(command -v codex 2>/dev/null)" || codex_bin=""
 fi
 
 if [ "$sec" = "no" ]; then
@@ -494,6 +526,32 @@ elif [ "${SEC_POLICY:-auto}" = "off" ]; then
   gate="off"
 elif [ "$host" = "codex-cli" ]; then
   if [ -z "$codex_unverified" ]; then gate="codex-security"; else gate="unverified"; fi
+elif [ "$host" = "grok-cli" ]; then
+  if [ "$grok_subagents_off" -eq 0 ]; then
+    if [ "$sec_files_mode" -eq 0 ] && [ -z "$sec_base_commit" ]; then
+      gate="unverified"
+      grok_unverified="セッション内レビューの基点${sec_base:+ ${sec_base} }を解決できません（--base で PR の base を渡す）"
+    else
+      gate="grok-session"
+    fi
+  elif [ -n "$codex_bin" ] && [ -z "$codex_skill_missing" ]; then
+    if [ "$sec_files_mode" -eq 0 ] && [ -z "$sec_base_commit" ]; then
+      gate="unverified"
+      grok_unverified="diff scan の基点${sec_base:+ ${sec_base} }を解決できません（--base で PR の base を渡す）"
+    else
+      gate="codex-security"
+      grok_fallback=1
+    fi
+  else
+    gate="unverified"
+    grok_unverified="実行できる CLI なし。セッション内レビューは GROK_SUBAGENTS=${GROK_SUBAGENTS:-} で無効"
+    if [ -z "$codex_bin" ]; then
+      grok_unverified="${grok_unverified}。codex が PATH にありません"
+    fi
+    if [ -n "$codex_skill_missing" ]; then
+      grok_unverified="${grok_unverified}。${codex_skill_missing}"
+    fi
+  fi
 elif [ "$host" != "claude-code" ]; then
   gate="unsupported"
 elif [ "$base_check" = "no-origin-head" ] || [ "$base_check" = "mismatch" ]; then
@@ -513,13 +571,22 @@ case "$gate" in
   none) report="対象外（該当変更なし）" ;;
   off) report="無効（security_review=off / ${SEC_POLICY_FROM}。${basis}）" ;;
   security-review) report="/security-review を実行する（${basis}）" ;;
+  grok-session)
+    if [ "$sec_files_mode" -eq 0 ]; then diff_target="${sec_base}...HEAD"; else diff_target="--files の変更"; fi
+    report="grok CLI のセッション内レビューを実行する（担当: grok-cli。対象: ${diff_target}。${basis}）" ;;
   codex-security)
     # 差分モードは基点を解決できた回だけここへ来る（できない回は上で unverified）
     if [ "$sec_files_mode" -eq 0 ]; then diff_target="${sec_base}...HEAD"; else diff_target="--files の変更"; fi
-    report="Codex Security の security-diff-scan を実行する（対象: ${diff_target}。${basis}）" ;;
+    if [ "$grok_fallback" -eq 1 ]; then
+      report="Codex Security の security-diff-scan を実行する（担当: codex-cli。対象: ${diff_target}。${basis}）"
+    else
+      report="Codex Security の security-diff-scan を実行する（対象: ${diff_target}。${basis}）"
+    fi ;;
   unverified)
     if [ "$host" = "codex-cli" ]; then
       report="未確認（${codex_unverified}。${basis}）"
+    elif [ "$host" = "grok-cli" ]; then
+      report="未確認（${grok_unverified}。${basis}）"
     elif [ "$base_check" = "no-origin-head" ]; then
       report="未確認（/security-review の基点 origin/HEAD がありません。${basis}）"
     else

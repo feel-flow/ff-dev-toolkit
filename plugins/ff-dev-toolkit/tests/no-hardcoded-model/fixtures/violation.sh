@@ -34,3 +34,5 @@ some-cli --model whatever-new-naming "$prompt"
 some-cli --model=another-new-naming "$prompt"
 some-cli "--model" "yet-another-naming" "$prompt"
 some-cli '--model' 'single-quoted-naming' "$prompt"
+# ゲート識別子を接頭辞に持つ実 slug。退避を無条件にすると、ここが不可視になる
+GATE_PREFIXED_SLUG="grok-session-4"

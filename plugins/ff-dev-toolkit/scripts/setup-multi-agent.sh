@@ -682,6 +682,67 @@ setup_strip_cr() {
     sed $'s/\r$//'
 }
 
+# toolkit ルートの plugin.json から X.Y.Z の版を返す。読めない・形が違うときは非 0
+# （版不明。比較の根拠にしない）。
+setup_toolkit_version() { # <toolkit root>
+    local version
+    version="$(ff_script_root_guard_manifest_field "$1/.claude-plugin/plugin.json" version)" || return 1
+    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    printf '%s\n' "$version"
+}
+
+# 第 1 引数の X.Y.Z が第 2 引数より厳密に新しいとき 0（シムの semver_is_newer と同じ比較）。
+setup_semver_is_newer() {
+    local ca cb cc oa ob oc
+    IFS=. read -r ca cb cc <<<"$1"
+    IFS=. read -r oa ob oc <<<"$2"
+    ca=$((10#$ca)); cb=$((10#$cb)); cc=$((10#$cc))
+    oa=$((10#$oa)); ob=$((10#$ob)); oc=$((10#$oc))
+    [ "$ca" -gt "$oa" ] \
+        || { [ "$ca" -eq "$oa" ] && [ "$cb" -gt "$ob" ]; } \
+        || { [ "$ca" -eq "$oa" ] && [ "$cb" -eq "$ob" ] && [ "$cc" -gt "$oc" ]; }
+}
+
+# 配置先シムの版を推定する。シムは版を持たないので、導入済み toolkit（シムの解決と同じ
+# Codex cache / Claude cache / grok の導入実体）のうち、template が配置先シムと行末 CR を
+# 除いて一致するものの plugin.json の最大版を配置先の版とみなす。一致が 0 件なら非 0（版不明）。
+# 結果は DEPLOYED_SHIM_VERSION / DEPLOYED_SHIM_ROOT へ置く。読めない候補は一致に数えない。
+setup_deployed_shim_version() { # <行末正規化済みの配置先シム> <作業ディレクトリ>
+    local norm_dest="$1" work="$2" grok_home="${GROK_HOME:-}"
+    DEPLOYED_SHIM_VERSION=""; DEPLOYED_SHIM_ROOT=""
+    [ -n "$grok_home" ] || { [ -z "${HOME:-}" ] || grok_home="${HOME}/.grok"; }
+    if [ -n "${CODEX_HOME:-}" ] || [ -n "${HOME:-}" ]; then
+        setup_match_installed_templates "$norm_dest" "$work" "${CODEX_HOME:-${HOME}/.codex}/plugins/cache/"*/ff-dev-toolkit/*
+    fi
+    if [ -n "${CLAUDE_CONFIG_DIR:-}" ] || [ -n "${HOME:-}" ]; then
+        setup_match_installed_templates "$norm_dest" "$work" "${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/plugins/cache/"*/ff-dev-toolkit/*
+    fi
+    if [ -n "$grok_home" ]; then
+        setup_match_installed_templates "$norm_dest" "$work" "${grok_home}/installed-plugins/ff-dev-toolkit-"*
+    fi
+    [ -n "$DEPLOYED_SHIM_VERSION" ]
+}
+
+setup_match_installed_templates() { # <行末正規化済みの配置先シム> <作業ディレクトリ> <候補ルート>...
+    local norm_dest="$1" work="$2" root version template
+    shift 2
+    for root in "$@"; do
+        [ -d "$root" ] || continue
+        template="${root}/scripts/templates/codex-review.sh"
+        [ -f "$template" ] && [ -r "$template" ] && [ -s "$template" ] || continue
+        # シムの解決が使えない候補（オーケストレータの無い途中までの導入など）は版の根拠にしない。
+        # 数えると、案内する FF_DEV_TOOLKIT_ROOT をシムが拒否する。
+        setup_usable_orchestrator "${root}/scripts/multi-agent.sh" || continue
+        version="$(setup_toolkit_version "$root")" || continue
+        setup_strip_cr <"$template" >"${work}/candidate" || continue
+        cmp -s "${work}/candidate" "$norm_dest" || continue
+        if [ -z "$DEPLOYED_SHIM_VERSION" ] || setup_semver_is_newer "$version" "$DEPLOYED_SHIM_VERSION"; then
+            DEPLOYED_SHIM_VERSION="$version"; DEPLOYED_SHIM_ROOT="$root"
+        fi
+    done
+    rm -f "${work}/candidate"
+}
+
 # 記録しようとしているパスが揮発領域（Temp）配下かを判定する（Issue #658）。
 # Temp 上の作業コピーから setup を実行すると、配置直後は動くが Temp 清掃で
 # サイドカーの参照先だけが消え、シムが後日静かに壊れる（実測インシデント:
@@ -830,6 +891,23 @@ install_review_wrappers() (
                 print_info "codex-review.sh の内容は最新ですが行末が CRLF のため、LF へ正規化して書き直します: ${dest}"
             fi
         fi
+        # 配置先シムが実行中の toolkit より新しい版の内容なら上書きしない（ダウングレード禁止）。
+        # 案内どおりに古い導入済み toolkit から再実行すると、導入先が追跡しているシムが後退して
+        # 機能 PR へ混入する（導入先で実測）。版不明（一致する導入済み toolkit が無い、または
+        # 実行中の版を読めない）はこれまでどおり配置する。
+        if [ "$shim_changed" = true ] && setup_deployed_shim_version "$norm_dest" "$stage"; then
+            local running_version
+            if ! running_version="$(setup_toolkit_version "${SCRIPT_DIR}/..")"; then
+                print_warning "実行中の toolkit の版を読めないため、配置先シム（${DEPLOYED_SHIM_VERSION} と同じ内容）との新旧を比べずに配置します"
+            elif setup_semver_is_newer "$DEPLOYED_SHIM_VERSION" "$running_version"; then
+                rm -f "$norm_src" "$norm_dest"
+                print_error "配置先の codex-review.sh は、実行中の toolkit ${running_version} より新しい ${DEPLOYED_SHIM_VERSION} の内容です: ${dest}"
+                print_info "古い版で上書きするとシムが後退するため、既存の ${dest} とサイドカーは変更していません。"
+                print_info "ff-dev-toolkit を ${DEPLOYED_SHIM_VERSION} 以上へ更新してから setup を再実行してください。"
+                print_info "作業ツリーのシムを変えずにレビューを走らせるなら、内容が一致する toolkit を FF_DEV_TOOLKIT_ROOT で渡してください: ${DEPLOYED_SHIM_ROOT}"
+                return 1
+            fi
+        fi
         rm -f "$norm_src" "$norm_dest"
     fi
     # 書き込みが要るのは「内容が変わった」か「行末だけ直す」のどちらか。後者は
@@ -904,6 +982,10 @@ install_review_wrappers() (
     # 両一時ファイルの rename 後、関数の subshell 終了時に私有領域を回収する。
     if [ "$shim_changed" = true ]; then
         print_success "codex-review.sh を配置しました: ${dest}"
+        # シムは導入先が git で追跡するファイル。書き換えた事実を出さないと `git commit -a` で
+        # 機能 PR へ混入する（導入先で実測）。
+        print_warning "追跡ファイル scripts/codex-review.sh を書き換えました。機能 PR へ混ぜず、シムの同期だけの単独 PR でコミットしてください"
+        git -C "$target_root" status --short -- scripts/codex-review.sh 2>/dev/null | sed 's/^/    /' || true
     elif [ "$shim_normalize_only" = true ]; then
         print_success "codex-review.sh の行末を LF へ正規化しました（内容は同一のため .bak は作りません）: ${dest}"
     fi
