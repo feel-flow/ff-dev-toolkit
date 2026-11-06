@@ -47,6 +47,20 @@
 #      コードとして読み、内側の二重引用符の文字列も走査する（内側の `"` で外側を閉じない）。単一引用符の文字列・`@'…'@`・
 #      コメント・文字列の外のバッククォート（行継続・次の 1 文字のエスケープ）は対象外。`-File` /
 #      `-EncodedCommand` / pwsh の位置引数（スクリプトファイル）は読まない。`-Command -` は heredoc の本文を読む
+#   Q（cmdline-double-backslash。Issue `#2651`）: ヒアドキュメントの本文の外（コマンド行の引数）に書いた二重
+#      バックスラッシュのうち、Claude Code の Bash ツールが `\\` を `\` へ解釈すると bash の値が変わる形。引用の種類で決まる:
+#      単一引用符の中はすべて（`'a\\b'` は本来 `a\\b`、届くと `a\b`）。引用なしは、末尾の `\\` と、3 本続いてふつうの文字が
+#      来る形（`a\\\b` は元も縮んだ後も `a\b`）を除いてすべて（`a\\b` は本来 `a\b`、届くと `ab`）。
+#      二重引用符の中は、縮んだ `\` の次が `$` / バッククォート / `"` / `\` / 改行のときだけ（`"a\\\\b"` は本来 `a\\b`、
+#      届くと `a\b`）。ほかの文字が続く `"D:\\data"` は、縮んでも bash が同じ `D:\data` を作るので対象外。`$'…'` の中は、
+#      次が ANSI-C のエスケープ文字（`n` / `t` / `0` など。`x` / `u` / `U` は 16 進の数字、`c` は文字が続くとき）のときだけ。
+#      引用の種類ごとに 1 件を出す。
+#      トップレベルのコマンド行だけを読む（射程の選択）。入れ子の bash の本文は読まない: `bash -c "…"` の本文は bash が引用を
+#      解いた後の値でホストの解釈の前後と対応せず、`bash <<'EOF'` の本文は原文のまま縮んで値も変わるが、ホストの解釈を
+#      織り込んで書く形（`printf '\\134'`。suite の DN5）を止めないため、ほかのヒアドキュメントの本文と同じく射程の外に置く。
+#      `$(…)` / バッククォート / `${…}` の中も読まない（既知の限界。インタプリタへ渡す引用付き heredoc の本文は述語 D が読む）。
+#      ホストが `\uXXXX` を文字へ置き換える別の解釈（観測台帳 OBS-324）は扱わない。D と同じく、hook は Claude Code 以外の
+#      ホストでは Q を落とす
 #
 # プログラムとして読むのは: perl の `-e` / `-E`（`-pe` / `-0pi -e` などの束ね・`-e<本文>` の
 # 直付けを含む）と、`-e` が無いときの heredoc（`perl - <<'EOF'`）/ node の `-e` / `--eval` /
@@ -63,6 +77,8 @@
 #       `B<TAB><NAME><TAB><perl|node>`      述語 B の検出
 #       `D<TAB><\\x の 3 文字><TAB><言語>`   述語 D の検出（言語は python / node / perl / ruby。言語ごとに 1 件）
 #       `P<TAB><`x の 2 文字><TAB>powershell` 述語 P の検出（エスケープ文字ごとに 1 件）
+#       `Q<TAB><\\x の 3 文字><TAB><single|double|bare|ansi>` 述語 Q の検出（引用の種類ごとに 1 件。x が改行・タブなら
+#                                            `<LF>` / `<TAB>` と書く）。第 3 引数が 1（入れ子の走査）のときは出さない
 #       `S<TAB><入れ子のコマンド>`            `bash -c` 等の入れ子。改行は \002 に置き換えて 1 行に
 #                                            収める（呼び出し側がデコードして再走査する）
 #       `E<TAB>done`                        走査を最後まで終えた印（最終行）
@@ -71,8 +87,9 @@
 #             「0 件」ではない。stdout はそこまでの検出）
 #         その他 = awk が失敗した（不在 127・破損）。stdout は信用しない
 #     第 2 引数: 親で export されずに代入された名前（空白区切り）。入れ子の走査で使う
+#     第 3 引数: 1 なら入れ子の走査（述語 Q を出さない）。省略はトップレベル
 #   ff_literal_write_scan_all <コマンド文字列>
-#     入れ子（`S` 行）を最大 3 段まで再走査し、`A` / `B` / `D` / `P` 行だけを返す。親で export されずに代入された
+#     入れ子（`S` 行）を最大 3 段まで再走査し、`A` / `B` / `D` / `P` / `Q` 行だけを返す。親で export されずに代入された
 #     名前は子の走査へ引き継ぐ（子の環境には無いので、子が `$ENV{NAME}` で読めば述語 B に当たる）。
 #     rc は ff_literal_write_scan と同じ契約で、入れ子のどこかが 0 以外なら最初の非 0 を返す。
 #     3 段を超える入れ子は rc 4、awk が 0 で終わったのに完了印（`E` 行）が無いときは rc 5
@@ -102,6 +119,24 @@
 
 _FF_LITERAL_WRITE_AWK_PROG='
 function isname(ch) { return (ch ~ /[A-Za-z0-9_]/) }
+# 述語 Q: p は二重バックスラッシュの 1 本目。引用の種類ごとに 1 件だけ出す。入れ子の走査では出さない
+function q_hit(kind, p,   s, x) {
+  if (nested == 1 || (kind in seen_q)) return
+  seen_q[kind] = 1
+  x = substr(src, p + 2, 1)
+  if (x == "\n") x = "<LF>"
+  else if (x == "\t") x = "<TAB>"
+  s = substr(src, p, 2) x
+  printf "Q\t%s\t%s\n", s, kind
+}
+# 述語 Q の ANSI-C 引用: 縮んだ \ と次の文字 e（その次は f）が、元と違う値を作るエスケープになるか。
+# \x \u \U は 16 進の数字が続くとき、\c は文字が続くときだけ（続かなければ縮んでも \x などのまま）
+function q_ansi(e, f) {
+  if (e == "" || !index("abeEfnrtv\\\"?01234567xuUc" sq, e)) return 0
+  if (e == "x" || e == "u" || e == "U") return (f ~ /[0-9A-Fa-f]/)
+  if (e == "c") return (f != "" && f != sq)
+  return 1
+}
 # 閉じ括弧までを読み飛ばす（$( … ) / <( … )。引用・入れ子・中の heredoc を扱う）。戻り値は ")" の次の位置、0 は未終端
 # noheredoc=1 は算術式（$(( … )) / (( … ))）の中: << はシフト演算子で heredoc ではない
 function skip_paren(p, noheredoc,   depth, ch, j, hn, hd, hs, line, e, t, pv) {
@@ -259,12 +294,14 @@ function expand_body(b,   out, p, ch, nx, m, j) {
   }
   return out
 }
-function tokenize(   ch, nx, j, d, q, t, r) {
+function tokenize(   ch, nx, j, d, q, t, r, k) {
   cur = 1; cwn[1] = 0; w = ""; inw = 0; skipnext = 0; npend = 0; i = 1
   while (i <= n) {
     ch = substr(src, i, 1); nx = substr(src, i + 1, 1)
     if (ch == sq) {
       j = index(substr(src, i + 1), sq); if (!j) { rc = 4; return }
+      # 述語 Q: 単一引用符の中の \\ は、縮むと必ず値が変わる
+      k = index(substr(src, i + 1, j - 1), "\\\\"); if (k) q_hit("single", i + k)
       w = w substr(src, i + 1, j - 1); inw = 1; i += j + 1; continue
     }
     if (ch == "$" && nx == sq) {
@@ -272,6 +309,8 @@ function tokenize(   ch, nx, j, d, q, t, r) {
       while (1) {
         if (i > n) { rc = 4; return }
         ch = substr(src, i, 1)
+        # 述語 Q: ANSI-C 引用（$ + 単一引用符）の中の \\ は、縮んだ \ が次の文字と ANSI-C のエスケープを作るときだけ値が変わる
+        if (ch == "\\" && substr(src, i + 1, 1) == "\\" && q_ansi(substr(src, i + 2, 1), substr(src, i + 3, 1))) q_hit("ansi", i)
         if (ch == "\\") { w = w substr(src, i, 2); i += 2; continue }
         if (ch == sq) { i++; break }
         w = w ch; i++
@@ -286,6 +325,8 @@ function tokenize(   ch, nx, j, d, q, t, r) {
         if (ch == "\"") { i++; break }
         if (ch == "\\") {
           if (nx == "\n") { i += 2; continue }
+          # 述語 Q: 二重引用符の中の \\ は、縮んだ \ の次が $ ` " \ 改行のときだけ値が変わる（"D:\\data" は同じ値）
+          if (nx == "\\") { k = substr(src, i + 2, 1); if (k == "$" || k == "`" || k == "\"" || k == "\\" || k == "\n") q_hit("double", i) }
           if (nx == "$" || nx == "`" || nx == "\"" || nx == "\\") { w = w nx; i += 2; continue }
           w = w ch; i++; continue
         }
@@ -298,6 +339,9 @@ function tokenize(   ch, nx, j, d, q, t, r) {
     if (ch == "\\") {
       if (nx == "\n") { i += 2; continue }
       if (nx == "") { w = w ch; inw = 1; i++; continue }
+      # 述語 Q: 引用の外の \\ は、縮んだ \ が次の文字をエスケープするので値が変わる。末尾の \\ と、3 本続いて
+      # ふつうの文字が来る形（\\\a は元も縮んだ後も \a）は同じ値
+      if (nx == "\\" && substr(src, i + 2, 1) != "" && !(substr(src, i + 2, 1) == "\\" && substr(src, i + 3, 1) ~ /[A-Za-z0-9_.\/:@%+=,-]/)) q_hit("bare", i)
       w = w nx; inw = 1; i += 2; continue
     }
     if (ch == "$") {
@@ -686,14 +730,14 @@ END {
 }
 '
 
-ff_literal_write_scan() { # <cmd> [親から引き継ぐ未 export の名前（空白区切り）]
+ff_literal_write_scan() { # <cmd> [親から引き継ぐ未 export の名前（空白区切り）] [入れ子なら 1]
   # 判定はすべて ASCII の字句で行うので、バイト単位で読む（不正な UTF-8 を含む入力で
   # macOS の awk が「multibyte conversion failure」で落ちるのを避ける）
-  printf '%s\n' "$1" | LC_ALL=C "${FF_LITERAL_WRITE_AWK:-awk}" -v inherit="${2:-}" "$_FF_LITERAL_WRITE_AWK_PROG"
+  printf '%s\n' "$1" | LC_ALL=C "${FF_LITERAL_WRITE_AWK:-awk}" -v inherit="${2:-}" -v nested="${3:-}" "$_FF_LITERAL_WRITE_AWK_PROG"
 }
 
 ff_literal_write_scan_all() { # <cmd>
-  local queue next out rc first_rc depth line nested sep fsep names body done_seen
+  local queue next out rc first_rc depth line nested sep fsep names body done_seen nflag
   sep="$(printf '\003')"
   fsep="$(printf '\004')"
   queue="${fsep}$1"
@@ -715,7 +759,10 @@ ff_literal_write_scan_all() { # <cmd>
       names="${line%%"$fsep"*}"
       body="${line#*"$fsep"}"
       rc=0
-      nested="$(ff_literal_write_scan "$body" "$names")" || rc=$?
+      # 述語 Q はトップレベル（1 段目）だけで読む。入れ子の本文は bash が引用を解いた後の値
+      nflag=""
+      if [ "$depth" -gt 1 ]; then nflag=1; fi
+      nested="$(ff_literal_write_scan "$body" "$names" "$nflag")" || rc=$?
       done_seen=0
       while IFS= read -r hit; do
         case "$hit" in
@@ -727,7 +774,7 @@ ff_literal_write_scan_all() { # <cmd>
             next="${next:+${next}${sep}}${names}${fsep}${hit}"
             ;;
           E"	done") done_seen=1 ;;
-          A"	"* | B"	"* | D"	"* | P"	"*) out="${out:+${out}
+          A"	"* | B"	"* | D"	"* | P"	"* | Q"	"*) out="${out:+${out}
 }${hit}" ;;
         esac
       done <<EOF

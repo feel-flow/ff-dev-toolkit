@@ -4,8 +4,9 @@
 #
 # 使い方:
 # --- usage:start ---
-#   record-gate-head.sh --gate <ラベル> [--status pass|fail|partial] [--mode <文字列>]
+#   record-gate-head.sh --gate <ラベル> [--status pass|fail|partial|unverified] [--mode <文字列>]
 #                       [--suites <空白区切りの suite 名>] [--stale-only <空白区切りの suite 名>]
+#                       [--covers-diff <SHA40>] [--unverified-steps <空白区切りのステップ名>]
 #                       [--result <文字列>]
 #                       [--expect-head <SHA40>] [--record <パス>]
 #   record-gate-head.sh --print-path
@@ -16,6 +17,10 @@
 #                            同じ `COMMIT` に `pass` の記録が既にあれば**上書きしない**
 #                            （上位互換の証拠を潰さない。詳細は下の「記録先」）
 #                  fail    … 通らなかった。前回の緑を無効化する
+#                  unverified … 環境起因で未確認のまま終わった。照合側は一致しても
+#                            判定不能のままステップ名を名指しし、全件緑へ昇格しない。
+#                            同じ `COMMIT` の `pass` は**上書きする**（未確認を緑のまま
+#                            残すと、環境が直らない記録が一致の exit 0 に化ける）
 #   --suites       partial のときに「**通った** suite」を空白区切りで残す。消費側は
 #                  この値を「検証済み」として提示するので、実行はしたが skip / 赤だった
 #                  suite を混ぜてはならない（未検証のものが検証済みとして載る）。
@@ -29,6 +34,15 @@
 #                  値に混じった CR/LF は空白へ畳んでから書く — 記録は 1 行 1 キーで、
 #                  消費側は `head -n 1` で読む。改行を通すと 2 行目以降が別のキーとして
 #                  読まれる（あるいは黙って捨てられる）。
+#   --covers-diff  partial のときだけ受ける。導入先が「この部分実行は差分を覆っている」
+#                  と判断した PR の base（40 桁の SHA）を印として残す（`COVERS_DIFF=`。
+#                  行は値が無くても常に書く）。本スクリプトはパスを解釈しない。印が現在の
+#                  PR の base と一致するかは照合側が見る。印が無い記録は従来の部分実行のまま。
+#   --unverified-steps
+#                  unverified のとき必須。環境起因で未確認のステップ名を空白区切りで残す
+#                  （`UNVERIFIED_STEPS=`。行は値が無くても常に書く）。名前にコロンを含んでよい
+#                  （`test:review-cli-config`）。CR/LF は `--suites` と同じく空白へ畳む。
+#                  畳んだあとに名前が残らなければ記録しない。
 #   --expect-head  ゲート開始時の HEAD。現在の HEAD と違えば**記録しない**。
 #                  長時間のゲートは実行中に HEAD が動きうる（別セッションの commit、
 #                  自分の commit）。終了時の HEAD をそのまま書くと、suite が一度も
@@ -72,15 +86,19 @@
 #   の劣化経路そのもの）。全件ゲートの後にレビュー対応で名指し suite を 1 本回す、は
 #   ごく普通の並びなので、放置すると常時発生する。
 #
-#   **この例外を `fail` へ広げないこと。** 赤が前回の緑を無効化する規定は上のとおり
-#   load-bearing で、`fail` まで「上書きしない」に含めると「一度通ったコミット」が
-#   「いま通るコミット」に化ける経路がそのまま戻る。判定材料は**取り込む status が
-#   `partial` であること**だけで、既存側は「v1 として解釈できる `pass` で `COMMIT` が
-#   同じ」を全部満たすときに限って残す（解釈できない記録は残さず上書きする — 読めない
-#   記録を温存する理由が無い）。
+#   **この例外を `fail` と `unverified` へ広げないこと。** 赤が前回の緑を無効化する規定は
+#   上のとおり load-bearing で、`fail` まで「上書きしない」に含めると「一度通ったコミット」が
+#   「いま通るコミット」に化ける経路がそのまま戻る。`unverified` も同じ向きで上書きする
+#   （未確認を緑のまま残さない）。判定材料は**取り込む status が `partial` であること**
+#   だけで、既存側は「v1 として解釈できる `pass` で `COMMIT` が同じ」を全部満たすときに
+#   限って残す（解釈できない記録は残さず上書きする — 読めない記録を温存する理由が無い）。
 #
-#   照合側が**無出力の exit 0 で通すのは `STATUS=pass` だけ**である。`partial` は
-#   一致していても「判定不能」として報告され、`fail` と未知の値も同じく通らない。
+#   照合側が**無出力の exit 0 で通すのは `STATUS=pass` だけ**である。`partial` と
+#   `unverified` は一致していても「判定不能」として報告され、`fail` と未知の値も
+#   同じく通らない。`RECORD_VERSION` は 1 のままにする。`unverified` は旧照合器の
+#   STATUS allowlist の `*)` に落ちて判定不能になり、新しいキーは旧照合器が読み飛ばす。
+#   版を上げると、新しい記録器の記録を旧照合器が丸ごと解釈不能にするだけで、
+#   昇格不能性は STATUS の未知値で既に足りている。
 #
 #   部分実行の判別子を STATUS に置いたのは、**古い照合側でも構造的に昇格できない**
 #   ようにするため。記録先は checkout の git dir 配下だが、照合器はインストール済み
@@ -120,6 +138,8 @@ STATUS="pass"
 MODE=""
 SUITES=""
 STALE_ONLY=""
+COVERS_DIFF=""
+UNVERIFIED_STEPS=""
 RESULT=""
 EXPECT_HEAD=""
 RECORD_PATH=""
@@ -139,8 +159,8 @@ while [[ $# -gt 0 ]]; do
     --status)
       [[ $# -ge 2 ]] || fail "--status に値がありません"
       case "$2" in
-        pass|fail|partial) STATUS="$2" ;;
-        *) fail "--status は pass / fail / partial のいずれかです（受領: $2）" ;;
+        pass|fail|partial|unverified) STATUS="$2" ;;
+        *) fail "--status は pass / fail / partial / unverified のいずれかです（受領: $2）" ;;
       esac
       shift 2
       ;;
@@ -157,6 +177,18 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || fail "--stale-only に値がありません"
       # --suites と同じ理由で CR/LF を空白へ畳む（記録は 1 行 1 キー）
       STALE_ONLY="$(printf '%s' "$2" | tr '\r\n' '  ')"
+      shift 2
+      ;;
+    --covers-diff)
+      [[ $# -ge 2 ]] || fail "--covers-diff に値がありません"
+      COVERS_DIFF="$2"
+      shift 2
+      ;;
+    --unverified-steps)
+      [[ $# -ge 2 ]] || fail "--unverified-steps に値がありません"
+      # --suites と同じ理由で CR/LF を空白へ畳む（記録は 1 行 1 キー）。
+      # コロンはステップ名の一部なので残す（test:review-cli-config）。
+      UNVERIFIED_STEPS="$(printf '%s' "$2" | tr '\r\n' '  ')"
       shift 2
       ;;
     --result) [[ $# -ge 2 ]] || fail "--result に値がありません"; RESULT="$2"; shift 2 ;;
@@ -202,13 +234,41 @@ fi
 [[ -z "$STALE_ONLY" || "$STATUS" == "fail" ]] \
   || fail "--stale-only は --status fail のときだけ指定できます（受領: status=${STATUS}）"
 
+is_sha40() {
+  case "$1" in
+    *[!0-9a-f]*) return 1 ;;
+    ????????????????????????????????????????) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# 印は導入先の判断を運ぶだけで、本スクリプトはパスを解釈しない。partial 以外に付けると、
+# 緑の記録に「差分を覆った」という別の主張が並ぶ。
+if [[ -n "$COVERS_DIFF" ]]; then
+  [[ "$STATUS" == "partial" ]] \
+    || fail "--covers-diff は --status partial のときだけ指定できます（受領: status=${STATUS}）"
+  is_sha40 "$COVERS_DIFF" \
+    || fail "--covers-diff は 40 桁の完全な SHA で渡してください（受領: ${COVERS_DIFF}）"
+fi
+# 未確認はステップ名が無いと照合側が何を判断すればよいかを述べられない。空の unverified は
+# 「記録が無い」と区別が付かないので書かない。unverified 以外の記録に名前を残すと、
+# 緑の隣に未確認が並ぶ。
+if [[ "$STATUS" == "unverified" ]]; then
+  UNVERIFIED_NONEMPTY="$(printf '%s' "$UNVERIFIED_STEPS" | tr -d '[:space:]')"
+  [[ -n "$UNVERIFIED_NONEMPTY" ]] \
+    || fail "--status unverified には --unverified-steps で未確認のステップ名が必要です"
+fi
+if [[ -n "$UNVERIFIED_STEPS" && "$STATUS" != "unverified" ]]; then
+  fail "--unverified-steps は --status unverified のときだけ指定できます（受領: status=${STATUS}）"
+fi
+
 COMMIT="$(git rev-parse HEAD 2>/dev/null)" \
   || fail "HEAD を解決できません（コミットが 1 つも無いか、git work tree の外です）"
 
 # ゲート実行中に HEAD が動いていたら記録しない。終了時の HEAD を書くと、
 # 実際には読まれていないツリーが実測対象として記録される。
 #
-# 条件は `fail` 以外のすべて（`pass` と `partial`）。`pass` だけに掛けると、
+# 条件は `fail` 以外のすべて（`pass` と `partial` と `unverified`）。`pass` だけに掛けると、
 # 「一度も読んでいないツリーに部分緑が付く」という同じ false green の入口が
 # 部分記録の側へ移る。赤い記録は前回の緑の**無効化**であって実測の主張ではないので、
 # HEAD が動いていても書く（書かない方が危険側に倒れる）。
@@ -293,6 +353,8 @@ TMP="${TARGET}.tmp.$$"
   printf 'MODE=%s\n' "$MODE"
   printf 'SUITES=%s\n' "$SUITES"
   printf 'STALE_ONLY_FAILED=%s\n' "$STALE_ONLY"
+  printf 'COVERS_DIFF=%s\n' "$COVERS_DIFF"
+  printf 'UNVERIFIED_STEPS=%s\n' "$UNVERIFIED_STEPS"
   printf 'RESULT=%s\n' "$RESULT"
   printf 'RECORDED_AT=%s\n' "$RECORDED_AT"
 } > "$TMP" 2>/dev/null || { rm -f "$TMP" 2>/dev/null || true; fail "記録を書き込めません: ${TARGET}"; }

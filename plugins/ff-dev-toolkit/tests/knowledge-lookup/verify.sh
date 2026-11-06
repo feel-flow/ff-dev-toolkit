@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 空振り検出: 未閉鎖フェンスの拒否、カテゴリ入口の非ディレクトリ拒否を別々に弱めた隔離コピーで、K35 相当の期待値が赤。前後対照各 5 件と、壊れた symlink を拒否する正常系を実測（2026-11-06 macOS / Bash 3.2）。
+# 空振り検出: 索引省略の空判定分岐・件数の照合・壊れた見出しの検出・重複設定の拒否を個別に弱めた隔離コピーでは、各変異に対応する K34 の期待値と不一致。無変異の前後対照は各 4 件成功（2026-11-06 macOS / Bash 3.2）。
 # 空振り検出: 物理identityキー・既定照合列・物理role・論理roleを各1件戻す4変異は構文0の後、別名/除外の針でrc=1。前後privacy51件、既存分を含む全体135件pass（2026-10-29実測）。
 # 空振り検出: 記録候補を論理leafから実体pathnameへ戻す変異は構文0の後、配置/隣接categoryの2針が赤（rc=1）。前後対照privacy40件pass（2026-10-29実測）。
 # 空振り検出: privacy対照29件pass。root包含除去・UTF-8検査no-op・上限倍増・Changelog再読・空privacy集合の5変異は、構文成功後に各対象の針でrc=1（2026-10-29、隔離コピーで前後対照を実測）。
@@ -971,8 +973,8 @@ fi
 
 # K26: /ace-curate・/ace-refine が同じ resolver を呼び、検索と解決が同じ配置を返す（AC3）
 for f in skills/ace-curate/SKILL.md skills/ace-refine/SKILL.md; do
-  if grep -qF -- 'bash "${FF_DEV_TOOLKIT_ROOT}/scripts/knowledge-lookup.sh" --resolve-playbook' "${PLUGIN_ROOT}/${f}"; then
-    ok "K26: ${f} は knowledge-lookup.sh --resolve-playbook で配置を解決する"
+  if grep -qF -- 'bash "${FF_DEV_TOOLKIT_ROOT}/scripts/knowledge-lookup.sh" --resolve-playbook --with-index-mode' "${PLUGIN_ROOT}/${f}"; then
+    ok "K26: ${f} は共通 resolver で配置と索引方式を解決する"
   else
     bad "K26: ${f} が共通 resolver（knowledge-lookup.sh --resolve-playbook）を呼んでいない"
   fi
@@ -985,6 +987,117 @@ for r in "${ROOT22}" "${ROOT22m}" "${ROOT24p}" "${ROOT25d}" "${ROOT1}"; do
   if [[ -n "${rel}" ]] && out_has "== ACE Playbook（${rel}） =="; then same_n=$((same_n + 1)); else bad "K26: ${r##*/} で検索と --resolve-playbook の配置が食い違う（resolve=${rel:-空}）"; fi
 done
 if [[ "${same_n}" -eq 5 ]]; then ok "K26: 5 fixture すべてで検索と --resolve-playbook が同じ配置を返す"; fi
+
+# K33: 未宣言は従来の inline、索引を省略した知見は独自配置でも本文から検索できる。
+run_lookup "${ROOT1}" --resolve-playbook --with-index-mode
+if [[ "${RC}" -eq 0 && "$(kv ACE_INDEX_MODE)" = inline ]]; then
+  ok "K33: 未宣言は inline"
+else
+  bad "K33: 未宣言が inline にならない（rc=${RC} / $(kv ACE_INDEX_MODE)）"
+fi
+ROOT_INDEX="${TMP}/index-mode"
+index_rel="docs/custom/PLAYBOOK.md"
+index_fixture="${ROOT_INDEX}/${index_rel}"
+index_live="${index_fixture%/*}/playbook/coding.md"
+mkdir -p "${index_live%/*}"
+printf '%s\n' '---' 'ace_index_mode: omit' 'ace_entry_count: 1' '---' '# Playbook' >"${index_fixture}"
+printf '%s\n' '# Coding' '### ACE-2131-1: hydration without an index' >"${index_live}"
+run_lookup "${ROOT_INDEX}" --resolve-playbook --with-index-mode --playbook "${index_fixture}"
+if [[ "${RC}" -eq 0 && "$(kv ACE_INDEX_MODE)" = omit && "$(kv ACE_PLAYBOOK_REL)" = "${index_rel}" ]]; then
+  ok "K33: 独自配置の省略宣言を解決"
+else
+  bad "K33: 独自配置で省略を解決できない（rc=${RC}）"; printf '%s\n' "${OUT}" >&2
+fi
+run_lookup "${ROOT_INDEX}" --resolve-playbook --playbook "${index_fixture}"
+if [[ "${RC}" -eq 0 ]] && ! out_has 'ACE_INDEX_MODE='; then
+  ok "K33: 既存 resolver の出力にモードを足さない"
+else
+  bad "K33: 既存 resolver の出力が変わった（rc=${RC}）"; printf '%s\n' "${OUT}" >&2
+fi
+run_lookup "${ROOT_INDEX}" --playbook "${index_fixture}" --offline hydration
+if [[ "${RC}" -eq 0 ]] && out_has "RECORD ace=ACE-2131-1"; then
+  ok "K33: 索引なしでもカテゴリ本文がヒット"
+else
+  bad "K33: 索引なしの本文が検索できない（rc=${RC}）"; printf '%s\n' "${OUT}" >&2
+fi
+
+# K34: 0 件の宣言だけでは破損を隠せない。省略宣言の誤記・重複も従来扱いに戻さない。
+printf '%s\n' '---' 'ace_index_mode: omit' 'ace_entry_count: 0' '---' '# Playbook' >"${index_fixture}"
+printf '%s\n' '# Coding' '```markdown' '### ACE-000-1: example' '```' >"${index_live}"
+run_lookup "${ROOT_INDEX}" --offline example
+if [[ "${RC}" -eq 0 ]] && out_has 'ace_state=empty' && out_has 'RECORD ace=0 件'; then
+  ok "K34: 索引なしで宣言どおりの空は正常"
+else
+  bad "K34: 宣言済みの空を認識できない（rc=${RC}）"
+fi
+printf '%s\n' '# Coding' '### ACE 2131 broken' >"${index_live}"
+run_lookup "${ROOT_INDEX}" --offline broken
+if [[ "${RC}" -eq 2 ]] && out_has 'ACE Playbook=noentry'; then
+  ok "K34: 索引節の外にある壊れた見出しは空にしない"
+else
+  bad "K34: 壊れた見出しを空と判定した（rc=${RC}）"
+fi
+printf '%s\n' '# Coding' >"${index_live}"
+printf '%s\n' '---' 'ace_index_mode: omit' 'ace_entry_count: 1' '---' '# Playbook' >"${index_fixture}"
+run_lookup "${ROOT_INDEX}" --offline missing
+if [[ "${RC}" -eq 2 ]] && out_has 'ACE Playbook=noentry'; then
+  ok "K34: 実体の無い非ゼロ件数は空にしない"
+else
+  bad "K34: 非ゼロ宣言を空と判定した（rc=${RC}）"
+fi
+for invalid_mode in 'ace_index_mode: split' 'ace_index_mode: omit'; do
+  printf '%s\n' '---' 'ace_index_mode: omit' "$invalid_mode" '---' '# Playbook' >"${index_fixture}"
+  run_lookup "${ROOT_INDEX}" --resolve-playbook --with-index-mode
+  if [[ "${RC}" -eq 2 && "$(kv ACE_PLAYBOOK_STATE)" = index-invalid && -z "$(kv ACE_INDEX_MODE)" ]]; then
+    ok "K34: 重複・競合する宣言で停止（${invalid_mode}）"
+  else
+    bad "K34: 重複・競合する宣言を採用した（${invalid_mode}, rc=${RC}）"
+  fi
+done
+printf '%s\n' '# Playbook' 'ace_index_mode: omit' 'ace_entry_count: 0' >"${index_fixture}"
+run_lookup "${ROOT_INDEX}" --offline missing
+if [[ "${RC}" -eq 2 ]] && out_has 'ACE Playbook=noentry'; then
+  ok "K34: 本文の宣言例で未宣言の索引欠落を正常にしない"
+else
+  bad "K34: 本文の宣言例を設定として扱った（rc=${RC}）"
+fi
+
+# K35: 壊れた入力を正常空にしない。退避済みの知見だけは明示検索できる。
+printf '%s\n' '---' 'ace_index_mode: omit' 'ace_entry_count: 0' '---' '# Playbook' >"${index_fixture}"
+printf '%s\n' '# Coding' '```markdown' '### ACE-2131-1: hydration' '~~~' >"${index_live}"
+run_lookup "${ROOT_INDEX}" --offline hydration
+if [[ "${RC}" -eq 2 ]] && out_has 'ACE Playbook=noentry'; then
+  ok "K35: 閉じていないフェンスの内側に知見が隠れた回を空としない"
+else
+  bad "K35: 異なる種類のフェンスを閉じとして扱った（rc=${RC}）"
+fi
+printf '%s\n' '# Coding' >"${index_live}"
+mkdir -p "${index_live%/*}/archive"
+printf '%s\n' '### ACE-2131-1: hydration after archive' >"${index_live%/*}/archive/coding.md"
+run_lookup "${ROOT_INDEX}" --include-archived --offline hydration
+if [[ "${RC}" -eq 0 ]] && out_has 'ace_state=empty' && id_under_group 'アーカイブ（playbook/archive' 'ACE-2131-1'; then
+  ok "K35: live が空で退避済みの知見は明示検索できる"
+else
+  bad "K35: アーカイブのみの省略配置を検索できない（rc=${RC}）"
+fi
+mv "${index_live%/*}" "${ROOT_INDEX}/saved-playbook"
+if [[ "${kl_symlinks}" -eq 1 ]]; then
+  ln -s missing-playbook "${index_live%/*}"
+else
+  : >"${index_live%/*}"
+fi
+run_lookup "${ROOT_INDEX}" --offline hydration
+if [[ "${RC}" -eq 2 ]] && out_has 'ACE Playbook=unreadable'; then
+  ok "K35: 壊れたカテゴリパスを空としない"
+else
+  bad "K35: 壊れたカテゴリパスを空と判定した（rc=${RC}）"
+fi
+run_lookup "${ROOT_INDEX}" --resolve-playbook --with-index-mode
+if [[ "${RC}" -eq 2 && "$(kv ACE_PLAYBOOK_STATE)" = unreadable && -z "$(kv ACE_INDEX_MODE)" ]]; then
+  ok "K35: 書き手の resolver も壊れたカテゴリパスで停止"
+else
+  bad "K35: resolver が壊れたカテゴリパスを許可した（rc=${RC}）"
+fi
 
 echo ""
 # Default metadata cannot grant an external read. Synthetic inputs only.

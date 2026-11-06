@@ -20,8 +20,12 @@
 #      回避形行列（deny / allow）と、解釈の前後の値の差の実測（python3）
 #   PF / PN / PP. 述語 P（Issue `#2496`）: pwsh / powershell の -Command の二重引用符の中のバッククォートの
 #      回避形行列（deny / allow）と、二重引用符・単一引用符の実測（pwsh / powershell が在れば）
+#   QF / QN / QP. 述語 Q（Issue `#2651`）: コマンド行の引数の二重バックスラッシュの引用の種類ごとの行列（deny / allow）と、
+#      \\ を \ に縮めた形と元の形を bash で実行した出力の差（止める形は変わり、止めない形は変わらない）
 #
 # 変異検出: 述語 D の判定を空にする（M14）・引用付き heredoc の原文を残さない（M15）と DF1 が素通しになり、python の escape 文字の絞り込みを外すと DN2 が deny になる（M19）。述語 P の検出を消す（M16）・hook の前置フィルタから pwsh を外す（M18）と PF1 が素通しになり、PowerShell の単一引用符を読み飛ばさないと PN1 が deny になる（M17。いずれも実測 2026-11-02 Windows Git Bash）。
+# 変異検出: 述語 Q（Issue `#2651`）: 単一引用符の中の \\ を見ない（M25）・hook の前置フィルタから二重バックスラッシュを外す（M29）と QF1 が素通しになり、入れ子の走査にも Q を当てる（M26）と QN11、二重引用符の中で次の文字を見ずに止める（M27）と QN1、Claude Code 以外のホストで Q を落とさない（M28）と QN14 が deny になり、前置判定の二重バックスラッシュをホストで絞らない（M30）と QC1 が判定不能の deny になる。D の M22 は、前置判定がホストで絞るようになったので、perl と $ で候補になる DN17 を入力にする（実測 2026-11-06 WSL）。
+# 空振り検出: 述語 Q の q_hit の定義を消して呼び出しだけ残すと awk が失敗し、二重バックスラッシュを含む候補が判定不能の deny になって 15 件赤（QF1 は「検出ではなく判定不能」で赤。WSL の awk で測った）。Q 行の綴りを変えて中継（ff_literal_write_scan_all）が拾わない形にすると QF 系が素通しになって 21 件赤。hook の前置判定を生の入力の 2 本（1 本の \ ）へ戻すと、Windows の cwd を持つ呼び出しがすべて jq へ進み、壊れた jq で QN15 が判定不能の deny になって赤。正常は 252/0（2026-11-06 WSL 実測）。
 # 変異検出: パイプの送り側を記録しない（M20）と DF19、/dev/stdin をスクリプト引数として読まない（M23）と DF20、二重引用符の中の部分式を追わない（M21）と PF15 が素通しになり、Claude Code 以外のホストで述語 D を落とす分岐を消す（M22）と DN13 が、CLAUDECODE だけで Claude Code と決める（M24。レビュー 2 巡目）と DN15 が deny になる（レビュー 1 巡目の対応後に実測 2026-11-02）。
 #
 # 変異検出: 判定ヘルパの述語 A の呼び出し（if (inplace) rule_a(...)）を消したコピーは F1 と同形の perl -i を素通しし、F の検査が赤になる（M1。実測 2026-09-28）。
@@ -609,7 +613,7 @@ python3 -m json.tool <<'PY'
 PY
 CASE
 lw_pass 'DN8: 引数・コメント・コミットメッセージの中の綴り' <<'CASE'
-echo 'python3 - <<PY \\n'
+echo "python3 - <<PY \\n"
 # python3 - <<'PY' \\n
 git commit -m "python3 - <<'PY' \\n"
 CASE
@@ -662,6 +666,112 @@ RUN_EXTRA='{"model":"gpt-5"}' run_hook "$D_FIRE_PY" CLAUDECODE=1
 assert_pass 'DN15: CLAUDECODE=1 を受け継いだ別ホスト（入力に model がある。Claude Code から起動した codex exec）では発火させない'
 run_hook "$D_FIRE_PY" CLAUDECODE=1 GROK_PLUGIN_ROOT=/opt/grok
 assert_pass 'DN16: grok root がある環境では CLAUDECODE=1 でも発火させない'
+LW_ENV=()
+
+echo "guard-literal-write: Q 述語（コマンド行の引数の二重バックスラッシュ）"
+LW_ENV=(CLAUDECODE=1)
+Q_FIRE_SQ="$(cat <<'CASE'
+printf '%s' 'a\\b'
+CASE
+)"
+run_hook "$Q_FIRE_SQ" CLAUDECODE=1
+assert_fire 'QF1: 単一引用符の中の \\（Issue の AC の例。本来 a\\b の値が a\b で届く）'
+for needle in '単一引用符の中' 'OBS-324' 'bash <そのファイル>' 'grep -f' 'FF_LITERAL_WRITE_ACK=1'; do
+  case "$REASON" in
+    *"$needle"*) ok "QF1 の停止文が [$needle] を含む" ;;
+    *) bad "QF1 の停止文に [$needle] が無い: [$REASON]" ;;
+  esac
+done
+lw_fire 'QF2: 二重引用符の中で \\ の次が \（Issue の AC の例。パターンの \\r が \r に変わる）' <<'CASE'
+grep -iE "x|\\\\r|y" notes.md
+CASE
+lw_fire 'QF3: 引用の外の \\（本来 a\b の値が ab で届く）' <<'CASE'
+printf '%s\n' a\\b
+CASE
+lw_fire 'QF4: case のパターンの \\（[A-Za-z]:\\* が [A-Za-z]:\* に変わり、絶対パスを相対と判定する）' <<'CASE'
+case "$v" in [A-Za-z]:\\*) echo abs ;; *) echo rel ;; esac
+CASE
+lw_fire 'QF5: 二重引用符の中で \\ の次が $（本来は \ と展開、届くと $ のリテラル）' <<'CASE'
+printf '%s\n' "a\\$HOME"
+CASE
+lw_fire 'QF6: ANSI-C 引用（$ + 単一引用符）の中で \\ の次がエスケープ文字（本来 \n の 2 文字、届くと改行）' <<'CASE'
+printf '%s' $'a\\nb'
+CASE
+lw_fire 'QF7: && の後ろのコマンド・パイプの送り側' <<'CASE'
+cd /tmp && grep -c 'a\\b' f.txt | tee n.txt
+CASE
+lw_pass 'QN1: 二重引用符の中で \\ の次がふつうの文字（"D:\\data" は縮んでも bash が同じ D:\data を作る。Issue の例）' <<'CASE'
+printf '%s\n' "D:\\data\\name\\project"
+CASE
+lw_pass 'QN2: 二重引用符の中の正規表現の \\.（縮んでも \. で同じ）' <<'CASE'
+grep -E "foo\\.bar" f.txt
+CASE
+lw_pass 'QN3: 1 本のバックスラッシュ（縮む対象が無い）' <<'CASE'
+printf '%s\n' 'a\b' "c\d" e\ f
+CASE
+lw_pass 'QN4: ANSI-C 引用（$ + 単一引用符）の中で \\ の次がエスケープ文字でない（\q は縮んでも \q）' <<'CASE'
+printf '%s' $'a\\qb'
+CASE
+lw_pass 'QN5: 引用の外の末尾の \\（縮んでも末尾の \ のまま）' <<'CASE'
+printf '%s' end\\
+CASE
+lw_pass 'QN6: ヒアドキュメントの本文（Q はコマンド行だけを読む。データ行きの本文は既知の限界）' <<'CASE'
+cat > f.sh <<'EOF'
+printf '%s' 'a\\b'
+EOF
+CASE
+lw_pass 'QN7: コメントの中' <<'CASE'
+ls  # 'a\\b'
+CASE
+lw_pass 'QN8: 先頭の ACK で通る' <<'CASE'
+FF_LITERAL_WRITE_ACK=1 printf '%s' 'a\\b'
+CASE
+run_hook "$Q_FIRE_SQ" -u CLAUDECODE
+assert_pass 'QN9: Claude Code 以外のホスト（CLAUDECODE が無い）では述語 Q を発火させない'
+RUN_EXTRA='{"model":"gpt-5"}' run_hook "$Q_FIRE_SQ" CLAUDECODE=1
+assert_pass 'QN10: CLAUDECODE=1 を受け継いだ別ホスト（入力に model がある）では発火させない'
+# 入れ子の bash の本文は Q の対象外（トップレベルのコマンド行だけを読む）。bash -c "…" の本文は bash が引用を解いた
+# 後の値でホストの解釈の前後と対応せず、bash <<'EOF' の本文にはホストの解釈を織り込んで書く形（DN5 の printf '\\134'）がある
+Q_NEST_PASS="$(cat <<'CASE'
+bash <<'EOF'
+printf '%s' 'a\\b'
+EOF
+CASE
+)"
+run_hook "$Q_NEST_PASS" CLAUDECODE=1
+assert_pass 'QN11: 入れ子の bash の本文の単一引用符の \\（Q はトップレベルのコマンド行だけを読む）'
+lw_pass 'QN12: 引用の外で 3 本続いてふつうの文字が来る形（a\\\b は元も縮んだ後も a\b）' <<'CASE'
+printf '%s' a\\\b
+CASE
+lw_pass 'QN13: ANSI-C 引用の中で \\x の後に 16 進の数字が無い形（縮んでも \xg のまま）' <<'CASE'
+printf '%s' $'a\\xg'
+CASE
+# 前置判定は二重バックスラッシュを Claude Code の環境でだけ数える。ほかの理由（perl と $）で候補になった呼び出しの
+# D・Q の検出は、後段のホストの絞り込みが落とす（M22 / M28 の入力）
+D_HOST_MIX="$(cat <<'CASE'
+perl -e 'print 1' "$X"; python3 - <<'PY'
+x = '\\n'
+PY
+CASE
+)"
+Q_HOST_MIX="$(cat <<'CASE'
+perl -e 'print 1' "$X"; printf '%s' 'a\\b'
+CASE
+)"
+run_hook "$D_HOST_MIX" -u CLAUDECODE
+assert_pass 'DN17: perl と $ で候補になった呼び出しでも、Claude Code 以外のホストでは述語 D を落とす'
+run_hook "$Q_HOST_MIX" -u CLAUDECODE
+assert_pass 'QN14: perl と $ で候補になった呼び出しでも、Claude Code 以外のホストでは述語 Q を落とす'
+Q_UNTERMINATED="printf '%s' 'a\\\\b"
+run_hook "$Q_UNTERMINATED" -u CLAUDECODE
+assert_pass 'QC1: Claude Code 以外のホストでは、二重バックスラッシュだけの未終端コマンドを候補にしない（判定不能の deny の面を広げない）'
+run_hook "$Q_UNTERMINATED" CLAUDECODE=1
+assert_unavailable 'QC2: Claude Code 上では、二重バックスラッシュを含む未終端コマンドを判定不能の deny にする'
+mkdir -p "$TEST_TMP/badjq-bin"
+printf '#!/bin/sh\nexit 3\n' > "$TEST_TMP/badjq-bin/jq"
+chmod +x "$TEST_TMP/badjq-bin/jq"
+RUN_EXTRA='{"cwd":"D:\\data\\repo","transcript_path":"D:\\data\\t.jsonl"}' run_hook 'git status --short' CLAUDECODE=1 "PATH=$TEST_TMP/badjq-bin:$PATH"
+assert_pass 'QN15: cwd・transcript_path のバックスラッシュ（生の入力で 2 本）だけでは候補にしない（壊れた jq でも素通し。前置判定は 4 本で探す）'
 LW_ENV=()
 
 echo "guard-literal-write: P 述語（pwsh / powershell の -Command の二重引用符の中のバッククォート）"
@@ -803,6 +913,45 @@ if [ -n "$ps_exe" ]; then
 else
   echo "  ○ skip: pwsh / powershell が無いため PP1 は未検査"
 fi
+# 述語 Q: ホストの解釈（\\ → \）は suite の中では起こせないので、置換で再現した後の形と元の形を bash で実行して
+# 出力を比べる。止める形は出力が変わり、止めない形は変わらないこと（述語の根拠）と、hook の判定が揃うことを見る
+q_collapse() { # <コマンド文字列（1 行）> → \\ を左から順に \ へ縮めた形（パラメータ展開の置換は bash 3.2 で引用の扱いが違うので sed）
+  printf '%s' "$1" | sed 's/\\\\/\\/g'
+}
+q_out() { # <コマンド文字列> → 実行した出力の 16 進
+  bash -c "$1" </dev/null 2>/dev/null | od -An -tx1 | tr -d ' \n'
+}
+qp_check() { # <label> <changed|same> <want_decision>（stdin: 1 行 1 コマンド）
+  local label="$1" want="$2" wantd="$3" qc before after good=1 n=0
+  while IFS= read -r qc; do
+    [ -n "$qc" ] || continue
+    n=$((n + 1))
+    before="$(q_out "$qc")" || before="ERR"
+    after="$(q_out "$(q_collapse "$qc")")" || after="ERR"
+    run_hook "$qc" CLAUDECODE=1
+    if [ "$want" = changed ] && [ "$before" != "$after" ] && [ "$DECISION" = "$wantd" ]; then continue; fi
+    if [ "$want" = same ] && [ "$before" = "$after" ] && [ "$DECISION" = "$wantd" ]; then continue; fi
+    good=0
+    bad "${label}: [$qc] 元=[$before] 縮めた後=[$after] decision=[$DECISION]"
+  done
+  [ "$good" -eq 0 ] || ok "${label}（${n} 形）"
+}
+qp_check 'QP1: 述語 Q が止める形は、\\ を \ に縮めると bash の出力が変わる' changed deny <<'CASE'
+printf '%s' 'a\\b'
+printf '%s' a\\b
+printf '%s' "a\\\\b"
+printf '%s' "a\\$NO_SUCH_VAR_FOR_QP"
+printf '%s' $'a\\nb'
+printf '%s' $'a\\x41b'
+CASE
+qp_check 'QP2: 述語 Q が止めない二重バックスラッシュの形は、縮めても bash の出力が変わらない' same "" <<'CASE'
+printf '%s' "D:\\data\\name"
+printf '%s' "foo\\.bar"
+printf '%s' $'a\\qb'
+printf '%s' end\\
+printf '%s' a\\\b
+printf '%s' $'a\\xg'
+CASE
 
 echo "guard-literal-write: D / P の変異検出"
 MUTDP="$TEST_TMP/mutdp"
@@ -851,8 +1000,8 @@ sed 's/^if \[ "$d_host" != 1 \]; then$/if false; then/' "$TARGET" > "$MUTDP/hook
 if cmp -s "$TARGET" "$MUTDP/hooks/guard-literal-write.sh"; then
   bad "M22: sed が当たらず変異が注入されていない（針が古い）"
 else
-  run_on "$MUTDP/hooks/guard-literal-write.sh" "$D_FIRE_PY" -u CLAUDECODE
-  if [ "$DECISION" = "deny" ]; then ok "M22: Claude Code 以外のホストで述語 D を落とす分岐を消した変異は DN13 を deny し、D の検査が赤になる"; else bad "M22: 変異が効いていない: out=[$OUT]"; fi
+  run_on "$MUTDP/hooks/guard-literal-write.sh" "$D_HOST_MIX" -u CLAUDECODE
+  if [ "$DECISION" = "deny" ]; then ok "M22: Claude Code 以外のホストで述語 D を落とす分岐を消した変異は DN17 を deny し、D の検査が赤になる"; else bad "M22: 変異が効いていない: out=[$OUT]"; fi
 fi
 cp "$TARGET" "$MUTDP/hooks/guard-literal-write.sh"
 sed 's/^if \[ -n "${GROK_PLUGIN_ROOT:-}" \] || ! printf/if false \&\& ! printf/' "$TARGET" > "$MUTDP/hooks/guard-literal-write.sh"
@@ -875,6 +1024,45 @@ if mutate_dp '/if (ch == "\$" \&\& nx == "(") { k = ps_sub(p, k + 2, m); continu
   run_on "$MUTDP/hooks/guard-literal-write.sh" "$P_FIRE_SUB"
   if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "M21: 二重引用符の中の部分式を追わない変異は PF15 を素通しし、P の検査が赤になる"; else bad "M21: 変異が効いていない: decision=[$DECISION]"; fi
 fi
+if mutate_dp 's/if (k) q_hit("single", i + k)/if (0) k = k/' M25; then
+  run_on "$MUTDP/hooks/guard-literal-write.sh" "$Q_FIRE_SQ" CLAUDECODE=1
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "M25: 単一引用符の中の \\\\ を見ない変異は QF1 を素通しし、Q の検査が赤になる"; else bad "M25: 変異が効いていない: decision=[$DECISION]"; fi
+fi
+if mutate_dp 's/if \[ "$depth" -gt 1 \]; then nflag=1; fi/nflag=""/' M26; then
+  run_on "$MUTDP/hooks/guard-literal-write.sh" "$Q_NEST_PASS" CLAUDECODE=1
+  if [ "$DECISION" = "deny" ]; then ok "M26: 入れ子の走査にも述語 Q を当てる変異は QN11 を deny し、Q の検査が赤になる"; else bad "M26: 変異が効いていない: out=[$OUT]"; fi
+fi
+Q_PASS_DQ="$(cat <<'CASE'
+printf '%s\n' "D:\\data\\name\\project"
+CASE
+)"
+if mutate_dp 's/^\( *\)if (nx == "\\\\") { k = substr(src, i + 2, 1); if .* q_hit("double", i) }$/\1if (nx == "\\\\") q_hit("double", i)/' M27; then
+  run_on "$MUTDP/hooks/guard-literal-write.sh" "$Q_PASS_DQ" CLAUDECODE=1
+  if [ "$DECISION" = "deny" ]; then ok 'M27: 二重引用符の中で次の文字を見ずに止める変異は QN1（"D:\\data"）を deny し、Q の検査が赤になる'; else bad "M27: 変異が効いていない: out=[$OUT]"; fi
+fi
+cp "$SCAN_LIB" "$MUTDP/tests/lib/literal-write-scan.sh"
+sed 's/D"\(.\)"\* | Q"\(.\)"\*) continue ;;/D"\1"*) continue ;;/' "$TARGET" > "$MUTDP/hooks/guard-literal-write.sh"
+if cmp -s "$TARGET" "$MUTDP/hooks/guard-literal-write.sh"; then
+  bad "M28: sed が当たらず変異が注入されていない（針が古い）"
+else
+  run_on "$MUTDP/hooks/guard-literal-write.sh" "$Q_HOST_MIX" -u CLAUDECODE
+  if [ "$DECISION" = "deny" ]; then ok "M28: Claude Code 以外のホストで述語 Q を落とさない変異は QN14 を deny し、Q の検査が赤になる"; else bad "M28: 変異が効いていない: out=[$OUT]"; fi
+fi
+sed 's/^is_candidate "\$input" .\{6\} || exit 0$/is_candidate "$input" NO_SUCH_SPELLING_Y || exit 0/' "$TARGET" > "$MUTDP/hooks/guard-literal-write.sh"
+if cmp -s "$TARGET" "$MUTDP/hooks/guard-literal-write.sh"; then
+  bad "M29: sed が当たらず変異が注入されていない（針が古い）"
+else
+  run_on "$MUTDP/hooks/guard-literal-write.sh" "$Q_FIRE_SQ" CLAUDECODE=1
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "M29: hook の前置フィルタから二重バックスラッシュを外した変異は QF1 を素通しし、Q の検査が赤になる（前置フィルタも針の一部）"; else bad "M29: 変異が効いていない: decision=[$DECISION]"; fi
+fi
+sed 's/^if \[ "${CLAUDECODE:-}" = 1 \] && \[ -z "${GROK_PLUGIN_ROOT:-}" \]; then bs_host=1; fi$/bs_host=1/' "$TARGET" > "$MUTDP/hooks/guard-literal-write.sh"
+if cmp -s "$TARGET" "$MUTDP/hooks/guard-literal-write.sh"; then
+  bad "M30: sed が当たらず変異が注入されていない（針が古い）"
+else
+  run_on "$MUTDP/hooks/guard-literal-write.sh" "$Q_UNTERMINATED" -u CLAUDECODE
+  if [ "$DECISION" = "deny" ]; then ok "M30: 前置判定の二重バックスラッシュをホストで絞らない変異は QC1 を判定不能の deny にし、Q の検査が赤になる"; else bad "M30: 変異が効いていない: out=[$OUT]"; fi
+fi
+cp "$TARGET" "$MUTDP/hooks/guard-literal-write.sh"
 
 echo "guard-literal-write: M 変異検出（コピーへ当て、本番検査と同形の針が赤になること）"
 MUT="$TEST_TMP/mut"

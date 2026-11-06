@@ -368,7 +368,9 @@ make_real_root() { # $1: ルートパス
     cp "$REAL_HOOK_DIR/$n" "$root/.claude/hooks/$n"
     chmod +x "$root/.claude/hooks/$n"
   done
-  make_stub "$root/scripts/check-dev-toolkit-sync-drift.sh" "DRIFT_COUNT=0"
+  make_stub "$root/scripts/release-dev-toolkit.sh" ""
+  mkdir -p "$root/scripts/lib"
+  cp "$REPO_ROOT/scripts/lib/release-hook-functions.sh" "$root/scripts/lib/"
   make_stub "$root/scripts/check-public-dependabot-health.sh" "GRAPH_MANIFESTS=1
 OPEN_ALERTS=0
 GHOST_ALERTS=0"
@@ -403,11 +405,11 @@ chmod +x "$STUB_BIN/gh"
 markers_for() { # $1: hook 名
   case "$1" in
     session-start-sync-drift.sh)
-      printf '%s\n' 'scripts/check-dev-toolkit-sync-drift.sh' ;;
+      printf '%s\n' 'scripts/release-dev-toolkit.sh' ;;
     session-start-dependabot-health.sh)
       printf '%s\n' 'scripts/check-public-dependabot-health.sh' ;;
     post-merge-dev-toolkit-sync.sh)
-      printf '%s\n' 'scripts/sync-dev-toolkit-to-public.sh' 'scripts/check-dev-toolkit-sync-drift.sh' ;;
+      printf '%s\n' 'scripts/sync-dev-toolkit-to-public.sh' 'scripts/release-dev-toolkit.sh' ;;
   esac
 }
 
@@ -799,6 +801,8 @@ else
   # sync スクリプトの実在を先に見るので stub を置く
   cp "$REPO_ROOT/scripts/check-dev-toolkit-sync-drift.sh" "$RG/scripts/"
   cp "$REPO_ROOT/scripts/check-public-dependabot-health.sh" "$RG/scripts/"
+  mkdir -p "$RG/scripts/lib"
+  cp "$REPO_ROOT/scripts/lib/release-hook-functions.sh" "$RG/scripts/lib/"
   make_stub "$RG/scripts/sync-dev-toolkit-to-public.sh" "plugins/ff-dev-toolkit"
   git init -q "$RG"
   for n in session-start-sync-drift.sh session-start-dependabot-health.sh; do

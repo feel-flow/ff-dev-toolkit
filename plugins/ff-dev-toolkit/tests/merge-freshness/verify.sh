@@ -364,6 +364,10 @@ run_check --remote-head "$C1" --record "$BROKEN"
 [[ "$RC" -eq 2 ]] && ok "MODE=full でも STATUS=partial なら判定不能（判定は STATUS だけを見る）" \
   || bad "STATUS=partial + MODE=full で exit ${RC}（期待 2）"
 out_has "$OUT" "記録は部分実行です" "STATUS=partial の理由が部分実行であることを述べる（MODE で分岐していない）"
+case "$OUT" in
+  *導入先の判定で差分を覆っている*) bad "印の無い部分記録を被覆と読んだ" ;;
+  *) ok "印の無い部分記録は被覆と読まない" ;;
+esac
 printf 'RECORD_VERSION=1\nSTATUS=pass\nCOMMIT=%s\nDIRTY=no\nGATE=g\nMODE=explicit\nSUITES=alpha\n' "$C1" > "$BROKEN"
 run_check --remote-head "$C1" --record "$BROKEN"
 [[ "$RC" -eq 0 ]] && ok "MODE=explicit でも STATUS=pass なら一致（MODE を合否に混ぜない既存契約の維持）" \
@@ -375,6 +379,111 @@ printf 'RECORD_VERSION=1\nSTATUS=bogus\nCOMMIT=%s\nDIRTY=no\n' "$C1" > "$BROKEN"
 run_check --remote-head "$C1" --record "$BROKEN"
 [[ "$RC" -eq 2 ]] && ok "未知の STATUS は判定不能（allowlist を緩めない）" || bad "未知 STATUS で exit ${RC}（期待 2）"
 out_has "$OUT" "記録のゲート結果を解釈できません" "未知の STATUS はその旨を理由に述べる"
+
+# --- 差分を覆う印と、環境起因の未確認。どちらも全件緑（exit 0）へ昇格しない ---
+if [[ "$C1" == "$C3" ]]; then
+  bad "fixture: base の不一致に使う SHA が同じ（以降の印の検査は何も測っていない）"
+fi
+COVER_REC="$WORK/cover-record"
+run_record --gate "tests/run-all.sh" --status partial --suites alpha --covers-diff "$C1" --record "$COVER_REC"
+[[ "$RC" -eq 0 ]] && ok "--covers-diff 付きの partial は記録できる" || bad "--covers-diff 付き partial で exit ${RC}（期待 0）"
+contains "$COVER_REC" "COVERS_DIFF=${C1}" "COVERS_DIFF に渡した base を残す"
+COVER_COMMIT="$(sed -n 's/^COMMIT=//p' "$COVER_REC" | head -n 1)"
+run_check --remote-head "$COVER_COMMIT" --base "$C1" --record "$COVER_REC"
+[[ "$RC" -eq 2 ]] && ok "印が base と一致しても exit 2（全件緑へ昇格しない）" || bad "被覆の印で exit ${RC}（期待 2）"
+out_has "$OUT" "DIFF_COVERED=yes" "印が base と一致すると DIFF_COVERED=yes を出す"
+out_has "$OUT" "記録は部分実行です" "被覆の印があっても理由は部分実行のまま"
+out_has "$OUT" "導入先の判定で差分を覆っている" "一致した印は理由に導入先の判定を名指しする"
+run_check --remote-head "$COVER_COMMIT" --record "$COVER_REC"
+[[ "$RC" -eq 2 ]] && ok "--base を渡さない回は従来どおり exit 2" || bad "--base なしの印付き部分記録で exit ${RC}（期待 2）"
+case "$OUT" in
+  *導入先の判定で差分を覆っている*|*DIFF_COVERED=yes*) bad "--base を渡さないのに被覆と読んだ: ${OUT}" ;;
+  *) ok "--base を渡さない回は印を被覆と扱わない" ;;
+esac
+out_has "$OUT" "記録は部分実行です" "--base が無い部分記録の理由は従来の文言"
+run_check --remote-head "$COVER_COMMIT" --base "$C3" --record "$COVER_REC"
+[[ "$RC" -eq 2 ]] && ok "base が違う部分記録は exit 2" || bad "base 不一致の部分記録で exit ${RC}（期待 2）"
+case "$OUT" in
+  *導入先の判定で差分を覆っている*|*DIFF_COVERED=yes*) bad "base が違うのに被覆と読んだ: ${OUT}" ;;
+  *) ok "base が違う部分記録は被覆と読まない" ;;
+esac
+if [[ "$COVER_COMMIT" == "$C3" ]]; then
+  bad "fixture: head の不一致に使う SHA が記録の COMMIT と同じ"
+else
+  run_check --remote-head "$C3" --base "$C1" --record "$COVER_REC"
+  [[ "$RC" -eq 1 ]] && ok "印が一致しても head が違えば exit 1 で止まる" || bad "被覆の印 × head 不一致で exit ${RC}（期待 1）"
+  out_has "$OUT" "FRESHNESS=MISMATCH" "被覆の印は不一致を判定不能へ格下げしない"
+fi
+# 印の一致は汚れ・別ブランチより後にある。前へ移すと、実測していない木が被覆になる。
+printf '%s\n' "$(sed 's/^DIRTY=no$/DIRTY=yes/' "$COVER_REC")" > "$WORK/cover-dirty"
+run_check --remote-head "$COVER_COMMIT" --base "$C1" --record "$WORK/cover-dirty"
+[[ "$RC" -eq 2 ]] && ok "汚れた木の印付き部分記録は exit 2" || bad "汚れた木 × 印で exit ${RC}（期待 2）"
+out_has "$OUT" "作業ツリーが汚れて" "汚れた木の印付き部分記録は汚れを理由にする"
+case "$OUT" in
+  *DIFF_COVERED=yes*|*導入先の判定で差分を覆っている*) bad "汚れた木の印付き部分記録を被覆と読んだ: ${OUT}" ;;
+  *) ok "汚れた木の印付き部分記録は被覆と読まない" ;;
+esac
+_cover_branch="$(git_q symbolic-ref --quiet --short HEAD)"
+printf '%s\n' "$(sed 's/^BRANCH=.*/BRANCH=wt-elsewhere/' "$COVER_REC")" > "$WORK/cover-other"
+if [[ "${_cover_branch}" == "wt-elsewhere" ]]; then
+  bad "fixture: 現在のブランチが wt-elsewhere では別ブランチの印を測れていない"
+else
+  run_check --remote-head "$COVER_COMMIT" --base "$C1" --record "$WORK/cover-other"
+  [[ "$RC" -eq 2 ]] && ok "別ブランチの印付き部分記録は exit 2" || bad "別ブランチ × 印で exit ${RC}（期待 2）"
+  out_has "$OUT" "記録は別ブランチのものです" "別ブランチの印付き部分記録は別ブランチを理由にする"
+  case "$OUT" in
+    *DIFF_COVERED=yes*|*導入先の判定で差分を覆っている*) bad "別ブランチの印付き部分記録を被覆と読んだ: ${OUT}" ;;
+    *) ok "別ブランチの印付き部分記録は被覆と読まない" ;;
+  esac
+fi
+run_check --remote-head "$C1" --base "deadbeef"
+[[ "$RC" -eq 3 ]] && ok "短縮の --base は検査不成立" || bad "短縮 --base で exit ${RC}（期待 3）"
+
+UNV_REC="$WORK/unverified-record"
+run_record --gate g --status unverified --unverified-steps "test:review-cli-config" --record "$UNV_REC"
+[[ "$RC" -eq 0 ]] && ok "--status unverified はステップ名があれば記録できる" || bad "unverified で exit ${RC}（期待 0）"
+contains "$UNV_REC" "STATUS=unverified" "未確認は STATUS=unverified として記録される"
+contains "$UNV_REC" "UNVERIFIED_STEPS=test:review-cli-config" "ステップ名のコロンを残す"
+UNV_COMMIT="$(sed -n 's/^COMMIT=//p' "$UNV_REC" | head -n 1)"
+run_check --remote-head "$UNV_COMMIT" --record "$UNV_REC"
+[[ "$RC" -eq 2 ]] && ok "未確認の記録は head が一致しても exit 2（全件緑へ昇格しない）" || bad "未確認 × 一致で exit ${RC}（期待 2）"
+out_has "$OUT" "環境起因で未確認: test:review-cli-config" "一致した未確認はステップ名を名指しする"
+out_has "$OUT" "環境を直す（例: toolkit の更新）か、未確認のステップを PR 本文に記録して判断する" "未確認の次の一手は環境を直すか本文に記録して判断する"
+case "${OUT}${ERR}" in
+  *再実行*|*部分実行*|*汚れていました*|*記録がありません*) bad "未確認の案内に再実行・部分実行・汚れ・記録なしが混ざった: ${OUT}${ERR}" ;;
+  *) ok "未確認の案内は再実行を述べない" ;;
+esac
+if [[ "$UNV_COMMIT" == "$C3" ]]; then
+  bad "fixture: 未確認の不一致に使う SHA が記録の COMMIT と同じ"
+else
+  run_check --remote-head "$C3" --record "$UNV_REC"
+  [[ "$RC" -eq 1 ]] && ok "未確認の記録でも head が違えば exit 1（判定不能へ格下げしない）" || bad "未確認 × 不一致で exit ${RC}（期待 1）"
+  out_has "$OUT" "FRESHNESS=MISMATCH" "未確認 × 不一致は MISMATCH"
+fi
+printf 'RECORD_VERSION=1\nSTATUS=unverified\nCOMMIT=%s\nDIRTY=no\nGATE=g\n' "$C1" > "$BROKEN"
+run_check --remote-head "$C1" --record "$BROKEN"
+[[ "$RC" -eq 2 ]] && ok "ステップ名の行が無い未確認記録も exit 2（pass へ昇格しない）" || bad "ステップ名なしの unverified で exit ${RC}（期待 2）"
+out_has "$OUT" "環境起因で未確認: （ステップ名の記録なし）" "ステップ名が無い未確認はその旨を名指しする"
+printf '%s\n' "$(sed 's/^DIRTY=no$/DIRTY=yes/' "$UNV_REC")" > "$WORK/unv-dirty"
+run_check --remote-head "$UNV_COMMIT" --record "$WORK/unv-dirty"
+[[ "$RC" -eq 2 ]] && ok "汚れた木の未確認記録は exit 2" || bad "汚れた木 × 未確認で exit ${RC}（期待 2）"
+out_has "$OUT" "作業ツリーが汚れて" "汚れた木の未確認記録は汚れを理由にする"
+case "$OUT" in
+  *環境起因で未確認*) bad "汚れた木の未確認を環境起因と読んだ: ${OUT}" ;;
+  *) ok "汚れた木の未確認は環境起因の案内に進まない" ;;
+esac
+printf '%s\n' "$(sed 's/^BRANCH=.*/BRANCH=wt-elsewhere/' "$UNV_REC")" > "$WORK/unv-other"
+if [[ "$(git_q symbolic-ref --quiet --short HEAD)" == "wt-elsewhere" ]]; then
+  bad "fixture: 現在のブランチが wt-elsewhere では別ブランチの未確認を測れていない"
+else
+  run_check --remote-head "$UNV_COMMIT" --record "$WORK/unv-other"
+  [[ "$RC" -eq 2 ]] && ok "別ブランチの未確認記録は exit 2" || bad "別ブランチ × 未確認で exit ${RC}（期待 2）"
+  out_has "$OUT" "記録は別ブランチのものです" "別ブランチの未確認記録は別ブランチを理由にする"
+  case "$OUT" in
+    *環境起因で未確認*) bad "別ブランチの未確認を環境起因と読んだ: ${OUT}" ;;
+    *) ok "別ブランチの未確認は環境起因の案内に進まない" ;;
+  esac
+fi
 
 # --- --measured は記録より優先される（記録が無くても照合できる） ---
 run_check --remote-head "$C1" --measured "$C1" --record "$WORK/does-not-exist"
@@ -611,6 +720,8 @@ run_record --mode fast
 
 # --- 部分実行の記録（--status partial / --suites）---
 contains "$REC" "SUITES=" "--suites を渡さない実行でも SUITES= 行を書く（キーの有無で欠落と空を分けない）"
+contains "$REC" "COVERS_DIFF=" "印を渡さない実行でも COVERS_DIFF= 行を書く"
+contains "$REC" "UNVERIFIED_STEPS=" "未確認でなくても UNVERIFIED_STEPS= 行を書く"
 
 PART_B="$WORK/record-partial"
 run_record --gate "tests/run-all.sh" --status partial --mode explicit --suites "alpha beta" --record "$PART_B"
@@ -686,6 +797,41 @@ contains "$DOWN_REC" "STATUS=partial" "別コミットの pass は据え置か�
 printf 'RECORD_VERSION=9\nSTATUS=pass\nCOMMIT=%s\nDIRTY=no\n' "$HEAD_B2" > "$DOWN_REC"
 bash "$RECORD" --gate g --status partial --suites "delta" --record "$DOWN_REC" >/dev/null 2>&1
 contains "$DOWN_REC" "SUITES=delta" "解釈できない版の pass は据え置かない（v1 として読めるものだけを守る）"
+
+# unverified は pass を上書きする（未確認を緑のまま残さない）。partial の据え置きは広げない。
+bash "$RECORD" --gate g --status pass --record "$DOWN_REC" >/dev/null 2>&1
+cp "$DOWN_REC" "$DOWN_COPY"
+sleep 1
+run_record --gate g --status partial --suites alpha --covers-diff "$C1" --record "$DOWN_REC"
+[[ "$RC" -eq 0 ]] && ok "covers-diff 付きの partial でも同じコミットの pass は exit 0 で据え置く" \
+  || bad "covers-diff 付き partial の据え置きで exit ${RC}（期待 0）"
+if cmp -s "$DOWN_REC" "$DOWN_COPY"; then
+  ok "covers-diff 付きの partial は同じコミットの pass を byte 一致で据え置く"
+else
+  bad "covers-diff 付き partial が pass を書き換えた"
+fi
+run_record --gate g --status unverified --unverified-steps "test:review-cli-config" --record "$DOWN_REC"
+[[ "$RC" -eq 0 ]] && ok "unverified は同じコミットの pass を上書きできる" || bad "unverified の上書きで exit ${RC}（期待 0）"
+contains "$DOWN_REC" "STATUS=unverified" "同じコミットの pass は unverified で上書きされる"
+contains "$DOWN_REC" "UNVERIFIED_STEPS=test:review-cli-config" "上書きした未確認にステップ名が残る"
+run_record --gate g --status unverified --record "$WORK/unv-empty"
+[[ "$RC" -eq 2 && ! -f "$WORK/unv-empty" ]] && ok "ステップ名の無い unverified は記録しない" \
+  || bad "ステップ名の無い unverified で exit ${RC}（ファイル: $( [[ -f "$WORK/unv-empty" ]] && echo あり || echo なし )）"
+run_record --gate g --status pass --covers-diff "$C1" --record "$WORK/cover-on-pass"
+[[ "$RC" -eq 2 && ! -f "$WORK/cover-on-pass" ]] && ok "--covers-diff は partial 以外では記録しない" \
+  || bad "pass への --covers-diff で exit ${RC}"
+run_record --gate g --status partial --covers-diff "not-a-sha" --record "$WORK/cover-bad-sha"
+[[ "$RC" -eq 2 && ! -f "$WORK/cover-bad-sha" ]] && ok "SHA でない --covers-diff は記録しない" \
+  || bad "不正な --covers-diff で exit ${RC}"
+run_record --gate g --status partial --unverified-steps "test:review-cli-config" --record "$WORK/steps-on-partial"
+[[ "$RC" -eq 2 && ! -f "$WORK/steps-on-partial" ]] && ok "--unverified-steps は unverified 以外では記録しない" \
+  || bad "partial への --unverified-steps で exit ${RC}"
+UNV_CRLF="$WORK/unv-crlf"
+bash "$RECORD" --gate g --status unverified --unverified-steps "$(printf 'test:review-cli-config\rother\nmore')" --record "$UNV_CRLF" >/dev/null 2>&1
+contains "$UNV_CRLF" "UNVERIFIED_STEPS=test:review-cli-config other more" "未確認ステップの CR/LF は空白へ畳み、コロンは残す"
+DRIFT_UNV="$WORK/record-drift-unverified"
+bash "$RECORD" --gate g --status unverified --unverified-steps alpha --expect-head "$ABSENT" --record "$DRIFT_UNV" >/dev/null 2>&1
+[[ ! -f "$DRIFT_UNV" ]] && ok "HEAD が動いた回は unverified でも記録しない" || bad "HEAD ドリフト時に unverified の記録が書かれました"
 
 # git status が失敗した回を「clean」と書かない。`$(git status ... 2>/dev/null)` の空文字は
 # 「clean」と「status が失敗した」の両方を意味するので、区別しないと偽の clean 記録ができる。

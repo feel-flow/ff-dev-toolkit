@@ -108,7 +108,7 @@ MCP: 取得値: MCPでIssue title/body と PR diff/rollup/reviewDecision。形�
 **Issue 本文は全文取得する**。[AC照合](references/ac-judgement.md)に従う。
 
 - **根拠は AC の指す対象を測っているか**: AC ごとに「根拠が測った対象 = AC が指す対象」を 1 行で書く。「測れない」= 未達（他 AC の達成数で埋めない）。bug の原因を名指しできなければ「原因未確定。次回読めるようにする計測を入れた / 入れていない」を報告する。
-- 「未達」と「AC が実装より古い」を区別する。AC 無しは手順6へ。post-merge 検証待ちは Refs のみでチェックしない。
+- 「未達」と「AC が実装より古い」を区別する。AC 無しは手順6へ。
 
 ### 4. 未達 AC の解消（自動修正ループ）
 
@@ -116,7 +116,7 @@ MCP: 取得値: MCPでIssue title/body と PR diff/rollup/reviewDecision。形�
 
 ### 5. Issue 本文の更新（チェックボックス + 工数実績）
 
-本文は**この 1 回にまとめる**。
+本文は**この 1 回にまとめる**（例外は 5b）。
 
 #### 5a. 工数実績の算出（`ff-effort` ブロックがある場合）
 
@@ -124,7 +124,7 @@ MCP: 取得値: MCPでIssue title/body と PR diff/rollup/reviewDecision。形�
 
 #### 5b. 本文の書き換えと送信
 
-[Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従い、達成 AC を `- [ ]` → `- [x]` にする（`☑` 不可）。初回だけ私有領域を確保し W の実値を記録する。5a の確保済み領域も使える。後続呼び出しは実値を W に明示する:
+[Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従い、達成 AC を `- [ ]` → `- [x]` にする（`☑` 不可）。初回だけ私有領域を確保し（5a の領域も可）W の実値を記録する。後続呼び出しは実値を W に明示する:
 
 ```bash
 : "${W:?記録済みWの実値を明示}"
@@ -146,7 +146,7 @@ gh issue edit "$ISSUE_URL" --body-file "$W/issue-body-${ISSUE_NUMBER}.md"
 <!--4012219f76dd63c0-->
 MCP: 取得値: MCPでIssue body/updatedAt（REST updated_at）。形式: 原本 .orig.md / 編集 .md。渡し先: 許可差分・直前時刻照合後 update_issue.body → fresh一致。不足時: MCP 必須不足は停止。
 
-更新するのは**チェックボックスと `ff-effort` ブロックの中身のみ**（例外は手順 3 の「AC が実装より古い」と手順 4 のスコープ変更）。対象外・post-merge 検証待ちはチェックしない。
+更新するのは**チェックボックスと `ff-effort` ブロックの中身のみ**（例外は手順 3 の「AC が実装より古い」と手順 4 のスコープ変更。チェックと工数の後の[2 回目で送る](references/ac-judgement.md#second-send)）。対象外・post-merge 検証待ちはチェックしない。
 
 ### 6. 完了報告コメントの投稿
 
@@ -170,10 +170,10 @@ MCP: 取得値: MCPで全 comments id/body と report marker。形式: 全 page 
 **マージ直前に `finish.sh precheck` をもう一度実行する**。MCP / Refs は同じ subject / body、file は fresh raw を使い、`headRefOid` と記録を照合する（[詳細](references/merge-gate.md)）:
 
 - **`FRESH_STATUS`**: 0 = 一致（`FRESH_REPORT` を報告へ）/ 1 = 不一致（止まる。`RELATION` に従って取り込んでゲートを回し直し、手順 1 へ）/ 2 = 判定不能（止めないが `FRESH_REASON` / `FRESH_ACTION` を**両方**報告へ。**2 で止めないのは意図的** — 記録の仕組みを持たないプロジェクトでは常態）/ 3 = 検査不成立（止める）
-- **`RERUN_FULL_GATE`**（判定不能のとき）: `yes` は clean な木で全件ゲートを再実行して手順 1 へ。`no` は進む（**リリース前・契約面の変更時は除く** — script は rc 0 を返すのでここで判断）。`see-action` は `FRESH_ACTION` に従う
+- **`RERUN_FULL_GATE`**: `yes` は全件再実行し手順1。`no` は checks 全成功、または印が base と一致し導入先の判定で差分を覆っている（リリース前・契約面除く）。`see-action`=`FRESH_ACTION`（環境起因の未確認は再実行を案内しない）
 - **PR タイトルの件名規約（必須）**: タイトルは squash の件名になり**マージ後に直せない**。規約外なら `gh pr edit "${PR_NUMBER}" --title "<規約に沿った件名>"` で直してから進む（Refs 運用の `--subject` も同じ）
 
-<!--80affbd1cf30b389-->
+<!--989c5d2cba23219f-->
 MCP: 取得値: MCPでPR title/headRefOid。形式: title 原文の構造化引数。渡し先: update_pull_request.title → fresh後読 → precheck。不足時: MCP 必須不足は停止。
 
 gh 経路は `MERGE_COMMAND_BEGIN` 〜 `END` の出力をそのまま実行し、手順 8 へ貼る。**書き写さない**（2b は何も保証しなくなる）。MCP 経路は[同じ最終 precheck の元値を6引数へ渡す契約](references/merge-gate.md#mcp-merge)に従い、生成 shell を parse/eval/unquote せず実行する。merge commit 規約の回は precheck 全回に `--merge-method merge`（[方式](references/merge-gate.md#merge-method)）。`HEAD_DELETE_RESULT` と非 0 の読み方は [Git Workflow](../../docs-template/05-operations/deployment/git-workflow.md#ステップ8-マージmerge) に従う。

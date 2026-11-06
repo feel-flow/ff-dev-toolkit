@@ -385,6 +385,8 @@ FF_STARTUP_LOAD_PER_CORE=10
 
 # Independent runners are found across repositories/worktrees. The existing Git-dir
 # marker serves nested effort accounting and is deliberately not a host registry.
+# >>> ff-startup-other-gates
+# tests/run-all/verify.sh がこの関数だけを抽出して、走査の前に呼ぶ。
 ff_startup_other_gates() {
   local snapshot candidates pid script recorded observed cwd_info process_cwd
   snapshot="$(LC_ALL=C ps -ww -eo pid=,ppid=,args= 2>/dev/null)" || return 1
@@ -477,6 +479,7 @@ ff_startup_other_gates() {
     [[ "$unavailable" == 0 ]]
   }
 }
+# <<< ff-startup-other-gates
 
 ff_capture_startup_load() {
   local others others_rc=0 comparison_rc core_digits_limit=8

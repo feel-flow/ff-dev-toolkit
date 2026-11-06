@@ -184,6 +184,7 @@ ff_assert_script_plugin_root "${BASH_SOURCE[0]}" || exit 2
 # ff-dev-toolkit-script-root-guard:end
 
 root=""
+snapshot_head=""
 path_list=""
 cleanup() { [[ -z "$path_list" ]] || rm -f "$path_list"; }
 trap cleanup EXIT
@@ -191,6 +192,7 @@ trap 'exit 130' HUP INT TERM
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --root) shift; [[ $# -gt 0 ]] || { echo "Usage: $0 [--root <repository>]" >&2; exit 2; }; root="$1" ;;
+    --snapshot-head) shift; [[ $# -gt 0 && "$1" =~ ^[0-9a-f]{40}$ ]] || exit 2; snapshot_head="$1" ;;
     *) echo "Usage: $0 [--root <repository>]" >&2; exit 2 ;;
   esac
   shift
@@ -220,6 +222,11 @@ read_version() {
 }
 
 resolve_fresh_base() {
+  if [[ -n "${snapshot_head:-}" ]]; then
+    [[ "$(git -C "$root" rev-parse HEAD)" == "$snapshot_head" ]] || { echo "✗ 固定した release HEAD と checkout が一致しません" >&2; return 2; }
+    default_base="$snapshot_head"
+    return 0
+  fi
   default_ref="$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" || { echo "✗ origin/HEAD を解決できません" >&2; return 2; }
   [[ "$default_ref" == origin/* ]] || { echo "✗ origin/HEAD が不正です" >&2; return 2; }
   default_branch="${default_ref#origin/}"

@@ -98,20 +98,20 @@ MCP: 取得値: MCP の同じ PR の title/body/全 commits/closingIssuesReferen
 
 比較の材料には **API の値（`headRefOid`）を照合直前に読み直して使う**。`git fetch` + `git rev-parse origin/<branch>` を比較に使ってはいけない — remote-tracking ref は前回 fetch 時点のスナップショットで、fetch を忘れた回に「古い先端 == 古い実測対象」で一致してしまう。`--fetch` は関係の分類（祖先か / 未 push か / 分岐か）にだけ使う。
 
-実測対象は自己申告ではなく**記録**から取ります。`scripts/record-gate-head.sh` がゲートの通過時に HEAD・作業ツリーの汚れ・モードを書き、`tests/run-all.sh` は既定一覧の実行でも明示引数の実行でもこれを呼びます。ただし**明示引数の実行は `STATUS=partial`（部分実行）として記録されます** — 名指しした suite しか回っていない記録は、リモート先端と一致していても全件緑へは昇格せず、判定不能（exit 2）として報告されます。**例外: 同じコミットに全件緑（`STATUS=pass`）の記録が既にあるときは、部分実行で上書きしません**（`pass@X` は `partial@X` の上位互換の証拠。全件ゲートの後に名指し 1 本を回す並びは一致のまま）。赤い実行（`STATUS=fail`）は同じコミットでも前回の緑を無効化します。赤の原因がすべて base の先行による鮮度赤（run-all が stale と分類した suite）だけで説明できる回は、記録にその suite 名が残り（`STALE_ONLY_FAILED`）、照合は判定不能のまま「base を取り込み、赤だった suite だけを verify.sh のパスで名指しして回し直す」を案内します — 緑なら部分実行の記録になり、PR の checks が全件成功していればゲート全体を回し直さずに進めます（鮮度の分類は suite 単位の「含む」判定なので、取り込み後の実測を省きません）。
+実測対象は自己申告ではなく**記録**から取ります。`scripts/record-gate-head.sh` がゲートの通過時に HEAD・作業ツリーの汚れ・モードを書き、`tests/run-all.sh` は既定一覧の実行でも明示引数の実行でもこれを呼びます。ただし**明示引数の実行は `STATUS=partial`（部分実行）として記録されます** — 名指しした suite しか回っていない記録は、リモート先端と一致していても全件緑へは昇格せず、判定不能（exit 2）として報告されます。**例外: 同じコミットに全件緑（`STATUS=pass`）の記録が既にあるときは、部分実行で上書きしません**（`pass@X` は `partial@X` の上位互換の証拠。全件ゲートの後に名指し 1 本を回す並びは一致のまま。差分を覆う印 `COVERS_DIFF` を付けた部分実行も、この例外を広げない）。赤い実行（`STATUS=fail`）と、環境起因で未確認の記録（`STATUS=unverified`）は同じコミットでも前回の緑を無効化します。赤の原因がすべて base の先行による鮮度赤（run-all が stale と分類した suite）だけで説明できる回は、記録にその suite 名が残り（`STALE_ONLY_FAILED`）、照合は判定不能のまま「base を取り込み、赤だった suite だけを verify.sh のパスで名指しして回し直す」を案内します — 緑なら部分実行の記録になり、PR の checks が全件成功していればゲート全体を回し直さずに進めます（鮮度の分類は suite 単位の「含む」判定なので、取り込み後の実測を省きません）。
 
 終了コード（`FRESH_STATUS`。個別の原因ではなく終了コードで分岐する）:
 
 - **0 = 一致（無出力）**: `FRESH_REPORT`（`--print-record` のゲート名・モード・結果）を報告へ載せる。高速モードの記録を「全件実行で通した」と読ませない（モードは合否には使わない）
 - **1 = 不一致（マージを止める）**: `RELATION` で次の一手が変わる — `ancestor`（実測後にリモートが先行）→ 取り込んで再実測 / `unpushed`（未 push のコミットを測っている）→ push して再実測 / `divergent`（同一ブランチの実測対象と先端が分岐）→ **force-push で押し切らず**相手のコミットの上に自分の変更を積んでから再実測 / `unknown` → fetch の成否を確認し `ACTION` に従う
-- **2 = 判定不能（止めないが報告する）**: 原因は増えうる（記録が無い / 別ブランチの記録 / 汚れた木で測った / 直近のゲートが赤い / 記録が部分実行である / 記録の版や内容を解釈できない / 実測対象のコミットが手元に無い）。**2 で止めないのは意図的**です。記録の仕組みを持たないプロジェクトでは判定不能が常態で、そこで無条件にマージを止めると検査ごと迂回されます。**この窓は静かに外れると squash merge に畳み込まれるので、ノイズより見逃しのコストが高い** — だから「黙って緑を返さない」ことを最低線として守り、判定不能は手順 8 の完了報告に必ず載せる（`REASON` と `ACTION` を**両方**。部分実行なら REASON が「何を検証したのか」を名指しし、ACTION がそれを指して次の一手を述べる）
+- **2 = 判定不能（止めないが報告する）**: 原因は増えうる（記録が無い / 別ブランチの記録 / 汚れた木で測った / 直近のゲートが赤い / 記録が部分実行である / 環境起因で未確認 / 記録の版や内容を解釈できない / 実測対象のコミットが手元に無い）。**2 で止めないのは意図的**です。記録の仕組みを持たないプロジェクトでは判定不能が常態で、そこで無条件にマージを止めると検査ごと迂回されます。**この窓は静かに外れると squash merge に畳み込まれるので、ノイズより見逃しのコストが高い** — だから「黙って緑を返さない」ことを最低線として守り、判定不能は手順 8 の完了報告に必ず載せる（`REASON` と `ACTION` を**両方**。部分実行なら REASON が「何を検証したのか」を名指しし、ACTION がそれを指して次の一手を述べる）
 - **3 = 検査不成立（停止する）**
 
 記録の `BRANCH` が現在の名前付きブランチと異なる場合は、コミット照合より前に **`UNDETERMINED`（exit 2）** を返す（別ブランチの古い記録は同一ブランチへの追加 push の証拠ではない。SHA が同一でも一致へ昇格させない）。`BRANCH` が欠落・空・`HEAD`・`(unknown)`、または現在が detached HEAD なら、別ブランチと断定せず従来のコミット照合を行う。
 
 別の checkout（Windows の作業機なら WSL の clone）で全件ゲートを回した回は、`finish.sh precheck <PR番号> --gate-record <その clone の記録のパス>` で記録を明示する。明示した記録に限ってブランチ照合を外し、一致は「`COMMIT` が `headRefOid` と同じ・`STATUS=pass`・`DIRTY=no`・そのコミットが手元に実在」のときだけになる（`COMMIT` が食い違えば `FRESH_STATUS=1` で止まる。読めないパスは rc 2 で名指しして止まり、既定の記録へは戻らない）。記録は WSL 側の `git rev-parse --absolute-git-dir` の下の `ff-dev-toolkit/gate-record` にあり、Git Bash からは `//wsl.localhost/<distro>/home/...` の形で渡す。
 
-鮮度照合が判定不能（`FRESH_STATUS=2`）で、かつ `FRESH_REASON` が「汚れた木で測った / 記録が無い / 記録が部分実行である」のいずれかなら（`RERUN_FULL_GATE=yes`）、clean な作業ツリーで全件ゲートを再実行してから改めて照合します（記録の仕組みを持たないプロジェクトではこの限りではなく、2 でマージを止めない既存規定も変わりません）。**ただし `FRESH_REASON` が「記録が部分実行である」で、かつ checks が非空で全件成功した回に限り、リリース前と契約面の変更時を除き再実行しません**（`RERUN_FULL_GATE=no`） — PR の checks がリモート先端（base へのマージ結果）を実測しており、部分ゲートの記録で判定不能になるのは想定どおりだからです。「汚れた木で測った / 記録が無い」は checks が成功していても従来どおり全件ゲートを再実行します（checks がローカルの検証スイートを回しているとは限らないため）。それ以外の理由は `RERUN_FULL_GATE=see-action`（`FRESH_ACTION` に従う）。
+鮮度照合が判定不能（`FRESH_STATUS=2`）で、かつ `FRESH_REASON` が「汚れた木で測った / 記録が無い / 記録が部分実行である」のいずれかなら（`RERUN_FULL_GATE=yes`）、clean な作業ツリーで全件ゲートを再実行してから改めて照合します（記録の仕組みを持たないプロジェクトではこの限りではなく、2 でマージを止めない既存規定も変わりません）。**ただし `FRESH_REASON` が「記録が部分実行である」で、かつ checks が非空で全件成功した回に限り、リリース前と契約面の変更時を除き再実行しません**（`RERUN_FULL_GATE=no`） — PR の checks がリモート先端（base へのマージ結果）を実測しており、部分ゲートの記録で判定不能になるのは想定どおりだからです。印（`COVERS_DIFF`）が現在の PR の base と一致する部分実行も、checks が空でも `RERUN_FULL_GATE=no` にする（理由に「導入先の判定で差分を覆っている」と出る。照合そのものは exit 2 のまま。印が無い、または base が違う回は、checks が空なら従来どおり `yes`）。「汚れた木で測った / 記録が無い」は checks が成功していても従来どおり全件ゲートを再実行します（checks がローカルの検証スイートを回しているとは限らないため）。head が一致する `STATUS=unverified` は `RERUN_FULL_GATE=see-action` で、理由は「環境起因で未確認」とステップ名、案内は環境を直すか未確認のステップを PR 本文に記録して判断することで、再実行は案内しない（汚れた木・別ブランチの記録は、その前に判定不能として止まる）。head が違えば不一致（exit 1）として止める。それ以外の理由は `RERUN_FULL_GATE=see-action`（`FRESH_ACTION` に従う）。
 
 未達 AC の修正ループで fix commit を push した場合、修正前の記録とは不一致になる。**ゲートを回し直してから**マージへ進む。
 
@@ -244,9 +244,9 @@ MCP merge には branch 削除引数が無い。merge 前に固定した canonic
 
 ### raw と writer の受け渡し
 
-PR は flat な gh JSON の `number,state,isDraft,headRefName,headRefOid,baseRefName,title,body,closingIssuesReferences,commits,statusCheckRollup,additions,deletions,files,isCrossRepository` が全必須。形は `commits:[{oid,messageHeadline,messageBody}]` / `files:[{path}]` / `closingIssuesReferences:[{url}]` である。normalized `get_pr_info` の counts や generic GraphQL envelope はこの形ではない。欠落を推測の空配列や本文から補わず、実取得でこの形を供給できなければ停止する。checks 非空時は実取得した `checks-retry` attempt、次に全 threads の cursor/page、最後に別取得の `after-threads` PR を同じ index に保存する。同じ raw の phase 改名は fresh 取得にならない。
+PR は flat な gh JSON の `number,state,isDraft,headRefName,headRefOid,baseRefName,title,body,closingIssuesReferences,commits,statusCheckRollup,additions,deletions,files,isCrossRepository` が全必須。gh 経路の `gh pr view --json` はこれに加え `baseRefOid` を要求する。file 入力では任意で、40 桁の小文字 16 進のときだけ被覆の印と照合し、欠ける・形が違う回は被覆と扱わない。形は `commits:[{oid,messageHeadline,messageBody}]` / `files:[{path}]` / `closingIssuesReferences:[{url}]` である。normalized `get_pr_info` の counts や generic GraphQL envelope はこの形ではない。欠落を推測の空配列や本文から補わず、実取得でこの形を供給できなければ停止する。checks 非空時は実取得した `checks-retry` attempt、次に全 threads の cursor/page、最後に別取得の `after-threads` PR を同じ index に保存する。同じ raw の phase 改名は fresh 取得にならない。
 
-<!--88ead1f007110401-->
+<!--9b4025bb960766dd-->
 MCP: 取得値: MCP のPR/repo/checks/threads の実フィールド。形式: flat PR / GraphQL thread raw と phase/attempt/cursor の index JSON。渡し先: finish.sh precheck --github-input /absolute/index.json。欠損は推測で補わない。不足時: MCP 必須不足は operation / field / page を示して停止。
 
 Issue は同じ repository / number の全文 `body` と `updatedAt`（REST の `updated_at` に対応）を取得して原本保存し、更新直前の fresh 値と照合する。normalized snapshot に時刻が無ければ raw GET 等で取得し、できなければ停止する。許可差分判定後の本文ファイル原文を MCP `update_issue` の body へ渡し、他フィールドは指定しない。全 page のコメントから `<!-- close-issue-report:PR-N -->` を同定し、既存 ID があれば update、無ければ create に報告ファイル原文を渡す。重複 / 不完全一覧は停止し、各 write 後の fresh GET で body 原文一致と対象を確認する。

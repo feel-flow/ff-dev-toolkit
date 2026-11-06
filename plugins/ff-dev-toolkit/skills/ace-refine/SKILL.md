@@ -46,7 +46,7 @@ fi
 
 ## 配置先・前提・引数・閾値
 
-- 配置先（最初に解決）: `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/knowledge-lookup.sh" --resolve-playbook` の `ACE_PLAYBOOK_REL` を使う（`/ace-curate` と同じ resolver。順は `ACE_PLAYBOOK_PATH` → AGENTS.md / CLAUDE.md / `docs/MASTER.md` の配置記録 → 既定 `docs/08-knowledge/PLAYBOOK.md` → 探索。`ACE_PLAYBOOK_STATE=ok` 以外は変更前に報告、`ACE_PLAYBOOK_REL` が空の repo 外配置は編集しない）。以降のパスは既定配置の例で、独自配置ではゲート引数・git add・claim も置換する
+- 配置先（最初に解決）: `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/knowledge-lookup.sh" --resolve-playbook --with-index-mode` の `ACE_PLAYBOOK_REL` と `ACE_INDEX_MODE` を使う（[判定・停止条件](../ace-curate/references/curate.md#索引方式)）。以降のパスは既定配置の例で、独自配置ではゲート引数・git add・claim も置換する
 - 前提: PLAYBOOK がある・default branch（`<default-branch>`）上・clean tree。契機は月次か `check-category-size` のブロック・警告
 - `$ARGUMENTS`: `domain [--confirm-pr <PR番号> --entry <ACE ID>]` / カテゴリ名 / `--all`。省略時は R1 の候補が多いカテゴリを提示する。**`domain` のときは [references/domain.md](references/domain.md) を読む**
 - 閾値の環境変数と既定値は [scripts/ace/README.md](../../docs-template/scripts/ace/README.md)「ace-refine-report.ts の実行」の表。`ACE_REUSE_STALE_DAYS` は作成からの経過にも効くため、**運用開始からこの日数が経つまで Archive 候補は 0 件**（ADR-033）。候補は `helpful === 0` との積集合なので `ace-reuse-report` の候補数と一致しない
@@ -76,7 +76,7 @@ fi
 
    **(4)「組にできなかった候補対」は 0 が正常**（0 以外はレポートのバグとして報告。冒頭に「不完全」があれば計算予算か保持の上限で打ち切った分なので 0 以外でもバグではなく、組を全件と扱わない）。legacy（旧テーブル形式）の候補は R3-b へ回す。日本語だけで共通する組は機械シグナルに出ないので、手順 2 は省かない。
 
-2. **近似重複・抽象度統合の抽出（LLM 判断）**: 1b の組を優先し索引タイトルで補って、**本文まで読んで**「アクションが同一か」「抽象度を 1 段上げれば同一か」で判定し、上げた主張から元のアクションを再導出できなければ棄却する（[PLAYBOOK.md](../../docs-template/08-knowledge/PLAYBOOK.md)「抽象度の下限と棄却基準（ff-dev-toolkit ADR-047）」）。
+2. **近似重複・抽象度統合の抽出（LLM 判断）**: 1b の組を優先し、`inline` は索引タイトル、`omit` は live 本文検索で補う。**本文まで読んで**「アクションが同一か」「抽象度を 1 段上げれば同一か」で判定し、上げた主張から元のアクションを再導出できなければ棄却する（[PLAYBOOK.md](../../docs-template/08-knowledge/PLAYBOOK.md)「抽象度の下限と棄却基準（ff-dev-toolkit ADR-047）」）。
 3. カテゴリ指定があれば候補を絞る。
 
 ### Phase R2: 承認ゲート
@@ -149,7 +149,7 @@ R3-a / b / c は live のブロックを `playbook/archive/<category>.md` へ運
 `.version-claims` contract があれば、**直 push / PR のどちらでも**変更した文書ごとの `.version-claims/<文書 path>.claim` を同じ最終 commit に含める。
 
 1. **エントリ保全の一括検証（必須）**: live から削除・書き換えした**全 ID** について、`playbook/archive/` 配下に `### <ID>:` 見出しが**ちょうど 1 件**（存在ではなく一意）あることを `grep -c` で確認する。0 件なら git から復元してやり直し、2 件以上なら 1 ブロックに畳む。
-2. 索引からアーカイブ・統合した行が消えているか確かめる。
+2. アーカイブ・統合で撤去した ID の残存を live 本文と既存索引で確認する（[索引方式別の扱い](references/operations.md#既存索引の扱い)）。
 3. Frontmatter を [ace-cycle.md](../../docs-template/05-operations/deployment/ace-cycle.md)「3. Frontmatter の更新」に従って更新する（`ace_entry_count` は live 実数、refine は `version` minor +1・`changeImpact: medium`）。
 4. `## Changelog` 先頭へ整理ブロックを追記する。ID 列の書式は `check-refine-invariants` が検査する（規則の正本は [scripts/ace/README.md](../../docs-template/scripts/ace/README.md)「check-refine-invariants.ts の実行」）。**統合が 0 組なら `- Merged:` の行ごと書かない**（`- Merged: なし` は解析できず exit 1。「なし」を書けるのは他の 3 ラベルだけ）:
 

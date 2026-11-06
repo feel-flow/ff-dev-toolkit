@@ -606,11 +606,11 @@ BASE_OID="$(g -C "$WORK" rev-parse origin/develop)"
 write_pr_json() {
   local files_json='[{"path":"x.txt"}]'
   [ -z "${PR_FILES_JSON:-}" ] || files_json="$PR_FILES_JSON"
-  jq -n --arg body "$1" --arg head "$HEAD_OID" --argjson rollup "$2" --argjson number "$PRN" --argjson cross "${PR_CROSS:-false}" \
+  jq -n --arg body "$1" --arg head "$HEAD_OID" --arg base "$BASE_OID" --argjson rollup "$2" --argjson number "$PRN" --argjson cross "${PR_CROSS:-false}" \
     --argjson files "$files_json" \
     --arg title "feat(#${PRN}): x" --arg headline "${PR_HEADLINE:-fix: #${REFN} x}" --arg cbody "${PR_COMMIT_BODY:-body}" \
     --arg head_ref "${PR_HEAD_REF:-feature/#7-x}" --arg base_ref "${PR_BASE_REF:-develop}" '{
-    number: $number, state: "OPEN", isDraft: false, headRefName: $head_ref, headRefOid: $head, isCrossRepository: $cross,
+    number: $number, state: "OPEN", isDraft: false, headRefName: $head_ref, headRefOid: $head, baseRefOid: $base, isCrossRepository: $cross,
     baseRefName: $base_ref, title: $title, body: $body,
     closingIssuesReferences: (if ($body | test("Closes")) then [{url: ("https://github.com/owner/repo/issues/" + ($number | tostring))}] else [] end),
     commits: [{oid: $head, messageHeadline: $headline, messageBody: $cbody}],
@@ -1200,6 +1200,85 @@ if [ "$RC" -eq 2 ] && has_line "$OUT" "FRESH_STATUS=2" && has_line "$OUT" "RERUN
 else
   bad "D3: 部分実行 + checks 無しの扱いが違う（rc=${RC}）: ${OUT}"
 fi
+# D3 の記録は印が無い部分実行なので、PR JSON に baseRefOid があっても被覆にはしない。ここから先は印と base の組み合わせを付け直す。
+write_pr_json "Closes #${PRN}" '[]'
+record partial --suites alpha --covers-diff "$BASE_OID"
+run_finish "$WORK" precheck 7
+if [ "$RC" -eq 0 ] && has_line "$OUT" "FRESH_STATUS=2" && has_line "$OUT" "RERUN_FULL_GATE=no" && has_line "$OUT" "PRECHECK=ready" \
+  && has_text "$OUT" "導入先の判定で差分を覆っている" && has_text "$OUT" "FRESH_REASON=記録は部分実行です" \
+  && awk 'index($0, "pr view") == 1 && index($0, "headRefOid") > 0 { seen = 1; if (index($0, "baseRefOid") == 0) bad = 1 } END { exit (seen && !bad) ? 0 : 1 }' "$STUB_LOG"; then
+  ok "D3b: 印が PR の base と一致する部分実行は checks が無くても回し直さない（rc 0）。gh の --json は baseRefOid を要求する"
+else
+  bad "D3b: 被覆の印の扱いが違う（rc=${RC}）: ${OUT} / ${ERR} / $(cat "$STUB_LOG")"
+fi
+record partial --suites alpha --covers-diff "$HEAD_OID"
+run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && has_line "$OUT" "RERUN_FULL_GATE=yes" && has_text "$OUT" "FRESH_REASON=記録は部分実行です" \
+  && ! has_text "$OUT" "導入先の判定で差分を覆っている"; then
+  ok "D3c: 印の base が PR の base と違う部分実行は回し直す"
+else
+  bad "D3c: base が違う印の扱いが違う（rc=${RC}）: ${OUT}"
+fi
+if [ "$HEAD_OID" != "$BASE_OID" ]; then
+  ok "D3c-fixture: head と base は別の SHA"
+else
+  bad "D3c-fixture: head と base が同じでは印の不一致を測れていない"
+fi
+jq 'del(.baseRefOid)' "$TMP/pr.json" >"$TMP/pr-no-base.json"
+cp "$TMP/pr-no-base.json" "$TMP/pr.json"
+record partial --suites alpha --covers-diff "$BASE_OID"
+run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && has_line "$OUT" "RERUN_FULL_GATE=yes" && ! has_text "$OUT" "導入先の判定で差分を覆っている"; then
+  ok "D3d: baseRefOid が無い PR は印があっても被覆と扱わない"
+else
+  bad "D3d: base 欠落の扱いが違う（rc=${RC}）: ${OUT}"
+fi
+# 大文字・短い baseRefOid は --base の使い方エラー（exit 3）にせず、印を被覆と扱わない。
+write_pr_json "Closes #${PRN}" '[]'
+_d3_upper="$(printf '%s' "$BASE_OID" | tr '[:lower:]' '[:upper:]')"
+if [ "$_d3_upper" = "$BASE_OID" ]; then
+  bad "D3g-fixture: base に英字が無く、大文字の baseRefOid を測れていない"
+else
+  jq --arg b "$_d3_upper" '.baseRefOid = $b' "$TMP/pr.json" >"$TMP/pr-upper.json"
+  cp "$TMP/pr-upper.json" "$TMP/pr.json"
+  record partial --suites alpha --covers-diff "$BASE_OID"
+  run_finish "$WORK" precheck 7
+  if [ "$RC" -eq 2 ] && has_line "$OUT" "FRESH_STATUS=2" && has_line "$OUT" "RERUN_FULL_GATE=yes" \
+    && ! has_text "$OUT" "導入先の判定で差分を覆っている" && ! has_text "$ERR" "使い方"; then
+    ok "D3g: 大文字の baseRefOid は被覆と扱わず、検査不成立（exit 3）にもしない"
+  else
+    bad "D3g: 大文字の baseRefOid の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+fi
+write_pr_json "Closes #${PRN}" '[]'
+jq --arg b "${BASE_OID%?}" '.baseRefOid = $b' "$TMP/pr.json" >"$TMP/pr-short.json"
+cp "$TMP/pr-short.json" "$TMP/pr.json"
+record partial --suites alpha --covers-diff "$BASE_OID"
+run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && has_line "$OUT" "FRESH_STATUS=2" && has_line "$OUT" "RERUN_FULL_GATE=yes" \
+  && ! has_text "$OUT" "導入先の判定で差分を覆っている"; then
+  ok "D3h: 39 桁の baseRefOid は被覆と扱わない（FRESH_STATUS=2）"
+else
+  bad "D3h: 短い baseRefOid の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+write_pr_json "Closes #${PRN}" '[]'
+record unverified --unverified-steps "test:review-cli-config"
+run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && has_line "$OUT" "FRESH_STATUS=2" && has_line "$OUT" "RERUN_FULL_GATE=see-action" \
+  && has_text "$OUT" "環境起因で未確認: test:review-cli-config" && has_text "$ERR" "環境を直す（例: toolkit の更新）か、未確認のステップを PR 本文に記録して判断する" \
+  && ! has_text "$OUT$ERR" "再実行"; then
+  ok "D3e: head が一致する未確認は see-action で、再実行を案内しない"
+else
+  bad "D3e: 未確認の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+( cd "$WORK" && g checkout -q --detach "$BASE_OID" ) && record unverified --unverified-steps "test:review-cli-config" && ( cd "$WORK" && g checkout -q 'feature/#7-x' )
+run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "FRESH_STATUS=1" && has_text "$ERR" "止める: リモート先端がゲート実測対象と一致しません"; then
+  ok "D3f: 未確認の記録でも head が違えば不一致で止める"
+else
+  bad "D3f: 未確認 × 不一致の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+record partial --suites alpha
 write_pr_json "Closes #${PRN}" '[{"name":"lint","conclusion":"SUCCESS"}]'
 : >"$STUB_LOG"
 run_finish "$WORK" precheck 7
@@ -1362,6 +1441,56 @@ if [ "$RC" -eq 0 ] && has_line "$OUT" "FRESH_STATUS=0" && ! has_text "$OUT" "別
 else
   bad "GR7: --gate-record なしの挙動が変わった（rc=${RC}）: ${OUT}"
 fi
+# 印が付いていても、汚れと別ブランチは被覆より先に止まる。--gate-record の印付き部分実行は D3b と同じ。
+WORK_REC="$(g -C "$WORK" rev-parse --absolute-git-dir)/ff-dev-toolkit/gate-record"
+write_pr_json "Closes #${PRN}" '[]'
+record partial --suites alpha --covers-diff "$BASE_OID"
+sed 's/^DIRTY=no$/DIRTY=yes/' "$WORK_REC" >"$TMP/rec-dirty" && cp "$TMP/rec-dirty" "$WORK_REC"
+run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && has_line "$OUT" "RERUN_FULL_GATE=yes" && has_text "$OUT" "汚れていました" \
+  && ! has_text "$OUT" "導入先の判定で差分を覆っている" && ! has_text "$OUT" "DIFF_COVERED=yes"; then
+  ok "D3i: 汚れた木の印付き部分実行は回し直す（被覆にしない）"
+else
+  bad "D3i: 汚れた木 × 印の扱いが違う（rc=${RC}）: ${OUT}"
+fi
+record partial --suites alpha --covers-diff "$BASE_OID"
+sed -e 's/^DIRTY=.*/DIRTY=no/' -e 's/^BRANCH=.*/BRANCH=wt-elsewhere/' "$WORK_REC" >"$TMP/rec-other" && cp "$TMP/rec-other" "$WORK_REC"
+run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && has_line "$OUT" "RERUN_FULL_GATE=see-action" && has_text "$OUT" "記録は別ブランチのものです" \
+  && ! has_text "$OUT" "導入先の判定で差分を覆っている" && ! has_text "$OUT" "DIFF_COVERED=yes"; then
+  ok "D3j: 別ブランチの印付き部分実行は被覆にせず see-action"
+else
+  bad "D3j: 別ブランチ × 印の扱いが違う（rc=${RC}）: ${OUT}"
+fi
+record unverified --unverified-steps "test:review-cli-config"
+sed 's/^DIRTY=no$/DIRTY=yes/' "$WORK_REC" >"$TMP/rec-unv-dirty" && cp "$TMP/rec-unv-dirty" "$WORK_REC"
+run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && has_line "$OUT" "RERUN_FULL_GATE=yes" && has_text "$OUT" "汚れていました" \
+  && ! has_text "$OUT" "環境起因で未確認"; then
+  ok "D3k: 汚れた木の未確認は回し直す（環境起因の案内に進まない）"
+else
+  bad "D3k: 汚れた木 × 未確認の扱いが違う（rc=${RC}）: ${OUT}"
+fi
+record unverified --unverified-steps "test:review-cli-config"
+sed 's/^BRANCH=.*/BRANCH=wt-elsewhere/' "$WORK_REC" >"$TMP/rec-unv-other" && cp "$TMP/rec-unv-other" "$WORK_REC"
+run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && has_line "$OUT" "RERUN_FULL_GATE=see-action" && has_text "$OUT" "記録は別ブランチのものです" \
+  && ! has_text "$OUT" "環境起因で未確認"; then
+  ok "D3l: 別ブランチの未確認は環境起因の案内に進まない"
+else
+  bad "D3l: 別ブランチ × 未確認の扱いが違う（rc=${RC}）: ${OUT}"
+fi
+g -C "$OTHER_CO" checkout -q -B wt-elsewhere "$HEAD_OID" >/dev/null 2>&1
+rm -f "$OTHER_CO/dirty.txt" "$GATE_REC"
+other_record partial --suites alpha --covers-diff "$BASE_OID"
+run_finish "$WORK" precheck 7 --gate-record "$GATE_REC"
+if [ "$RC" -eq 0 ] && has_line "$OUT" "FRESH_STATUS=2" && has_line "$OUT" "RERUN_FULL_GATE=no" && has_line "$OUT" "PRECHECK=ready" \
+  && has_text "$OUT" "導入先の判定で差分を覆っている" && has_text "$OUT" "FRESH_REASON=記録は部分実行です"; then
+  ok "GR8: --gate-record の印が base と一致する部分実行は checks が無くても回し直さない"
+else
+  bad "GR8: --gate-record × 印の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+record pass
 
 # ── E. precheck: base を別 worktree が保持 ────────────────────────────────────
 echo

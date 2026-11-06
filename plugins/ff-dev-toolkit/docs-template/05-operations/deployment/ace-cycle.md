@@ -132,7 +132,8 @@ ACE 知見コミットのマージ方針は **git-workflow.md ステップ10 §�
 
 ```bash
 # Playbook 内の既存エントリを確認
-# PLAYBOOK.md のエントリ一覧セクションを参照
+# /knowledge-lookup で live 本文をカテゴリ横断で探す
+# 索引を運用している場合は PLAYBOOK.md のエントリ一覧も参照
 
 # AIツールに照合を依頼する場合:
 「PLAYBOOK.md の既存エントリを読み、以下の知見候補と重複・矛盾がないか確認してください:
@@ -188,7 +189,7 @@ ID は **PRスコープ式**（`ACE-<PR番号>-<連番>`）。採番ルールの
 - 1 エントリの行数バジェットは **15 行**（anchor 行〜終端 `---`）。例外は `<!-- ace-line-budget-exception: 理由 -->` を添えて 30 行まで
 - 旧テーブル形式（`| フィールド | 値 |` + Insight/Context/Action）は読み取り互換として共存させる。新規追記には使わない
 - `playbook/<category>.md` が無ければ [PLAYBOOK.md §新規カテゴリファイルのテンプレート](../../08-knowledge/PLAYBOOK.md#新規カテゴリファイルのテンプレート) で作成する
-- エントリ本体を `PLAYBOOK.md` へ直接追記しない。`PLAYBOOK.md` には §エントリ一覧の索引行だけを追加する
+- エントリ本体はカテゴリファイルへ追記する。通常は `PLAYBOOK.md` の §エントリ一覧にも索引行を追加する。[索引の省略](../../08-knowledge/PLAYBOOK.md#索引の省略)を宣言した Playbook では本文で照合し、新規索引行の追加を省く。件数・版・Changelog は引き続き更新する
 
 **anchor 命名規則**: 見出し直前に `<a id="ace-XXX"></a>` を 1 行付与（エントリ ID を小文字化、例 `ace-438-1`）。詳細・根拠は SSOT である [PLAYBOOK.md 記述ガイドライン](../../08-knowledge/PLAYBOOK.md#記述ガイドライン) を参照。
 
@@ -412,6 +413,12 @@ ACE_REUSE_STALE_DAYS=120 npm run ace:reuse-report
 ---
 
 ## Changelog
+
+### [1.9.0] - 2026-11-06
+
+#### 追加
+
+- 索引を省略する Playbook の照合と追記手順を追加した
 
 ### [1.8.0] - 2026-10-11
 

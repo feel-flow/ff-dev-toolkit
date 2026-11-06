@@ -365,6 +365,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_REAL_CKSUM`
 - `FF_RELEASE_CHECK_PUBLIC`
 - `FF_RELEASE_CHECK_PUBLIC_URL`（`/pre-commit-check` の断片帰属照合が公開側 clone の無い回に最新タグを引く公開リポジトリの URL。既定は ff-dev-toolkit の公開リポジトリ）
+- `FF_RELEASE_GATE_HEAD`（リリースのゲートで鮮度検査に渡す固定済みの SHA）
 - `FF_RETRO_PROFILE`
 - `FF_RETRO_SELFTEST_JOBS`
 - `FF_RG_STDIN_AWK`
@@ -386,6 +387,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_RUN_ALL_NESTED`
 - `FF_RUN_ALL_PROBE_LOG`
 - `FF_RUN_ALL_PROBE_RENDEZVOUS`
+- `FF_RUN_ALL_VERIFY_STOP_AFTER_GUARD`（tests/run-all/verify.sh が並走判定の直後で走査を始めず終わる検査用注入口。`1` のときだけ）
 - `FF_STARTUP_CORES`（以下はrunnerの起動時観測を保持する内部変数）
 - `FF_STARTUP_LOAD`
 - `FF_STARTUP_LOAD_PER_CORE`
@@ -446,6 +448,9 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_TO`
 - `FF_UTF8_LOCALE_CMD`
 - `FF_VERSION_FIXTURE`
+- `FF_VERIFY_GRAPH`（tests/run-all/verify.sh の並走判定 fixture が ps の成否を選ぶ注入口）
+- `FF_VERIFY_REAL_PS`（同じ fixture が祖先の ps に使う実 ps のパス）
+- `FF_VERIFY_SLEEPER_PID`（同じ fixture が独立した run-all.sh として見せる PID）
 - `FF_WEEKLY_HEALTH_ACCEPT_DISPATCH`
 - `FF_WRITE_SCAN_GIT`
 - `FF_WRITE_SCAN_GREP`

@@ -413,10 +413,8 @@ contains '非 0 なら**同期しない**' \
 # 可視性が消費側で失われ、実害（20 行に埋もれて 2 週間気づかれない）が戻る。
 contains 'CRON_NOTE=` が出ていれば、同期は続行してよいが週次 CI の異常として別途ユーザーへ報告する' \
   "healthy の回でも赤い cron をユーザーへ報告することが明記されている"
-contains '同じ 2 点を無条件に回し直す' \
-  "収束周回でも週次 CI と run-all を省略しない"
-contains 'footer 差分でも省略しない' \
-  "収束段落が footer 差分での週次 CI と run-all 省略を禁じている"
+contains '比較リンクの反映には全件ゲートと公開配置検査の再実行が要らない' \
+  "固定版の比較リンク反映は限定ゲートだけで進む"
 release_contains '検査した tree と HEAD の tree が一致しない' \
   "dirty なまま得た green を「HEAD を検査済み」と扱わない"
 
@@ -671,7 +669,7 @@ release_contains_exactly 'for t in "$PUBLIC_TAGS_VERIFY" "$CONTRACT_VERIFY"; do'
   "限定ゲートの 2 suite（changelog-public-tags / changelog-contract）が footer 段の 1 箇所にある"
 release_contains "'○ skip' \"\$CAP_FILE\"; then" \
   "限定ゲートは skip / 部分 skip / 非 0 を成功と読まない（checks-skipped: total=0 と同じ基準）"
-contains '**commit の前に限定ゲート（2 suite / 4 観点）を通す**' \
+contains '**commit の前に限定ゲートを通す**' \
   "手順 8 が限定ゲートを footer の commit 前に置くと明記している"
 contains 'update-dev-toolkit-changelog-footer.sh --public-checkout' \
   "手順 8 の footer writer が実行可能 helper へ一本化されている"
@@ -684,8 +682,8 @@ release_not_contains 'gh pr create' \
   "リリーススクリプトは PR を作らない"
 release_not_contains 'push -f' \
   "リリーススクリプトは force push しない"
-release_not_contains '--force' \
-  "リリーススクリプトは --force を使わない"
+release_not_contains 'push --force' \
+  "リリーススクリプトは --force で push しない"
 contains '）は作らず、`release: CHANGELOG 比較リンクを vX.Y.Z へ追従` の単独コミット' \
   "手順 8 が footer PR を作らないと明記している"
 
@@ -962,8 +960,8 @@ APPROVAL_BLOCK_EXPECTED="$(cat <<'APPROVAL_BLOCK_EOF'
 - dry-run が `RELEASE_RESULT=stopped`（exit 1）または `RELEASE_RESULT=unavailable`（exit 2）で終わったら**承認を求めない**。stderr の `NG:` 行の停止理由と次の一手をユーザーへ報告して止まる
 - dry-run が `RELEASE_RESULT=not-needed` なら承認は不要（リリースするものが無い）。その旨だけを報告する
 - 承認後に本実行するまでに develop が進んだ（`git rev-parse HEAD` が承認した `RELEASE_HEAD=` と違う）ときは、`scripts/release-dev-toolkit.sh --advance-check <承認した RELEASE_HEAD>` で前進を分類し、dry-run を回し直す。次の 3 条件をすべて満たせば**再承認なしで本実行へ進んでよい**（承認した外向き操作の中身が変わらないため。v0.157.0 で一度だけ出した条件付き承認を恒常化した。Issue `#2202`）: (a) `ADVANCE=neutral`（新しいコミットが公開対象 = `--list-targets` の prefix・リリース機構 = 後段が実行する `scripts/` 配下・`changelog.d` を 1 ファイルも変えない） (b) 回し直した dry-run の `RELEASE_VERSION=` が承認時と同じ (c) `PLAN:` 行が、同期 commit の件名に入る SSOT の SHA 以外は承認時と同一。どれか 1 つでも外れたら（`ADVANCE=public` / `tooling` / `changelog` / `diverged`・版が変わった・SHA 以外の PLAN 行が変わった）従来どおり転記値を差し替えてから承認を取り直す。(a) と (b) は本実行のスクリプトも照合する（次項）ので、確かめ損ねても外れた前進は公開されない
-- 本実行には、ユーザーが承認した dry-run の `RELEASE_VERSION=` と `RELEASE_HEAD=` を `--expect-version <版> --approved-head <SHA>` で対にして渡す（回し直した dry-run の値へ差し替えるのは承認を取り直したときだけ。本実行で片方だけを渡すと使い方の誤りで exit 64）。スクリプトは出そうとしている版が承認した版と違えば、準備の push・同期・タグ・Release の前に `RELEASE_RESULT=stopped-needs-approval`（exit 1）で止まる。preflight で develop の最新を取り込んだ後には、承認した HEAD から先に入ったコミットを (a) と同じ判定で分類し、前進が無いか `neutral` なら続け、`public` / `tooling` / `changelog` / `diverged` の回は同じ結果で止まって `ADVANCE=` / `ADVANCE_RANGE=` / `ADVANCE_PATH=` の行を出す。承認した HEAD を解決できない回は `ADVANCE=unknown` と `REASON=` の行を出して同じ結果で止まる（版を変えない前進 — 承認後に入った同じ版幅の断片など — は版の照合を通るので、承認範囲の照合はこちらが担う。Issue `#2622`）。この実行自身の release コミット（準備と比較リンクの追従。スクリプトが作ったコミットの SHA の記録に載り、件名と変えたファイルも準備・追従の形のものだけ）は前進に数えないので、途中で止まった本実行は同じ引数のまま再実行して続きから進む。次の 2 つの回は、渡さない本実行も同じ結果で止まる（Issue `#2482`）: (1) タグ未作成の準備済み版へ断片が後着した回（dry-run は `LATE_FRAGMENTS=new-version` を出し、準備済みの版をタグを打たない中間版として残すことと、後着断片を新しい版として準備することを `PLAN:` に出す。中間版は Release の本文と件名へ畳み込まれる。Issue `#2462` / `#2619`） (2) Release の後で止まった本実行の再実行で、その間に新しい公開対象の変更が入った回。`stopped-needs-approval` が出たら dry-run を回し直し、`PLAN:` / `RELEASE_VERSION=` / `RELEASE_HEAD=` を転記して承認を取り直す。後着断片は必ず版を変えるので、準備済みの版を承認した `--expect-version` は照合で止まる
-- 本実行の gate 段の**走行中**に develop が進んだ回は、スクリプトが同じ判定 (a) で扱う（承認の取り直しは要らない）: run-all の赤がすべて鮮度分類（`✗ stale`）の suite で、前進が neutral なら HEAD を origin/develop へ進めて鮮度の suite だけを同じモードで再検査し、緑なら続行する（`GATE_STALE_RECHECK=green` の行が出る）。公開対象・リリース機構・`changelog.d` のどれかに触れる前進と鮮度以外の赤は従来どおり止まる
+- 本実行には `--executor` と、ユーザーから直接承認された `--expect-version` / `--approved-head` を渡す。Issue の値は担当と承認照合値の記録に使う。prepare 前の `ADVANCE=` の分類は従来どおりで、neutral 以外の前進・分岐・不明は `stopped-needs-approval` で止まる。固定済みの再開では、この clone に prepare の作成記録があるときだけ準備前の入力と承認済み HEAD を照合する。作成記録がない別 clone で引き継ぐときは、clean な worktree を固定 SHA に detach して dry-run を行い、その SHA の承認を直接得る。
+- prepare が develop に push したコミットを `RELEASE_FIXED_HEAD=` として Issue に記録する。gate / sync / tag / release はこの対象で続け、後着の公開対象変更は次の受付へ回す。鮮度を判定する `changelog-fragments` と `shared-version-convergence` も同じ SHA を使う。リリースのゲートでは HEAD を進める `GATE_STALE_RECHECK` を使わない。
 APPROVAL_BLOCK_EOF
 )"
 APPROVAL_BLOCK_ACTUAL="$(awk 'index($0, "**承認の求め方（承認文は dry-run の実測値を転記して作る。") == 1 {f=1} f && index($0, "- 段は `preflight → check") == 1 {exit} f' "$SKILL")"
@@ -987,42 +985,21 @@ if [[ -n "$_r_head" && -n "$_approval" && -n "$_next_head" && "$_r_head" -lt "$_
 else
   bad "「承認の求め方」段落が手順 R の中に無い（R=${_r_head:-なし} / 段落=${_approval:-なし} / 0b=${_next_head:-なし}）"
 fi
-SYNC_PROPOSAL_NEEDLE='先に scripts/release-dev-toolkit.sh --dry-run を回し、その PLAN: 行と RELEASE_VERSION= を承認文へ転記したうえで（段数・版番号を推定しない。dry-run が止まったときの扱いは .claude/skills/sync-dev-toolkit/SKILL.md 手順 R の「承認の求め方」）、ユーザーに「公開リポジトリ feel-flow/ff-dev-toolkit へリリース（同期）しますか？」と確認し'
 for _hook in "$POST_MERGE_HOOK" "$SESSION_START_HOOK"; do
   _hook_name="${_hook##*/}"
-  if [[ ! -f "$_hook" ]]; then
-    bad "同期提案 hook がありません: ${_hook}（改名・移設したら本 suite のパスも更新する）"
-    continue
-  fi
-  _got="$(grep -cF -- "$SYNC_PROPOSAL_NEEDLE" "$_hook" || true)"
-  if [[ "$_got" == "1" ]]; then
-    ok "${_hook_name} の同期提案文が先に dry-run を回して承認文へ転記するよう求め、手順 R を指している"
+  if [[ -s "$_hook" ]] && grep -Fq 'release_hook_update "$' "$_hook" &&
+    ! grep -Eq 'リリース（同期）しますか|承認された場合のみ' "$_hook"; then
+    ok "${_hook_name} は受付を更新し、リリース承認を求めない"
   else
-    bad "${_hook_name} の同期提案文に dry-run 先行の指示が無い（期待 1 箇所 / 実際 ${_got} 箇所）"
-  fi
-  # 承認を求める文（「しますか」「承認された場合のみ」）を持つ行は、必ず dry-run 先行の文と同じ行にある。
-  # 言い回しを変えた別経路の提案（dry-run 先行を欠く）を足す退行を止める
-  _stray="$(awk -v n="$SYNC_PROPOSAL_NEEDLE" '/^[[:space:]]*#/ {next} (index($0, "しますか") || index($0, "承認された場合のみ")) && !index($0, n) { print FILENAME ":" NR }' "$_hook")"
-  if [[ -z "$_stray" ]]; then
-    ok "${_hook_name} で承認を求める文はすべて dry-run 先行の文と同じ行にある"
-  else
-    bad "${_hook_name} に dry-run 先行を欠く承認要求の行がある: ${_stray}"
+    bad "${_hook_name} に受付更新の入口が無い、または承認を求めている"
   fi
 done
-# post-merge hook は提案文を PROPOSAL_TAIL に 1 回だけ定義し、提案する分岐（公開対象外 + 積み残し /
-# 公開対象の変更）の 2 箇所で使う。使用箇所を別の文へ差し替える退行は定義行の針では見えない
-_tail_uses="$(grep -cF -- '${PROPOSAL_TAIL}' "$POST_MERGE_HOOK" 2>/dev/null || true)"
-if [[ "$_tail_uses" == "2" ]]; then
-  ok "post-merge hook の提案する 2 分岐がともに PROPOSAL_TAIL（dry-run 先行の提案文）を使う"
-else
-  bad "post-merge hook の PROPOSAL_TAIL の使用箇所が 2 でない（実際 ${_tail_uses:-0} 箇所 — 提案文を差し替えた分岐が無いか）"
-fi
 
 # ── 7. リリーススクリプト（手順 0b / 5 / 8 の本体。ADR-063）───────────────────
 echo "-- (7) リリーススクリプトの段の順序と同期元 SHA の契約 --"
 # 段の実行順（main の呼び出し行）。check → prepare → gate → sync → tag → release → footer → report。
 # ゲートより前に同期・タグ・Release が来る並べ替えは、不可逆操作の後で検査する退行になる。
-R_CHECK="$(release_exact_line_of 'stage_check')"
+R_CHECK="$(release_exact_line_of '  stage_check')"
 R_PREPARE="$(release_exact_line_of '  stage_prepare')"
 R_GATE="$(release_exact_line_of '  stage_gate')"
 R_SYNC="$(release_exact_line_of '  stage_sync')"
@@ -1031,7 +1008,7 @@ R_REL="$(release_exact_line_of '  stage_release')"
 R_FOOTER="$(release_exact_line_of '  stage_footer')"
 R_REPORT="$(release_exact_line_of 'stage_report')"
 R_PREFLIGHT="$(release_exact_line_of 'stage_preflight')"
-R_APPROVED="$(release_exact_line_of 'approved_head_guard')"
+R_APPROVED="$(release_exact_line_of 'issue_check_approval')"
 # 承認した dry-run の HEAD との照合（Issue `#2622`）は preflight の fetch / pull の後・check 段の前。pull より前だと取り込んだ前進を
 # 分類から落とし、check 段より後だと準備・同期へ進む回が照合の前に出る
 assert_order "$R_PREFLIGHT" "$R_APPROVED" "順序(7): 承認した HEAD との照合が preflight（fetch / pull）より後" "順序(7): 承認した HEAD との照合が preflight より前 — 取り込んだ前進を分類しない退行"

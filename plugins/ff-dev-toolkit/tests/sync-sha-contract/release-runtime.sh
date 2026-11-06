@@ -279,6 +279,7 @@ if [[ -f "$RELEASE_RT_STATE/runall.advance" ]]; then
   git -C "$side" fetch -q origin && git -C "$side" checkout -q -B develop origin/develop
   case "$kind" in
     public) f=plugins/ff-dev-toolkit/scripts/side.txt ;;
+    pinned) f=plugins/ff-dev-toolkit/scripts/next-release.txt ;;
     tooling) f=scripts/side-tool.txt ;;
     changelog) f=changelog.d/990.added.side.md ;;
     *) f=plugins/ff-media-toolkit/side.txt ;;
@@ -289,6 +290,12 @@ if [[ -f "$RELEASE_RT_STATE/runall.advance" ]]; then
   git -C "$side" -c user.name="Side Session" -c user.email=side@example.com commit -qm "side: ${kind}"
   git -C "$side" push -q origin develop
   git -C "$side" rev-parse HEAD >"$RELEASE_RT_STATE/side.sha"
+  if [[ "$kind" == pinned ]]; then
+    [[ "${FF_RELEASE_GATE_HEAD:-}" == "$(git rev-parse HEAD)" ]] || exit 1
+    bash "$side/scripts/release-dev-toolkit.sh" --update-release-issue || exit 1
+    printf 'suites: total=1 run=1 passed=1 failed=0\nchecks-skipped: total=0 suites=0\n'
+    exit 0
+  fi
   echo "  ○ skip: estimation カテゴリファイルは未作成（stub）"
   extra=""
   [[ "$kind" != mixed ]] || extra=" other-suite"
@@ -394,8 +401,14 @@ cp "$REPO_ROOT/scripts/check-full-gate-reuse.sh" "$SSOT/scripts/"
 chmod +x "$SSOT/scripts/release-dev-toolkit.sh"
 cp "$REPO_ROOT/scripts/lib/release-in-flight-functions.sh" "$REPO_ROOT/scripts/lib/release-gate-advance-functions.sh" \
   "$REPO_ROOT/scripts/lib/release-environment-functions.sh" "$REPO_ROOT/scripts/lib/release-partial-write-functions.sh" \
-  "$REPO_ROOT/scripts/lib/release-prepare-functions.sh" "$REPO_ROOT/scripts/lib/release-publish-functions.sh" "$SSOT/scripts/lib/"
+  "$REPO_ROOT/scripts/lib/release-prepare-functions.sh" "$REPO_ROOT/scripts/lib/release-publish-functions.sh" \
+  "$REPO_ROOT/scripts/lib/release-issue-functions.sh" "$REPO_ROOT/scripts/lib/release-pinned-footer-functions.sh" \
+  "$REPO_ROOT/scripts/lib/release-hook-functions.sh" "$SSOT/scripts/lib/"
+# Local stage regressions predate GitHub coordination. Restore the actual
+# coordinator below for the two-clone handoff and fixed-HEAD cases.
+printf '%s\n' 'issue_begin() { :; }' 'issue_require_execution_arguments() { :; }' >>"$SSOT/scripts/lib/release-issue-functions.sh"
 cp "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/commit-identity-functions.sh" "$SSOT/plugins/ff-dev-toolkit/scripts/lib/"
+cp "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/github-input.sh" "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/abs-path.sh" "$SSOT/plugins/ff-dev-toolkit/scripts/lib/"
 # changelog-fragments の stub が呼ぶ共有 CHANGELOG の判定（実物。検査対象のオーケストレータではなく本 suite と同じ木から写す）
 mkdir -p "$SSOT/plugins/ff-dev-toolkit/tests/lib"
 cp "$SCRIPT_DIR/../lib/shared-changelog-judge.sh" "$SSOT/plugins/ff-dev-toolkit/tests/lib/"
@@ -478,6 +491,18 @@ commit_push() { # $1=メッセージ（作業ツリーの変更を develop へ p
   git -C "$SSOT" commit -qm "$1"
   git -C "$SSOT" push -q origin develop
 }
+release_case_init_clone() {
+  ff_git_fixture_init "$1" "$ID_NAME" "$ID_MAIL"
+}
+
+if [[ "${3:-}" == --handoff-only ]]; then
+  . "$SCRIPT_DIR/release-issue-runtime.sh"
+  release_issue_cases
+  REACHED_END=1
+  echo "release-runtime: pass=${PASS} fail=${FAIL}"
+  [[ "$FAIL" -eq 0 ]]
+  exit
+fi
 
 echo "-- release: 段の一覧 --"
 run_orch --list-stages
@@ -1914,57 +1939,13 @@ fi
 run_orch --due --drift-count x --last-sync-sha "$drift_base"
 if [[ "$RC" -eq 2 ]] && has "RELEASE_DUE=unknown"; then ok "--due: 数値でない件数は unknown（exit 2）"; else bad "--due の不正件数を受理した (rc=$RC)"; dump; fi
 
-# ── 同期提案 hook（進行中のサイクル / 粒度） ─────────────────────────────────
-if [[ -n "$HOOK" && -f "$HOOK" ]]; then
-  echo "-- 同期提案 hook --"
-  mkdir -p "$SSOT/.claude/hooks"
-  cp "$HOOK" "$SSOT/.claude/hooks/post-merge-dev-toolkit-sync.sh"
-  git -C "$SSOT" add -A
-  git -C "$SSOT" commit -qm "chore: hook"
-  git -C "$SSOT" push -q origin develop
-  hook_out() { printf '%s' '{"tool_input":{"command":"gh pr merge 77 --squash"}}' | bash "$SSOT/.claude/hooks/post-merge-dev-toolkit-sync.sh" 2>&1 || true; }
-  printf '%s\n' plugins/ff-dev-toolkit/skills/demo/SKILL.md >"$STATE/pr-files"
-  mkdir -p "$MARKER"
-  printf 'pid=%s\nhost=%s\nstarted=%s\nversion=0.35.0\n' "$$" "$(hostname)" "$(date +%s)" >"$MARKER/info"
-  OUT="$(hook_out)"
-  if has "リリースサイクルが進行中" && ! has "しますか"; then
-    ok "hook: 進行中のサイクルでは同期の再確認を出さない（OBS-270）"
-  else
-    bad "hook: 進行中なのに再確認を出す"; dump
-  fi
-  rm -rf "$MARKER"
-  OUT="$(hook_out)"
-  if has "リリース（同期）しますか"; then ok "hook: 契約変更を含む未同期があれば提案する"; else bad "hook: 契約変更で提案しない"; dump; fi
-  # 提案文は承認を求める前に dry-run の実測値（PLAN: / RELEASE_VERSION=）を承認文へ転記させる（OBS-018 / `#1917`）
-  if has "先に scripts/release-dev-toolkit.sh --dry-run を回し、その PLAN: 行と RELEASE_VERSION= を承認文へ転記"; then
-    ok "hook: 提案文が承認前の dry-run と実測値の転記を求める"
-  else
-    bad "hook: 提案文に dry-run 先行の指示が無い"; dump
-  fi
-  run_orch
-  [[ "$RC" -eq 0 ]] || { bad "hook 用の前提リリースが完了しない (rc=$RC)"; dump; }
-  printf '%s\n' '' '本文だけ' >>"$SSOT/plugins/ff-dev-toolkit/skills/demo/SKILL.md"
-  commit_push "docs: body only"
-  iso_ago 3600 >"$STATE/published_at"
-  OUT="$(hook_out)"
-  if has "次の日次リリースで反映" && ! has "しますか"; then
-    ok "hook: 契約変更を含まず日次の時期でもなければ承認を求めない"
-  else
-    bad "hook: 日次待ちなのに提案する"; dump
-  fi
-  : >"$STATE/drift.stale"
-  OUT="$(hook_out)"
-  if has "しますか" && ! has "次の日次リリースで反映"; then
-    ok "hook: drift が stale（fetch 失敗）のときは「日次待ち」を受理せず提案する"
-  else
-    bad "hook: stale な drift で日次待ちに倒れた"; dump
-  fi
-  rm -f "$STATE/drift.stale"
-fi
-
 RELEASE_GATE_MODE_REACHED=0
 release_gate_mode_cases
 [[ "$RELEASE_GATE_MODE_REACHED" -eq 1 ]] || bad 'gate-mode cases did not reach their end'
+
+# shellcheck source=release-issue-runtime.sh
+. "$SCRIPT_DIR/release-issue-runtime.sh"
+release_issue_cases
 
 REACHED_END=1
 echo "release-runtime: pass=${PASS} fail=${FAIL}"

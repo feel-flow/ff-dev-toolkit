@@ -247,7 +247,7 @@ cmd_precheck() {
   need_bundled decision-tree/route.sh
   need_bundled lib/branch-issue.sh
 
-  local PR_JSON PR_FIELDS="number,state,isDraft,headRefName,headRefOid,baseRefName,title,body,closingIssuesReferences,commits,statusCheckRollup,additions,deletions,files,isCrossRepository"
+  local PR_JSON PR_FIELDS="number,state,isDraft,headRefName,headRefOid,baseRefName,baseRefOid,title,body,closingIssuesReferences,commits,statusCheckRollup,additions,deletions,files,isCrossRepository"
   PR_JSON="$(gh_pr_view_or_die "$PR_NUMBER" "$PR_FIELDS" initial)" || exit $?
   local pr_state head_ref base_ref head_oid pr_title is_draft is_cross
   pr_state="$(printf '%s' "$PR_JSON" | jq -r '.state // ""')"
@@ -699,6 +699,18 @@ cmd_precheck() {
     fresh_record_args=(--record "${GATE_RECORD}" --record-from-other-checkout)
     print_record_args=(--record "${GATE_RECORD}")
   fi
+  # gh pr view --json は baseRefOid を要求する。file 入力では任意（finish_file_pr の必須にしない）。
+  # 40 桁の小文字 16 進のときだけ --base を渡す。欠ける・形が違う回は印を被覆と扱わない（fail-closed）。
+  local base_oid=""
+  base_oid="$(printf '%s' "$PR_JSON_AGAIN" | jq -r '.baseRefOid // ""')"
+  case "$base_oid" in
+    *[!0-9a-f]*) base_oid="" ;;
+    ????????????????????????????????????????) ;;
+    *) base_oid="" ;;
+  esac
+  if [[ -n "$base_oid" ]]; then
+    fresh_record_args+=(--base "$base_oid")
+  fi
   assert_bundled_shebang_lf "${FRESHNESS}"
   FRESH_OUT="$(FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${FRESHNESS}" --remote-head "${REMOTE_HEAD}" --fetch ${fresh_record_args[@]+"${fresh_record_args[@]}"})"
   FRESH_STATUS=$?
@@ -750,13 +762,23 @@ cmd_precheck() {
   echo "FRESH_STATUS=${FRESH_STATUS}"
   echo "FRESH_REPORT=${FRESH_REPORT}"
   # ── 6. 判定不能のとき全件ゲートを回し直すか ──
-  local rerun="" rerun_reason=""
+  local rerun="" rerun_reason="" diff_covered=0
   if [[ "$FRESH_STATUS" -eq 2 ]]; then
     echo "FRESH_REASON=${FRESH_REASON}"
     echo "FRESH_ACTION=${FRESH_ACTION}"
     case "$FRESH_REASON" in
+      # 環境起因は「部分実行」より先に見る。ステップ名に「部分実行」が含まれても
+      # 再実行へ倒さない。案内文に「再実行」を入れない（環境が直らない限り記録は書けない）。
+      *"環境起因で未確認"*)
+        rerun="see-action"; rerun_reason="環境起因で未確認（FRESH_ACTION に従う）" ;;
       *"部分実行"*)
-        if [[ "$checks" == "passed" ]]; then
+        diff_covered=0
+        case $'\n'"${FRESH_OUT}"$'\n' in
+          *$'\n'DIFF_COVERED=yes$'\n'*) diff_covered=1 ;;
+        esac
+        if [[ "$diff_covered" -eq 1 ]]; then
+          rerun="no"; rerun_reason="導入先の判定で差分を覆っている（リリース前・契約面の変更時は除く）"
+        elif [[ "$checks" == "passed" ]]; then
           rerun="no"; rerun_reason="記録が部分実行で checks が全件成功（PR の checks がリモート先端を実測している。リリース前・契約面の変更時は除く）"
         else
           rerun="yes"; rerun_reason="記録が部分実行で checks による裏付けが無い"
@@ -854,10 +876,18 @@ cmd_precheck() {
 
   if [[ "$FRESH_STATUS" -eq 2 && "$rerun" != "no" ]]; then
     echo "PRECHECK=undetermined"
-    {
-      echo "✗ 判定不能: ゲート実測鮮度を確定できません — ${FRESH_REASON}"
-      echo "  復帰: RERUN_FULL_GATE=${rerun}（${rerun_reason}）。記録の仕組みを持つプロジェクトでは clean な木で全件ゲートを回してから finish.sh precheck を再実行する。持たないプロジェクトでは判定不能が常態なので、上の FRESH_REASON / FRESH_ACTION を完了報告へそのまま載せて MERGE_COMMAND で進む（skill 側の判断）"
-    } >&2
+    if [[ "$FRESH_REASON" == *"環境起因で未確認"* ]]; then
+      # 全件ゲートの再実行は案内しない。FRESH_ACTION（環境を直すか、PR 本文に記録して判断する）を出す。
+      {
+        echo "✗ 判定不能: ゲート実測鮮度を確定できません — ${FRESH_REASON}"
+        echo "  復帰: RERUN_FULL_GATE=${rerun}（${rerun_reason}）。${FRESH_ACTION}"
+      } >&2
+    else
+      {
+        echo "✗ 判定不能: ゲート実測鮮度を確定できません — ${FRESH_REASON}"
+        echo "  復帰: RERUN_FULL_GATE=${rerun}（${rerun_reason}）。記録の仕組みを持つプロジェクトでは clean な木で全件ゲートを回してから finish.sh precheck を再実行する。持たないプロジェクトでは判定不能が常態なので、上の FRESH_REASON / FRESH_ACTION を完了報告へそのまま載せて MERGE_COMMAND で進む（skill 側の判断）"
+      } >&2
+    fi
     exit 2
   fi
   echo "PRECHECK=ready"

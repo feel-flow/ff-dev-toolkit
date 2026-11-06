@@ -8,6 +8,7 @@
 # 変異検出: gh 照会の上限（Issue `#2377`。2026-10-27 WSL 実測、基準 377 件緑）。MSYS / Cygwin の上限を他の OS と同じ各 1 秒へ戻すと MSYS と Cygwin の 2 秒の照会の 2 件が赤、時間枠の判定を外すと時間枠の通知の名指しと戻り時間の 2 件が赤。引用も展開も含まない語の速い経路（mc_literal_var）の結果を変えると 91 件が赤。
 # 空振り検出: 抽出先 scripts/lib/finish-precheck.sh を空にすると必須ファイル非空の確認で rc1 になる（2026-10-22 実測。入口に名前だけが残っても参照抽出を検査したことにしない）。
 # 空振り検出: mc_stop の本体を return 0 だけにすると（関数名は残し、MC_STOP_REASON も同じセグメントの ACK 通知も出さない）、未解決変数・env/command option・path gh・先行 cwd・代入と先行 cd・global flag・別セグメントの ACK・timeout wrapper・cwd/環境の遷移・wrapper 後続・GH_HOST・引用した pr の未解決変数・builtin と grouping の先行 cd・bash -c・bash -lc・bash -c の複文・bash -o の後続・squash の未知 flag の停止検査 61 件が赤になる（363 件成功、suite rc=1。2026-10-31 macOS 実測。説明文字列・別サブコマンドの引数・引用した pr の照会・bash -lc の echo・複文 echo・bash -o の説明文字列は緑のまま）。
+# 空振り検出: Issue `#2599` の例外の文言更新を 2 回目に送る検査 15 件（基準 439 件緑）。ac-judgement.md の新しい節をアンカーごと消すと 11 件、節の見出しだけを変えると 10 件、SKILL.md 手順 5 の「（例外は 5b）」と 5b の順序・リンクを元へ戻すと 2 件、順序の文を 5b から 5a へ移すと 1 件、弱める書き換えの禁止から経路の限定を外す・2 回目の範囲からスコープ変更の削除と追加を外す・送らずに止めた回の扱いを消す・report.md の「AC 文言の更新」の行を消すとそれぞれ 1 件が赤になり、report.md を空にすると必須ファイルの確認で中断する（2026-11-06 WSL 実測）。
 #
 # closing keyword 抵触検査の回帰テスト。
 #
@@ -47,6 +48,7 @@ FINISH="$PLUGIN_ROOT/scripts/lib/finish-precheck.sh"
 COLLECTION="$PLUGIN_ROOT/scripts/lib/merge-message.sh"
 GATE_REF="$PLUGIN_ROOT/skills/close-issue/references/merge-gate.md"
 AC_REF="$PLUGIN_ROOT/skills/close-issue/references/ac-judgement.md"
+REPORT_REF="$PLUGIN_ROOT/skills/close-issue/references/report.md"
 WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
 
 # 2a（供給源のスキャン）と 2b（マージへ渡す文字列の検査）は役割が違い、片方の規定を
@@ -144,7 +146,7 @@ echo "== closing keyword 抵触検査 =="
 
 # ファイルが 1 つ欠けただけで後続の contains が全部個別に落ちると、1 つの事実が
 # 数十行のノイズになる。存在検査は即座に打ち切る。
-for file in "$GUARD" "$SKILL" "$FINISH" "$COLLECTION" "$GATE_REF" "$AC_REF" "$WORKFLOW"; do
+for file in "$GUARD" "$SKILL" "$FINISH" "$COLLECTION" "$GATE_REF" "$AC_REF" "$REPORT_REF" "$WORKFLOW"; do
   if [[ ! -s "$file" ]]; then
     echo "  ✗ 必須ファイルが存在し非空: $file" >&2
     echo "✗ closing-keyword-guard verify: 必須ファイル欠落のため中断" >&2
@@ -599,6 +601,25 @@ contains "$AC_REF" 'Issue 本文の該当 AC を実装に合わせて更新（�
 contains "$AC_REF" 'AC を弱める方向の書き換えには使わない' "AC 更新経路の方向限定（弱化への迂回を禁止）"
 contains "$AC_REF" '更新は手順 5 と同じ競合確認手順' "AC 更新が手順 5 の競合確認手順に接続されている"
 contains "$SKILL" '例外は手順 3 の「AC が実装より古い」と手順 4 のスコープ変更' "本文不変規則の例外が 2 経路に限定列挙されている"
+# Issue `#2599`: 例外の文言更新は判定器（check-issue-body-diff.sh）の許可範囲外なので、チェックと工数の
+# 送信へ混ぜると rc 1 で止まる。1 回目（判定器を通す）と 2 回目（例外）に分ける順序・2 回目を送ってよい
+# 条件・完了報告の 1 行を固定し、本線の「1 回にまとめる」と例外の送り方が食い違わないことを見る。
+SECOND_SEND_HEADING='## 例外の文言更新は 2 回目に送る'
+section_contains "$SKILL" '### 5. Issue 本文の更新（チェックボックス + 工数実績）' '本文は**この 1 回にまとめる**（例外は 5b）' "手順 5 の本文を 1 回にまとめる規則が例外を除く形になっている"
+section_contains "$SKILL" '#### 5b. 本文の書き換えと送信' 'チェックと工数の後の[2 回目で送る](references/ac-judgement.md#second-send)' "手順 5b に送る順序があり、例外の文言更新の送り方へたどれる"
+contains "$AC_REF" '<a id="second-send"></a>' "例外の送り方の節に手順 5b のリンク先アンカーがある"
+section_contains "$AC_REF" '## 「未達」と「AC が実装より古い」を区別する' '送るのはチェックと工数を送った後の 2 回目にする（[例外の文言更新は 2 回目に送る](#second-send)）' "AC が実装より古い節から送り方へたどれる"
+section_contains "$AC_REF" "$SECOND_SEND_HEADING" '**1 回目（判定器を通す）**: 手順 5b のとおり、達成 AC のチェックと `ff-effort` の書き戻しだけを送る' "1 回目はチェックと工数だけを判定器に通して送る"
+section_contains "$AC_REF" "$SECOND_SEND_HEADING" '古い文言のままここでチェックを付ける' "文言を更新する AC のチェックも 1 回目に付ける"
+section_contains "$AC_REF" "$SECOND_SEND_HEADING" '**2 回目（判定器の許可範囲外の例外）**: 1 回目の後に本文と `updatedAt` を取り直し' "文言の更新は 1 回目の後の 2 回目に送る"
+section_contains "$AC_REF" "$SECOND_SEND_HEADING" 'スコープ変更ではユーザーが決めた範囲の AC 行の置き換え・削除・追加に限る' "スコープ変更の AC 行の削除・追加も 2 回目の範囲に入る"
+section_contains "$AC_REF" "$SECOND_SEND_HEADING" '判定器には掛けない（文言の変更は必ず rc 1 になる）' "2 回目は判定器に掛けない"
+section_contains "$AC_REF" "$SECOND_SEND_HEADING" '変わった行が書き換えた AC 行だけで、残る行のチェックボックスの状態が変わっていないことを確かめる。1 行でも外れていれば送らない' "2 回目は差分で範囲を確かめてから送る"
+section_contains "$AC_REF" "$SECOND_SEND_HEADING" '判定器を通さずに送ってよいのは、この 2 回目の条件（例外の AC 行に限る・残る行のチェックボックスの状態を変えない）を満たす回だけ' "判定器を通さずに送ってよい条件が限定されている"
+section_contains "$AC_REF" "$SECOND_SEND_HEADING" '「AC が実装より古い」の経路では、AC の意図を弱める書き換えに使わない（上節）' "弱める書き換えの禁止は AC が実装より古い経路に限る"
+section_contains "$AC_REF" "$SECOND_SEND_HEADING" '更新した AC ごとに `AC 文言の更新: <更新した AC の要約> — <理由>` を 1 行で書いておく' "文言を更新した AC と理由を完了報告へ 1 行残す"
+section_contains "$AC_REF" "$SECOND_SEND_HEADING" '下書きの `AC 文言の更新` の行を消す' "2 回目を送らずに止めた回は報告の行を消す"
+contains "$REPORT_REF" 'AC 文言の更新: <更新した AC の要約> — <理由>' "完了報告テンプレートに AC 文言の更新の行がある"
 # 公開 ff-dev-toolkit で報告された 2 件のミラー: 取得した根拠が AC の指す対象を測っているか（測る口が
 # 無い AC が他 AC の達成数に隠れる）と、bug 種別で原因を記録から名指しできるか（推測の修正で閉じる）の
 # 2 問を手順 3 の上位視点 1 条件として固定する。手順 3 の節の中にあることを見る（別の節へ流れたら赤）。

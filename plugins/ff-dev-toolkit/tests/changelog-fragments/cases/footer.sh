@@ -292,9 +292,20 @@ else
   printf '%s\n' "$LIVE_OUT" | sed 's/^/    | /' >&2
 fi
 
-if ! default_ref="$(git -C "$REPO_ROOT" symbolic-ref --quiet --short refs/remotes/origin/HEAD)"; then
+if [[ -n "${FF_RELEASE_GATE_HEAD:-}" ]]; then
+  if [[ "$FF_RELEASE_GATE_HEAD" =~ ^[0-9a-f]{40}$ && "$(git -C "$REPO_ROOT" rev-parse HEAD)" == "$FF_RELEASE_GATE_HEAD" ]]; then
+    default_ref="$FF_RELEASE_GATE_HEAD"
+  else
+    default_ref=""
+  fi
+else
+  if ! default_ref="$(git -C "$REPO_ROOT" symbolic-ref --quiet --short refs/remotes/origin/HEAD)"; then
+    default_ref=""
+  fi
+fi
+if [[ -z "$default_ref" ]]; then
   bad "origin/HEAD が無く共有 CHANGELOG 判定を開始できない"
-elif [[ "$default_ref" != origin/* ]]; then
+elif [[ -z "${FF_RELEASE_GATE_HEAD:-}" && "$default_ref" != origin/* ]]; then
   bad "origin/HEAD が origin/* ではない"
 # CI では fetch しない — checkout は特定 SHA に固定されていて rebase という対処が存在せず、
 # 走行中（週次 run-all は約 25 分）に default branch が進んだことを理由に赤にしても実害と
@@ -302,7 +313,7 @@ elif [[ "$default_ref" != origin/* ]]; then
 # が CI について既に採っている形と同じ。workflow 側が既定ブランチ checkout の回にその ref を
 # checkout SHA へ固定する）。ローカルは従来どおり fetch して最新の base で判定する —
 # 作業者には rebase という対処があるので、古い base で緑を出す方が有害。
-elif [[ "$FF_AMBIENT_GITHUB_ACTIONS" != true ]] \
+elif [[ -z "${FF_RELEASE_GATE_HEAD:-}" && "$FF_AMBIENT_GITHUB_ACTIONS" != true ]] \
   && ! git -C "$REPO_ROOT" fetch origin "+refs/heads/${default_ref#origin/}:refs/remotes/origin/${default_ref#origin/}" >/dev/null 2>&1; then
   bad "共有 CHANGELOG 判定前に latest default branch を fetch できない"
 elif ! git -C "$REPO_ROOT" rev-parse --verify "${default_ref}^{commit}" >/dev/null 2>&1; then

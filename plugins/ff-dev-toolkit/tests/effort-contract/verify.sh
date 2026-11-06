@@ -52,6 +52,8 @@
 # 変異検出: record-effort-wallclock.sh の Issue 番号抽出の `#` を任意に戻すと 検査 14c（`chore/2026-09-23-cleanup` を Issue として記録する）が赤になる（mutation/mut-hash-optional.py）。
 # 空振り検出: bundle 規定の欠落・同じ針の写し残存は一致行数 0 / 2 以上で赤。規定 13 行を個別削除して各 exit 1、写し 1 行追加も exit 1（2026-09-28 実測）。
 # 空振り検出: references/estimation.md から「遡及付与しないのはこの書き換えに限る」を消すと 1 件、git-workflow ステップ2 のリンク行を消すと 1 件、着手時追記の行を「ブロックの無い既存 Issue へは遡及付与しない」へ戻すと 2 件が赤になる。正常は 355/0・既存 skip 2 件（2026-11-02 実測）。
+# 空振り検出: references/estimation.md の AI 工数の目安表から「既存の判定に乗る静的検出器・ゲート」の行を消すと 8 件、新設の倍率・回避形 2 巡を当てない句を反転すると 1 件、補正元より先に見る句を消すと 1 件、偽陽性潰しの実数を倍率へ戻すと 1 件、レビュー対応分を実装分と同額へ戻すと 1 件、除外の 2 形をこの行へ取り込むと 1 件、新設との区別の条件を消すと 1 件、出所の OBS-295 を差し替えると 1 件が赤になる。正常は 396/0・既存 skip 2 件（2026-11-06 WSL 実測）。
+# 空振り検出: references/estimation.md の bundle の節から、子のレビュー対応分を束ねた 1 回分で配る規則の行を消すと 3 件（規則・1 巡目の固定費・端数）、規則の行を複製すると 3 件、単独 PR の倍率を掛けない行を消すと 1 件、その句を「掛けて足す」へ反転すると 1 件、子 3 件の例の行を消すと 1 件、例の合計を別の数値へ差し替えると 1 件、1 巡目を固定費から外すと 1 件、端数を親で調整する形へ戻すと 1 件、estimation.md を空にすると 61 件が赤になる。正常は 388/0・既存 skip 2 件（2026-11-06 WSL 実測）。
 # 空振り検出: create-issue の references/estimation.md を消すと検査対象不在で exit 1、3 層参照の表を本線 SKILL.md へ戻して estimation.md から消すと 検査 9 の 3 件が赤になる（`--state closed` は補正手順の照会にも在るので残る）（2026-09-24 実測。置き場所を移した針が移動元の写しに当たって緑になる形を塞ぐ）。
 # 変異検出: effort-report.sh の中央値の位置の判定を `vmed >= upper` へ倒すと 検査 4h の median-edge（上限ちょうど 2.00 は in_band）、`vmed <= lower` へ倒すと median-lower-edge（下限ちょうど 0.50 は in_band）、母集団 0 件の (unmeasured) 分岐を外すと空入力がそれぞれ 1 件赤になる（mutation/mut-median-edge.py / mut-median-lower-edge.py / mut-median-empty.py）。
 # 空振り検出: references/estimation.md から既定値の表の「再置換で済む」行を消すと 検査 9b の 3 件、ガード新設の行を消すと 2 件、分岐の問い・同額の行・補正元優先の段落・並列・再掲文書・静的検出器の行を消すとそれぞれ 1 件、retrospective の較正トリガ行を消すと 3 件、close-issue の較正手順 2 を消すと 1 件が赤になる（2026-09-27 実測。規定を足した行が消えても緑のままになる形を塞ぐ）。
@@ -743,6 +745,14 @@ contains "$CREATE_ESTIMATION" '壁時計の短縮は別に記録し、最長レ�
 contains "$CREATE_ESTIMATION" '人時換算の基準・担当数・重複除外を `effort_basis` に書く。' "並列計画では人時換算の基準を effort_basis に明記する"
 contains "$CREATE_ESTIMATION" '同じ規則を再掲する生存文書を `grep` で数え上げ' "規則の文言変更は再掲文書の本数を別項目で積む"
 contains "$CREATE_ESTIMATION" "回避形への対応を 2 巡" "コマンド文字列型の検出器は回避形対応 2 巡"
+contains "$CREATE_ESTIMATION" "| 既存の判定に乗る静的検出器・ゲート（" "既存の判定に乗る静的検出器の行"
+contains "$CREATE_ESTIMATION" "「静的検出器・ゲートの新設」行の倍率・回避形 2 巡・ライブラリ化の項目と、既定値の表の「検査・ガードの新設」行（1.5 倍以上）は当てない" "既存の判定に乗る検出器へ新設の倍率・回避形 2 巡を当てない"
+contains "$CREATE_ESTIMATION" "この行は先勝ちの表と同じく補正元より先に見て、補正元の実績比・既定値の表を重ねない" "既存の判定に乗る検出器の行は補正元より先"
+contains "$CREATE_ESTIMATION" "偽陽性潰し分は、母集団の再走査と標本の読み取りの実数で積む" "既存の判定に乗る検出器の偽陽性潰しは実数"
+contains "$CREATE_ESTIMATION" "レビュー対応分は 1 巡分として実装分の 1/3〜1/2 で積む" "既存の判定に乗る検出器のレビュー対応は 1 巡分"
+contains "$CREATE_ESTIMATION" "既存の検出器に状態を足す拡張（前の呼び出しの結果を次の判定に使う等）と、判定を新しい入力経路（別の入力形式・件数の上限・取得失敗）へ広げる拡張はこの行に当てない" "状態・入力経路を足す拡張は除外"
+contains "$CREATE_ESTIMATION" "検出規則を既存資産の全体へ当てて初めて偽陽性クラスが分かるもの）は、「静的検出器・ゲートの新設」行で積む" "新設との区別の条件"
+contains "$CREATE_ESTIMATION" "観測台帳 OBS-295（実測 3 件はすべて過大側" "既存の判定に乗る検出器の出所（OBS-295 の実測 3 件）"
 # 補正元の同種判定・照合面の分・文書同期の行は、どれも既定値 1 本が一方向へ倒れた導入先の実測から
 # 足した規定（設計判断の有無は過大側 5 件、照合面は過小側 3 件、文書同期は過大側 3 件）。
 contains "$CREATE_ESTIMATION" "同じ変更の質・**設計判断の有無**が一致する" "補正元の同種判定に設計判断の有無の一致を含める"
@@ -812,6 +822,11 @@ bundle_rule_once() {
 }
 bundle_rule_once "$CREATE_ESTIMATION" '固定費（ブランチ作成・PR 作成・レビュー 1 巡・全件ゲート・cleanup）は bundle 全体で 1 回分だけ積む' 'bundle 固定費 1 回'
 bundle_rule_once "$CREATE_ESTIMATION" '子は実装分 + レビュー対応分に留める' '子の見積もり範囲'
+bundle_rule_once "$CREATE_ESTIMATION" '子のレビュー対応分は、束ねた PR のレビュー対応 1 回分を子の実装の比で配って決める' '子のレビュー対応は束ねた 1 回分を配る'
+bundle_rule_once "$CREATE_ESTIMATION" '1 巡目の起動と読み取りは固定費として親に置き、2 巡目以降の起動と読み取り・各巡の指摘の修正を 1 回分に入れる' 'レビュー 1 巡目は固定費のまま親に置く'
+bundle_rule_once "$CREATE_ESTIMATION" '割り切れない端数は、この 1 回分に限り親ではなく最も大きい子で調整し' '配分の端数を親の固定費へ入れない'
+bundle_rule_once "$CREATE_ESTIMATION" '子ごとに単独 PR の倍率を掛けて足さない' '子ごとに単独 PR の倍率で積まない'
+bundle_rule_once "$CREATE_ESTIMATION" '子のレビュー対応分の合計 0.8 + 0.6 + 0.6 = 2.0h は 1 回分と一致する' '例の配分の合計が 1 回分と一致'
 bundle_rule_once "$CREATE_ESTIMATION" 'bundle 親の工数ブロックには固定費だけ、子には各自の実装分だけを記録する' '親子の二重計上を避ける'
 bundle_rule_once "$CREATE_ESTIMATION" '既存 Issue の予定値と `effort_basis` は遡って書き換えない' '過去予定を保持'
 bundle_rule_once "$CREATE_ESTIMATION" '遡及付与しないのはこの書き換えに限る' '遡及付与しない範囲'

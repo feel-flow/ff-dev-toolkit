@@ -229,7 +229,11 @@ REPO_ROOT="$(git -C "$PLUGIN_ROOT" rev-parse --show-toplevel)"
 # 出力を捨てずに受ける。鮮度由来の非 0（validator の FF_STALE_BASE マーカー）を
 # 内容の欠陥として報告すると、読み手は存在しない claim 不整合を探しに行く。
 set +e
-live_claims_out="$(GITHUB_ACTIONS="$FF_AMBIENT_GITHUB_ACTIONS" validate_live_claims 2>&1)"
+if [[ -n "${FF_RELEASE_GATE_HEAD:-}" ]]; then
+  live_claims_out="$("$CLAIM_VALIDATOR" --root "$REPO_ROOT" --snapshot-head "$FF_RELEASE_GATE_HEAD" 2>&1)"
+else
+  live_claims_out="$(GITHUB_ACTIONS="$FF_AMBIENT_GITHUB_ACTIONS" validate_live_claims 2>&1)"
+fi
 live_claims_rc=$?
 set -e
 if [[ "$live_claims_rc" -eq 0 ]]; then

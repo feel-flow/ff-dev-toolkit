@@ -20,12 +20,16 @@ Every file invocation takes `--github-input /absolute/index.json`. The existing 
 | release.health.workflow | workflow=weekly-run-all.yml | health / gate / report | `{}` | state/created_at; original ISO and time rules |
 | release.health.runs | workflow=weekly-run-all.yml, event=schedule or workflow_dispatch, per_page=100, max_age_days=14 by default | health / gate / report | `{}` | workflow_runs array; id/status/event/head_branch/created_at/updated_at/html_url/conclusion; event must match selector |
 | release.health.log | run_id=adopted evidence ID | health / gate / report | `{}`, last=true | nonempty complete whole-run raw text, original complete suite summary |
+| release.issue-repo | private source repository URL | queue | `{}` | exact full_name, private=true, visibility=private |
+| release.issue-list | private source repository URL | queue | `{}`, last=true | flat array of all open release Issues with number, state and managed body |
 
 The weekly run request retains the original one-page100 window, rather than claiming an all-history enumeration. max_age_days follows the explicit checker option. Release lists preserve the original all-page request. A missing next page, missing attempt, wrong phase, wrong repo/event/window or wrong adopted log ID cannot reuse another entry.
 
 The real orchestrator passes `--github-phase` only with `--github-input`: due→sync-drift(due), check→required(check) and sync-drift(check), prepare's offline simulation→required(prepare-simulation), finalization→required(prepare-finalize), gate→weekly(gate), report→weekly(report). The three standalone defaults are sync, check and health, respectively. The accepted phase sets are closed. Preparation simulation still runs without `--fetch`, removes its temporary origin and performs no GitHub read; the phase handoff is not an acquisition receipt. No repository override was added for that offline path.
 
 ## Write handoff and evidence boundary
+
+The Issue entries support read-only dry-run decisions. A real queue update or release uses live `gh` for the private Issue reads, writes and fresh GET while holding the Git-backed transaction. This applies even when the other release acquisitions use `--github-input`. An offline read-back cannot prove current ownership, so a missing live client stops before prepare. The public Release creation handoff below still uses the file-mode PLAN and independent read-back.
 
 File mode never runs `gh release create`. When creation is needed after the normal Git/gate conditions, it emits the common `PLAN:{...}` containing exact tag/repo/title/notes/verify-tag/latest and requests a separate fresh `release.create` create-readback. Without it, the command returns rc2/unavailable. An already matching fresh read-back emits no new creation PLAN and still requires fresh post Latest plus all-page Release/tag reconciliation. Static phase names cannot establish when a host acquired the bytes; the host must perform the approved actual write and capture fresh read-back. The existing release approval boundary remains in the canonical sync skill.
 

@@ -137,6 +137,7 @@
 # 空振り検出: consumer context helper不在・読めない・同名0byte・mode集合0、実tracked入力から危険形を
 #   消す各写しは親の集合検査または実走査検査1件で赤（対照8/0、各rc=1、2026-10-22）。
 # 空振り検出: case 35 の pipe-and-chain（Issue `#2593`）は、検出の print を外す・pipefail の宣言を無視する・解除を宣言扱いにする・フェンス開始で状態を戻さない・`||` まで対象にする・tail / tee 以外で終わる左辺まで止める・`|&` を background と読む 7 変異が各 rc=1。無変異対照は rc=0（2026-11-04 WSL 実測）
+# 空振り検出: case 52 は独立した run-all.sh（4194303:/x/run-all.sh）を与えると rc 2、プロセス一覧の取得失敗は rc 2、並走なしは GUARD_PASSED。ガード内のシェルの exit 2 行だけを外した写しは並走を名指した stderr（4194303:/x/run-all.sh）のあと GUARD_PASSED で rc 0（awk の END exit 2 は残す）。並走を ○ skip や GUARD_PASSED だけにすると 52-A が赤（2026-11-05 実測）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -167,6 +168,63 @@ for _stale_file in "$STALE_HELPER" "$RUNNER"; do
 done
 
 [ -f "$RUNNER" ] || { echo "✗ run-all.sh が見つかりません: $RUNNER" >&2; exit 1; }
+
+# 並走検出（別 worktree の run-all.sh、またはプロセス一覧が取れない回）。走査の前に止める。
+# 親の run-all.sh の系譜は除外する。系譜の外の独立した run-all.sh が見える回は rc 2 で、
+# 全件ゲートの子として起動していてもこの suite は非 0 になり、ランナーは緑に数えない
+# （ランナーの集計は変えない。復帰は並走が終わってから、またはプロセス一覧が取れてから回し直す）。
+# 抽出に失敗した回も ○ skip にせず rc 2（判定不能は緑にしない）。
+ff_verify_concurrency_guard() {
+  local extract others="" rc=0
+  extract="$(mktemp "${TMPDIR:-/tmp}/run-all-other-gates.XXXXXX" 2>/dev/null)" || {
+    echo "✗ 判定不能: 並走検出の抽出先を作れません（プロセス一覧の判定が成立していない。実行できなかった）" >&2
+    exit 2
+  }
+  if ! awk '
+    BEGIN { found = 0 }
+    /^# >>> ff-startup-other-gates$/ { grab = 1; next }
+    /^# <<< ff-startup-other-gates$/ { if (grab) found = 1; exit }
+    grab { print }
+    END { if (!found) exit 2 }
+  ' "$RUNNER" >"$extract"; then
+    rm -f "$extract"
+    echo "✗ 判定不能: 並走検出の関数を取り出せません（実行できなかった）" >&2
+    exit 2
+  fi
+  if ! awk 'BEGIN { c = 0 } /^ff_startup_other_gates\(\) \{/ { c++ } END { exit c == 1 ? 0 : 1 }' "$extract"; then
+    rm -f "$extract"
+    echo "✗ 判定不能: 並走検出の関数が 1 つではありません（実行できなかった）" >&2
+    exit 2
+  fi
+  # shellcheck disable=SC1090
+  if ! . "$extract"; then
+    rm -f "$extract"
+    echo "✗ 判定不能: 並走検出の関数を読み込めません（実行できなかった）" >&2
+    exit 2
+  fi
+  rm -f "$extract"
+  others="$(ff_startup_other_gates)" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo "✗ 判定不能: プロセス一覧を取得できないため並走を判定できません（実行できなかった）" >&2
+    if [[ -n "$others" ]]; then
+      echo "  取得できた候補:" >&2
+      printf '%s\n' "$others" >&2
+    fi
+    echo "  復帰: プロセス一覧が取れる状態で、この suite を回す" >&2
+    exit 2
+  fi
+  if [[ -n "$others" ]]; then
+    echo "✗ 判定不能: 別の全件ゲートが動いています（実行できなかった）。並走:" >&2
+    printf '%s\n' "$others" >&2
+    echo "  復帰: 並走中の tests/run-all.sh が終わってから、この suite を回す" >&2
+    exit 2
+  fi
+}
+ff_verify_concurrency_guard
+if [[ "${FF_RUN_ALL_VERIFY_STOP_AFTER_GUARD:-}" == "1" ]]; then
+  echo "GUARD_PASSED"
+  exit 0
+fi
 
 # rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
 # 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
@@ -202,6 +260,99 @@ RUN_RC=0
 # （`STATUS=fail`）で潰れる（マージ直前の鮮度照合が判定不能になる）。末尾で消す。
 RUN_GATE_RECORD="$RUN_WORK/ff-run-all-gate-record"
 rm -f "$RUN_GATE_RECORD"
+
+# 並走の fixture。本物の run-all.sh は起動しない。ps を差し替え、STOP_AFTER_GUARD で
+# ガードの直後に戻す（ガードを外した変異が全件の走査へ進んで再帰しないようにする）。
+echo "== case 52: 並走中は走査を始めない（rc 2） =="
+_ff_guard_stub="$RUN_WORK/ps-stub"
+mkdir -p "$_ff_guard_stub"
+_ff_guard_real_ps="$(command -v ps)"
+{
+  printf '%s\n' '#!/usr/bin/env bash'
+  printf '%s\n' 'real_ps="${FF_VERIFY_REAL_PS:?}"'
+  printf '%s\n' 'if [ "${1:-}" = "-ww" ] && [ "${2:-}" = "-eo" ]; then'
+  printf '%s\n' '  case "${FF_VERIFY_GRAPH:-}" in fail) exit 1 ;; esac'
+  printf '%s\n' '  pid="$PPID"'
+  printf '%s\n' '  i=0'
+  printf '%s\n' '  while [ "$i" -lt 6 ] && [ -n "$pid" ] && [ "$pid" != 0 ] && [ "$pid" != 1 ]; do'
+  printf '%s\n' '    printf "%s 1 bash verify.sh\n" "$pid"'
+  printf '%s\n' '    pid="$("$real_ps" -o ppid= -p "$pid" 2>/dev/null | tr -d "[:space:]")" || exit 1'
+  printf '%s\n' '    i=$((i + 1))'
+  printf '%s\n' '  done'
+  printf '%s\n' '  if [ "${FF_VERIFY_GRAPH:-}" = "independent" ]; then'
+  printf '%s\n' '    printf "%s 1 bash /x/run-all.sh\n" "${FF_VERIFY_SLEEPER_PID:?}"'
+  printf '%s\n' '  fi'
+  printf '%s\n' '  exit 0'
+  printf '%s\n' 'fi'
+  printf '%s\n' 'if [ "${1:-}" = "-ww" ] && [ "${2:-}" = "-o" ] && [ "${3:-}" = "args=" ] && [ "${4:-}" = "-p" ]; then'
+  printf '%s\n' '  if [ "${5:-}" = "${FF_VERIFY_SLEEPER_PID:-}" ] && [ "${FF_VERIFY_GRAPH:-}" = "independent" ]; then'
+  printf '%s\n' '    printf "%s\n" "bash /x/run-all.sh"'
+  printf '%s\n' '    exit 0'
+  printf '%s\n' '  fi'
+  printf '%s\n' '  exit 1'
+  printf '%s\n' 'fi'
+  printf '%s\n' 'exit 1'
+} >"$_ff_guard_stub/ps"
+chmod +x "$_ff_guard_stub/ps"
+ff_guard_invoke() { # <script> <graph>
+  _ff_guard_script="$1"
+  _ff_guard_graph="$2"
+  _ff_guard_err="$RUN_WORK/guard-err"
+  _ff_guard_rc=0
+  _ff_guard_out="$(
+    FF_RUN_ALL_VERIFY_STOP_AFTER_GUARD=1 \
+    FF_VERIFY_GRAPH="$_ff_guard_graph" \
+    FF_VERIFY_SLEEPER_PID=4194303 \
+    FF_VERIFY_REAL_PS="$_ff_guard_real_ps" \
+    PATH="$_ff_guard_stub:$PATH" \
+    bash "$_ff_guard_script" 2>"$_ff_guard_err"
+  )" || _ff_guard_rc=$?
+  _ff_guard_err_text="$(cat "$_ff_guard_err")"
+}
+ff_guard_invoke "$SCRIPT_DIR/verify.sh" independent
+if [ "$_ff_guard_rc" -eq 2 ] \
+  && case "$_ff_guard_err_text" in *"4194303:/x/run-all.sh"*) true ;; *) false ;; esac \
+  && case "$_ff_guard_out$_ff_guard_err_text" in *GUARD_PASSED*|*'○ skip'*) false ;; *) true ;; esac; then
+  ok "52-A: 独立した run-all.sh が見えると走査を始めず rc 2 で並走を名指しする"
+else
+  bad "52-A: 並走の停止が違う（rc=${_ff_guard_rc}） out=[${_ff_guard_out}] err=[${_ff_guard_err_text}]"
+fi
+ff_guard_invoke "$SCRIPT_DIR/verify.sh" fail
+if [ "$_ff_guard_rc" -eq 2 ] \
+  && case "$_ff_guard_err_text" in *"プロセス一覧を取得できない"*) true ;; *) false ;; esac \
+  && case "$_ff_guard_out$_ff_guard_err_text" in *GUARD_PASSED*|*'○ skip'*) false ;; *) true ;; esac; then
+  ok "52-B: プロセス一覧を取得できない回は rc 2（緑にも skip にもしない）"
+else
+  bad "52-B: プロセス一覧の失敗が違う（rc=${_ff_guard_rc}） out=[${_ff_guard_out}] err=[${_ff_guard_err_text}]"
+fi
+ff_guard_invoke "$SCRIPT_DIR/verify.sh" clean
+if [ "$_ff_guard_rc" -eq 0 ] && case "$_ff_guard_out" in *GUARD_PASSED*) true ;; *) false ;; esac; then
+  ok "52-C: 並走が無いスナップショットはガードを通過する（このあと全検査へ進む）"
+else
+  bad "52-C: 並走なしでガードが通らない（rc=${_ff_guard_rc}） out=[${_ff_guard_out}] err=[${_ff_guard_err_text}]"
+fi
+# 変異コピーは dirname から run-all.sh と鮮度ヘルパを探す。一時ディレクトリ直下に置くと
+# その探索が /tmp/run-all.sh になり、ガードより前の針で rc 1 になる。実ファイルと同じ
+# 相対配置（tests/run-all/verify.sh の隣に run-all.sh）へ置く。
+_ff_guard_tree="$RUN_WORK/guard-tree"
+mkdir -p "$_ff_guard_tree/run-all" "$_ff_guard_tree/lib"
+ln -s "$RUNNER" "$_ff_guard_tree/run-all.sh"
+ln -s "$STALE_HELPER" "$_ff_guard_tree/lib/stale-base.sh"
+_ff_guard_mut="$_ff_guard_tree/run-all/verify.sh"
+awk '
+  /^ff_verify_concurrency_guard\(\)/ { in_fn = 1 }
+  in_fn && /^}/ { in_fn = 0 }
+  in_fn && /^[[:space:]]*exit 2[[:space:]]*$/ { print "  :"; next }
+  { print }
+' "$SCRIPT_DIR/verify.sh" >"$_ff_guard_mut"
+ff_guard_invoke "$_ff_guard_mut" independent
+if [ "$_ff_guard_rc" -eq 0 ] \
+  && case "$_ff_guard_out" in *GUARD_PASSED*) true ;; *) false ;; esac \
+  && case "$_ff_guard_err_text" in *"4194303:/x/run-all.sh"*) true ;; *) false ;; esac; then
+  ok "52-D: シェルの exit 2 だけを外すと並走を名指したままガードの後まで進む（その変異は 52-A が赤にする）"
+else
+  bad "52-D: exit 2 の除去を検出できない（rc=${_ff_guard_rc}） out=[${_ff_guard_out}] err=[${_ff_guard_err_text}]"
+fi
 
 # ランナーを引数付きで実行し、出力と終了コードを記録する。
 # `out=$(...)` を素で書くと set -e が失敗時点で落とすので if 形式で受ける。

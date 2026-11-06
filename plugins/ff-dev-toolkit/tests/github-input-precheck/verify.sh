@@ -208,6 +208,27 @@ while IFS=$'\t' read -r name refs separate checks pages fork thread_kind; do
 done <"$TMP/cases"
 [ "$COUNT" -gt 0 ] && [ "$READY" -eq "$COUNT" ] || { bad 'ready coverage zero/incomplete'; exit 1; }
 
+# file 入力の baseRefOid が印と一致する回だけ被覆にする。共通 fixture には載せない（pass の golden を変えない）。
+cover_gate="$(g -C "$WORK" rev-parse --absolute-git-dir)/ff-dev-toolkit/gate-record"
+cp "$cover_gate" "$TMP/gate-before-cover"
+cp "$TMP/pr.json" "$TMP/pr-before-cover.json"
+BASE_FOR_COVER="$(g -C "$WORK" rev-parse origin/develop)"
+# 直前の golden は同じコミットの pass。partial は pass を上書きしないので、一度消してから書く。
+rm -f "$cover_gate"
+(cd "$WORK" && bash "$PLUGIN/scripts/record-gate-head.sh" --gate tests/run-all.sh --status partial --mode fixture --suites alpha --covers-diff "$BASE_FOR_COVER") >/dev/null 2>&1
+jq --arg base "$BASE_FOR_COVER" '.statusCheckRollup=[] | .baseRefOid=$base' "$TMP/pr-before-cover.json" >"$TMP/pr.json"
+run file file "$PLUGIN/scripts/finish.sh" precheck 7 --github-input "$TMP/index.json"
+if [ "$RC" -eq 0 ] && grep -qxF 'RERUN_FULL_GATE=no' "$TMP/file.out" && grep -qxF 'PRECHECK=ready' "$TMP/file.out" \
+  && grep -F '導入先の判定で差分を覆っている' "$TMP/file.out" >/dev/null; then
+  ok "file input: baseRefOid が印と一致する部分実行は回し直さない"
+else
+  bad "file input cover rc=$RC"
+  cat "$TMP/file.out" >&2
+  cat "$TMP/file.err" >&2
+fi
+cp "$TMP/pr-before-cover.json" "$TMP/pr.json"
+cp "$TMP/gate-before-cover" "$cover_gate"
+
 # Last golden is a ready nonempty nullable thread, without checks and with one complete page.
 index_base
 cp "$TMP/index.json" "$TMP/base-index.json"

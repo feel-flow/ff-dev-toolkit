@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import shlex
 import subprocess
@@ -141,6 +142,11 @@ else:sys.exit(99)
     for name in ['sync-dev-toolkit-to-public.sh','scan-unreachable-repo-refs.sh','materialize-dev-toolkit-changelog.sh']:
         shutil.copy2(ROOT/'scripts'/name,root/'scripts'/name)
     shutil.copytree(ROOT/'scripts/lib',root/'scripts/lib')
+    # These cases isolate the original public Release acquisition protocol.
+    # The private Issue coordinator is exercised with live-style reads/writes
+    # and an actual two-clone Git transport in sync-sha-contract.
+    with (root/'scripts/lib/release-issue-functions.sh').open('a', encoding='utf-8') as stream:
+        stream.write('\nissue_begin() { :; }\nissue_require_execution_arguments() { :; }\n')
     shutil.copytree(ROOT/P/'scripts/lib',root/P/'scripts/lib')
     (root/P/'.claude-plugin').mkdir(parents=True)
     (root/P/'.claude-plugin/plugin.json').write_text('{"name":"ff-dev-toolkit","version":"1.1.0"}\n')
@@ -401,8 +407,9 @@ printf '%s\\n' 'fixture-media@1.0.0'
     release_source=''.join(p.read_text() for p in [root/'scripts'/release,*sorted((root/'scripts/lib').glob('release-*-functions.sh'))])
     def function_source(name):
         marker=name+'() {'
-        assert release_source.count(marker)==1, 'prepare function source absent/duplicate: '+name
-        start=release_source.index(marker);line_end=release_source.index('\n',start)
+        starts=[match.start() for match in re.finditer(r'^'+re.escape(marker),release_source,re.MULTILINE)]
+        assert len(starts)==1, 'prepare function source absent/duplicate: '+name
+        start=starts[0];line_end=release_source.index('\n',start)
         if release_source[start:line_end].rstrip().endswith('}'):
             return release_source[start:line_end]+'\n'
         end=release_source.index('\n}\n',start)+2
@@ -416,7 +423,7 @@ printf '%s\\n' 'fixture-media@1.0.0'
     prepare_driver=T/'prepare-finalize-driver.sh'
     # prepare_finalize first compares the approved version (--expect-version); unset here, so the guard passes.
     function_names=['finish','stop','stop_needs_approval','unavailable','mark','plan','kv','capture','release_delegate','prepare_fix_hint','expect_version_guard','prepare_finalize']
-    prepare_driver.write_text('set -u\nGITHUB_INPUT="$1"; PUBLIC="$2"; CHECK_SCRIPT="$3"\nROOT="$4"; CURRENT_STAGE=prepare; VER=1.1.0; DRY_RUN=1; EXPECT_VERSION=\nPREPARE_PATHS_TEXT=fixture; CHANGELOG=fixture; PLUGIN_JSON=fixture; AGENT_CONFIG=fixture; FRAGMENT_DIR=fixture\nwriting_snapshot() { :; }\n'+prepare_globals_text+''.join(function_source(name) for name in function_names)+'prepare_finalize 1.1.0 fixture\n')
+    prepare_driver.write_text('set -u\nGITHUB_INPUT="$1"; PUBLIC="$2"; CHECK_SCRIPT="$3"\nROOT="$4"; CURRENT_STAGE=prepare; VER=1.1.0; DRY_RUN=1; EXPECT_VERSION=\nPREPARE_PATHS_TEXT=fixture; CHANGELOG=fixture; PLUGIN_JSON=fixture; AGENT_CONFIG=fixture; FRAGMENT_DIR=fixture\nwriting_snapshot() { :; }\nissue_finish() { :; }\n'+prepare_globals_text+''.join(function_source(name) for name in function_names)+'prepare_finalize 1.1.0 fixture\n')
     def prepare_call(file=True):
         e=dict(env)
         if file:e['TEST_REJECT_GH']='1'

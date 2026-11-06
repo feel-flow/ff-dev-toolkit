@@ -48,6 +48,8 @@ STUB_BIN="$TMP/bin"
 mkdir -p "$REPO/.claude/hooks" "$REPO/scripts" "$STATE" "$STUB_BIN"
 git init -q "$REPO"
 cp "$HOOK" "$REPO/.claude/hooks/post-merge-dev-toolkit-sync.sh"
+mkdir -p "$REPO/scripts/lib"
+cp "${HOOK%/.claude/hooks/*}/scripts/lib/release-hook-functions.sh" "$REPO/scripts/lib/"
 
 write_stub() { # $1=path（中身は stdin）
   cat >"$1"
@@ -61,11 +63,12 @@ write_stub "$REPO/scripts/sync-dev-toolkit-to-public.sh" <<'STUB'
 [[ ! -f "$CF_RT_STATE/list.fail" ]] || exit 1
 printf '%s\n' plugins/ff-dev-toolkit oss/ff-dev-toolkit
 STUB
-# drift 検査: 未同期 3 件を返す（同期提案まで到達させ、hook が最後まで走ったことを文面で確かめる）
-write_stub "$REPO/scripts/check-dev-toolkit-sync-drift.sh" <<'STUB'
+# 受付の結果を固定し、hook が最後まで走ったことを確かめる
+write_stub "$REPO/scripts/release-dev-toolkit.sh" <<'STUB'
 #!/usr/bin/env bash
-echo "DRIFT_COUNT=3"
-echo "LAST_SYNC_SHA=0123456789abcdef0123456789abcdef01234567"
+[[ "$*" == --update-release-issue ]] || exit 64
+printf 'RELEASE_ISSUE_URL=%s/%s/%s%s/issues/1\n' 'https://github.com' 'feel-flow' 'feelflow-' 'plugins'
+echo "RELEASE_DUE=no"
 STUB
 # gh: PR 照会と変更ファイル一覧だけを受ける。想定外は大声で落ちる
 write_stub "$STUB_BIN/gh" <<'STUB'
@@ -109,7 +112,7 @@ run_hook() {
 has() { [[ "$OUT" == *"$1"* ]]; }
 dump() { printf '%s\n' "$OUT" | sed 's/^/    | /' >&2; }
 # 「hook が最後まで走って同期提案を出した」ことの確認（断片の通知が出ないケースの空振り除け）
-reached_proposal() { has "リリース（同期）しますか"; }
+reached_proposal() { has "issues/1 RELEASE_DUE=no"; }
 
 echo "-- changelog 断片の欠落通知 --"
 
@@ -164,7 +167,7 @@ fi
 
 # 4. 公開対象外の PR → 断片の通知なし（公開対象外の通知までは到達）
 run_hook "$HUMAN_VIEW" docs/notes.md .claude/hooks/other.sh
-if ! has "CHANGELOG_MISSING" && ! has "判定不能" && has "公開対象外"; then
+if ! has "CHANGELOG_MISSING" && ! has "判定不能" && reached_proposal; then
   ok "公開対象外の PR → 断片についての通知を出さない"
 else
   bad "公開対象外の PR に断片の通知を出した"; dump

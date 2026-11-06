@@ -4,7 +4,7 @@
 #
 # 使い方:
 # --- usage:start ---
-#   check-merge-freshness.sh --remote-head <SHA40> [--measured <SHA40>]
+#   check-merge-freshness.sh --remote-head <SHA40> [--measured <SHA40>] [--base <SHA40>]
 #                            [--record <パス> [--record-from-other-checkout]]
 #                            [--fetch] [--remote <名前>]
 #   check-merge-freshness.sh --print-record [--record <パス>]
@@ -23,6 +23,10 @@
 #   --fetch        関係の分類前に `git fetch <remote>` を行う（リモートのコミットが
 #                  手元に無いと ancestor / divergent を区別できないため）
 #   --remote       fetch 先のリモート名（既定 origin）
+#   --base         現在の PR の base（`baseRefOid`）。省略した回は被覆の印を一致と扱わない。
+#                  40 桁の小文字 16 進でない値は検査不成立（exit 3）。`COVERS_DIFF` がこの値と
+#                  同じ 40 桁のときだけ、部分実行の理由に「導入先の判定で差分を覆っている」
+#                  を添え、`DIFF_COVERED=yes` を出す。終了コードは 2 のまま（全件緑へ昇格しない）
 #   --print-record 照合せず、記録の中身（ゲート名・モード・結果・時刻）を出力する。
 #                  一致時の無出力を崩さずに、報告へ実測の素性を載せるための入口
 # --- usage:end ---
@@ -75,7 +79,15 @@
 #       であって、その記録が信用できないという意味ではない。だから REASON は
 #       **何を検証したのか**（`SUITES=` の中身・ゲート名・実測時刻）を名指しし、
 #       ACTION は「その範囲で差分の意味を検査できているならマージしてよい」と述べる
-#       — 毎回同じ黄色い警告を出すだけのゲートは、そのうち読まれなくなる
+#       — 毎回同じ黄色い警告を出すだけのゲートは、そのうち読まれなくなる。
+#       `COVERS_DIFF` が `--base` と一致する回も exit 2 のまま、REASON に
+#       「導入先の判定で差分を覆っている」を足して `DIFF_COVERED=yes` を出す。
+#       印が無い、`--base` を渡さない、base が違う、のいずれも従来の部分実行の文言のまま。
+#
+#       `STATUS=unverified` は環境起因で未確認の記録。head が一致するときは exit 2 で
+#       REASON を「環境起因で未確認: <ステップ>」にし、ACTION は環境を直すか PR 本文に
+#       記録して判断する、と述べる（「再実行」は案内しない）。head が違うときは
+#       pass の不一致と同じく exit 1 で止まる。全件緑へは昇格しない。
 #
 #       旧版のインストールへ `STATUS=partial` の記録を食わせると、STATUS allowlist の
 #       `*)` に落ちて「記録のゲート結果を解釈できません」という文言で exit 2 を返す。
@@ -101,7 +113,7 @@
 #
 #   `--print-record` の契約:
 #     exit 0 … 既知のキー（RECORD_VERSION / STATUS / COMMIT / BRANCH / DIRTY / GATE / MODE /
-#              SUITES / RESULT / RECORDED_AT）を `KEY=値` で出力する
+#              SUITES / RESULT / RECORDED_AT / COVERS_DIFF / UNVERIFIED_STEPS）を `KEY=値` で出力する
 #     exit 2 … 記録が無い / 版を解釈できない / 既知のキーが 1 つも無い。
 #              FRESHNESS=UNDETERMINED + REASON + ACTION を出す
 #
@@ -285,6 +297,7 @@ ff_assert_script_plugin_root "${BASH_SOURCE[0]}" || exit 3
 
 REMOTE_HEAD=""
 MEASURED=""
+BASE_OID=""
 RECORD_PATH=""
 DO_FETCH=0
 PRINT_RECORD=0
@@ -299,8 +312,11 @@ OTHER_CHECKOUT_NOTE=""
 # 記録が部分実行（STATUS=partial）だったか。一致判定の**後**に見る（理由は下の
 # 部分性の判定を参照）。--measured を明示した経路では記録を読まないので 0 のまま。
 RECORD_PARTIAL=0
+RECORD_UNVERIFIED=0
 RECORD_SUITES=""
 RECORD_MODE=""
+RECORD_COVERS_DIFF=""
+RECORD_UNVERIFIED_STEPS=""
 
 SELF="${BASH_SOURCE[0]}"
 SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
@@ -308,7 +324,7 @@ SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 usage_error() {
   printf 'FRESHNESS=ERROR\n'
   printf 'REASON=%s\n' "$*"
-  printf 'ACTION=%s\n' "使い方: check-merge-freshness.sh --remote-head <SHA40> [--measured <SHA40>] [--record <パス> [--record-from-other-checkout]] [--fetch]。検査は成立していないので一致として扱わないこと"
+  printf 'ACTION=%s\n' "使い方: check-merge-freshness.sh --remote-head <SHA40> [--measured <SHA40>] [--base <SHA40>] [--record <パス> [--record-from-other-checkout]] [--fetch]。検査は成立していないので一致として扱わないこと"
   exit 3
 }
 
@@ -316,6 +332,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --remote-head) [[ $# -ge 2 ]] || usage_error "--remote-head に値がありません"; REMOTE_HEAD="$2"; shift 2 ;;
     --measured)    [[ $# -ge 2 ]] || usage_error "--measured に値がありません"; MEASURED="$2"; shift 2 ;;
+    --base)        [[ $# -ge 2 ]] || usage_error "--base に値がありません"; BASE_OID="$2"; shift 2 ;;
     --record)      [[ $# -ge 2 ]] || usage_error "--record に値がありません"; RECORD_PATH="$2"; shift 2 ;;
     --remote)      [[ $# -ge 2 ]] || usage_error "--remote に値がありません"; REMOTE_NAME="$2"; shift 2 ;;
     --fetch)       DO_FETCH=1; shift ;;
@@ -364,7 +381,7 @@ if [[ "$PRINT_RECORD" -eq 1 ]]; then
   # 既知のキーだけを写す（記録に無関係な行が混ざっても報告へ流し込まない）。
   # `sed` の BRE で交替（バックスラッシュ + 縦棒）を使わない — BSD sed はこれを
   # 交替として解釈せず、**無出力のまま exit 0** になる（macOS が主対象なので致命的）。
-  RECORD_BODY="$(LC_ALL=C awk '/^(RECORD_VERSION|STATUS|COMMIT|BRANCH|DIRTY|GATE|MODE|SUITES|RESULT|RECORDED_AT)=/ { print }' "$RECORD_PATH")"
+  RECORD_BODY="$(LC_ALL=C awk '/^(RECORD_VERSION|STATUS|COMMIT|BRANCH|DIRTY|GATE|MODE|SUITES|RESULT|RECORDED_AT|COVERS_DIFF|UNVERIFIED_STEPS)=/ { print }' "$RECORD_PATH")"
   if [[ -z "$RECORD_BODY" ]]; then
     printf 'FRESHNESS=UNDETERMINED\n'
     printf 'REASON=%s\n' "記録に既知のキーがありません: ${RECORD_PATH}"
@@ -381,6 +398,10 @@ is_sha40 "$REMOTE_HEAD" \
 if [[ -n "$MEASURED" ]]; then
   is_sha40 "$MEASURED" \
     || usage_error "--measured は 40 桁の完全な SHA で渡してください（受領: ${MEASURED}）"
+fi
+if [[ -n "$BASE_OID" ]]; then
+  is_sha40 "$BASE_OID" \
+    || usage_error "--base は 40 桁の完全な SHA で渡してください（受領: ${BASE_OID}）"
 fi
 
 # 別 checkout の宣言は「明示した記録ファイル」にだけ付く。--record が無いと、照合は既定パスか
@@ -441,6 +462,9 @@ if [[ -z "$MEASURED" ]]; then
   # 部分実行の報告材料。**判定には使わない**（MODE を判定に混ぜない契約はヘッダ参照）。
   RECORD_SUITES="$(sed -n 's/^SUITES=//p' "$RECORD_PATH" 2>/dev/null | head -n 1)"
   RECORD_MODE="$(sed -n 's/^MODE=//p' "$RECORD_PATH" 2>/dev/null | head -n 1)"
+  # 行が無い旧記録は空。空と「印が無い」は同じ（被覆にも未確認の名指しにもしない）。
+  RECORD_COVERS_DIFF="$(sed -n 's/^COVERS_DIFF=//p' "$RECORD_PATH" 2>/dev/null | head -n 1)"
+  RECORD_UNVERIFIED_STEPS="$(sed -n 's/^UNVERIFIED_STEPS=//p' "$RECORD_PATH" 2>/dev/null | head -n 1)"
   # 赤が鮮度分類の suite だけで説明できた回の suite 名（run-all が書く。旧記録には行が無い）。
   # 案内の材料であって判定の根拠ではない — 一致・不一致の判定には使わない。
   RECORD_STALE_ONLY="$(sed -n 's/^STALE_ONLY_FAILED=//p' "$RECORD_PATH" 2>/dev/null | head -n 1)"
@@ -467,6 +491,10 @@ if [[ -z "$MEASURED" ]]; then
   case "$RECORD_STATUS" in
     pass) : ;;
     partial) RECORD_PARTIAL=1 ;;
+    # unverified は pass と同じくコミット比較まで進める。ここで *) へ落とすと、
+    # head が違う記録まで「解釈できません」（exit 2）になり、止めるべき不一致が
+    # 判定不能へ格下げされる。
+    unverified) RECORD_UNVERIFIED=1 ;;
     fail)
       # 赤がすべて base の先行（鮮度）で説明できた回は、ゲート全体を回し直さなくても
       # 取り込み後にその suite だけを名指しで回し直せば足りる（緑なら部分実行の記録になり、
@@ -555,7 +583,21 @@ if [[ "$MEASURED" == "$REMOTE_HEAD" ]]; then
   #
   # REASON は**何を検証したのか**を名指しする。毎回同じ黄色い警告を出すだけのゲートは
   # 読まれなくなり、赤で止まるゲートを黄色へ替えただけの劣化になる。
+  if [[ "$RECORD_UNVERIFIED" -eq 1 ]]; then
+    # 「再実行」は案内しない。環境が直らない限り同じ記録しか書けず、案内がループになる。
+    undetermined "環境起因で未確認: ${RECORD_UNVERIFIED_STEPS:-（ステップ名の記録なし）}" \
+                 "環境を直す（例: toolkit の更新）か、未確認のステップを PR 本文に記録して判断する"
+  fi
+
   if [[ "$RECORD_PARTIAL" -eq 1 ]]; then
+    # 印の一致は全件緑へ昇格させない。REASON は従来の「記録は部分実行です」を残したまま、
+    # 被覆できたことだけを足す。印が無い・--base を渡さない・base が違う回は文言を変えない
+    # （「導入先の判定で差分を覆っている」を不一致や印なしへ出さない）。
+    if is_sha40 "${RECORD_COVERS_DIFF:-}" && [[ -n "$BASE_OID" && "$BASE_OID" == "$RECORD_COVERS_DIFF" ]]; then
+      printf 'DIFF_COVERED=yes\n'
+      undetermined "記録は部分実行です（名指しした suite だけを実行した記録で、ゲートの既定一覧は回っていません）。導入先の判定で差分を覆っている。検証済み: ${RECORD_SUITES:-（suite 名の記録なし）} / ゲート: ${RECORD_GATE:-不明} / モード: ${RECORD_MODE:-不明} / 実測: ${RECORD_AT:-時刻不明}" \
+                   "導入先の判定で差分を覆っているため、ゲートの既定一覧を回し直さなくてよい（リリース前・契約面の変更時は除く）"
+    fi
     undetermined "記録は部分実行です（名指しした suite だけを実行した記録で、ゲートの既定一覧は回っていません）。検証済み: ${RECORD_SUITES:-（suite 名の記録なし）} / ゲート: ${RECORD_GATE:-不明} / モード: ${RECORD_MODE:-不明} / 実測: ${RECORD_AT:-時刻不明}" \
                  "上に名指しした suite で差分の意味を検査できている変更（CHANGELOG footer の追従など）なら、このままマージしてよい。それでは足りない差分なら、ゲートの既定一覧を回して記録を更新すること"
   fi

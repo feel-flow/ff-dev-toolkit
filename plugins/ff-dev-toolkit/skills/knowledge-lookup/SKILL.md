@@ -98,6 +98,8 @@ MCP: 取得値: MCP で同じ repository の state=open Issue 全件の number /
 
 store の実配置は既定パス（`docs/08-knowledge/PLAYBOOK.md` / `OBSERVATIONS.md`）の不在だけで「未導入」と結論しない。ACE Playbook は `--playbook` → `ACE_PLAYBOOK_PATH` → 記録済み配置（`AGENTS.md` / `CLAUDE.md` / `docs/MASTER.md` に書かれた `PLAYBOOK.md` のパス）→ 既定パス → root 配下の探索の順で解決する。この順は `/ace-curate` / `/ace-refine` の「配置先の解決」と同じで、両スキルは `--resolve-playbook` で本スクリプトの同じ関数を呼ぶ。観測台帳は既定パス → 探索。探索は候補が 1 件ならそれを採り、複数候補は曖昧として採らず `--playbook` / `--ledger` の明示を求める（推測で 1 つを選ばない）。`docs-template/` 配下は探索からだけ外す — 記録・環境変数で名指しされた `docs-template/08-knowledge/PLAYBOOK.md`（テンプレ配布リポジトリの実体）は採る。
 
+検索対象は知見本文。解決先が [索引省略を宣言](../ace-curate/references/curate.md#索引方式)したときは、索引節が無くても `ace_entry_count: 0` と live 本文を照合して空を判定する。壊れた見出し・アンカー、閉じていないコードフェンスや不正な宣言は読み取り失敗になる。隣接する `playbook/` が存在する場合は実ディレクトリを使う。`--resolve-playbook --with-index-mode` は同じ設定を読み、配置の 4 行に `ACE_INDEX_MODE` を追加する。
+
 
 ## ACE 保留候補
 

@@ -53,10 +53,10 @@ fi
 `/knowledge-lookup` と同じ resolver で解く（規則: [curate.md](references/curate.md)）:
 
 ```bash
-FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/knowledge-lookup.sh" --resolve-playbook
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/knowledge-lookup.sh" --resolve-playbook --with-index-mode
 ```
 
-`ACE_PLAYBOOK_STATE=ok` 以外は変更前に止めて報告する。以降の `docs/08-knowledge/` 配下は**既定配置の例**で、`ACE_PLAYBOOK_REL` が違えば置換する。
+`ACE_PLAYBOOK_STATE=ok` と [索引方式](references/curate.md#索引方式) を確認。非 0・repo 外は変更前に停止。既定パスの例は `ACE_PLAYBOOK_REL` に合わせる。
 
 ## 前提と引数
 
@@ -106,7 +106,7 @@ MCP: 取得値: MCP の PR diff/body/全comments/reviews と関連Issue本文。
 
 **domainの判定を先行する**: コード/テストだけならunverified、正式資料か確認者の承認があればconfirmed、矛盾はconflictingと両側の根拠を記録し、既存仕様や既存ACEを自動deprecatedにしない。Distilled-Toは収集時には付けない。評価ゲート: 再現性・影響度が「中」以上か（低→スキップ）/ **新規性があるか？**（「**読者が取る実行可能なアクションが既存エントリと同一か**」。同一なら `Helpful` +1 のみ。domainは主体・条件・例外・確認状態が違えば同一としない）/ **抽象度の下限を満たすか？**（固有名なしで書けるなら 1 段上げてから新規性を判定。上げすぎたら棄却）/ **一回性のインシデント叙述は Playbook に書かない**（TROUBLESHOOTING / runbook へ）。
 
-`FF_JEV_MODE=on` の候補は [triage](references/curate.md#triage) で先に選別する。`off` は従来経路・出力とバイト同一。照合: PLAYBOOK.md の索引で似たタイトルが**他カテゴリにもないか**を確認し、近縁カテゴリの `playbook/<category>.md` を読む。**重複** → `Helpful` +1 / **矛盾（非domain）** → 既存を `deprecated` にして新エントリ / **新規** → Phase 3。**Reuse 記録の反映**: PR body の「参照して役立った」既存 ACE ID があれば `Helpful` を +1（候補 0 件でも行う）。
+`FF_JEV_MODE=on` の候補は [triage](references/curate.md#triage) で先に選別する。`off` は従来経路・出力とバイト同一。[索引方式別の照合](references/curate.md#索引方式)で他カテゴリも確認する。**重複** → `Helpful` +1 / **矛盾（非domain）** → 既存を `deprecated` にして新エントリ / **新規** → Phase 3。**Reuse 記録の反映**: PR body の「参照して役立った」既存 ACE ID があれば `Helpful` を +1（候補 0 件でも行う）。
 
 ### 4. Phase 3: Curate（増分更新）
 
@@ -150,7 +150,7 @@ esac
 
 [エントリの正準フォーマット](references/curate.md#エントリの正準フォーマット)に従う。メタ4行は各行の行頭に置く。
 
-domainでは同梱契約の4行形式でEvidence / Verification / Distill-Toを必ず追記する。追記後、PLAYBOOK.md の索引にも 1 行加える — **列順はその PLAYBOOK の索引ヘッダ行から決める**（references/curate.md）。索引行はタイトルのみ。
+domainでは同梱契約の4行形式でEvidence / Verification / Distill-Toを必ず追記する。`inline` のみヘッダの列順で追記し、索引行はタイトルのみ。[索引方式](references/curate.md#索引方式) に従う。
 
 #### 4-c / 4-d / 4-e. Frontmatter・Changelog・行数バジェット
 

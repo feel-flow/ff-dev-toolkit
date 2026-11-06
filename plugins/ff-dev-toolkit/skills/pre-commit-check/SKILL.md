@@ -186,7 +186,7 @@ bash plugins/ff-dev-toolkit/tests/changelog-fragments/verify.sh
 bash plugins/ff-dev-toolkit/tests/git-fixture-isolation/verify.sh
 ```
 
-判定順序は手順 7 と同じで、**実行できなかった**を先に切り分ける。suite ファイルが存在しない・依存コマンドが無い・suite 自身が「skip」と報告した場合は、終了コードが 0 でも**違反なしへ倒さない**。「実行できなかった」と「違反なし」を別の状態として報告し、緑扱いにせず commit へ進まない側の判定にする（fail-closed）。実行できた suite だけを終了コードで緑赤に分ける。
+判定順序は手順 7 と同じで、**実行できなかった**を先に切り分ける。suite ファイルが存在しない・依存コマンドが無い・suite 自身が「skip」と報告した場合は、終了コードが 0 でも**違反なしへ倒さない**。「実行できなかった」と「違反なし」を別の状態として報告し、緑扱いにせず commit へ進まない側の判定にする（fail-closed）。実行できた suite だけを終了コードで緑赤に分ける。`tests/run-all/verify.sh` が終了コード 2 で、別の `run-all.sh` の並走、またはプロセス一覧を取得できないことを名指しした回は「実行できなかった」とする。製品の違反でも緑でもない。並走を名指した回の次の一手は、その全件ゲートが終わってから同じ suite を回すこと。プロセス一覧を取得できない回の次の一手は、一覧が取れる状態で同じ suite を回すこと。
 
 Windows の Git Bash（MSYS / Cygwin。判定は `scripts/lib/wsl-notice.sh` の `ff_host_is_msys`）では、固定表の suite が行頭の `○ skip` または字下げした `  ○ skip` を出したら、終了コードが 0 でも「実行できなかった」とし、違反なしへ倒さない。600 秒以内に戻らない回も同じ。次の一手は WSL である。(1) リポジトリを WSL のホームディレクトリ配下へ clone する（`/mnt/c` 配下では回さない）(2) `npm ci --prefix plugins/ff-dev-toolkit/mcp` (3) 同じ suite を `bash plugins/ff-dev-toolkit/tests/<suite>/verify.sh` で回す。Linux / macOS / WSL では、字下げした部分 skip は終了コードで緑赤を分け、行頭の suite 全体の skip だけを「実行できなかった」とする。
 

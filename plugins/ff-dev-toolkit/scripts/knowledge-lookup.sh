@@ -22,11 +22,12 @@
 #                       台帳の `Status | promoted` エントリのうち、リンク先 Issue が open のものを
 #                       列挙する（`/retrospective` 観察チェックリスト第 0 項の入力）。state を
 #                       確認できなかった参照は隠さず `未確認` として列挙する（fail-closed）。
-#   配置の解決         knowledge-lookup.sh --resolve-playbook [--root <dir>] [--playbook <path>]
+#   配置の解決         knowledge-lookup.sh --resolve-playbook [--with-index-mode] [--root <dir>] [--playbook <path>]
 #                       ACE Playbook の実配置だけを解決し、`ACE_PLAYBOOK=` / `ACE_PLAYBOOK_REL=` /
 #                       `ACE_PLAYBOOK_SOURCE=` / `ACE_PLAYBOOK_STATE=` の 4 行を出す（0 = 確定 /
 #                       2 = 不在・曖昧・読み取り失敗）。/ace-curate・/ace-refine の「配置先の解決」が
 #                       この出力を読む — キーワード検索と同じ関数で解決するので、規則が食い違わない。
+#                       --with-index-mode は検証済みの ACE_INDEX_MODE=inline|omit を追加する。
 #
 # オプション:
 #   --root <dir>        対象リポジトリのルート（既定: cwd から git rev-parse --show-toplevel、無ければ cwd）
@@ -235,7 +236,7 @@ usage() {
   knowledge-lookup.sh [--root DIR] [--playbook PATH] [--ledger PATH] [--all]
                       [--include-archived] [--offline] [--github-input INDEX_ABS] [--format text|tsv] <キーワード>...
   knowledge-lookup.sh --promoted-open [--root DIR] [--ledger PATH] [--offline] [--format text|tsv]
-  knowledge-lookup.sh --resolve-playbook [--root DIR] [--playbook PATH]
+  knowledge-lookup.sh --resolve-playbook [--with-index-mode] [--root DIR] [--playbook PATH]
 USAGE
 }
 
@@ -248,6 +249,7 @@ OFFLINE=0
 GITHUB_INPUT=""
 FORMAT="text"
 MODE="search"
+WITH_INDEX_MODE=0
 KEYWORDS=()
 
 while [ $# -gt 0 ]; do
@@ -262,6 +264,7 @@ while [ $# -gt 0 ]; do
     --format) [ $# -ge 2 ] || { usage; exit 1; }; FORMAT="$2"; shift 2 ;;
     --promoted-open) MODE="promoted-open"; shift ;;
     --resolve-playbook) MODE="resolve-playbook"; shift ;;
+    --with-index-mode) WITH_INDEX_MODE=1; shift ;;
     -h|--help) usage; exit 1 ;;
     --) shift; while [ $# -gt 0 ]; do KEYWORDS+=("$1"); shift; done ;;
     -*) printf '未知のオプション: %s\n' "$1" >&2; usage; exit 1 ;;
@@ -270,6 +273,10 @@ while [ $# -gt 0 ]; do
 done
 
 case "${FORMAT}" in text|tsv) ;; *) printf -- '--format は text か tsv: %s\n' "${FORMAT}" >&2; exit 1 ;; esac
+if [ "$WITH_INDEX_MODE" -eq 1 ] && [ "$MODE" != resolve-playbook ]; then
+  printf '%s\n' '--with-index-mode には --resolve-playbook が必要です' >&2
+  exit 1
+fi
 if [ "${MODE}" = "search" ] && [ "${#KEYWORDS[@]}" -eq 0 ]; then
   printf '%s\n' "キーワードが 1 つも指定されていません（--promoted-open 以外はキーワードが必須）" >&2
   usage
@@ -535,8 +542,54 @@ if [ "${ACE_STATE}" = "ok" ]; then
   fi
 fi
 
+# 索引省略の宣言は PLAYBOOK.md 冒頭の frontmatter のトップレベルに限定する。
+# 値をシェルで評価しない。未宣言の既存 Playbook は inline のまま扱う。
+read_ace_index_settings() {
+  local snapshot
+  snapshot="$(accepted_snapshot "$ACE_INDEX" "$ACE_AUTHORITY")" || return 2
+  LC_ALL=C awk '
+    { sub(/\r$/, "") }
+    NR == 1 { if ($0 != "---") exit; next }
+    /^---[ \t]*$/ { closed = 1; exit }
+    /^ace_index_mode[ \t]*:/ {
+      mode_keys++
+      if ($0 ~ /^ace_index_mode:[ \t]+omit[ \t]*$/) omit = 1
+    }
+    /^ace_entry_count[ \t]*:/ {
+      count_keys++
+      if ($0 ~ /^ace_entry_count:[ \t]*(0|"0"|\0470\047)[ \t]*$/) zero = 1
+    }
+    END {
+      if (mode_keys > 0 && (!closed || mode_keys != 1 || !omit)) exit 2
+      printf "%s:%s\n", (omit ? "omit" : "inline"), (closed && count_keys == 1 && zero ? "zero" : "unknown")
+    }
+  ' "$snapshot"
+}
+
+ACE_INDEX_MODE=""
+ACE_DECLARED_COUNT="unknown"
+if [ "$ACE_STATE" = ok ] && { [ "$MODE" = search ] || [ "$WITH_INDEX_MODE" -eq 1 ]; }; then
+  if ace_index_settings="$(read_ace_index_settings)"; then
+    ACE_INDEX_MODE="${ace_index_settings%:*}"
+    ACE_DECLARED_COUNT="${ace_index_settings#*:}"
+    # find は symlink のディレクトリを辿らない。省略時は入口を実ディレクトリに限定し、
+    # 壊れた配置を「走査したが本文ゼロ」と読み替えない。
+    ace_categories="${ACE_INDEX%/*}/playbook"
+    if [ "$ACE_INDEX_MODE" = omit ] &&
+      { [ -L "$ace_categories" ] || { [ -e "$ace_categories" ] && [ ! -d "$ace_categories" ]; }; }; then
+      ACE_STATE="unreadable"
+      ACE_INDEX_MODE=""
+      printf 'ACE Playbook のカテゴリパスが実ディレクトリではありません: %s\n' "$ace_categories" >&2
+    fi
+  else
+    ACE_STATE="index-invalid"
+    printf 'ACE Playbook の索引設定を読めません: %s (ace_index_mode)\n' "$ACE_INDEX" >&2
+  fi
+fi
+
 # ── --resolve-playbook: 解決結果だけを出して終える ───────────────────────────
 # /ace-curate・/ace-refine が「配置先の解決」で読む契約。KEY=VALUE の 4 行を必ず出す。
+# --with-index-mode の回だけ、配置と同じスナップショットで確定した索引方式の行を足す。
 # STATE が ok 以外の回も 4 行を出す: absent / ambiguous では ACE_PLAYBOOK は空、unreadable では
 # 名指しされたパス（読めなかった対象の報告用）。成否は STATE と終了コードで読む
 # （0 = 確定 / 2 = 不在・曖昧・読み取り失敗）。
@@ -571,6 +624,7 @@ if [ "${MODE}" = "resolve-playbook" ]; then
   printf 'ACE_PLAYBOOK_REL=%s\n' "${ace_rel}"
   printf 'ACE_PLAYBOOK_SOURCE=%s\n' "${ACE_SOURCE}"
   printf 'ACE_PLAYBOOK_STATE=%s\n' "${ACE_STATE}"
+  if [ "$WITH_INDEX_MODE" -eq 1 ]; then printf 'ACE_INDEX_MODE=%s\n' "$ACE_INDEX_MODE"; fi
   [ "${ACE_STATE}" = "ok" ] && exit 0
   exit 2
 fi
@@ -653,18 +707,44 @@ extract_entries() { # <PREFIX: ACE|OBS> <file>...
 # フェンス内の記入例は数えない（テンプレートは記入例をフェンスで持つ）。分割配置の category ファイルは
 # 自分の `## エントリ一覧` を持つので、索引・本体とも同じ節スコープで数える。
 # 戻り値: 0 = 空（正常）/ 1 = 書式破損の疑い
-store_is_empty() { # <索引ファイル> <走査対象ファイル...>
-  local index="$1"; shift
-  index="$(snapshot_store_input "$index")" || return 1
-  awk '/^[[:space:]]*(```|~~~)/ { infence = !infence; next } infence { next } /^## エントリ一覧/ { seen = 1 } END { exit seen ? 0 : 1 }' "${index}" || return 1
+store_is_empty() { # <索引方式> <索引ファイル> <走査対象ファイル...>
+  local index_mode="$1" index="$2"; shift 2
+  if [ "$index_mode" = omit ]; then
+    [ "$ACE_DECLARED_COUNT" = zero ] || return 1
+  else
+    index="$(snapshot_store_input "$index")" || return 1
+    awk '/^[[:space:]]*(```|~~~)/ { infence = !infence; next } infence { next } /^## エントリ一覧/ { seen = 1 } END { exit seen ? 0 : 1 }' "${index}" || return 1
+  fi
   local f
   for f in "$@"; do
     f="$(snapshot_store_input "$f")" || return 1
     # 見出しを数えるのは `## エントリ一覧` 節の内側だけ（次の `## ` 見出し — Changelog 等 — で節を閉じる。
     # テンプレートの Changelog は `### [版]` 見出しを持つので、節を閉じないと空を書式破損と誤判定する）
-    if awk '/^[[:space:]]*(```|~~~)/ { infence = !infence; next } infence { next } /^## / { seen = ($0 ~ /^## エントリ一覧/) } seen && /^### / { found = 1 } END { exit found ? 0 : 1 }' "${f}"; then
-      return 1
-    fi
+    # 省略時は一覧節がなくても、ACE らしい見出し・アンカーの残存を正常空にしない。
+    awk -v mode="$index_mode" '
+      /^[[:space:]]*(```|~~~)/ {
+        if (mode != "omit") { infence = !infence; next }
+        line = $0
+        sub(/^[[:space:]]*/, "", line)
+        match(line, /^(`+|~+)/)
+        width = RLENGTH
+        marker = substr(line, 1, 1)
+        if (!infence) {
+          infence = 1
+          fence_marker = marker
+          fence_width = width
+        } else if (marker == fence_marker && width >= fence_width && substr(line, width + 1) ~ /^[[:space:]]*$/) {
+          infence = 0
+        }
+        next
+      }
+      infence { next }
+      /^## / { seen = ($0 ~ /^## エントリ一覧/) }
+      seen && /^### / { found = 1 }
+      mode == "omit" && (tolower($0) ~ /^[ \t]*##+[ \t]+ace([^[:alnum:]]|$)/ ||
+                         tolower($0) ~ /^[ \t]*<a[ \t]+id=["\047]ace-/) { found = 1 }
+      END { exit (found || (mode == "omit" && infence)) ? 1 : 0 }
+    ' "${f}" || return 1
   done
   return 0
 }
@@ -700,7 +780,7 @@ if [ "${ACE_STATE}" = "ok" ]; then
     while IFS= read -r f; do [ -n "${f}" ] && files+=("${f}"); done <"${ACE_FILES}"
     extract_entries ACE "${files[@]}" >"${ACE_ENTRIES}" || exit 2
     if [ ! -s "${ACE_ENTRIES}" ]; then
-      if store_is_empty "${ACE_INDEX}" "${files[@]}"; then ACE_STATE="empty"; else ACE_STATE="noentry"; fi
+      if store_is_empty "$ACE_INDEX_MODE" "${ACE_INDEX}" "${files[@]}"; then ACE_STATE="empty"; else ACE_STATE="noentry"; fi
     fi
     if [ "${INCLUDE_ARCHIVED}" -eq 1 ]; then
       arch=()
@@ -723,7 +803,7 @@ if [ "${OBS_STATE}" = "ok" ]; then
   if [ ! -s "${OBS_ENTRIES}" ]; then
     # 見出しを 1 件も認識できない台帳は「0 件ヒット」ではなく読み取り失敗（書式変更を空振りで
     # 緑にしない）。ただしテンプレート直後の空台帳（エントリ一覧が空）は正常（判定は store_is_empty）。
-    if store_is_empty "${OBS_FILE}" "${OBS_FILE}"; then
+    if store_is_empty inline "${OBS_FILE}" "${OBS_FILE}"; then
       OBS_STATE="empty"
     else
       OBS_STATE="noentry"
