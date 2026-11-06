@@ -138,6 +138,7 @@
 #   消す各写しは親の集合検査または実走査検査1件で赤（対照8/0、各rc=1、2026-10-22）。
 # 空振り検出: case 35 の pipe-and-chain（Issue `#2593`）は、検出の print を外す・pipefail の宣言を無視する・解除を宣言扱いにする・フェンス開始で状態を戻さない・`||` まで対象にする・tail / tee 以外で終わる左辺まで止める・`|&` を background と読む 7 変異が各 rc=1。無変異対照は rc=0（2026-11-04 WSL 実測）
 # 空振り検出: case 52 は独立した run-all.sh（4194303:/x/run-all.sh）を与えると rc 2、プロセス一覧の取得失敗は rc 2、並走なしは GUARD_PASSED。ガード内のシェルの exit 2 行だけを外した写しは並走を名指した stderr（4194303:/x/run-all.sh）のあと GUARD_PASSED で rc 0（awk の END exit 2 は残す）。並走を ○ skip や GUARD_PASSED だけにすると 52-A が赤（2026-11-05 実測）。
+# 空振り検出: case 53 は suite へ両方を継承する修正前の run-all.sh で 53-B / 53-C / 53-E が逐次・並列とも赤、変異の対象行の不在で 53-M1 / 53-M2 が赤（8 件）。FF_GATE_RECORD_FILE だけを外す版では 53-B が逐次・並列とも赤（FF_GATE_RECORD の継承）。逐次・並列の各呼び出しだけを外した写しは、その経路の suite が親の 2 つの値を受け取る（2026-11-07 WSL 実測）。一時領域・fixture を作れない回と、並列を指定したのに並列経路で走らない回は構造上赤（未実測）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -4593,6 +4594,10 @@ case "$(_rr_extract)" in
   "FF_RUN_ALL_FULL=1 bash /"*"/fixtures/fail/verify.sh") ok "51-F: 全件モードの回は再実行コマンドに FF_RUN_ALL_FULL=1 を前置する" ;;
   *) bad "51-F: 全件モードの再実行コマンドに前置が無い: '$(_rr_extract)'" ;;
 esac
+
+# case 53: ゲートの記録の制御（FF_GATE_RECORD_FILE / FF_GATE_RECORD）を suite へ継承しない（OBS-414）。
+# shellcheck source=cases/gate-record-scope.sh
+. "$SCRIPT_DIR/cases/gate-record-scope.sh"
 
 # 集約入口の契約は既存の hook 登録検査と同じ suite で実測する。
 if bash "$SCRIPT_DIR/bash-hook-batch.sh"; then

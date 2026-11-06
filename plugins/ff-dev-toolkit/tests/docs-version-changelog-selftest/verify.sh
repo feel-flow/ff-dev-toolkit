@@ -95,7 +95,7 @@ FAIL=0
 ENV_SKIPPED=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
-env_skip() { echo "  ○ $1"; ENV_SKIPPED=$((ENV_SKIPPED + 1)); }
+env_skip() { echo "  ○ skip: $1"; ENV_SKIPPED=$((ENV_SKIPPED + 1)); }
 
 # fixture を（再）構築する。実リポジトリの docs/ をそのまま写すので baseline が
 # 実体と乖離しない（一覧をここに書かない = 対象が増えても追随不要）。

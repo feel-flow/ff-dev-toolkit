@@ -631,7 +631,7 @@ else
   bad "E4: 走査器の失敗が検査不成立にならない（rc=${e4_rc} / [${e4_out%%$'\n'*}]）"
 fi
 if [ "$(id -u)" -eq 0 ]; then
-  echo "  ○ E5: root では読み取り権限を落とせないため未検査（読めない tracked shell）"
+  echo "  ○ skip: E5 root では読み取り権限を落とせないため未検査（読めない tracked shell）"
 else
   git init -q "$TMP/unreadable-repo"
   printf '#!/usr/bin/env bash\ntrue\n' > "$TMP/unreadable-repo/a.sh"

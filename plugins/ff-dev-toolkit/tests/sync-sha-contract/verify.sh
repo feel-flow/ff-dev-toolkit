@@ -176,6 +176,7 @@
 # 空振り検出: 同期の展開前 tree 種別検査を除く対照は source/destination LICENSE symlink の dry/real を4件検出して rc=1、通常対照 rc=0（2026-10-28、有限の隔離 sentinel のみ）。
 # 空振り検出: 非公開件名の公開 commit 転記を復元すると marker 検査だけが赤（158 pass / 1 fail、rc=1）、通常対照は159 pass / 0 fail、rc=0（2026-10-28、hook 省略の隔離 runtime）。
 # 空振り検出: Darwin 専用 skip の条件付き許可（Issue `#2517`）を無条件にする・Darwin だけへ反転する・節ごと消す 3 変異は、いずれも実挙動 4 通りの照合だけが赤（169 pass / 1 fail、rc=1）、通常対照は 170 pass / 0 fail（2026-10-29 WSL 実測）。差し替えた本体の lib だけで同じ節を消すと実挙動の照合が赤、出し手の行を「○ skip: <fixture 名> — <理由文>」の語順へ変えると出し手の集合照合が赤（各 rc=1）。
+# 変異検出: release-runtime.sh で、run-all の stub が作る side の clone の作者設定（fixture の helper での初期化）を外すと、release Issue のロックの commit-tree が止まり「固定リリースの公開・比較リンク・次の受付の分離」が赤。fixture の git の隔離を `GIT_CONFIG_GLOBAL=/dev/null` へ戻すと「作者情報を推測しない」の針が赤、環境変数の作者を外す行を消して GIT_AUTHOR_* / GIT_COMMITTER_* を与えると「作者情報を持たない repo の commit-tree は止まる」の針が赤（Issue `#2665`。いずれも --handoff-only の 16 件中 1 件。2026-11-06 WSL 実測。user.useConfigOnly が無いと、作者を推測できる環境では side の作者設定を外しても緑のまま — Git Bash で EMAIL を与えた実測で commit-tree が通った）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -545,6 +546,29 @@ contains '| `multi-agent-stale-outputs`: 実 ACL helper の回は Windows の Gi
   "手順 0b の許容表に OS 限定（multi-agent-stale-outputs の実 ACL helper の回）の行がある"
 contains '| `knowledge-lookup`: K32（起動回数の上限は Windows と Linux でだけ固定する検査のため未実行） | OS 限定 |' \
   "手順 0b の許容表に OS 限定（knowledge-lookup の K32）の行がある"
+# 大文字と小文字を区別するファイルシステムでは case-alias 分岐を作れない。Linux の gate では毎回出る構造的 skip。
+# 表から消えると Linux からのリリースが gate 段で止まる。
+release_contains "'大文字小文字を区別するファイルシステムでは case-alias 分岐を作れないため未実行'" \
+  "許容表にファイルシステム限定（case-alias 分岐を作れない検査）がある"
+contains '| `multi-agent-stale-outputs`: 大文字小文字を区別するファイルシステムでは case-alias 分岐を作れないため未実行 | ファイルシステム限定 |' \
+  "手順 0b の許容表にファイルシステム限定（multi-agent-stale-outputs の case-alias）の行がある"
+_case_emitters="$(grep -rlF -- '大文字小文字を区別するファイルシステムでは case-alias 分岐を作れないため未実行' "$REPO_ROOT"/plugins/*/tests 2>/dev/null \
+  | grep -v '/tests/sync-sha-contract/' | sed "s|^$REPO_ROOT/||" | sort)" || true
+if [[ "$_case_emitters" == plugins/ff-dev-toolkit/tests/multi-agent-stale-outputs/admin-identity-cases.sh ]]; then
+  ok "case-alias の理由文を出すファイルが admin-identity-cases.sh だけである"
+else
+  bad "case-alias の理由文を出すファイルの集合が想定と違う（文言の変更か使い回し。許容表と SKILL.md の表を見直す）: [${_case_emitters}]"
+fi
+release_contains 'ff_release_temp_preflight && ff_release_python_preflight && ff_release_media_preflight' \
+  "環境確認は一時領域を先に作り、作れない回は Python と ff-media の確認へ進まない"
+_temp_pin='一時領域を作れない、または結果がディレクトリでない回は prepare と suite の前に止まる'
+contains "$_temp_pin" \
+  "手順書が、一時領域を作れない回は prepare と suite の前に止まると書いている"
+if grep -qF -- "$_temp_pin" "$REPO_ROOT/docs/04-quality/TESTING.md"; then
+  ok "TESTING.md が、一時領域を作れない回は prepare と suite の前に止まると書いている"
+else
+  bad "TESTING.md に一時領域の停止条件が無い"
+fi
 # K32 の理由文（Issue `#2477`）も、出す suite の集合を完全一致で固定する。文言を変えると macOS の gate 段で初めて止まるため
 _k32_emitters="$(grep -rlF -- '起動回数の上限は Windows と Linux でだけ固定する検査のため未実行' "$REPO_ROOT"/plugins/*/tests 2>/dev/null \
   | grep -v '/tests/sync-sha-contract/' | sed "s|^$REPO_ROOT/||" | sort)" || true
@@ -1089,10 +1113,13 @@ release_contains_exactly 'if [[ -z "$tags" || -z "$rels" ]]; then unverified=yes
 release_contains '[[ "$latest" == "v$VER" ]] || stop' \
   "release 段が Latest の位置を直接検証する"
 
+# shellcheck source=../lib/relay-skip-lines.sh
+. "$SCRIPT_DIR/../lib/relay-skip-lines.sh"
 _release_rt_err="$(mktemp "${TMPDIR:-/tmp}/sync-sha-release.XXXXXX")"
 _release_rt_rc=0
 bash "$SCRIPT_DIR/release-runtime.sh" "$RELEASE_SCRIPT" "$POST_MERGE_HOOK" >"$_release_rt_err" 2>&1 || _release_rt_rc=$?
 if [[ "$_release_rt_rc" -eq 0 ]]; then
+  ff_relay_captured_skips "$_release_rt_err" || bad "skip 行を中継できない（release-runtime）"
   ok "リリーススクリプトの振る舞い（段の順序・dry-run・冪等な再開・止まるべき状態・粒度・hook の in-flight 抑止）: $(tail -n 1 "$_release_rt_err")"
 else
   bad "リリーススクリプトの振る舞いが壊れている (rc=${_release_rt_rc})"
@@ -1106,6 +1133,7 @@ _cf_rt_err="$(mktemp "${TMPDIR:-/tmp}/sync-sha-changelog-fragment.XXXXXX")"
 _cf_rt_rc=0
 bash "$SCRIPT_DIR/changelog-fragment-runtime.sh" "$POST_MERGE_HOOK" "$REPO_ROOT/scripts/check-release-required.sh" >"$_cf_rt_err" 2>&1 || _cf_rt_rc=$?
 if [[ "$_cf_rt_rc" -eq 0 ]]; then
+  ff_relay_captured_skips "$_cf_rt_err" || bad "skip 行を中継できない（changelog-fragment-runtime）"
   ok "同期提案 hook の changelog 断片の欠落通知（欠落・揃い・公開対象外・判定不能・allowlist の一致）: $(tail -n 1 "$_cf_rt_err")"
 else
   bad "同期提案 hook の changelog 断片の欠落通知が壊れている (rc=${_cf_rt_rc})"

@@ -21,9 +21,11 @@
 #     これを pass ではなく skip として数え、サマリーで名指しする。マーカー文言は
 #     tests/run-all/verify.sh が実在を検査するので、変えると red になる。
 #     一部の検査だけを飛ばす「部分 skip」でこのマーカーを出さないこと（1 行でも
-#     あると suite 全体が skip 扱いになり、実際に走った検査が報告から消える）。部分
-#     skip は1文字以上インデントした `○ skip` を出す。ランナーは検査件数を
-#     `checks-skipped` へ別集計し、suite-level の skipped / REQUIRED_SUITES 判定へは混ぜない
+#     あると suite 全体が skip 扱いになり、実際に走った検査が報告から消える）。
+#     suite が書く部分 skip は字下げ 2 つの `  ○ skip:` だけ（検査は
+#     tests/lib/skip-line-contract.sh）。ランナーの計数は、親が写した 1 文字以上の
+#     字下げも `checks-skipped` として受ける。suite-level の skipped /
+#     REQUIRED_SUITES 判定へは混ぜない
 #     **suite 全体の skip 経路を新しく足した suite は既定で必須になる**（fail-closed）。
 #     `REQUIRED_SUITES` へ 1 行足すか、verify.sh へ `# run-all-required: no — 理由`
 #     （理由は必須。無いと赤）を書くまで登録照合が赤になる。導出規則は下の
@@ -1088,6 +1090,8 @@ else
     # 公開 checkout（スクリプト不在）は ○ skip、SSOT なのに SKILL 不在は red。
     # read-only・外部コマンド不要（〜1 秒）。sync 系ゲートの並びに置く。
     "$SCRIPT_DIR/sync-sha-contract/verify.sh"
+    # 部分 skip の書式と、捕捉した子の skip 行の中継。
+    "$SCRIPT_DIR/skip-line-contract/verify.sh"
     # 毎 sync リリース運用ゲート scripts/check-release-required.sh の検出力実測
     # （Issue #552）。live 状態は検査しない — 「実変更 + [Unreleased] 非空 + version
     # 据え置き」は開発中の PR では正常で、live 検査を常時ゲートに入れると通常開発が
@@ -2840,6 +2844,18 @@ ff_consume() { # <name> <kind: run|missing|notexec|gone> <script> <rc>。本文�
   echo
 }
 
+# suite へ継承させない環境変数を外す。**必ず suite を起動するサブシェルの中で呼ぶ** — 本体の
+# 環境は変えない（終了時の ff_record_gate_head は本体に残した値で記録する）。どちらもこのランナーの
+# 最終記録だけを制御する値で、suite へ継承すると suite 内の fixture の記録まで動かす:
+#   FF_GATE_RECORD_FILE … 最終記録の出力先。別 checkout の fixture が記録器を --record なしで呼ぶと、
+#                         自分の git dir ではなく親の指定先へ書いて偽赤になる（OBS-414。tests/finish の GR0〜GR2）
+#   FF_GATE_RECORD=0    … 最終記録を止める指定。suite が入れ子で回すランナーの記録まで止まり、記録を
+#                         実測する検査（tests/merge-freshness の抽出した記録ブロック・case 39-C）が赤になる
+# suite が内部で明示した指定はそのまま効く。
+ff_suite_env_isolate() {
+  unset FF_GATE_RECORD_FILE FF_GATE_RECORD
+}
+
 # 逐次実行。一時領域を要求しない経路で、read-only 環境の退避先でもある。
 ff_run_sequential() {
   local script name kind suite_rc _t0 _t1 _elapsed
@@ -2857,7 +2873,7 @@ ff_run_sequential() {
       # パイプで完結し一時ファイルを作らないので read-only 環境でも動く。判定後に
       # そのまま全量を出力するので、診断情報は失敗時も成功時も欠けない。
       _t0="$(ff_epoch)" || _t0=""
-      if FF_SUITE_OUTPUT="$(bash "$script" 2>&1)"; then
+      if FF_SUITE_OUTPUT="$(ff_suite_env_isolate; bash "$script" 2>&1)"; then
         suite_rc=0
       else
         suite_rc=$?
@@ -3098,6 +3114,7 @@ ff_run_parallel() {
       # なしに読めるようにするため（部分的に書かれた出力を完成品として読まない）。
       (
         set +e
+        ff_suite_env_isolate
         _t0="$(ff_epoch)"
         bash "${SCRIPTS[$i]}" >"$SPOOL/$i.out" 2>&1
         _rc=$?

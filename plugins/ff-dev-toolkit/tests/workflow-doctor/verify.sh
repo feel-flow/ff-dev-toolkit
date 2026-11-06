@@ -17,7 +17,7 @@
 #
 # 変異検出（2026-10-02）: 追加語族の除去で 2d / 4c が赤。見出しを旧名限定へ戻すと 3b が赤、次のスコープ外節を連結すると 3c が赤。
 #
-# 変異検出: workflow-doctor.sh の Stop hook のパス判定を `/` 始まりだけへ戻すと 5c2 の MSYS ケースが赤（C:/… を --root へ連結して SKIP 3。130/1）。実機の MSYS / Cygwin では 5c2 を件数合わせの ok にする（2026-10-26 WSL 実測。Issue `#2367`）。
+# 変異検出: workflow-doctor.sh の Stop hook のパス判定を `/` 始まりだけへ戻すと 5c2 の MSYS ケースが赤（C:/… を --root へ連結して SKIP 3。130/1）。実機の MSYS / Cygwin では 5c2 を部分 skip にする（2026-10-26 WSL 実測。Issue `#2367`）。
 # 変異検出（2026-09-16 実測。赤転しなかった変異は無し）:
 #   OLD_PATTERN から `|口にした時点で.*起票` を落とす → fixture 2b（第 3 選択肢だけの旧文言）が赤
 #   hook 検査の `! grep -q 'YAGNI'` を外す → fixture 4b（即起票の語を残しつつ YAGNI を持つ reminder）が誤って FAIL になり赤
@@ -31,6 +31,8 @@ SKILL="$PLUGIN_ROOT/skills/workflow-doctor/SKILL.md"
 PASS=0; FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1"; FAIL=$((FAIL + 1)); }
+# 実行できない検査は成功に数えない。部分 skip は字下げ 2 つの skip 行だけ。
+part_skip() { echo "  ○ skip: $1"; }
 
 [ -f "$TARGET" ] || { echo "✗ workflow-doctor.sh が見つかりません: $TARGET" >&2; exit 1; }
 [ -f "$SKILL" ] || { echo "✗ SKILL.md が見つかりません: $SKILL" >&2; exit 1; }
@@ -211,7 +213,7 @@ else
   printf '%s\n' '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"python3 x.py"}]}]}}' > "$d/.claude/settings.json"
   out="$(run_doctor "$d")"; rc=$?
   if grep -q $'^SKIP\t3\t' <<<"$out"; then ok "jq 不在では hook 検査が SKIP（緑にしない）"; else bad "jq 不在で hook 検査が SKIP にならない"; fi
-  ok "（jq 不在のため hook の正例は未検証 — 件数合わせ）"
+  part_skip "jq 不在のため hook の正例は未検証"
 fi
 
 # 4c. 追加した語族は Stop hook の inline / script のどちらにも届く。
@@ -228,7 +230,7 @@ if command -v jq >/dev/null 2>&1; then
     if [ "$rc" -eq 1 ] && grep -q $'^FAIL\t3\t.*'"$d/hooks/guard.sh" <<<"$out"; then ok "追加語族の script hook → FAIL 3: $rule"; else bad "追加語族が script hook に届かない（rc=${rc}）"; fi
   done
 else
-  printf '%s\n' '  ○ jq 不在のため追加語族の hook 検査は未検証'
+  part_skip "jq 不在のため追加語族の hook 検査は未検証"
 fi
 
 # 5. --offline の 4〜6・11 は SKIP として数える（緑にしない）。jq 不在の環境では検査 3 も SKIP になるので期待値を 1 足す
@@ -244,7 +246,7 @@ if command -v jq >/dev/null 2>&1; then
   out="$(run_doctor "$d")"; rc=$?
   if [ "$rc" -eq 1 ] && grep -q $'^FAIL\t3\t.*解釈できない' <<<"$out"; then ok "壊れた settings.json → FAIL 3（fail-closed）"; else bad "壊れた settings.json が FAIL にならない（rc=${rc}）"; fi
 else
-  ok "（jq 不在のため settings.json 破損の検査は未検証 — 件数合わせ）"
+  part_skip "jq 不在のため settings.json 破損の検査は未検証"
 fi
 
 # 5c. settings.local.json（既定対象）にだけ旧 reminder の hook がある → FAIL 3。既定対象を使うため --settings を渡さず、
@@ -259,7 +261,7 @@ if command -v jq >/dev/null 2>&1; then
   # 5c2. Stop hook のスクリプトがドライブ文字の形（C:/…）。MSYS / Cygwin では絶対パスとしてそのまま読み、他の OS では
   #      --root へ連結する（Issue `#2367`）。OSTYPE を差し替え、起動時 cwd にだけ「C:」ディレクトリを置いて結果を分ける
   case "${OSTYPE:-}" in
-    msys* | cygwin*) ok "（実機の MSYS / Cygwin では C:/… が本物のドライブを指すため 5c2 は未検証 — 件数合わせ）"; ok "（同上 — 件数合わせ）" ;;
+    msys* | cygwin*) part_skip "実機の MSYS / Cygwin では C:/… が本物のドライブを指すため 5c2 は未検証"; part_skip "実機の MSYS / Cygwin では C:/… を --root へ連結する経路は未検証" ;;
     *)
       d="$(make_root drivehook "$GOOD_CLAUDE")"
       mkdir -p "$TEST_TMP/drive/C:/hooks"
@@ -303,13 +305,13 @@ if command -v jq >/dev/null 2>&1; then
   out="$(run_doctor "$d")"; rc=$?
   if [ "$rc" -eq 1 ] && grep -q $'^FAIL\t3\t.*'"$d/hooks/b.py" <<<"$out"; then ok "command 内の 2 本目のスクリプトの旧 reminder → FAIL 3"; else bad "2 本目のスクリプトを見ていない（rc=${rc}）"; fi
 else
-  ok "（jq 不在のため settings.local.json の検査は未検証 — 件数合わせ）"
-  ok "（jq 不在のため inline command の検査は未検証 — 件数合わせ）"
-  ok "（jq 不在のため YAGNI つき inline の検査は未検証 — 件数合わせ）"
-  ok "（jq 不在のため 2 本目のスクリプトの検査は未検証 — 件数合わせ）"
-  ok "（jq 不在のため elif 経路 2 件の検査は未検証 — 件数合わせ）"
-  ok "（jq 不在のため elif 経路 2 件の検査は未検証 — 件数合わせ）"
-  ok "（jq 不在のため issue化必須 の検査は未検証 — 件数合わせ）"
+  part_skip "jq 不在のため settings.local.json の検査は未検証"
+  part_skip "jq 不在のため inline command の検査は未検証"
+  part_skip "jq 不在のため YAGNI つき inline の検査は未検証"
+  part_skip "jq 不在のため 2 本目のスクリプトの検査は未検証"
+  part_skip "jq 不在のため elif 経路のスクリプト検査は未検証"
+  part_skip "jq 不在のため elif 経路の inline 検査は未検証"
+  part_skip "jq 不在のため issue化必須 の検査は未検証"
 fi
 
 # 7. 検査 8（Draft PR の旧文言）: 作る指示は FAIL 8 + FIXTEXT、否定・廃止を述べる行は OK 8
@@ -416,7 +418,7 @@ if command -v jq >/dev/null 2>&1; then
   out="$(run_doctor "$d")"; rc=$?
   if [ "$rc" -eq 1 ] && grep -q $'^FAIL\t9\t.*解析できない' <<<"$out" && ! grep -q 'が無い' <<<"$(grep -E $'\t9\t' <<<"$out")" && ! grep -q $'^SUGGEST\t9\t' <<<"$out"; then ok "壊れた package.json → FAIL 9（解析できない。「script が無い」と提案にしない）"; else bad "壊れた package.json を「script が無い」に畳んでいる（rc=${rc}）: $(grep -E $'\t9\t' <<<"$out" | tr '\n' ' ')"; fi
 else
-  ok "（jq 不在のため壊れた package.json の検査は未検証 — 件数合わせ）"
+  part_skip "jq 不在のため壊れた package.json の検査は未検証"
 fi
 
 # 10. 検査 10（入口のパリティ）: AGENTS.md にだけ契約語が無い → WARN 10

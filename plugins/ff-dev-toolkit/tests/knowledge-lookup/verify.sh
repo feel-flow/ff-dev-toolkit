@@ -450,7 +450,7 @@ if [[ "${RC}" -eq 2 ]]; then ok "K7: 唯一の store の見出しが壊れてい
 
 # ── K8: 読めない台帳 ──────────────────────────────────────────────────────────
 if [[ "$(id -u)" -eq 0 ]]; then
-  echo "  ○ K8 skip: root 実行では読めないファイルを作れない"
+  echo "  ○ skip: K8 root 実行では読めないファイルを作れない"
 else
   ROOT6="${TMP}/unreadable"; make_playbook "${ROOT6}"; make_ledger "${ROOT6}"
   chmod 000 "${ROOT6}/docs/08-knowledge/OBSERVATIONS.md"

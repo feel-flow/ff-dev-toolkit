@@ -92,6 +92,7 @@ green」。healthy を確認できない回は全件で代替 — ADR-039）。`
 | case 49 | （複製ランナーと起動 sentinel、実体の検査専用モード・resource） | 非空の `FF_DEV_TOOLKIT_ROOT` を継承した既定・明示実行は rc 3 で suite 未起動。値を表示せず変数名と解除方法を案内し、未設定・空値・検査専用モード・resource 単体は維持する。診断を除去した変異で停止検査が赤になる |
 | case 50 | slow-a〜d（`FF_RUN_ALL_JOBS=2` と probe の rendezvous、`FF_RUN_ALL_ELAPSED_RECORD` で記録を与える）／slow-a + fail（50-K）／複製ランナーの一時リポジトリとその worktree（50-J） | 並列実行は前回の経過秒の長い順（数値で比べ、同順位は登録順）に起動し、記録に無い suite を先に起動する。見出し・elapsed-sec は登録順のまま。実行後は今回 pass した suite の経過秒で記録を書き直し、前回の記録が読めた回は走らなかった suite の行を残す（赤の suite の秒数は載せない）。記録が無い・空・1 行でも崩れている・ディレクトリの回は登録順と理由を出す（崩れた記録は捨てて今回の分だけで書き直し、ディレクトリの中へは書かない）。記録を与えない明示引数・逐次・入れ子の実行は並べ替えず、記録も書き換えない。記録を書けない回（塞がれた置き場・書けない既存ディレクトリ）も rc=0 で、シェルのエラー文を出さない。既定一覧は `<git common dir>/ff-dev-toolkit/run-all-elapsed.tsv` を絶対パスで名指しし、別 worktree からも同じ記録で並べ替える。起動順は probe ログの最初の 2 本の集合で読む（同時に起動した 2 本の前後は比べない） |
 | case 51 | pass, fail, stale（明示引数。fail は相対パスでも渡す。51-E は `FF_RUN_ALL_JOBS=2`、51-F は全件モード） | 赤の回は `✗ failed:` の後に、赤の suite だけを絶対パスで並べた再実行コマンドを出す（緑の suite は混ぜない）。赤が複数なら `✗ failed:` と同じ集合・同じ並び。全件モードの回は `FF_RUN_ALL_FULL=1` を前置する。出したコマンドは形を確かめてから入れ子の印付きで別の cwd から実行し、赤の 1 本だけが走る（not-run 0）。相対パスで渡した suite も絶対パスで出す。緑の回は案内を出さない |
+| case 53 | 一時 git リポジトリの fixture と疑似 suite 2 本（`cases/gate-record-scope.sh`。明示引数で `FF_RUN_ALL_JOBS=1` と `=2`） | 親へ渡した `FF_GATE_RECORD_FILE` / `FF_GATE_RECORD` は suite の環境に届かない（未設定と空文字を区別する）。suite が `--record` なしで呼んだ記録器は fixture の git dir の既定の記録先へ書き、suite が内部で明示した `FF_GATE_RECORD_FILE` はそのまま効く。fixture が記録した直後に親の指定先はまだ無く、走行後は親の最終記録がある。逐次・並列の両経路で測る |
 
 ケース番号には欠番があります。Issue #1022 でランナー契約の核心 4 領域（集計 / skip 判定 / fail-closed 経路 /
 選択モード）へ絞り、同じ検出対象を別の疑似 suite で二重に踏んでいたケースを**検出力単位で統合**したためです。
@@ -246,6 +247,7 @@ FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh
   | 赤の suite の秒数も記録する | case 50-K |
   | 記録の場所がディレクトリでも書く / 一時ファイルのエラー文を stderr へ出す | case 50-H2 / case 50-H3 |
   | 既定一覧の記録の場所（common dir・ファイル名）を変える | case 50-J |
+  | 逐次 / 並列の起動箇所から `ff_suite_env_isolate` の呼び出しを外す | case 53-B / 53-C / 53-E（自己変異は 53-M1 / 53-M2） |
   | 並列経路の起動直後に `wait $!` を挟んで逐次化する | case 30（最大同時実行数 1） |
   | `tests/lib/exit-code-guard.sh` の `is_pipe` を常に 0 へ倒す（パイプ終端を認識しなくする） | case 35 |
   | 同梱 MCP 依存ガードの発火条件を常に偽へ倒す | case 41-A |

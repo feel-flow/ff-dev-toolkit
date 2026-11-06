@@ -57,6 +57,8 @@ PASS=0
 FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
+# 実行できない検査は成功に数えない。部分 skip は字下げ 2 つの skip 行だけ。
+part_skip() { echo "  ○ skip: $1"; }
 
 echo "== 主 + 副レビュワー体制 =="
 
@@ -384,7 +386,7 @@ if [ "$YQ_AVAILABLE" = "true" ]; then
     bad "設定ファイル経由でモデル slug が通った（rc=${RUN_RC}）— ACE-70-2 の再入経路"
   fi
 else
-  ok "○ yq 不在のため設定ファイル経由の検査はスキップ"
+  part_skip "yq 不在のため設定ファイル経由の検査はスキップ"
 fi
 rm -rf "$REPO/.claude"
 
@@ -443,7 +445,7 @@ if [ "$YQ_AVAILABLE" = "true" ]; then
     sed 's/^/    /' "$TMP/projwin.log" >&2
   fi
 else
-  ok "○ yq 不在のためプロジェクト設定の優先順位検査はスキップ（他の検査は実行済み）"
+  part_skip "yq 不在のためプロジェクト設定の優先順位検査はスキップ（他の検査は実行済み）"
 fi
 rm -rf "$REPO/.claude"
 
@@ -884,7 +886,7 @@ YAML
   fi
   rm -rf "$REPO/.claude"
 else
-  ok "○ yq 不在のため config 由来の strategy 検査はスキップ（flag 経路は実行済み）"
+  part_skip "yq 不在のため config 由来の strategy 検査はスキップ（flag 経路は実行済み）"
 fi
 
 # ── 既存モードの温存 ───────────────────────────────────────────
@@ -1299,7 +1301,7 @@ YAML
   fi
   rm -rf "$REPO/.claude"
 else
-  ok "○ yq 不在のためプロジェクト設定の cross_review 不正値検査はスキップ"
+  part_skip "yq 不在のためプロジェクト設定の cross_review 不正値検査はスキップ"
 fi
 
 # 手編集ファイルの未知キー（typo）は行を名指しして警告し、読み取りは止めない。
@@ -1426,7 +1428,7 @@ YAML
   fi
   rm -rf "$REPO/.claude"
 else
-  ok "○ yq 不在のためプロジェクト設定の優先順位検査はスキップ"
+  part_skip "yq 不在のためプロジェクト設定の優先順位検査はスキップ"
 fi
 run "$TMP/cr-env-user.log" MULTI_AGENT_CROSS_REVIEW=auto -- --print-reviewers
 if [ "$RUN_RC" -eq 0 ] \

@@ -359,7 +359,7 @@ run_ci_example_cases() {
         bad "CI例が${resource}のunreadable fixtureを成功扱い (rc=${rc})"
       fi
     else
-      echo "○ skip: 実行ユーザーが権限bitを超えて読めるため${resource}のunreadable fixtureを作れません"
+      echo "  ○ skip: 実行ユーザーが権限bitを超えて読めるため${resource}のunreadable fixtureを作れません"
     fi
   done
 

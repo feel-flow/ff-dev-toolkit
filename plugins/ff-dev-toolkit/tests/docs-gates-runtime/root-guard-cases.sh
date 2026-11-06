@@ -363,7 +363,7 @@ run_root_guard_cases() {
     run_guard_case "実行可能でも読み取り不能のresourceを案内付きで拒否" \
       "$unreadable_root" 2 "$GUARD_ROOT/unreadable.log"
   else
-    echo "○ skip: 実行ユーザーが権限bitを超えて読めるためunreadable resource fixtureを作れません"
+    echo "  ○ skip: 実行ユーザーが権限bitを超えて読めるためunreadable resource fixtureを作れません"
   fi
   directory_root="$GUARD_ROOT/directory"
   make_guard_root "$directory_root" multi-agent.sh

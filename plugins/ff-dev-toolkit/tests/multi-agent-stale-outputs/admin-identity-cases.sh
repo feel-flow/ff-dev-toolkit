@@ -36,7 +36,7 @@ run_admin_identity_cases() {
       else ok 'case alias of the repository root refuses by physical identity'; fi
     fi
   else
-    echo '  ○ case-alias branch unavailable on this filesystem; physical identity controls above ran'
+    echo '  ○ skip: 大文字小文字を区別するファイルシステムでは case-alias 分岐を作れないため未実行（上の物理同一性の検査は実施済み）'
     if ff_review_output_prepare "$REPO" "$REPO/.GIT/valid-distinct-output" false review >"$TMP/admin-distinct.out" 2>&1; then
       ok 'a physically distinct uppercase directory is not rejected by case folding'
     else bad 'a physically distinct uppercase directory was rejected'; fi

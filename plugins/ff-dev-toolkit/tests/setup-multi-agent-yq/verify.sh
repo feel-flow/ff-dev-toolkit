@@ -327,7 +327,7 @@ case "$REAL_YQ_VERSION" in
     fi
     ;;
   *)
-    ok "（参考）ホストに Mike Farah yq v4 が無いため成功経路の実測はスキップ"
+    echo "  ○ info: ホストに Mike Farah yq v4 が無いため成功経路は実測していない"
     ;;
 esac
 
@@ -385,7 +385,7 @@ EOF
     fi
     ;;
   *)
-    ok "（参考）ホストに Mike Farah yq v4 が無いためオフライン導入の実測はスキップ"
+    echo "  ○ info: ホストに Mike Farah yq v4 が無いためオフライン導入は実測していない"
     ;;
 esac
 

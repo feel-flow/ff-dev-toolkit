@@ -58,8 +58,25 @@ FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
-# 実行者のグローバル / システム設定（commit.gpgsign・core.hooksPath 等）を fixture へ継承させない
-export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+# 実行者のグローバル / システム設定（commit.gpgsign・core.hooksPath 等）を fixture へ継承させない。
+# 作者情報も推測させない（user.useConfigOnly）: 設定が無いと git は作者を推測する（名前は OS アカウントのフルネーム欄、
+# メールは EMAIL かアカウント名@ホスト名）。推測できる環境でだけ緑になり、推測できない環境（WSL・Windows の
+# Git Bash で実測）でだけ赤になる（Issue `#2665`）。環境変数で渡された作者も外す。fixture の commit は、作者情報を自前で持つ
+printf '[user]\n\tuseConfigOnly = true\n' >"$TMP/gitconfig-global"
+export GIT_CONFIG_GLOBAL="$TMP/gitconfig-global" GIT_CONFIG_NOSYSTEM=1
+unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+if [[ "$(git config --global --get user.useConfigOnly 2>/dev/null || true)" == true ]]; then
+  ok "fixture の git は作者情報を推測しない（グローバル設定は user.useConfigOnly だけ）"
+else
+  bad "fixture の git が作者情報を推測しうる（GIT_CONFIG_GLOBAL の隔離が効いていない。実行中: $(git --version)）"
+fi
+# 作者情報を持たない repo の commit-tree が実際に止まること（環境変数の作者が残っていても、推測でも通らない）
+git init -q "$TMP/ident-probe"
+if git -C "$TMP/ident-probe" commit-tree "$(git -C "$TMP/ident-probe" mktree </dev/null)" -m probe >/dev/null 2>&1; then
+  bad "作者情報を持たない repo で commit-tree が通る（環境変数か推測で作者が入っている）"
+else
+  ok "作者情報を持たない repo の commit-tree は止まる（fixture は作者情報を自前で持つ必要がある）"
+fi
 SSOT_NAME="$(printf '%s%s' 'feelflow-' 'plugins')"
 ID_NAME="Release Runtime"
 ID_MAIL="release-runtime@example.com"
@@ -275,7 +292,13 @@ if [[ -f "$RELEASE_RT_STATE/runall.advance" ]]; then
     git -C "$self" -c user.name="Same Checkout" -c user.email=same@example.com commit -qm "moved during gate"
     git -C "$self" push -q origin HEAD:refs/heads/develop
   fi
-  [[ -d "$side/.git" ]] || git clone -q "$RELEASE_RT_SSOT_ORIGIN" "$side"
+  if [[ ! -d "$side/.git" ]]; then
+    git clone -q "$RELEASE_RT_SSOT_ORIGIN" "$side" || { echo "✗ run-all stub: side の clone に失敗" >&2; exit 1; }
+    # 別 clone から呼ぶリリーススクリプトも、Issue 更新のロックを commit-tree で作るので作者情報を持たせる
+    # shellcheck source=/dev/null
+    . "$RELEASE_RT_FIXTURE_LIB" || { echo "✗ run-all stub: fixture の helper を読めない" >&2; exit 1; }
+    ff_git_fixture_init "$side" "Side Session" side@example.com || { echo "✗ run-all stub: side の作者情報を書けない" >&2; exit 1; }
+  fi
   git -C "$side" fetch -q origin && git -C "$side" checkout -q -B develop origin/develop
   case "$kind" in
     public) f=plugins/ff-dev-toolkit/scripts/side.txt ;;
@@ -458,6 +481,8 @@ git -C "$PUB" checkout -q -b main origin/main
 printf '%s\n' v0.31.0 >"$STATE/releases"
 
 export RELEASE_RT_STATE="$STATE" RELEASE_RT_PUBLIC="$PUB" RELEASE_RT_SSOT_ORIGIN="$SSOT_ORIGIN"
+# run-all の stub が作る side の clone へ、fixture と同じ helper で作者情報を書くための helper の場所
+export RELEASE_RT_FIXTURE_LIB="$SCRIPT_DIR/../lib/git-fixture.sh"
 export PATH="$STUB_BIN:$PATH"
 
 OUT="" RC=0
