@@ -27,13 +27,13 @@
 # 記録先: ${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/gate.tsv
 #   1 行 1 レコードの追記専用 TSV。列は issue / event(gate) / epoch / iso8601 / seconds /
 #   mode / status / branch / repo。repo は `--repo-dir` の `git rev-parse --path-format=absolute
-#   --git-common-dir`（linked worktree 間で共通）。Issue 番号はそのリポジトリの現在のブランチ
-#   `<type>/#<n>-<slug>` から取る。
+#   --git-common-dir`（linked worktree 間で共通）。Issue 番号はそのリポジトリの現在のブランチから
+#   取る（読み方の正本は scripts/lib/branch-issue.sh）。
 #
 # 記録しない形（exit 0・無出力 = fail-soft。ゲートの結果を変えない）:
 #   - FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS=1（wall-clock / 読み込みバイトの hook と同じ opt-out）
 #   - ブランチ名から Issue 番号が取れない（統合ブランチ・detached HEAD・番号の無いブランチ。
-#     `#` を必須にするので `chore/2026-09-23-cleanup` の日付を Issue 番号として記録しない）
+#     `chore/2026-09-23-cleanup` の日付を Issue 番号として記録しない）
 #   - repo を引けない（git 管理外）・秒が整数でない
 #   - 記録置き場を作れない・書けない
 #   記録が欠けた Issue は読み手が `(unmeasured)` として 0 と区別する（黙って 0 にしない）。
@@ -79,14 +79,15 @@ case "$SECONDS_ARG" in
 esac
 command -v git >/dev/null 2>&1 || exit 0
 
-# Issue 番号はブランチ名 `<type>/#<n>-<slug>` から（wall-clock の hook と同じ規則。`#` を必須にする —
-# `chore/2026-09-23-cleanup` の日付を Issue 番号として記録しない）
+# Issue 番号はブランチ名から（wall-clock の hook と同じ規則を共有 lib で読む）
 branch="$BRANCH"
 if [ -z "$branch" ]; then
   branch="$(git -C "$REPO_DIR" symbolic-ref --short -q HEAD 2>/dev/null)" || exit 0
 fi
 [ -n "$branch" ] || exit 0
-issue="$(printf '%s' "$branch" | sed -n 's|^[A-Za-z0-9_.-]*/#\([0-9][0-9]*\)\([-_/].*\)\{0,1\}$|\1|p' 2>/dev/null)"
+# shellcheck source=lib/branch-issue.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/branch-issue.sh" 2>/dev/null || exit 0
+issue="$(ff_branch_issue "$branch")"
 [ -n "$issue" ] || exit 0
 
 repo="$(git -C "$REPO_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || exit 0

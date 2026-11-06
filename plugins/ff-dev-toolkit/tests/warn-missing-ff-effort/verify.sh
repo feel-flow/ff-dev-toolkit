@@ -8,6 +8,7 @@
 #
 # 空振り検出: 警告句 ff-effort ブロックがありません を hook から消すと、検査本文の前に rc=1 で止まる（2026-10-30 実測: 句の不在で rc=1）。
 # 空振り検出: hook ファイルの不在と読取不能（chmod a-r）は、検査本文に入る前に rc=1 で止まる（2026-10-30 実測: 不在 rc=1、chmod a-r rc=1）。
+# 空振り検出: ff_branch_hash_hint の呼び出しを外すと `#` の案内の検査 5 件が赤になる（2026-11-05 実測）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -208,6 +209,11 @@ assert_lacks() {
 
 run_hook PostToolUse Bash 'git switch -c docs/#11-missing' "$WITH_GH"
 assert_warn 'switch -c はブロックの無い Issue を注意する' 'Issue 11'
+# 事後追記の予定値が最小値を下回らないよう、注意文が最小 1.0h と目安表の所在を名指しする
+assert_warn '注意文は effort_ai_planned を名指しする' 'effort_ai_planned は'
+assert_warn '注意文は最小値の値を書く' '最小 1.0h'
+assert_warn '注意文は目安表の所在を書く' 'references/estimation.md'
+assert_warn '注意文は bundle では束ね全体に当てると書く' '親・子それぞれではなく束ね全体'
 
 run_hook PostToolUse Bash 'git checkout -b feature/#12-missing' "$WITH_GH"
 assert_warn 'checkout -b はブロックの無い Issue を注意する' 'Issue 12'
@@ -346,6 +352,63 @@ if grep -F 'PostToolUse :: Bash :: hooks/warn-missing-ff-effort.sh' "$SURFACE" >
   ok '公開面に PostToolUse Bash の三つ組がある'
 else
   bad '公開面に PostToolUse Bash の三つ組が無い'
+fi
+
+# `#` だけが欠けた名前は実測が Issue に紐づかないので、無音にせず形を案内する（止めない）
+HINT_NEEDLE='からは Issue 番号を読めない'
+assert_hint() {
+  local label="$1" must="$2"
+  if [ "$RC" -ne 0 ] || [ -n "$ERR" ]; then
+    bad "${label}: exit=${RC} err=[${ERR}] out=[${OUT}]"
+    return 0
+  fi
+  if printf '%s' "$OUT" | jq -e --arg n "$must" --arg needle "$HINT_NEEDLE" \
+    '.hookSpecificOutput.hookEventName == "PostToolUse"
+     and (.hookSpecificOutput.additionalContext | contains($needle) and contains($n))
+     and (.hookSpecificOutput | has("permissionDecision") | not)' >/dev/null; then
+    ok "$label"
+  else
+    bad "${label}: out=[${OUT}]"
+  fi
+}
+printf '%s\n' 'plain body' > "$BODY/274"
+run_hook PostToolUse Bash 'git switch -c feature/274-x' "$WITH_GH"
+assert_hint '`#` の欠けた名前は # 付きの形を案内する' 'feature/#274-x'
+assert_lacks '`#` の欠けた名前は Issue として読まない' "$NEEDLE"
+run_hook PostToolUse Bash 'git switch -c feature/274-x' "$NO_GH"
+assert_hint 'gh が無くても # の案内は出す' 'feature/#274-x'
+run_hook PostToolUse Bash 'git branch -m feature/274-x' "$WITH_GH"
+assert_hint '付け替えでも # の案内を出す' 'feature/#274-x'
+run_hook PostToolUse Bash 'git switch -c feature/#11-x && git switch -c feature/274-x' "$WITH_GH"
+assert_hint '同じ呼び出しの工数の注意と # の案内は両方残る' 'feature/#274-x'
+case "$OUT" in
+  *"$NEEDLE"*) ok '同じ呼び出しの工数の注意も残る' ;;
+  *) bad "同じ呼び出しの工数の注意が消えた: out=[${OUT}]" ;;
+esac
+run_hook PostToolUse Bash 'git worktree add -b feature/274-x ../wt-274' "$WITH_GH"
+assert_hint 'git worktree add -b でも # の案内を出す' 'feature/#274-x'
+run_hook PostToolUse Bash 'git worktree add -b docs/#11-missing ../wt-11' "$WITH_GH"
+assert_warn 'git worktree add -b でも工数の注意を出す' 'Issue 11'
+run_hook PostToolUse Bash 'git worktree add ../wt-existing feature/274-x' "$WITH_GH"
+assert_silent '-b の無い git worktree add は新しい名前を作らないので無音'
+run_hook PostToolUse Bash 'git worktree list' "$WITH_GH"
+assert_silent 'git worktree list は無音'
+for name in chore/2026-09-23-cleanup codex/2026-09-23-x chore/ace-from-pr-7233 develop; do
+  run_hook PostToolUse Bash "git switch -c ${name}" "$WITH_GH"
+  assert_silent "Issue を持たない名前は無音: ${name}"
+done
+run_hook PostToolUse Bash 'git switch -c codex/274-x' "$WITH_GH"
+assert_warn 'ホストの形は Issue として読み、工数の注意を出す' 'Issue 274'
+# grok の入力（run_terminal_command）はシム経由で同じ結果になる
+GROK_SHIM="$PLUGIN_ROOT/scripts/grok/hook-shim.sh"
+if [ -f "$GROK_SHIM" ]; then
+  RC=0
+  OUT="$(jq -n --arg d "$TEST_TMP" '{tool_name:"run_terminal_command", tool_input:{command:"git switch -c feature/274-x"}, cwd:$d, hook_event_name:"PostToolUse"}' \
+    | env PATH="$WITH_GH" HOME="$FAKE_HOME" GH_PROMPT_DISABLED=1 FAKE_GH_BODY_DIR="$BODY" bash "$GROK_SHIM" bash "$TARGET" 2>"$TEST_TMP/hook.err")" || RC=$?
+  ERR="$(cat "$TEST_TMP/hook.err")"
+  assert_hint 'grok の入力もシム経由で同じ案内を出す' 'feature/#274-x'
+else
+  bad "シムがありません: ${GROK_SHIM}"
 fi
 
 if [ "$FAIL" -eq 0 ]; then

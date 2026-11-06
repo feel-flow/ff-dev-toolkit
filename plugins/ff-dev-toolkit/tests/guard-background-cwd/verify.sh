@@ -1,42 +1,43 @@
 #!/usr/bin/env bash
 # Runtime contract for the Bash cwd guard hook.
 #
-# 配布物 hooks/guard-background-cwd.sh を stdin JSON で直接駆動し、受け入れ条件の
-# 各ケース（モノレポ + background + 非絶対 cd → systemMessage 警告 / linked worktree の
-# ある repo は foreground でも警告 / 先頭が絶対パスの cd・linked worktree 無しの単一
-# パッケージ repo → 無音 / git worktree list が失敗する環境 → fail-open /
-# 壊れた stdin → fail-open）を固定する。
-# あわせて「絶対化イディオムをどう扱うか」（コマンド置換・変数展開・サブシェル前置は
-# 沈黙側、明らかに相対な cd は警告側）、先頭前置の剥がし（改行・グループ・環境変数前置・env）と
-# cwd 非依存 allowlist（gh / until / sleep / 読み取り専用 head）の無音化、heredoc は本文の
-# 最初の実効行で判定すること（本文はセグメント分割の対象外）、allowlist をセグメント単位で
-# 見ること（`&&` / `||` / `|` / `;` / 改行のいずれで連結しても、また `then` / `elif` /
-# `else` 前置のセグメントでも素通りしない）、実体の消えた（prunable）worktree 登録を live と数えないこと、そして残る既知の誤警告
-# （npm --prefix /abs のようにオプション側で絶対化する形）を固定する。`cd` のオプション
-# （`-L` / `-P` / `-e` / `-@` と結合形）を読み飛ばして絶対パス判定すること（`cd -P /abs` は
-# 無音、`cd -P sub` のようなオプション後の相対パスは従来どおり検出すること）も固定する。
-# あわせて警告が
-# 出力チャネルが経路で分かれること（linked worktree あり かつ 先頭が相対 cd →
-# エージェントへ届く deny / それ以外 → ブロックしない systemMessage の警告）を固定し、
-# hooks.json の PreToolUse 登録を静的照合する。
+# 配布物 hooks/guard-background-cwd.sh を stdin JSON で直接駆動し、次を固定する。
+#   - deny 面: linked worktree のある repo で、先頭が相対パスの cd の呼び出しを、エージェントへ
+#     届く再実行可能な deny（permissionDecision + permissionDecisionReason）で止める。前置
+#     （改行・空白・サブシェル・グループ・環境変数・env・先頭の setopt）を剥がしてから判定し、
+#     cwd が linked worktree 側でも止める。background × モノレポなら理由文へ補足を足す
+#   - deny の面を広げない: 絶対パス（Windows のドライブ付きを含む）・コマンド置換・変数展開・
+#     チルダの cd、引数なし・オプション付き・`cd -`・区切りや改行を越える形、heredoc 本文、
+#     linked worktree の無い repo、実体の消えた（prunable）登録しか無い repo、
+#     `git worktree list` が失敗する環境は止めない
+#   - 止めない警告は出さない（Issue `#2614`）: deny に当たらない呼び出しは、systemMessage も
+#     hookSpecificOutput.additionalContext も含め stdout が空。以前の警告面（`cd` を含まない
+#     `npm test` 等・モノレポの background 実行）の入力をすべて無出力側で固定する
+#   - fail-open（壊れた stdin・jq 不在・opt-out・ASDD ゲートの早期終了でも stdin を読み切る）と、
+#     hooks.json の PreToolUse 登録
 #
-# 変異検出（届くチャネルへの切り替え）:
-#           deny 分岐を外して systemMessage のみへ戻すと 9 件が赤。
-#           相対 cd の条件を外して経路 B 全体を deny にする（面を広げる）と 22 件が赤。
-#           前置（環境変数・サブシェル・env）の剥がし後ではなく生の command で判定すると 2 件が赤。
-#           `starts_with_absolute_cd` のオプション読み飛ばし（`cd_arg_after_options` の
-#           利用）を外し、`cd` 直後の文字列をそのまま絶対パス判定に渡すと 22 件が赤
-#           （`cd -P /abs` 等のオプション付き絶対 cd が無音にならなくなる）。
-#           `--` の後もオプション走査を続ける（`cd -- -P /abs` を絶対 cd と読む）と 1 件が赤。
+# 空振り検出: 対象 hook を「stdin を読み切って exit 0 するだけ」の写し（opt-out の参照だけは残す — 無いと
+#   isolate_hook_env のセンチネル照合が先に止める）へ差し替えると 31 件が赤（deny の全件とその理由文の針。
+#   2026-11-04 実測。無出力を「止めないのが正しい」へ倒さないことの実測）。
+# 空振り検出: Issue `#2614` より前の hook（警告面を systemMessage で出す版）を当てると 36 件が赤（警告面だった入力の
+#   無出力の検査と、理由文の通し方の案内）。警告を hookSpecificOutput.additionalContext で呼び出しごとに出す変異でも
+#   51 件が赤（チャネルだけ替えて洪水を戻す形を通さない。いずれも 2026-11-04 実測）。
+#
+# 変異検出（2026-11-04 実測。いずれも hook の写しへ 1 箇所だけ注入して suite を回した赤の件数）:
+#           相対 cd の条件を外して linked worktree のある repo の全呼び出しを deny にする（面を広げる）と 47 件が赤。
+#           前置の剥がし後ではなく生の command で判定すると 6 件が赤。
+#           オプション付き（`cd -P sub`）を降りずに deny へ倒すと 1 件が赤。
+#           `--` の後もオプション走査を続ける（`cd -- -P sub` を取りこぼす）と 1 件が赤。
 #           区切り（`;` / `&&`）を越えて次の語を引数と読むと 3 件が赤。
-#           deny のラベルを警告へ戻すと 1 件が赤。
-#           deny の締めへ警告用の文（「ブロックしません」）を流用すると 2 件が赤
-#           — 届けたい唯一のチャネルの中で「止めていない」と自称する形（レビューで実測）。
-#           絶対パス・コマンド置換・変数展開を相対と誤判定すると 6 件が赤。
-#           先頭の setopt（オプション名だけの文）の読み飛ばしを外すと S1 が警告になり赤（S8 が suite の中で確かめる。2026-11-02）。
-#           良性: 改行の切り落としだけを外しても緑、空白読み飛ばしを [[:space:]] へ戻すだけでも緑。
-#           この 2 つは同じ危険（`cd<改行><次行>` を相対 cd と読む）を独立に塞ぐ冗長化で、
-#           **両方を同時に外すと 1 件が赤**になる。検査は実装の片側ではなく振る舞いを固定している。
+#           絶対パス・コマンド置換・変数展開・チルダを相対と誤判定すると 12 件が赤。
+#           `cd` の直後を空白・タブに限らず [[:space:]] で受けると 2 件が赤（`cd<FF>/abs` / `cd<全角空白>/abs`）。
+#           deny のラベルを警告へ戻すと 1 件が赤。理由文の通し方を opt-out の前置へ戻すと 2 件が赤。
+#           先頭の setopt（オプション名だけの文）の読み飛ばしを外すと 3 件が赤（S8 が陽性対照付きで suite の中でも確かめる）。
+#           prunable な登録を live と数えると 1 件が赤。linked worktree の閾値を 1 本へ下げても 1 件が赤
+#           （`.git/worktrees/` を持つのは prunable の fixture だけ）。
+#           モノレポ判定の find で node_modules の prune を外すと 1 件、root の package.json を数えると 1 件が赤。
+#           改行の切り落とし（`cd <空白><改行><次行>` を相対 cd と読まない）を外すと 1 件、`cd` の引数前の空白読み飛ばしを
+#           [[:space:]] へ広げると 1 件（`cd <空白><FF>/…` を絶対と読む）、両方を外すと 2 件が赤。
 #
 # run-all-required: no — jq / git 不在での skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。既存の Bash ガード suite と同じ扱い）
 set -euo pipefail
@@ -95,12 +96,12 @@ FAIL=0
 ok() { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
-# fixture 1: packages/ を持つモノレポ
+# fixture 1: packages/ を持つモノレポ（linked worktree 無し）
 MONO="$TEST_TMP/mono"
 mkdir -p "$MONO/packages/app" "$MONO/packages/api"
 git -C "$MONO" init --quiet >/dev/null 2>&1 || { echo "○ skip: git init に失敗（guard-background-cwd は未検査のままです）"; REACHED_END=1; exit 0; }
 
-# fixture 2: packages/ は無いが子ディレクトリに package.json が 2 つあるモノレポ
+# fixture 2: packages/ は無いが子ディレクトリに package.json が 2 つあるモノレポ（linked worktree 無し）
 MULTI="$TEST_TMP/multi"
 mkdir -p "$MULTI/web" "$MULTI/mobile" "$MULTI/web/node_modules/dep"
 git -C "$MULTI" init --quiet >/dev/null 2>&1 || true
@@ -116,8 +117,8 @@ git -C "$SINGLE" init --quiet >/dev/null 2>&1 || { echo "○ skip: git init に�
 printf '{}\n' > "$SINGLE/package.json"
 
 # fixture 4 / 5: linked worktree を 1 本持つ repo。
-# 4 = 単一パッケージ（経路 B のみ）、5 = モノレポ（経路 A と B が同時に立つ）。
-# `git worktree add` には最低 1 コミットが要る。作れない環境では該当ブロックだけ skip する。
+# 4 = 単一パッケージ、5 = モノレポ（deny の理由文へ background の補足が足される側）。
+# `git worktree add` には最低 1 コミットが要る。作れない環境では該当ブロックを失敗にする。
 make_worktree_repo() { # <repo dir> <linked worktree dir>
   local repo="$1" linked="$2"
   mkdir -p "$repo" || return 1
@@ -143,6 +144,29 @@ if [ "$MONOWT_READY" -eq 1 ]; then
   mkdir -p "$MONOWT/packages/app" || MONOWT_READY=0
 fi
 
+# fixture 5b / 5c: `packages/` を持たない linked worktree の repo。モノレポ判定の find 側
+# （子ディレクトリの package.json を数える。node_modules は prune、root の package.json は数えない）を
+# deny の理由文の補足で固定する。5b = 子 2 つ + node_modules の囮（モノレポ）、5c = 子 1 つ（モノレポでない）。
+MULTIWT="$TEST_TMP/multiwt"
+MULTIWT_READY=1
+make_worktree_repo "$MULTIWT" "$TEST_TMP/multiwt-linked" || MULTIWT_READY=0
+if [ "$MULTIWT_READY" -eq 1 ]; then
+  mkdir -p "$MULTIWT/web/node_modules/dep" "$MULTIWT/mobile" &&
+    printf '{}\n' > "$MULTIWT/web/package.json" &&
+    printf '{}\n' > "$MULTIWT/mobile/package.json" &&
+    printf '{}\n' > "$MULTIWT/web/node_modules/dep/package.json" || MULTIWT_READY=0
+fi
+ONECHILDWT="$TEST_TMP/onechildwt"
+ONECHILDWT_READY=1
+make_worktree_repo "$ONECHILDWT" "$TEST_TMP/onechildwt-linked" || ONECHILDWT_READY=0
+if [ "$ONECHILDWT_READY" -eq 1 ]; then
+  # 囮の node_modules は find の深さ（-maxdepth 3）に収まる位置へ置く。深すぎると prune の有無に
+  # かかわらず数えられず、prune を外した変異を検出できない。
+  mkdir -p "$ONECHILDWT/web" "$ONECHILDWT/node_modules/dep" &&
+    printf '{}\n' > "$ONECHILDWT/web/package.json" &&
+    printf '{}\n' > "$ONECHILDWT/node_modules/dep/package.json" || ONECHILDWT_READY=0
+fi
+
 # fixture 6: 登録は残っているが実体が消えている（prunable）worktree だけを持つ repo。
 # `rm -rf` しただけで `git worktree prune` を打っていない状態を再現する。
 PRUNEMAIN="$TEST_TMP/prunemain"
@@ -155,8 +179,8 @@ fi
 
 OUT=""
 RC=0
-MESSAGE=""
 DECISION=""
+REASON=""
 
 run_hook() { # <command> <cwd> [background:true|false|absent] [env NAME=VALUE]
   local cmd="$1" cwd="$2" bg="${3:-true}" extra_env="${4:-}"
@@ -177,30 +201,25 @@ run_hook() { # <command> <cwd> [background:true|false|absent] [env NAME=VALUE]
   else
     OUT="$(printf '%s' "$json" | bash "$TARGET" 2>/dev/null)" || RC=$?
   fi
-  MESSAGE="$(printf '%s' "$OUT" | jq -r '.systemMessage // empty' 2>/dev/null || true)"
   DECISION="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)"
   REASON="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null || true)"
 }
 
-assert_warn() { # <label>
-  if [ "$RC" -eq 0 ] && [ -n "$MESSAGE" ] && [ -z "$DECISION" ]; then
-    ok "$1"
-  else
-    bad "$1: exit=$RC decision=[$DECISION] out=[$OUT]"
-  fi
-}
-
-# deny（エージェントへ届く警告）。systemMessage しか出ない形は「利用者の画面にだけ出て
-# エージェントには届かない」状態そのものなので、reason の非空と systemMessage の不在を
-# 対で見る（片方だけだと、両方出す折衷へ変えても緑のまま通る）。
+# deny（エージェントへ届く唯一の止めるチャネル）。理由文の非空に加えて、利用者の画面へ出る
+# systemMessage と、CLI / Remote Control の画面にも出る additionalContext の不在を対で見る
+# （片方だけだと、deny と並べて警告を出す折衷へ変えても緑のまま通る）。
 assert_deny() { # <label>
-  if [ "$RC" -eq 0 ] && [ "$DECISION" = "deny" ] && [ -n "$REASON" ] && [ -z "$MESSAGE" ]; then
+  local extra=""
+  extra="$(printf '%s' "$OUT" | jq -r '[.systemMessage // empty, .hookSpecificOutput.additionalContext // empty] | join("")' 2>/dev/null || true)"
+  if [ "$RC" -eq 0 ] && [ "$DECISION" = "deny" ] && [ -n "$REASON" ] && [ -z "$extra" ]; then
     ok "$1"
   else
-    bad "$1: exit=$RC decision=[$DECISION] reason_len=${#REASON} message_len=${#MESSAGE} out=[$OUT]"
+    bad "$1: exit=$RC decision=[$DECISION] reason_len=${#REASON} extra_len=${#extra} out=[$OUT]"
   fi
 }
 
+# 無出力（exit 0 かつ stdout が空）。systemMessage も additionalContext も含め何も出さないこと
+# を、stdout 全体の空で一度に見る（Issue `#2614`: 呼び出しごとの表示はチャネルを問わず洪水になる）。
 assert_silent() { # <label>
   if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
     ok "$1"
@@ -209,165 +228,168 @@ assert_silent() { # <label>
   fi
 }
 
-echo "guard-background-cwd: AC1（モノレポ + background + 非絶対 cd → 警告）"
+# fixture を作れないまま skip すると deny 面のケースが全部消えたまま緑になる。
+# git が無い環境は suite 冒頭で skip 済みなので、ここで作れないのは実装かテストの異常。
+if [ "$WT_READY" -ne 1 ]; then
+  bad "linked worktree の fixture（git worktree add）を作れませんでした（deny 面が未検査のまま緑になるのを防ぐため失敗にします）"
+fi
+
+echo "guard-background-cwd: 警告面の廃止（以前の警告面の入力は、どのチャネルにも何も出さない）"
 run_hook 'npm test' "$MONO"
-assert_warn "AC1: packages/ を持つ repo で先頭が cd でない background 実行を警告する"
+assert_silent "モノレポ + background + cd を含まない呼び出しは無出力"
 run_hook 'cd packages/app && npm test' "$MONO"
-assert_warn "AC1: 相対パスの cd（cd packages/app）も警告する"
+assert_silent "linked worktree の無いモノレポ + background + 相対 cd は deny へ倒さず無出力"
 run_hook 'npm test' "$MULTI"
-assert_warn "AC1: 子ディレクトリの package.json 2 つでもモノレポと判定する（node_modules は数えない）"
+assert_silent "子ディレクトリの package.json 2 つのモノレポ + background も無出力"
 run_hook 'npm test' "$MONO/packages/app"
-assert_warn "AC1: cwd がパッケージ配下でも repo root から判定する"
-
-echo "guard-background-cwd: 警告文の契約（ブロックせず、対処を出力自体に案内する）"
-run_hook 'npm test' "$MONO"
-case "$MESSAGE" in
-  *"絶対パス"*) ok "警告文が絶対パスの cd を先頭に置くことを案内する" ;;
-  *) bad "警告文に絶対パスの案内が無い: [$MESSAGE]" ;;
-esac
-case "$MESSAGE" in
-  *"$MONO"*) ok "警告文がセッション cwd（worktree root）を名指しする" ;;
-  *) bad "警告文に repo root が無い: [$MESSAGE]" ;;
-esac
-case "$MESSAGE" in
-  *FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD*) ok "警告文が opt-out を案内する" ;;
-  *) bad "警告文に opt-out の案内が無い: [$MESSAGE]" ;;
-esac
-
-echo "guard-background-cwd: AC2（無音 exit 0）"
-run_hook "cd $MONO/packages/app && npm test" "$MONO"
-assert_silent "AC2: 先頭が絶対パスの cd なら無音"
-run_hook "(cd $MONO/packages/app && npm test) " "$MONO"
-assert_silent "AC2: サブシェル前置（先頭の空白・括弧）を剥がして判定する"
-run_hook "cd \"$MONO/packages/app\" && npm test" "$MONO"
-assert_silent "AC2: クォート付きの絶対パスも無音"
-run_hook 'npm test' "$MONO" false
-assert_silent "AC2: foreground（run_in_background: false）は無音"
-run_hook 'npm test' "$MONO" absent
-assert_silent "AC2: run_in_background キーが無い入力（別ハーネス）は無音"
-run_hook 'npm test' "$SINGLE"
-assert_silent "AC2: 単一パッケージ repo は無音"
-run_hook 'npm test' "$SINGLE" false
-assert_silent "AC2: linked worktree が無く非モノレポなら foreground も無音（現行の静けさを壊さない）"
-run_hook 'npm test' "$SINGLE" absent
-assert_silent "AC2: linked worktree が無く非モノレポなら run_in_background キー無しも無音"
-
-echo "guard-background-cwd: cd のオプション付き絶対パス（cd -P /abs 等）は無音"
-run_hook "cd -P $MONO/packages/app && npm test" "$MONO"
-assert_silent "cd -P /abs: オプションを読み飛ばして絶対パスの cd と判定する"
-run_hook "cd -L $MONO/packages/app && npm test" "$MONO"
-assert_silent "cd -L /abs も無音"
-run_hook "cd -e $MONO/packages/app && npm test" "$MONO"
-assert_silent "cd -e /abs も無音"
-run_hook "cd -@ $MONO/packages/app && npm test" "$MONO"
-assert_silent "cd -@ /abs も無音"
-run_hook "cd -LP $MONO/packages/app && npm test" "$MONO"
-assert_silent "結合形 cd -LP /abs も無音"
-run_hook "cd -- -P $MONO/packages/app && npm test" "$MONO"
-assert_warn "cd -- -P /abs: -- の後の -P はオプションではなくパス引数なので、絶対 cd と読まず従来どおり検出する"
-run_hook 'cd -P sub && npm test' "$MONO"
-assert_warn "cd -P sub（オプションのあとの相対パス）は従来どおり検出する"
-run_hook 'cd -P' "$MONO" true
-assert_warn "cd -P（パス引数が無い）は引数なしの cd と同じ扱い（deny へ倒さないが警告は従来どおり）"
-
-echo "guard-background-cwd: 経路 B（linked worktree のある repo は foreground でも警告）"
+assert_silent "cwd がパッケージ配下のモノレポ + background も無出力"
 if [ "$WT_READY" -eq 1 ]; then
   run_hook 'npm test' "$WTMAIN" false
-  assert_warn "経路 B: linked worktree があれば foreground（run_in_background: false）でも警告する"
+  assert_silent "linked worktree あり + foreground + cd を含まない呼び出しは無出力"
   run_hook 'npm test' "$WTMAIN" absent
-  assert_warn "経路 B: run_in_background キーが無い入力（別ハーネス）でも警告する"
+  assert_silent "linked worktree あり + run_in_background キー無し（別ハーネス）も無出力"
+  run_hook 'npm test' "$WTMAIN" true
+  assert_silent "linked worktree あり + background + cd を含まない呼び出しも無出力"
   run_hook 'bash scripts/patch.sh' "$WTMAIN" false
-  assert_warn "経路 B: 相対パスの編集スクリプト実行を警告する"
+  assert_silent "linked worktree あり + 相対パスのスクリプト実行（cd で始まらない）も無出力"
   run_hook 'npm test' "$WTLINKED" false
-  assert_warn "経路 B: cwd が linked worktree 側でも警告する"
+  assert_silent "cwd が linked worktree 側でも cd を含まない呼び出しは無出力"
+  run_hook 'git status && npm test' "$WTMAIN" false
+  assert_silent "linked worktree あり + cd を含まない複合コマンドも無出力"
+  run_hook 'gh pr view | npm test' "$WTMAIN" false
+  assert_silent "linked worktree あり + パイプの右側が cwd 依存でも無出力"
+  run_hook 'if true; then npm test; fi' "$WTMAIN" false
+  assert_silent "linked worktree あり + 制御構文の中の cwd 依存セグメントも無出力"
+  run_hook 'sed -i.bak s/a/b/ package.json' "$WTMAIN" false
+  assert_silent "linked worktree あり + sed -i も無出力"
+  run_hook "npm --prefix $WTMAIN test" "$WTMAIN" false
+  assert_silent "linked worktree あり + オプション側で絶対化する形も無出力"
+  run_hook "$(printf "bash -e <<'EOF'\nnpm test\nEOF")" "$WTMAIN" false
+  assert_silent "linked worktree あり + heredoc 本文が cd で始まらない形も無出力"
+  run_hook 'cd' "$WTMAIN" false
+  assert_silent "linked worktree あり + 引数なしの cd は無出力"
+  run_hook 'cd -P sub && npm test' "$WTMAIN" false
+  assert_silent "linked worktree あり + オプション付き相対 cd（cd -P sub）は deny へ倒さず無出力"
+  run_hook 'cd -P' "$WTMAIN" false
+  assert_silent "linked worktree あり + オプションのみでパス引数が無い cd -P は無出力"
+  run_hook 'cd - && npm test' "$WTMAIN" false
+  assert_silent "linked worktree あり + cd -（OLDPWD）は無出力"
+  run_hook 'cd && npm test' "$WTMAIN" false
+  assert_silent "linked worktree あり + 引数なし cd + 区切り: 区切りを越えて次の語を引数と読まず無出力"
+  run_hook 'cd ; npm test' "$WTMAIN" false
+  assert_silent "linked worktree あり + cd ; <後続>: 区切りを越えず無出力"
+  run_hook 'cd -- && npm test' "$WTMAIN" false
+  assert_silent "linked worktree あり + cd -- <引数なし>: パス引数が無いので無出力"
+  run_hook "$(printf 'cd\nnpm test')" "$WTMAIN" false
+  assert_silent "linked worktree あり + cd <改行> <後続>: 改行を越えて次行を引数と読まず無出力"
+  run_hook "$(printf 'cd \nnpm test')" "$WTMAIN" false
+  assert_silent "linked worktree あり + cd <空白> <改行> <後続>: 空白の後の改行も越えず無出力"
+  run_hook "$(printf 'cd\f/work/repo && npm test')" "$WTMAIN" false
+  assert_silent "linked worktree あり + cd<FF>/abs: シェルが cd と読まない（語全体がコマンド名）ので無出力"
+  run_hook "$(printf 'cd\343\200\200/work/repo && npm test')" "$WTMAIN" false
+  assert_silent "linked worktree あり + cd<全角空白>/abs: シェルが cd と読まないので無出力"
+  run_hook "$(printf "bash -e <<'EOF'\ncd docs/notes\nnpm test\nEOF")" "$WTMAIN" false
+  assert_silent "linked worktree あり + heredoc 本文が相対 cd: deny 面には入れず無出力"
+fi
+if [ "$MONOWT_READY" -eq 1 ]; then
+  run_hook 'npm test' "$MONOWT" true
+  assert_silent "モノレポ + linked worktree + background + cd を含まない呼び出しも無出力"
+else
+  bad "モノレポ + worktree fixture を作れませんでした（未検査のまま緑になるのを防ぐため失敗にします）"
+fi
 
-  run_hook 'npm test' "$WTMAIN" false
-  case "$MESSAGE" in
-    *"linked worktree"*) ok "経路 B: 警告文が linked worktree の存在を名指しする" ;;
-    *) bad "経路 B: 警告文に linked worktree が無い: [$MESSAGE]" ;;
-  esac
-  case "$MESSAGE" in
-    *"絶対パス"*"cd"*) ok "経路 B: 警告文が先頭に絶対パスの cd を書くことを案内する" ;;
-    *) bad "経路 B: 警告文に絶対パスの cd の案内が無い: [$MESSAGE]" ;;
-  esac
-  case "$MESSAGE" in
-    *"$WTMAIN"*) ok "経路 B: 警告文が現在の repo root を名指しする" ;;
-    *) bad "経路 B: 警告文に repo root が無い: [$MESSAGE]" ;;
-  esac
-  case "$MESSAGE" in
-    *FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD*) ok "経路 B: 警告文が opt-out を案内する" ;;
-    *) bad "経路 B: 警告文に opt-out の案内が無い: [$MESSAGE]" ;;
-  esac
-
+echo "guard-background-cwd: 絶対化した cd と判定材料の無い repo は無出力"
+run_hook "cd $MONO/packages/app && npm test" "$MONO"
+assert_silent "モノレポ: 先頭が絶対パスの cd なら無出力"
+run_hook 'npm test' "$SINGLE"
+assert_silent "単一パッケージ repo は無出力"
+run_hook 'cd src && npm test' "$SINGLE" false
+assert_silent "linked worktree の無い単一パッケージ repo は相対 cd でも無出力"
+run_hook 'cd src && npm test' "$TEST_TMP" false
+assert_silent "git リポジトリ外は判定材料が無く無出力（fail-open）"
+if [ "$WT_READY" -eq 1 ]; then
   run_hook "cd $WTMAIN/src && npm test" "$WTMAIN" false
-  assert_silent "経路 B: 先頭が絶対パスの cd なら無音"
-  run_hook 'cd "$(git rev-parse --show-toplevel)" && npm test' "$WTMAIN" false
-  assert_silent "経路 B: 絶対化イディオムの線引きは経路 A と同じ判定を使う"
+  assert_silent "linked worktree あり: 先頭が絶対パスの cd なら無出力"
+  run_hook "(cd $WTMAIN/src && npm test) " "$WTMAIN" false
+  assert_silent "linked worktree あり: サブシェル前置を剥がした先が絶対パスの cd なら無出力"
+  run_hook "cd \"$WTMAIN/src\" && npm test" "$WTMAIN" false
+  assert_silent "linked worktree あり: クォート付きの絶対パスも無出力"
+  run_hook "cd -P $WTMAIN && npm test" "$WTMAIN" false
+  assert_silent "linked worktree あり: オプション付き絶対 cd（cd -P /abs）も無出力"
+  run_hook "cd -LP $WTMAIN && npm test" "$WTMAIN" false
+  assert_silent "linked worktree あり: 結合形 cd -LP /abs も無出力"
+  run_hook "cd -- $WTMAIN/src && npm test" "$WTMAIN" false
+  assert_silent "linked worktree あり: cd -- の後の絶対パスも無出力"
+  run_hook 'cd "$(git rev-parse --show-toplevel)"/src && npm test' "$WTMAIN" false
+  assert_silent "linked worktree あり: コマンド置換で絶対化するイディオムは無出力（リポジトリ規約が許容している形）"
+  run_hook 'cd $(git rev-parse --show-toplevel) && npm test' "$WTMAIN" false
+  assert_silent "linked worktree あり: クォート無しのコマンド置換も無出力"
+  run_hook 'cd "$CLAUDE_PROJECT_DIR/src" && npm test' "$WTMAIN" false
+  assert_silent "linked worktree あり: 変数展開の cd は評価できないため無出力側へ倒す（既知の取りこぼし）"
+  run_hook 'cd ~/work && npm test' "$WTMAIN" false
+  assert_silent "linked worktree あり: チルダ展開の cd も無出力"
   run_hook 'gh pr checks --watch' "$WTMAIN" false
-  assert_silent "経路 B: cwd 非依存の allowlist（gh）も経路 A と同じく無音"
-
-  echo "guard-background-cwd: AC5（git worktree list が失敗する環境は fail-open）"
-  GIT_BIN="$(command -v git)"
-  GIT_SHIM_DIR="$TEST_TMP/shim"
-  mkdir -p "$GIT_SHIM_DIR"
-  {
-    printf '#!/bin/sh\n'
-    printf 'for a in "$@"; do\n'
-    printf '  [ "$a" = "worktree" ] && exit 128\n'
-    printf 'done\n'
-    printf 'exec %s "$@"\n' "$GIT_BIN"
-  } > "$GIT_SHIM_DIR/git"
-  chmod +x "$GIT_SHIM_DIR/git"
-  run_hook 'npm test' "$WTMAIN" false "PATH=$GIT_SHIM_DIR:$PATH"
-  assert_silent "AC5: git worktree list が失敗する環境では黙って許可する（0 本として扱う）"
-else
-  # fixture を作れないまま skip すると経路 B のケースが全部消えたまま緑になる。
-  # git が無い環境は suite 冒頭で skip 済みなので、ここに来るのは実装かテストの異常。
-  bad "経路 B の fixture（git worktree add）を作れませんでした（経路 B が未検査のまま緑になるのを防ぐため失敗にします）"
+  assert_silent "linked worktree あり: gh は無出力"
+  run_hook 'until gh pr view --json state; do sleep 30; done' "$WTMAIN" false
+  assert_silent "linked worktree あり: CI 待ちの until ループは無出力"
+  run_hook "bash $WTMAIN/script.sh" "$WTMAIN" false
+  assert_silent "linked worktree あり: 第 1 引数が絶対パスの実行（bash /abs/script.sh）は無出力"
+  run_hook "$(printf "bash -e <<'EOF'\ncd %s/src\nnpm test\nEOF" "$WTMAIN")" "$WTMAIN" false
+  assert_silent "linked worktree あり: heredoc 本文 1 行目が絶対パスの cd なら無出力"
 fi
 
-echo "guard-background-cwd: prunable な登録は live と数えない"
-if [ "$PRUNE_READY" -eq 1 ]; then
-  run_hook 'npm test' "$PRUNEMAIN" false
-  assert_silent "実体の消えた（prunable）登録しか無い repo は無音（git worktree prune 前でも鳴らさない）"
-else
-  bad "prunable fixture を作れませんでした（prunable 除外が未検査のまま緑になるのを防ぐため失敗にします）"
-fi
-
-echo "guard-background-cwd: 経路 B かつ相対 cd はエージェントへ届く deny にする"
+echo "guard-background-cwd: linked worktree あり かつ 先頭が相対パスの cd は deny"
 # systemMessage は利用者向けの表示チャネルで、行動を変えるべきエージェントには届かない
-# （導入先で実測: 経路 B の発火条件を満たす相対 cd の呼び出しが、続く 2 呼び出しの
-# no such file or directory に化けたが、エージェント側には警告が 1 行も出なかった）。
-# 兄弟ガード 3 本が既に採っている deny + permissionDecisionReason へ寄せる。
-# 面は広げない — deny にするのは「linked worktree あり かつ 先頭が相対 cd」だけで、
-# cd を含まない呼び出しと経路 A のみの呼び出しは従来どおり非ブロックの警告のまま。
+# （導入先で実測: 相対 cd の呼び出しが、続く 2 呼び出しの no such file or directory に化けたが、
+# エージェント側には警告が 1 行も出なかった）。兄弟ガード 3 本と同じ deny + permissionDecisionReason。
 if [ "$WT_READY" -eq 1 ]; then
   run_hook 'cd docs/notes && npm test' "$WTMAIN" false
-  assert_deny "経路 B + 相対 cd: エージェントへ届く deny を返す"
+  assert_deny "相対 cd: エージェントへ届く deny を返す"
   case "$REASON" in
-    *"絶対パス"*"cd"*"再実行"*) ok "経路 B + 相対 cd: reason が「絶対パスの cd で再実行」を案内する" ;;
-    *) bad "経路 B + 相対 cd: reason に再実行の案内が無い: [$REASON]" ;;
+    *"絶対パス"*"cd"*"再実行"*) ok "相対 cd: reason が「絶対パスの cd で再実行」を案内する" ;;
+    *) bad "相対 cd: reason に再実行の案内が無い: [$REASON]" ;;
   esac
   case "$REASON" in
-    *"linked worktree"*) ok "経路 B + 相対 cd: reason が linked worktree の存在を名指しする" ;;
-    *) bad "経路 B + 相対 cd: reason に linked worktree が無い: [$REASON]" ;;
+    *"linked worktree"*) ok "相対 cd: reason が linked worktree の存在を名指しする" ;;
+    *) bad "相対 cd: reason に linked worktree が無い: [$REASON]" ;;
   esac
   case "$REASON" in
-    *FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD*) ok "経路 B + 相対 cd: reason が opt-out を案内する" ;;
-    *) bad "経路 B + 相対 cd: reason に opt-out の案内が無い: [$REASON]" ;;
+    *"合計 2 本"*) ok "相対 cd: reason がツリーの本数を名指しする" ;;
+    *) bad "相対 cd: reason にツリーの本数が無い: [$REASON]" ;;
   esac
+  case "$REASON" in
+    *"$WTMAIN"*) ok "相対 cd: reason が現在の repo root を名指しする" ;;
+    *) bad "相対 cd: reason に repo root が無い: [$REASON]" ;;
+  esac
+  # 意図どおりのツリーで走らせたい場合の通し方は「repo root からの絶対パスの cd」だけを案内する。
+  # opt-out の環境変数は hook 自身の環境から読むので、コマンドへ前置しても効かない。前置を促すと
+  # 同じ deny の再実行か、run-all など別の起動へ変数を載せる迂回を誘う（OBS-189）。
+  case "$REASON" in
+    *"$WTMAIN から始まる絶対パス"*) ok "相対 cd: reason が意図どおりのツリーでの通し方（repo root からの絶対パス）を案内する" ;;
+    *) bad "相対 cd: reason に repo root からの絶対パスの案内が無い: [$REASON]" ;;
+  esac
+  case "$REASON" in
+    *"FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1 を付けて再実行"*)
+      bad "相対 cd: reason が opt-out の前置を再実行の手段として案内している（前置では効かない）: [$REASON]" ;;
+    *"コマンドの前置では効きません"*) ok "相対 cd: reason は opt-out を利用者の設定として述べ、前置では効かないと明記する" ;;
+    *) bad "相対 cd: reason に opt-out の扱い（前置では効かない）の明記が無い: [$REASON]" ;;
+  esac
+  case "$REASON" in
+    *"加えてこのリポジトリはモノレポ"*) bad "相対 cd: 単一パッケージ + foreground の reason にモノレポの補足が混ざる: [$REASON]" ;;
+    *) ok "相対 cd: 単一パッケージ + foreground の reason にモノレポの補足を足さない" ;;
+  esac
+  run_hook 'cd docs/notes && npm test' "$WTMAIN" absent
+  assert_deny "相対 cd: run_in_background キーが無い入力（別ハーネス）でも deny"
   run_hook 'cd ../other-tree && npm test' "$WTLINKED" false
-  assert_deny "経路 B + 相対 cd: cwd が linked worktree 側でも deny"
-
-  # 面を広げないこと（AC2）。deny になるのは相対 cd で始まる形だけ。
-  run_hook 'npm test' "$WTMAIN" false
-  assert_warn "経路 B + cd 無し: 従来どおり非ブロックの警告のまま"
-  run_hook 'bash scripts/patch.sh' "$WTMAIN" false
-  assert_warn "経路 B + 相対スクリプト実行（cd で始まらない）: 警告のまま"
-  run_hook 'cd' "$WTMAIN" false
-  assert_warn "経路 B + 引数なしの cd: 相対パス指定ではないので警告のまま"
+  assert_deny "相対 cd: cwd が linked worktree 側でも deny"
   run_hook 'cd -- sub && npm test' "$WTMAIN" false
-  assert_deny "経路 B + cd -- <相対>: 区切りを剥がして相対と判定する"
+  assert_deny "相対 cd: cd -- <相対> は区切りを剥がして相対と判定する"
+  run_hook 'cd -- -P sub && npm test' "$WTMAIN" false
+  assert_deny "相対 cd: -- の後の -P はオプションではなくパス引数（ディレクトリ名）なので相対 cd として deny"
+  run_hook "$(printf 'cd \f/work/repo && npm test')" "$WTMAIN" false
+  assert_deny "相対 cd: cd <空白><FF>/… は bash / zsh では引数が <FF>/… の相対 cd なので deny"
+  run_hook "cd 'docs notes' && npm test" "$WTMAIN" false
+  assert_deny "相対 cd: 開きクォート付きの相対パスも deny"
 
   # deny の理由文が自分の効果を正しく名乗ること。警告用の締め（「ブロックしません」
   # 「そのまま実行して構いません」）を流用すると、**届けたい唯一のチャネルの中で**
@@ -384,165 +406,128 @@ if [ "$WT_READY" -eq 1 ]; then
     *) bad "deny の reason が効果を名乗っていない: [$REASON]" ;;
   esac
   case "$REASON" in
-    *"・警告）"*) bad "deny の reason が警告ラベルのまま: [$REASON]" ;;
-    *) ok "deny の reason は拒否ラベルを使う" ;;
+    *"・拒否）"*) ok "deny の reason は拒否ラベルを使う" ;;
+    *) bad "deny の reason が拒否ラベルではない: [$REASON]" ;;
   esac
 
-  # 前置の剥がしを経た判定であること（`head_cmd` ではなく生の command で判定すると
+  # 前置の剥がしを経た判定であること（剥がした先ではなく生の command で判定すると
   # これらが deny から落ちる）。
   run_hook 'FOO=1 cd docs && npm test' "$WTMAIN" false
-  assert_deny "経路 B + 環境変数前置 + 相対 cd: 前置を剥がして deny"
+  assert_deny "前置: 環境変数前置 + 相対 cd は前置を剥がして deny"
+  run_hook 'env FOO=1 cd docs && npm test' "$WTMAIN" false
+  assert_deny "前置: env 前置 + 相対 cd も deny"
   run_hook '(cd docs && npm test)' "$WTMAIN" false
-  assert_deny "経路 B + サブシェル前置 + 相対 cd: 前置を剥がして deny"
-
-  # 面を広げない側（AC2）。ここが緑のまま広がると、警告なら読み飛ばせた誤検知が
-  # **コマンドの停止**へ昇格する。
-  run_hook "cd -P $WTMAIN && npm test" "$WTMAIN" false
-  assert_silent "経路 B + オプション付き絶対 cd（cd -P /abs）: 無音"
-  run_hook "cd -LP $WTMAIN && npm test" "$WTMAIN" false
-  assert_silent "経路 B + 結合形 cd -LP /abs: 無音"
-  run_hook 'cd -P sub && npm test' "$WTMAIN" false
-  assert_warn "経路 B + オプション付き相対 cd（cd -P sub）: 従来どおり deny へ倒さない"
-  run_hook 'cd -P' "$WTMAIN" false
-  assert_warn "経路 B + オプションのみでパス引数が無い cd -P: 引数なしの cd と同じ扱い（deny へ倒さない）"
-  run_hook 'cd - && npm test' "$WTMAIN" false
-  assert_warn "経路 B + cd -（OLDPWD）: 相対パス指定ではないので deny へ倒さない"
-  run_hook 'cd && npm test' "$WTMAIN" false
-  assert_warn "経路 B + 引数なし cd + 区切り: 区切りを越えて次の語を引数と読まない"
-  run_hook 'cd ; npm test' "$WTMAIN" false
-  assert_warn "経路 B + cd ; <後続>: 区切りを越えない"
-  run_hook 'cd -- && npm test' "$WTMAIN" false
-  assert_warn "経路 B + cd -- <引数なし>: パス引数が無いので deny へ倒さない"
-  run_hook "$(printf 'cd\nnpm test')" "$WTMAIN" false
-  assert_warn "経路 B + cd <改行> <後続>: 改行を越えて次行を引数と読まない"
-
-  # heredoc 本文は deny 面に入れない（本文の最初の実効行は警告の判定にだけ使う）。
-  run_hook "$(printf "bash -e <<'EOF'\ncd docs/notes\nnpm test\nEOF")" "$WTMAIN" false
-  assert_warn "経路 B + heredoc 本文が相対 cd: deny 面には入れず警告のまま"
+  assert_deny "前置: サブシェル前置 + 相対 cd も deny"
+  run_hook '{ cd docs && npm test; }' "$WTMAIN" false
+  assert_deny "前置: グループ前置 + 相対 cd も deny"
+  run_hook "$(printf '\n  cd docs && npm test')" "$WTMAIN" false
+  assert_deny "前置: 先頭の改行・空白を剥がして相対 cd を deny"
 else
   bad "worktree fixture を作れませんでした（deny 経路が未検査のまま緑になるのを防ぐため失敗にします）"
 fi
 
-if [ -d "$MONO" ]; then
-  run_hook 'cd packages/app && npm test' "$MONO" true
-  assert_warn "経路 A のみ（linked worktree 無し）+ 相対 cd: deny へ倒さず警告のまま"
-fi
-
-echo "guard-background-cwd: 経路 A と B が同時に立つ場合（モノレポ + linked worktree）"
+echo "guard-background-cwd: background × モノレポの補足（deny の理由文だけに足す）"
 if [ "$MONOWT_READY" -eq 1 ]; then
-  run_hook 'npm test' "$MONOWT" true
-  assert_warn "両経路: モノレポ + linked worktree + background でも警告は 1 本"
-  case "$MESSAGE" in
-    *"linked worktree"*) ok "両経路: 警告文が linked worktree に触れる" ;;
-    *) bad "両経路: 警告文に linked worktree が無い: [$MESSAGE]" ;;
+  run_hook 'cd packages/app && npm test' "$MONOWT" true
+  assert_deny "モノレポ + linked worktree + background + 相対 cd は deny"
+  case "$REASON" in
+    *"linked worktree"*"background"*) ok "reason が linked worktree と background の cd 引き継ぎの両方に触れる" ;;
+    *) bad "reason に background の補足が無い: [$REASON]" ;;
   esac
-  case "$MESSAGE" in
-    *background*) ok "両経路: 警告文が background の cd 引き継ぎにも触れる" ;;
-    *) bad "両経路: 警告文に background の補足が無い: [$MESSAGE]" ;;
+  run_hook 'cd packages/app && npm test' "$MONOWT" false
+  assert_deny "モノレポ + linked worktree + foreground + 相対 cd も deny"
+  case "$REASON" in
+    *"加えてこのリポジトリはモノレポ"*) bad "foreground の reason に background の補足が混ざる: [$REASON]" ;;
+    *) ok "foreground の reason には background の補足を足さない" ;;
+  esac
+fi
+# packages/ を持たない repo では find で子ディレクトリの package.json を数える（node_modules は
+# prune、root の package.json は数えない）。packages/ の短絡に頼らずにこの側を通す。
+if [ "$MULTIWT_READY" -eq 1 ]; then
+  run_hook 'cd web && npm test' "$MULTIWT" true
+  assert_deny "子ディレクトリの package.json 2 つ + linked worktree + background + 相対 cd は deny"
+  case "$REASON" in
+    *"加えてこのリポジトリはモノレポ"*) ok "packages/ が無くても子の package.json 2 つならモノレポの補足を足す（find 側）" ;;
+    *) bad "子の package.json 2 つの repo でモノレポの補足が無い: [$REASON]" ;;
   esac
 else
-  bad "モノレポ + worktree fixture を作れませんでした（両経路が未検査のまま緑になるのを防ぐため失敗にします）"
+  bad "子 package.json 2 つ + worktree fixture を作れませんでした（find 側が未検査のまま緑になるのを防ぐため失敗にします）"
+fi
+if [ "$ONECHILDWT_READY" -eq 1 ]; then
+  run_hook 'cd web && npm test' "$ONECHILDWT" true
+  assert_deny "子の package.json 1 つ + linked worktree + background + 相対 cd も deny"
+  case "$REASON" in
+    *"加えてこのリポジトリはモノレポ"*) bad "root と node_modules を数えてモノレポと誤判定している: [$REASON]" ;;
+    *) ok "root の package.json と node_modules 配下は数えない（子 1 つはモノレポではない）" ;;
+  esac
+else
+  bad "子 package.json 1 つ + worktree fixture を作れませんでした（find 側が未検査のまま緑になるのを防ぐため失敗にします）"
 fi
 
-echo "guard-background-cwd: 絶対化イディオムの扱い（誤警告を出さない線引き）"
-run_hook 'cd "$(git rev-parse --show-toplevel)"/packages/app && npm test' "$MONO"
-assert_silent "コマンド置換で絶対化するイディオムは無音（リポジトリ規約が許容している形）"
-run_hook 'cd $(git rev-parse --show-toplevel) && npm test' "$MONO"
-assert_silent "クォート無しのコマンド置換も無音"
-run_hook 'cd "$CLAUDE_PROJECT_DIR/packages/app" && npm test' "$MONO"
-assert_silent "変数展開の cd は評価できないため無音側へ倒す（既知の取りこぼし）"
+echo "guard-background-cwd: ツリーの本数の数え方（fail-open と prunable）"
+if [ "$WT_READY" -eq 1 ]; then
+  GIT_BIN="$(command -v git)"
+  GIT_SHIM_DIR="$TEST_TMP/shim"
+  mkdir -p "$GIT_SHIM_DIR"
+  {
+    printf '#!/bin/sh\n'
+    printf 'for a in "$@"; do\n'
+    printf '  [ "$a" = "worktree" ] && exit 128\n'
+    printf 'done\n'
+    printf 'exec %s "$@"\n' "$GIT_BIN"
+  } > "$GIT_SHIM_DIR/git"
+  chmod +x "$GIT_SHIM_DIR/git"
+  run_hook 'cd docs/notes && npm test' "$WTMAIN" false "PATH=$GIT_SHIM_DIR:$PATH"
+  assert_silent "git worktree list が失敗する環境では 0 本として扱い、相対 cd でも黙って許可する"
+fi
+if [ "$PRUNE_READY" -eq 1 ]; then
+  run_hook 'cd docs/notes && npm test' "$PRUNEMAIN" false
+  assert_silent "実体の消えた（prunable）登録しか無い repo は相対 cd でも止めない（git worktree prune 前でも）"
+else
+  bad "prunable fixture を作れませんでした（prunable 除外が未検査のまま緑になるのを防ぐため失敗にします）"
+fi
 
-echo "guard-background-cwd: 先頭コマンドの切り出し（前置の剥がしと allowlist）"
-run_hook "$(printf '\n  cd %s/packages/app && npm test' "$MONO")" "$MONO"
-assert_silent "先頭の改行・空白を剥がしてから判定する"
-run_hook "{ cd $MONO/packages/app && npm test; }" "$MONO"
-assert_silent "グループ前置（{）を剥がして判定する"
-run_hook "FOO=bar cd $MONO/packages/app && npm test" "$MONO"
-assert_silent "環境変数前置（NAME=value）を剥がして絶対パスの cd と判定する"
-run_hook "env FOO=bar cd $MONO/packages/app && npm test" "$MONO"
-assert_silent "env 前置も剥がして判定する"
-run_hook 'FOO=bar cd packages/app && npm test' "$MONO"
-assert_warn "環境変数前置を剥がした先が相対 cd なら警告する"
-run_hook "cd -- $MONO/packages/app && npm test" "$MONO"
-assert_silent "cd -- の後の絶対パスも無音"
-run_hook "bash $MONO/packages/app/script.sh" "$MONO"
-assert_silent "第 1 語が絶対パスの引数を取る実行（bash /abs/script.sh）は無音"
-run_hook "$MONO/packages/app/script.sh" "$MONO"
-assert_silent "第 1 語そのものが絶対パスなら無音"
-run_hook 'gh pr checks --watch' "$MONO"
-assert_silent "cwd 非依存の allowlist（gh）は無音"
-run_hook 'until gh pr view --json state; do sleep 30; done' "$MONO"
-assert_silent "CI 待ちの until ループ（until / sleep / gh）は無音"
-run_hook "npm --prefix $MONO/packages/app test" "$MONO"
-assert_warn "オプション側で絶対化する形は警告側に残る（既知の誤警告として固定）"
-
-echo "guard-background-cwd: heredoc は本文の最初の実効行で判定する"
-run_hook "$(printf "bash -e <<'EOF'\ncd %s/packages/app\nnpm test\nEOF" "$MONO")" "$MONO"
-assert_silent "heredoc: 本文 1 行目が絶対パスの cd なら無音（規約どおりの複数行手順）"
-run_hook "$(printf "bash -e <<'EOF'\nROOT=\"\$(git rev-parse --show-toplevel)\"\ncd \"\$ROOT\"\nnpm test\nEOF")" "$MONO"
-assert_silent "heredoc: 変数代入の次の行が cd \"\$ROOT\" でも無音（代入行は cwd を変えない）"
-run_hook "$(printf "bash -e <<'EOF'\ncd packages/app\nnpm test\nEOF")" "$MONO"
-assert_warn "heredoc: 本文が相対パスの cd なら警告する"
-run_hook "$(printf "bash -e <<'EOF'\nnpm test\nEOF")" "$MONO"
-assert_warn "heredoc: 本文が cd で始まらなければ警告する"
-# 本文はセグメント分割の対象外（判定 2 で決着する）。本文に `&&` があっても、
-# 1 行目が絶対パスの cd なら以降のセグメントは同じツリーで走るので無音のまま。
-run_hook "$(printf "bash -e <<'EOF'\ncd %s/packages/app && npm test\nnpm run build\nEOF" "$MONO")" "$MONO"
-assert_silent "heredoc: 本文 1 行目が絶対 cd なら本文中の && で分割せず無音（本文は判定 3 の対象外）"
-
-echo "guard-background-cwd: 読み取り専用 head の無音化（誤警告の主因だった側）"
-run_hook 'echo hello' "$MONO"
-assert_silent "echo は相対パスでも壊れないので無音"
-run_hook 'ls -la' "$MONO"
-assert_silent "ls は無音"
-run_hook 'jq . package.json' "$MONO"
-assert_silent "jq は無音"
-run_hook 'cat package.json' "$MONO"
-assert_silent "cat は無音"
-run_hook 'grep -rn foo .' "$MONO"
-assert_silent "grep は無音"
-run_hook 'sed -n 1,5p package.json' "$MONO"
-assert_silent "sed -n（読み取り専用）は無音"
-run_hook 'sed -i.bak s/a/b/ package.json' "$MONO"
-assert_warn "sed -i は書き込むので警告する"
-
-echo "guard-background-cwd: 複合コマンドは全セグメントを見る"
-run_hook 'git status && npm test' "$MONO"
-assert_warn "allowlist の head で始まっても、後続に cwd 依存のセグメントがあれば警告する"
-run_hook 'gh pr view && gh pr list' "$MONO"
-assert_silent "全セグメントが cwd 非依存なら無音"
-run_hook 'gh pr view | npm test' "$MONO"
-assert_warn "パイプの右側が cwd 依存なら警告する"
-run_hook 'gh pr view || npm test' "$MONO"
-assert_warn "|| の右側が cwd 依存なら警告する"
-run_hook 'gh pr view; npm test' "$MONO"
-assert_warn "; の右側が cwd 依存なら警告する"
-run_hook "$(printf 'gh pr view\nnpm test')" "$MONO"
-assert_warn "改行区切りの後続セグメントが cwd 依存なら警告する"
-run_hook 'gh pr view || gh pr list' "$MONO"
-assert_silent "|| で連結しても全セグメントが cwd 非依存なら無音"
-run_hook "cd $MONO/packages/app && npm test && npm run build" "$MONO"
-assert_silent "先頭が絶対パスの cd なら以降のセグメントは同じツリーで走るので無音"
-# 制御構文を `;` / 改行で分割すると各セグメントの先頭に `then` / `else` / `elif` が残る。
-# 剥がした先が cwd 依存なら警告側に落ちること（allowlist を素通りしないこと）を固定する。
-# なお `if` 自体は allowlist に無いので、これらは条件節のセグメントでも警告側に落ちる。
-run_hook 'if true; then npm test; fi' "$MONO"
-assert_warn "then 前置のセグメントが cwd 依存なら警告する"
-run_hook 'if gh pr view; then gh pr list; elif npm run lint; then :; else npm test; fi' "$MONO"
-assert_warn "elif / else 前置のセグメントが cwd 依存なら警告する"
+echo "guard-background-cwd: 相対 cd で始まらない呼び出しは git を起動しない"
+# 全 Bash 呼び出しに乗る hook の通常経路から git の起動を外す（Issue `#2614`）。git を呼ぶと
+# 記録して失敗するシムを PATH の先頭に置き、相対 cd で始まらない呼び出しで記録が空のことを見る。
+GIT_TRAP_DIR="$TEST_TMP/git-trap"
+GIT_TRAP_LOG="$TEST_TMP/git-trap.log"
+mkdir -p "$GIT_TRAP_DIR"
+{
+  printf '#!/bin/sh\n'
+  printf 'echo called >> "%s"\n' "$GIT_TRAP_LOG"
+  printf 'exit 128\n'
+} > "$GIT_TRAP_DIR/git"
+chmod +x "$GIT_TRAP_DIR/git"
+: > "$GIT_TRAP_LOG"
+run_hook 'npm test' "$MONO" true "PATH=$GIT_TRAP_DIR:$PATH"
+run_hook "cd $MONO/packages/app && npm test" "$MONO" true "PATH=$GIT_TRAP_DIR:$PATH"
+run_hook 'gh pr view | npm test' "$MONO" false "PATH=$GIT_TRAP_DIR:$PATH"
+if [ ! -s "$GIT_TRAP_LOG" ]; then
+  ok "相対 cd で始まらない 3 呼び出しで git を 1 回も起動しない"
+else
+  bad "相対 cd で始まらない呼び出しで git を起動している: $(wc -l < "$GIT_TRAP_LOG" | tr -d ' ') 回"
+fi
+: > "$GIT_TRAP_LOG"
+run_hook 'cd packages/app && npm test' "$MONO" true "PATH=$GIT_TRAP_DIR:$PATH"
+if [ -s "$GIT_TRAP_LOG" ]; then
+  ok "対照: 相対 cd で始まる呼び出しでは git を起動する（シムが効いている）"
+else
+  bad "対照: 相対 cd で始まる呼び出しでも git が呼ばれていない（シムが効いていない）"
+fi
 
 echo "guard-background-cwd: 対象外と opt-out"
-run_hook 'npm test' "$MONO" true 'FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1'
-assert_silent "FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1 で無効化できる"
+if [ "$WT_READY" -eq 1 ]; then
+  run_hook 'cd docs/notes && npm test' "$WTMAIN" false 'FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1'
+  assert_silent "FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1 で deny も含めて無効化できる"
+fi
 RC=0
-OUT="$(jq -n --arg d "$MONO" '{tool_name: "Read", tool_input: {command: "npm test", run_in_background: true}, cwd: $d}' | bash "$TARGET" 2>/dev/null)" || RC=$?
+OUT="$(jq -n --arg d "$WTMAIN" '{tool_name: "Read", tool_input: {command: "cd docs && npm test", run_in_background: true}, cwd: $d}' | bash "$TARGET" 2>/dev/null)" || RC=$?
 if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
   ok "Bash 以外のツールは対象外"
 else
   bad "Bash 以外のツール: exit=$RC out=[$OUT]"
 fi
-run_hook 'npm test' "$TEST_TMP"
-assert_silent "git リポジトリ外は判定材料が無く無音（fail-open）"
 
 echo "guard-background-cwd: AC3（fail-open）"
 RC=0
@@ -565,8 +550,9 @@ fi
 # （Issue #1329: ubuntu ランナーで小さい payload でも再現した。macOS では小さい payload
 # だと pipe buffer に収まり競合が起きない）。payload をパイプバッファ（64 KiB）より大きく
 # して、stdin を drain しない実装がどの OS でも決定的に赤になるようにする。末尾の空白は
-# JSON として有効なので判定結果は変わらない。
-BIG_PAYLOAD="$(jq -n --arg d "$MONO" '{tool_name: "Bash", tool_input: {command: "npm test", run_in_background: true}, cwd: $d}')$(printf '%*s' 200000 '')"
+# JSON として有効なので判定結果は変わらない。deny に当たる入力（linked worktree + 相対 cd）を
+# 使い、無出力が fail-open によるものであることを確かめる。
+BIG_PAYLOAD="$(jq -n --arg d "$WTMAIN" '{tool_name: "Bash", tool_input: {command: "cd docs && npm test", run_in_background: true}, cwd: $d}')$(printf '%*s' 200000 '')"
 RC=0
 OUT="$(printf '%s' "$BIG_PAYLOAD" | PATH="/nonexistent" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
 if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
@@ -590,12 +576,29 @@ if jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[]
 else
   bad "hooks.json の PreToolUse（Bash matcher）に guard-background-cwd.sh が無い"
 fi
-# 変更前の description にも "background" は含まれていたため、その語では本 PR の主張
-# （linked worktree のある repo は foreground でも鳴る）を pin できない。新しい主張で照合する。
-if jq -e '.description | test("linked worktree")' "$HOOKS_JSON" >/dev/null 2>&1; then
-  ok "hooks.json の description が linked worktree での foreground 警告に言及する"
+if jq -e '.description | test("linked worktree があるリポジトリで先頭が相対パスの cd")' "$HOOKS_JSON" >/dev/null 2>&1; then
+  ok "hooks.json の description が現行の発火条件（linked worktree + 相対 cd）を述べる"
 else
-  bad "hooks.json の description に linked worktree の記述が無い"
+  bad "hooks.json の description に現行の発火条件（linked worktree + 相対 cd）の記述が無い"
+fi
+# 廃止した警告面を述べないこと: cwd ガードの文（発火条件の語を含む「。」までの 1 文）に「警告」が
+# 現れず、旧文の特徴語（絶対パスの cd でない background 実行）も description 全体に残っていないこと。
+CWD_CLAUSE="$(jq -r '.description' "$HOOKS_JSON" 2>/dev/null | awk '{
+  i = index($0, "linked worktree があるリポジトリで先頭が相対パスの cd")
+  if (i == 0) exit
+  s = substr($0, i); j = index(s, "。"); if (j > 0) s = substr(s, 1, j)
+  print s; exit
+}')"
+case "$CWD_CLAUSE" in
+  "") bad "hooks.json の description から cwd ガードの文を切り出せない" ;;
+  *"警告"*) bad "hooks.json の cwd ガードの文が警告を述べている（廃止した面）: [$CWD_CLAUSE]" ;;
+  *"deny"*) ok "hooks.json の cwd ガードの文は deny だけを述べ、警告を述べない" ;;
+  *) bad "hooks.json の cwd ガードの文に deny の記述が無い: [$CWD_CLAUSE]" ;;
+esac
+if jq -e '.description | test("絶対パスの cd でない background 実行")' "$HOOKS_JSON" >/dev/null 2>&1; then
+  bad "hooks.json の description が廃止した警告面の旧文（絶対パスの cd でない background 実行）を残している"
+else
+  ok "hooks.json の description に廃止した警告面の旧文が残っていない"
 fi
 
 echo "guard-background-cwd: ASDD ゲートの早期終了経路でも stdin を読み切る"
@@ -632,13 +635,9 @@ fi
 echo "guard-background-cwd: Windows のドライブ付き絶対パス / CRLF を出す jq"
 if [ "$WT_READY" -eq 1 ]; then
   run_hook 'cd C:/work/repo && npm test' "$WTMAIN" false
-  assert_silent "経路 B + cd C:/…（ドライブ付き絶対パス）は相対 cd として扱わない"
+  assert_silent "linked worktree あり + cd C:/…（ドライブ付き絶対パス）は相対 cd として扱わない"
   run_hook "cd 'C:\\work\\repo' && npm test" "$WTMAIN" false
-  assert_silent "経路 B + cd 'C:\\…'（バックスラッシュ区切り）も相対 cd として扱わない"
-  run_hook 'bash C:/work/run.sh' "$WTMAIN" false
-  assert_silent "経路 B + 第 1 引数がドライブ付き絶対パス（bash C:/…）は cwd 非依存として扱う"
-else
-  echo "  ○ skip: linked worktree の fixture を作れないため、ドライブ付き絶対パスの 3 検査は未実行"
+  assert_silent "linked worktree あり + cd 'C:\\…'（バックスラッシュ区切り）も相対 cd として扱わない"
 fi
 
 # hook は 4 フィールドを改行で連結して 1 回の jq で取り出す。修正前は tool が `Bash\r` になって
@@ -647,53 +646,63 @@ CRLF_BIN="$TEST_TMP/crlf-jq-bin"
 crlf_rc=0
 ff_crlf_jq_shim "$CRLF_BIN" "$(command -v jq)" || crlf_rc=$?
 if [ "$crlf_rc" -eq 2 ]; then
-  echo "  ○ skip: perl が無いため CRLF の jq を再現できません（この 2 検査は未実行）"
+  echo "  ○ skip: perl が無いため CRLF の jq を再現できません（この検査は未実行）"
 elif [ "$crlf_rc" -ne 0 ]; then
   bad "CRLF の jq シムを作れませんでした（rc=${crlf_rc}）"
 else
   SAVED_PATH="$PATH"
   PATH="$CRLF_BIN:$PATH"
-  run_hook 'npm test' "$MONO"
-  assert_warn "CRLF の jq でも、モノレポ + background + 非絶対 cd は警告する"
   if [ "$WT_READY" -eq 1 ]; then
     run_hook 'cd docs/notes && npm test' "$WTMAIN" false
-    assert_deny "CRLF の jq でも、経路 B + 相対 cd は deny"
-  else
-    echo "  ○ skip: linked worktree の fixture を作れないため、CRLF の jq での経路 B は未実行"
+    assert_deny "CRLF の jq でも、linked worktree あり + 相対 cd は deny"
   fi
   PATH="$SAVED_PATH"
 fi
 
 echo "guard-background-cwd: 先頭の setopt（guard-zsh-glob.sh の単語分割の前置で書き換えた後の形）"
-run_hook "setopt SH_WORD_SPLIT; cd $MONO/packages/app && npm test" "$MONO"
-assert_silent "S1: 先頭の setopt SH_WORD_SPLIT; の後ろが絶対パスの cd なら無音"
-run_hook "setopt shwordsplit nonomatch
-cd $MONO/packages/app && npm test" "$MONO"
-assert_silent "S2: 改行で終わる setopt（オプション名だけ）の後ろの絶対パスの cd も無音"
-run_hook 'setopt SH_WORD_SPLIT; npm test' "$MONO"
-assert_warn "S3: setopt の後ろが cd でない呼び出しは従来どおり警告（読み飛ばしが判定を消さない）"
-run_hook "setopt \"SH_WORD_SPLIT\"; cd $MONO/packages/app && npm test" "$MONO"
-assert_warn "S4: 引用を含む setopt の文は読み飛ばさない（オプション名だけの文に限る）"
-run_hook "set -e; cd $MONO/packages/app && npm test" "$MONO"
-assert_warn "S5: setopt 以外の先頭文（set）は巻き込まない（修正前と同じ警告）"
-run_hook "true; cd $MONO/packages/app && npm test" "$MONO"
-assert_warn "S6: setopt 以外の先頭文（true）も巻き込まない"
-run_hook "setopt SH_WORD_SPLIT && cd $MONO/packages/app && npm test" "$MONO"
-assert_warn "S7: && で続く setopt は文の区切りとして読まない（; と改行だけ）"
-SETOPT_MUT="$TEST_TMP/setopt-mut"
-mkdir -p "$SETOPT_MUT/hooks"
-cp "$PLUGIN_ROOT/hooks/"*.sh "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$SETOPT_MUT/hooks/"
-sed 's/^  setopt\[\[:space:\]\]\*)$/  NO_SUCH_SETOPT_X)/' "$TARGET" > "$SETOPT_MUT/hooks/guard-background-cwd.sh"
-if cmp -s "$TARGET" "$SETOPT_MUT/hooks/guard-background-cwd.sh"; then
-  bad "S8: sed が当たらず変異が注入されていない（針が古い）"
-else
-  json_s8="$(jq -n --arg c "setopt SH_WORD_SPLIT; cd $MONO/packages/app && npm test" --arg d "$MONO" \
-    '{tool_name: "Bash", tool_input: {command: $c, run_in_background: true}, cwd: $d, hook_event_name: "PreToolUse"}')"
-  out_s8="$(printf '%s' "$json_s8" | bash "$SETOPT_MUT/hooks/guard-background-cwd.sh" 2>/dev/null || true)"
-  case "$out_s8" in
-    *systemMessage*) ok "S8: setopt の読み飛ばしを外した変異は S1 を警告し、S1 の検査が赤になる" ;;
-    *) bad "S8: 変異が効いていない: out=[$out_s8]" ;;
-  esac
+if [ "$WT_READY" -eq 1 ]; then
+  run_hook 'setopt SH_WORD_SPLIT; cd docs && npm test' "$WTMAIN" false
+  assert_deny "S1: 先頭の setopt SH_WORD_SPLIT; を読み飛ばし、後ろの相対 cd を deny"
+  run_hook "$(printf 'setopt shwordsplit nonomatch\ncd docs && npm test')" "$WTMAIN" false
+  assert_deny "S2: 改行で終わる setopt（オプション名だけ）の後ろの相対 cd も deny"
+  run_hook "setopt SH_WORD_SPLIT; cd $WTMAIN/src && npm test" "$WTMAIN" false
+  assert_silent "S3: setopt の後ろが絶対パスの cd なら無出力"
+  run_hook 'setopt SH_WORD_SPLIT; npm test' "$WTMAIN" false
+  assert_silent "S4: setopt の後ろが cd でない呼び出しは無出力"
+  run_hook 'setopt "SH_WORD_SPLIT"; cd docs && npm test' "$WTMAIN" false
+  assert_silent "S5: 引用を含む setopt の文は読み飛ばさない（オプション名だけの文に限る）"
+  run_hook 'set -e; cd docs && npm test' "$WTMAIN" false
+  assert_silent "S6: setopt 以外の先頭文（set）は読み飛ばさない"
+  run_hook 'setopt SH_WORD_SPLIT && cd docs && npm test' "$WTMAIN" false
+  assert_silent "S7: && で続く setopt は文の区切りとして読まない（; と改行だけ）"
+  SETOPT_MUT="$TEST_TMP/setopt-mut"
+  mkdir -p "$SETOPT_MUT/hooks"
+  cp "$PLUGIN_ROOT/hooks/"*.sh "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$SETOPT_MUT/hooks/"
+  sed 's/^  setopt\[\[:space:\]\]\*)$/  NO_SUCH_SETOPT_X)/' "$TARGET" > "$SETOPT_MUT/hooks/guard-background-cwd.sh"
+  if cmp -s "$TARGET" "$SETOPT_MUT/hooks/guard-background-cwd.sh"; then
+    bad "S8: sed が当たらず変異が注入されていない（針が古い）"
+  else
+    s8_run() { # <command> — 変異体を直接起動し、出力を S8_OUT、終了コードを S8_RC へ
+      local j
+      j="$(jq -n --arg c "$1" --arg d "$WTMAIN" \
+        '{tool_name: "Bash", tool_input: {command: $c, run_in_background: false}, cwd: $d, hook_event_name: "PreToolUse"}')"
+      S8_RC=0
+      S8_OUT="$(printf '%s' "$j" | bash "$SETOPT_MUT/hooks/guard-background-cwd.sh" 2>/dev/null)" || S8_RC=$?
+    }
+    # 陽性対照: 変異体そのものが動いていること（前置の無い相対 cd は deny する）。これが無いと、
+    # 構文エラー等で何も出さない変異体でも下の「deny しない」が ok になる。
+    s8_run 'cd docs && npm test'
+    if [ "$S8_RC" -ne 0 ] || [ "${S8_OUT#*\"deny\"}" = "$S8_OUT" ]; then
+      bad "S8: 変異体が動いていない（前置の無い相対 cd を deny しない）: rc=$S8_RC out=[$S8_OUT]"
+    else
+      s8_run 'setopt SH_WORD_SPLIT; cd docs && npm test'
+      if [ "$S8_RC" -eq 0 ] && [ -z "$S8_OUT" ]; then
+        ok "S8: setopt の読み飛ばしを外した変異は S1 を取りこぼし（前置の無い対照は deny のまま）、S1 の検査が赤になる"
+      else
+        bad "S8: 変異が効いていない（setopt の読み飛ばしを外しても deny する）: rc=$S8_RC out=[$S8_OUT]"
+      fi
+    fi
+  fi
 fi
 
 echo

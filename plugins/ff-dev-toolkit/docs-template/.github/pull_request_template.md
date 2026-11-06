@@ -5,7 +5,7 @@
 ## PR Size Check
 
 <!-- PR の差分行数（追加 + 削除）を記載し、該当する区分にチェック -->
-<!-- GitHub の Files changed または `git diff --numstat <base>...HEAD` で追加・削除行数を確認してください。review-level.sh を配置済みの場合は、その出力を使っても構いません。 -->
+<!-- GitHub の Files changed または `git diff --numstat <base>...HEAD` で追加・削除行数を確認してください。 -->
 
 - 差分: **\_\_\_** 行（追加 + 削除、生成物・lockfile を除く）
 

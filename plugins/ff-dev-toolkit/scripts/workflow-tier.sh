@@ -17,8 +17,12 @@
 #
 # 判定規則（上から順に評価し、**最初に一致した tier を採る**）:
 #   1. full     … 配布・リリースへ影響する path を含む
-#   2. light    … 変更が `.md` のみ（1 に当たらない）
-#   3. standard … 上記以外（実装変更）
+#   2. light    … 変更が `.md` のみで、決定木の契約 path を含まない（1 に当たらない）
+#   3. standard … 上記以外（実装変更・契約 path の `.md`）
+#
+#   契約 path の一覧は tree.tsv の `rule root contract-path` を読む（ここへ写さない）。
+#   `skills/` を full へ足さないのは、下の「素朴な規則」と同じ理由で全 PR が full へ落ちるから。
+#   要るのは「重い段を足す」ことではなく「軽量へ倒さない」ことなので、standard で止める。
 #
 #   順序を固定するのが要点。`docs-template/**.md` は 1 と 2 の両方に当たるが、
 #   配布物なので full が勝つ。「どちらにも当たる場合どうするか」を運用者の判断に
@@ -366,9 +370,9 @@ if [ "${LIST_RULES}" -eq 1 ]; then
   done
   IFS="${WT_OLD_IFS}"
   set +f
-  echo "RULE=2|light|変更が .md のみ"
+  echo "RULE=2|light|変更が .md のみで、決定木の契約 path を含まない"
   # 説明文は実行時の REASON と同じ文字列にする（別々に書くと静かに drift する）
-  echo "RULE=3|standard|実装ファイルを含む（上記以外）"
+  echo "RULE=3|standard|実装ファイル、または契約 path の .md を含む（上記以外）"
   exit 0
 fi
 
@@ -496,8 +500,23 @@ if [ "${MD_RC}" -gt 1 ]; then
   unavailable ".md 判定に失敗しました（grep rc=${MD_RC}）。軽い側へ倒さないため判定しません"
 fi
 if [ "${MD_COUNT}" -eq "${CHANGED}" ]; then
-  echo "WORKFLOW_TIER=light"
-  echo "REASON=変更が .md のみ"
+  # 契約 path の判定は決定木の根へ任せる（一覧と照合の規則を 2 つ持たない）。判定できない回は
+  # 上と同じく軽い側へ倒さず standard にする。Jev は使わない（FF_JEV_MODE=off）— tier は規則で決める。
+  ROUTE_OUT="$(printf '%s\n' "${PATHS}" | FF_JEV_MODE=off bash "$(dirname "${BASH_SOURCE[0]}")/decision-tree/route.sh" --files-from - 2>/dev/null)"
+  ROUTE_RC=$?
+  TIER_VALUE="standard"
+  TIER_REASON="決定木の判定に失敗したため軽量へ倒さず標準にした（rc=${ROUTE_RC}）"
+  if [ "${ROUTE_RC}" -eq 0 ]; then
+    case $'\n'"${ROUTE_OUT}"$'\n' in
+      *$'\n'DT_REASON=contract-change:*) TIER_REASON=".md のみだが決定木の契約 path を含む" ;;
+      *$'\n'DT_REASON=docs-only$'\n'*)
+        TIER_VALUE="light"
+        TIER_REASON="変更が .md のみで、決定木の契約 path を含まない"
+        ;;
+    esac
+  fi
+  echo "WORKFLOW_TIER=${TIER_VALUE}"
+  echo "REASON=${TIER_REASON}"
   echo "SOURCE=${SOURCE}"
   echo "CHANGED=${CHANGED}"
   exit 0
@@ -505,7 +524,7 @@ fi
 
 # ---- 規則 3: standard ---------------------------------------------------------
 echo "WORKFLOW_TIER=standard"
-echo "REASON=実装ファイルを含む（上記以外）"
+echo "REASON=実装ファイル、または契約 path の .md を含む（上記以外）"
 echo "SOURCE=${SOURCE}"
 echo "CHANGED=${CHANGED}"
 exit 0

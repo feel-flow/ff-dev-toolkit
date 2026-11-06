@@ -126,6 +126,39 @@ gh 経路の生成コマンドは書き写さず、そのまま実行する。MC
 <!--4c815179839a3a80-->
 MCP: 取得値: MCP の同じ最終 headRefOid と元 subject/body。形式: 既存 merge_pull_request の6引数。渡し先: TARGET_REPO/PR/head/MERGE_METHOD/元subject/元body を直接渡し fresh merged/state 後読。shell parse 禁止。不足時: MCP 必須不足は operation / field / page を示して停止。
 
+Closes 対象の Issue 本文に未チェックの `- [ ]` が残る回は `PRECHECK=blocked`（rc 1）で merge コマンドを出さない。見るのは行頭の空白のあとの `- [ ]` だけで、`* [ ]`、三連のバッククォートまたは `~~~` のフェンス、HTML コメントの中は数えない。対象は Closes 群の本文だけ（Refs 群は取得しない）。各行は `AC_UNCHECKED=` に残し、`AC_UNCHECKED_COUNT` を出す。取得失敗は未チェック 0 件と読まず rc 2。`--ack-unchecked` は繰り返し指定でき、`owner/repo#N`、`#N`、数値、Issue の URL を対象リポジトリの小文字 `owner/repo#N` へ揃えて `AC_ACKED=` を出す。ack した対象は止めないが、未チェック行は隠さない。別 Issue の ack は対象を消さない。先に keyword 抵触などで止まっている回は、その停止理由を上書きしない。
+
+<a id="post-merge-gate"></a>
+
+**マージ後工程の判定（導入先の設定があるときだけ）**: AC に「マージ後に行う」と書いたままチェックを付けると、上の検査を通過して Closes のまま Issue が閉じ、工程が未実施で残る。`FF_POST_MERGE_TERMS` と `FF_POST_MERGE_PATHS` を両方設定した導入先では、この形を `PRECHECK=blocked`（rc 1）で止めて merge コマンドを出さない。どちらも `:` 区切りで、次のように読む。
+
+| 設定 | 読み方 | 例 |
+| --- | --- | --- |
+| `FF_POST_MERGE_TERMS` | 語。文字どおりの部分一致で、英字の大文字小文字は区別しない | `本番適用:本番への適用:production` |
+| `FF_POST_MERGE_PATHS` | リポジトリルート基準の glob。`*` は `/` も跨ぎ、`*` を含まない要素はそのファイルと配下に一致する | `db/migrations/**:db/rollback` |
+
+判定は Closes 対象ごとに行う。
+
+1. 変更ファイルが `FF_POST_MERGE_PATHS` に 1 つも一致しない回は判定せず、コメントも読まない（`POST_MERGE_GATE=no-path`）。Closes 対象が無い回も判定しない（`no-closes`）。一致したファイルは `POST_MERGE_PATH=` に出す
+2. 本文と、この PR の完了報告（`<!-- close-issue-report:PR-<PR番号> -->` を含むコメント）から、語を含む行を拾う。本文は可視の全行が対象で、チェック済みの行に限らない（番号付きの AC や背景の文も拾うので、語は工程を指す言い方へ絞る）。フェンスと HTML コメントの中は数えない。別の PR の報告と普通のコメントは見ない
+3. 拾った行は `POST_MERGE_HIT=<Issue><TAB>body|report<TAB><行>` と `POST_MERGE_HIT_COUNT` に出す。1 行も無ければ `clear`、ack の無い対象に 1 行でもあれば `blocked`、全対象が ack 済みなら `acked`
+
+復帰の手段は 2 つ。
+
+- **工程がマージ後に残る**: 本文の Closes を Refs に変え、`--subject` / `--body` を付けて手順 1 から再実行する。Issue は工程の完了後に閉じる
+- **工程が済んでいる・対象外**: `--ack-post-merge <owner/repo#N> --ack-post-merge-reason '<理由>'` を付けて再実行し、理由を完了報告へ書く。`--ack-post-merge` の値は `--ack-unchecked` と同じ表記を受け、対象ごとに繰り返せる。理由は直後に必須で、空・改行・タブは rc 2（出力は行頭の `KEY=` で読まれるので、改行入りの理由は `PRECHECK=` の行を偽造できる）。`POST_MERGE_ACKED=<Issue><TAB><理由>` に残り、一致行も隠さない。別 Issue の ack は対象を消さない
+
+取得できない回は一致なしと読まず rc 2 にする。本文・コメントの取得失敗と解釈不能、変更ファイルを読めない回が該当する。変更ファイルの API の一覧は 100 件で切れるので、一覧が空か 100 件に届いた回と file 入力では `origin/<base>...<head>` の git の差分で読み直す。読み直せなければ rc 2。
+
+設定の検査は PR を読む前に行う。片方だけの設定、空の要素、前後の空白、制御文字、`/` か `./` で始まるパスは rc 2。Closes 対象がある回は、`FF_POST_MERGE_PATHS` の各要素が追跡中のファイルかこの PR の変更ファイルに 1 つは当たることも確かめ、当たらない要素を名指しして rc 2 にする（誤字や改名で毎回 `no-path` になり、判定が黙って消えるのを防ぐ）。両方とも未設定の導入先は、取得も出力も従来と同じ。
+
+`FF_MERGE_DELETE_SEPARATE` が未設定または `0` のときは上の削除判定のまま。`1` のときは worktree の一覧を見ず、`DELETE_BRANCH_MODE=separate-consumer` と `DELETE_BRANCH_NOTE` を出し、`MERGE_COMMAND` は `gh pr merge` だけにする（`--delete-branch` も削除の尾もフック回避の代入も付けない）。それ以外の値（空文字を含む）は PR を読む前に rc 2。
+
+<!--fc99bbf7dcc3f9a7-->
+MCP: 取得値: MCP の同じ最終 headRefOid と元 subject/body。形式: 既存 merge_pull_request の6引数。渡し先: TARGET_REPO/PR/head/MERGE_METHOD/元subject/元body を直接渡し fresh merged/state 後読。shell parse 禁止。不足時: MCP 必須不足は operation / field / page を示して停止。
+
+`FF_DELETE_PUSH_SKIP_HOOKS` が未設定または `1` のとき、lease の削除尾は `SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0` を残し `DELETE_PUSH_HOOKS=skipped` を出す。`0` のときは生成する削除本文からその代入だけを外し `DELETE_PUSH_HOOKS=kept` を出す（ディスク上の同梱 script はフラグ付きのまま）。この 2 行は削除の尾があるときだけ出す。それ以外の値は PR を読む前に rc 2。`/merge-cleanup` の削除 push も同じ変数を見る。`0` と `1` 以外は PR 番号の検査の後、作業ディレクトリを作る前に rc 1。
+
 #### 完了報告の定型文
 
 `AUTO_CLOSE_UNRELIABLE=1`（本文に closing keyword があるのに `closingIssuesReferences` が空）のときは、Closes 運用の報告へ次を**必ず**追加する（省略すると AC 照合だけ通して Issue が open のまま残る）。確認済みの事実と推測を書き分け、因果は断定しない:
@@ -169,6 +202,8 @@ repository raw の決定的写像は REST `full_name` → `nameWithOwner`、`htm
 | 操作 | scope / phase / position | 必要な応答と不足時 |
 | --- | --- | --- |
 | `finish.precheck.pr` | repository / pr、`initial` と `after-threads`、`{}` | `number` / state / head・base / title / body / draft / fork / closing refs / commits / rollup / files / additions / deletions。最初と最後を別取得し、最後の head が欠落すれば rc 2、変われば既存の snapshot 検査で停止する |
+| `finish.precheck.issue-body` | repository / issue（`owner/repo#N`）、`initial`、`{}` | JSON の `body`（文字列または null。null は空）。Closes 対象があるときだけ読む。非文字列・欠落・取得不能は rc 2 で、未チェック 0 件にしない。Refs だけの回は要らない |
+| `finish.precheck.issue-comments` | repository / issue（`owner/repo#N`）、`initial`、`page:1..` | [マージ後工程の判定](#post-merge-gate)を設定し、パスが一致した回だけ読む。各 page は REST の raw 配列（要素は `body` が文字列または null のオブジェクト）で、非終端は `last:false`、終端は `last:true` の空ページ。欠落・配列でない・`last` なし・`http_status` が 200 以外は rc 2 で、一致なしにしない |
 | `finish.precheck.repo` | repository、`initial`、`{}` | `nameWithOwner` / `url` を Git の対象と照合する |
 | `finish.precheck.checks-retry` | repository / pr、`checks-retry`、`attempt: 1..3` | 非空 checks を再検査する各回の raw rollup。file 入力では watch 成功を代用せず、未取得・解釈不能・3 回後も pending は rc 2 |
 | `finish.precheck.threads` | repository / pr / first:100 / comments_first:100、`after-checks`、最初 `{}`、以降 `cursor` | GraphQL `author` / reviewThreads の nodes・各 comments・pageInfo。`hasNextPage=true` は非空 cursor と次の raw page が必須。`author:null`、コメントの path / line / originalLine の null は合法のまま判定する |

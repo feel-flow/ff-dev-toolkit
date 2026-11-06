@@ -364,6 +364,38 @@ assert_default_branch_fresh() {
   fi
 }
 
+# commitlint の header-max-length 既定。複数エントリの件名だけを、超えたとき短縮する。
+KC_SUBJECT_MAX=100
+# 件名の長さ。awk -v はバックスラッシュを壊すので、件名は標準入力で渡す。
+# LC_ALL=C の length はバイト数。この経路の ID は ASCII なので文字数と一致する。
+subject_byte_len() {
+  printf '%s' "$1" | LC_ALL=C awk '{ print length($0); exit }'
+}
+# 複数エントリを畳んだ短い件名。全 ID は本文の `- ID 要約` 行に残る。
+short_multi_subject() { # <type> <issue or empty>
+  local t="$1" issue="$2" rest_n
+  rest_n=$((msg_count - 1))
+  if [[ -z "$issue" ]]; then
+    printf '%s' "${t}: ${msg_first_id} ほか ${rest_n} 件"
+  else
+    printf '%s' "${t}: #${issue} ${msg_first_id} ほか ${rest_n} 件"
+  fi
+}
+# 100 字以内の件名はバイトを変えない。超える複数エントリだけ短い形へ替える。
+fit_multi_subject() { # <candidate> <type> <issue or empty>
+  local candidate="$1" t="$2" issue="$3" len
+  if [[ "${msg_count:-0}" -le 1 || -z "${msg_first_id:-}" ]]; then
+    printf '%s' "$candidate"
+    return 0
+  fi
+  len="$(subject_byte_len "$candidate")"
+  if [[ "$len" -gt "$KC_SUBJECT_MAX" ]]; then
+    short_multi_subject "$t" "$issue"
+    return 0
+  fi
+  printf '%s' "$candidate"
+}
+
 # 件名と本文を E 行（`E<TAB>source<TAB>id<TAB>summary<TAB>categories`）から組み立てる。add のドライランと
 # commit が同じ関数を通るので、ドライランで確かめた件名と commit する件名がずれない。
 # 引数: <E 行（改行区切り）> <commit type> [解決した Issue]。結果は msg_subject / msg_body / msg_count へ入れる
@@ -398,7 +430,12 @@ compose_message() {
     msg_subject="$(printf '%s\n' "$ordered" | awk -F '\t' -v t="$t" '{ s = s (NR > 1 ? " / " : "") $3 } END { print t ": " s }')"
     msg_body="$(printf '%s\n' "$ordered" | awk -F '\t' '{print "- " $3 " " $4}')"
   fi
+  msg_first_id="$(printf '%s\n' "$ordered" | awk -F '\t' 'NR==1 { print $3; exit }')"
   [[ -z "$issue" ]] || msg_subject="${t}: #${issue} ${msg_subject#*: }"
+  # 長さは Issue 前置の後に測る。収まる件名（1 件を含む）はここで文字列を触らない。
+  if [[ "$msg_count" -gt 1 ]]; then
+    msg_subject="$(fit_multi_subject "$msg_subject" "$t" "$issue")"
+  fi
   [[ -z "$categories" ]] || msg_body="${msg_body:+$msg_body$'\n\n'}${categories}"
 }
 
@@ -499,6 +536,7 @@ commit_msg_dry_run() {
     for t in "${types[@]}"; do
       [[ "$t" != "$subject_type" ]] || continue
       candidate="${t}:${subject#*:}"
+      candidate="$(fit_multi_subject "$candidate" "$t" "$issue")"
       if try_subject_hook "$candidate" "$body"; then
         msg_subject="$candidate" subject_type="$t"
         return 0
@@ -510,6 +548,7 @@ commit_msg_dry_run() {
       if [[ -n "$issue" ]]; then
         for t in "${types[@]}"; do
           candidate="${t}: #${issue} ${subject#*: }"
+          candidate="$(fit_multi_subject "$candidate" "$t" "$issue")"
           if try_subject_hook "$candidate" "$body"; then
             msg_subject="$candidate" subject_type="$t" subject_issue="$issue"
             return 0

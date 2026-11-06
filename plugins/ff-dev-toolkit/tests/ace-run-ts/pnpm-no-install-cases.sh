@@ -41,6 +41,7 @@ _pnpm_no_install_cases() {
   selected="${fixture}/selected workspace"
   mkdir -p "${selected}/packages/docs"
   selected="${selected}/packages/docs"
+  printf '%s\n' 'packages:' > "${selected}/pnpm-workspace.yaml"
   selected_bin="$(_bin_with)"
   _write_pnpm_no_install_shim "${selected_bin}/pnpm" "${delegate}" "${mkdir_abs}" available
   _run "${selected}" "${selected_bin}" "${STUB_TS}" "arg with space" plain
@@ -74,6 +75,7 @@ _pnpm_no_install_cases() {
 
   missing="${fixture}/missing"
   mkdir -p "${missing}"
+  printf '%s\n' 'packages:' > "${missing}/pnpm-workspace.yaml"
   missing_bin="$(_bin_with)"
   _write_pnpm_no_install_shim "${missing_bin}/pnpm" "${delegate}" "${mkdir_abs}" missing
   _run "${missing}" "${missing_bin}" "${STUB_TS}"
@@ -90,6 +92,8 @@ _pnpm_no_install_cases() {
 
   fallback="${fixture}/fallback"
   mkdir -p "${fallback}"
+  printf '%s\n' 'packages:' > "${fallback}/pnpm-workspace.yaml"
+  printf '%s\n' '# yarn.lock' > "${fallback}/yarn.lock"
   fallback_bin="$(_bin_with)"
   _write_pnpm_no_install_shim "${fallback_bin}/pnpm" "${delegate}" "${mkdir_abs}" missing
   caller_delegate="${fixture}/yarn-delegate"

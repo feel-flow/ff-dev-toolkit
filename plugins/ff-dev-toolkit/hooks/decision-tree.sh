@@ -23,7 +23,7 @@
 #     読み手が集合として畳む（記録は fail-soft を優先し、ロックは持たない）
 #   同 metrics/sessions/<session_id>.route … UserPromptSubmit が置く最新の根の答え（上書き）
 #   同 metrics/sessions/<session_id>.seen  … 記録済みの葉（追記）
-#   Issue 番号は cwd のブランチ名（`<type>/#<番号>-<slug>`）から取る。取れなければ `-`。
+#   Issue 番号は cwd のブランチ名から取る（読み方の正本は scripts/lib/branch-issue.sh）。取れなければ `-`。
 #
 # fail-soft（Issue の AC）: 記録が書けない・読めない・ルータが判定できないときはワークフローを
 # 止めない（exit 0・stdout 無出力）。ただし黙って 0 にせず、stderr へ `(unmeasured)` を含む
@@ -164,13 +164,13 @@ repo_key=""
 if [ -n "$cwd" ] && [ -d "$cwd" ]; then
   repo_key="$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || repo_key=""
   branch="$(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null)" || branch=""
-  case "$branch" in
-    *'#'[0-9]*)
-      num="${branch#*#}"
-      num="${num%%[!0-9]*}"
-      [ -n "$num" ] && issue="$num"
-      ;;
-  esac
+  # shellcheck source=../scripts/lib/branch-issue.sh
+  if . "${BASH_SOURCE[0]%/*}/../scripts/lib/branch-issue.sh" 2>/dev/null; then
+    ff_branch_issue_parse "$branch"
+    if [ -n "$_branch_issue_value" ]; then
+      issue="$_branch_issue_value"
+    fi
+  fi
 fi
 [ -n "$repo_key" ] || unmeasured "cwd の repo（git-common-dir）を引けないため葉を記録しません"
 

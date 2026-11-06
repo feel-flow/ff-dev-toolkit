@@ -10,6 +10,13 @@
 # 変異検出: Issue `#2138` のクエリ形の判定を無効化すると R1q が、直後の `&` の除外を外すと R5 のクエリ形が赤になる（2026-10-26 実測）。
 # 変異検出: Issue `#2491` の単語分割の判定（split_on=1）を消した hook は R10 を書き換えず警告だけに戻り、前置の認識（zsh-expansion-guard.sh の ff_zsh_word_split_prefixed）を消すと PostToolUse が前置済みの呼び出しにも scalar を返す。どちらも R15 が suite の中でコピーへ当てて赤を確かめる（2026-11-02 Windows Git Bash 実測）。permission_mode の条件を外すと R16 の default が前置され（R15b）、ACK のときに書き換え全体を諦める旧形へ戻すと R17 の glob の引用が deny へ戻る（R15c。レビュー 1 巡目の対応後に実測）。
 # 変異検出: CR の除外を外すと R3c が、保留した equals の deny を EXIT trap で出す経路を外すと R5 の equals 系が赤になる（2026-10-25 レビュー対応後に実測）。
+# 空振り検出: Issue `#2616` の通知の頻度は、session_id が無い・記録のキーに使えない（`../` `/` 空白）・記録を作れない（置き場がファイル）回を
+#   「毎回出す」側に固定する（R20e）。出し済みの判定が常に真になる hook は R1 から赤、判定不能の通知まで絞る hook は R20f が赤になる。
+# 変異検出: Issue `#2616` の notice_first を常に「出す」へ / 常に「出し済み」へ、集約入口の採用の一文を無条件に、deny に同居する scalar 警告・
+#   PostToolUse の検出・引用の書き換えの通知をそれぞれ絞らない形へ、判定不能の通知も絞る形へ、agent_id の検査を外す・記録のキーから
+#   agent_id を外す形へ、集約入口が届かなかった回の記録を消さない・deny でも届いたと数える形へ変えた 10 変異が、どれも R20 で赤になる。
+#   無変異の対照は緑（2026-11-04 WSL・zsh あり実測）。
+# 変異検出: Issue `#2614` より前の cwd ガード（cd を含まない呼び出しへ systemMessage の警告を出す版）を当てると R19 の 3 つ目が赤になる（2026-11-04 実測）。
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd -P)"
 target="${ZSH_REWRITE_TARGET_OVERRIDE:-$root/hooks/guard-zsh-glob.sh}"
@@ -276,18 +283,150 @@ done
 out="$(PM=default run 'setopt SH_WORD_SPLIT; if true; then unsetopt sh_word_split; fi; set -- $X')"
 check is_warn_only "$out"
 
-# ---- R19: 前置後の呼び出しを background の cwd ガードが誤警告しない（集約入口経由） ---------------------------
+# ---- R19: 前置後の呼び出しを cwd ガードが誤って止めず、相対 cd は止め続ける（集約入口経由） ---------------------
+# cwd ガードが働くのは linked worktree のある repo だけなので、fixture に 1 本足す。ガードの opt-out は
+# 利用者の環境（~/.claude/settings.json の env 等）に入っていることがあるので、呼び出しごとに外す。
+# git が無い環境だけを skip にする。git があるのに fixture を作れないのは実装かテストの異常なので、
+# R19 の 3 検査が消えたまま緑にならないよう失敗にする。
 bg_guard="$root/hooks/guard-background-cwd.sh"
-mono="$tmp/mono"
-mkdir -p "$mono/packages/app" "$mono/packages/api"
-if git -C "$mono" init --quiet >/dev/null 2>&1; then
-  bgpay() { jq -nc --arg c "$1" --arg d "$mono" '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$d,permission_mode:"bypassPermissions",tool_input:{command:$c,run_in_background:true,timeout:123,description:"fixture"}}'; }
-  out="$(bgpay "cd $mono/packages/app && ls \$X" | env SHELL=/bin/zsh CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" bash "$batch" "$target" "$bg_guard")"
-  check jq -e --arg c "setopt SH_WORD_SPLIT; cd $mono/packages/app && ls \$X" '.hookSpecificOutput.updatedInput.command == $c and ((.systemMessage // "") | contains("Bash の cwd") | not)' <<< "$out" >/dev/null
-  # 対照: 前置しても先頭の後ろが cd でない呼び出しは従来どおり警告する（setopt の読み飛ばしが他を巻き込まない）
-  out="$(bgpay 'npm test $X' | env SHELL=/bin/zsh CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" bash "$batch" "$target" "$bg_guard")"
-  check jq -e '(.systemMessage // "") | contains("Bash の cwd")' <<< "$out" >/dev/null
+wtrepo="$tmp/wtrepo"
+mkdir -p "$wtrepo/packages/app"
+if ! command -v git >/dev/null 2>&1; then
+  echo "SKIP R19: git が無いため cwd ガードとの組み合わせは未検査" >&2
+elif ! { git -c init.defaultBranch=main -C "$wtrepo" init --quiet >/dev/null 2>&1 \
+  && git -C "$wtrepo" -c user.email=guard@example.invalid -c user.name=guard commit --quiet --allow-empty -m init >/dev/null 2>&1 \
+  && git -C "$wtrepo" worktree add --quiet -b r19-linked "$tmp/wtrepo-linked" >/dev/null 2>&1; }; then
+  echo "FAIL zsh rewrite: R19 の linked worktree の fixture を作れません（git はあるのに init / commit / worktree add が失敗）" >&2
+  exit 1
 else
-  echo "SKIP R19: git init に失敗したため background の cwd ガードとの組み合わせは未検査" >&2
+  bgpay() { jq -nc --arg c "$1" --arg d "$wtrepo" '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$d,permission_mode:"bypassPermissions",tool_input:{command:$c,run_in_background:true,timeout:123,description:"fixture"}}'; }
+  bgrun() { bgpay "$1" | env -u FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD SHELL=/bin/zsh CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" bash "$batch" "$target" "$bg_guard"; }
+  no_cwd_text='[(.systemMessage // ""), (.hookSpecificOutput.additionalContext // ""), (.hookSpecificOutput.permissionDecisionReason // "")] | all(contains("Bash の cwd") | not)'
+  # 前置された絶対パスの cd は止めず、cwd ガードはどのチャネルにも何も足さない。
+  out="$(bgrun "cd $wtrepo/packages/app && ls \$X")"
+  check jq -e --arg c "setopt SH_WORD_SPLIT; cd $wtrepo/packages/app && ls \$X" ".hookSpecificOutput.updatedInput.command == \$c and .hookSpecificOutput.permissionDecision == null and ($no_cwd_text)" <<< "$out" >/dev/null
+  # 対照: 相対 cd は集約入口でも cwd ガードの deny が残り、書き換えは採用されない（元の入力が
+  # deny なので再検査へ進まない）。前置後の形（setopt SH_WORD_SPLIT; cd 相対）を cwd ガードが
+  # 読み飛ばして止めることは guard-background-cwd/verify.sh の S1 / S2 / S8 が固定する。
+  out="$(bgrun 'cd packages/app && ls $X')"
+  check jq -e '.hookSpecificOutput.permissionDecision == "deny" and .hookSpecificOutput.updatedInput == null and (.hookSpecificOutput.permissionDecisionReason | contains("Bash の cwd・拒否"))' <<< "$out" >/dev/null
+  # cd を含まない呼び出しには、止めない警告もどのチャネルにも出さない（Issue `#2614`）。
+  out="$(bgrun 'npm test $X')"
+  check jq -e "($no_cwd_text)" <<< "$out" >/dev/null
 fi
+
+# ---- R20: 止めない通知は種類ごとに同じセッションで 1 回だけ（Issue `#2616`） -------------------------------
+# 同じ session_id の 2 回目は、利用者の画面へ出る通知（systemMessage・additionalContext）を出さず、deny と
+# updatedInput は 1 回目と同じ。session_id が違う・無い・記録を作れない回と、判定不能の通知は毎回出す。
+# PreToolUse は集約入口（採用の一文を足す側）を通し、PostToolUse は登録どおり hook を直接駆動する。
+nstate="$tmp/notice-state"
+spay() { # <command> <session_id（空なら付けない）> <hook_event_name>
+  jq -nc --arg c "$1" --arg s "$2" --arg e "$3" --arg pm "$PM" \
+    '{hook_event_name:$e,tool_name:"Bash",tool_input:{command:$c,timeout:123,description:"fixture"}} + (if $s != "" then {session_id:$s} else {} end) + (if $pm != "" then {permission_mode:$pm} else {} end)'
+}
+srun() { # <command> <session_id> [PostToolUse] — 出力が無い回は {} を返す
+  local o
+  if [ "${3:-}" = PostToolUse ]; then
+    o="$(spay "$1" "$2" PostToolUse | env SHELL=/bin/zsh CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" FF_DEV_TOOLKIT_STATE_DIR="${NSTATE:-$nstate}" bash "$target")"
+  else
+    o="$(spay "$1" "$2" PreToolUse | env SHELL=/bin/zsh CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" FF_DEV_TOOLKIT_STATE_DIR="${NSTATE:-$nstate}" bash "$batch" "$target")"
+  fi
+  printf '%s\n' "${o:-"{}"}"
+}
+silent='(has("systemMessage") | not) and (.hookSpecificOutput.additionalContext == null)'
+# R14 以降は PM=bypassPermissions のままなので、前置しないモードの検査のために戻す（前置の検査は呼び出しごとに付ける）。
+PM=""
+# R20a bypassPermissions の単語分割: 1 回目は通知と採用の一文、2 回目は同じ updatedInput だけ。
+out1="$(PM=bypassPermissions srun 'ls $X' r20-a)"
+out2="$(PM=bypassPermissions srun 'ls $X' r20-a)"
+check jq -e '(.systemMessage | contains("SH_WORD_SPLIT")) and (.hookSpecificOutput.additionalContext | contains("採用しました"))' <<< "$out1" >/dev/null
+check jq -e "$silent and .hookSpecificOutput.permissionDecision == null" <<< "$out2" >/dev/null
+check test "$(rewritten "$out2")" = 'setopt SH_WORD_SPLIT; ls $X'
+check test "$(rewritten "$out2")" = "$(rewritten "$out1")"
+# R20b 引用の書き換えは単語分割と別の種類: 単語分割を出し済みのセッションでも、初めての引用の通知は出す。
+#   引用の通知も出し済みになった後は、別の語の書き換えでも通知を出さず、引用した updatedInput は返す。
+out1="$(PM=bypassPermissions srun 'grep -rn foo --include=*.md $X' r20-a)"
+check jq -e '(.hookSpecificOutput.additionalContext | contains("引用") and (contains("SH_WORD_SPLIT") | not)) and (has("systemMessage") | not)' <<< "$out1" >/dev/null
+check test "$(rewritten "$out1")" = 'setopt SH_WORD_SPLIT; grep -rn foo --include="*.md" $X'
+out2="$(PM=bypassPermissions srun 'grep -rn bar --include=*.ts .' r20-a)"
+check jq -e "$silent" <<< "$out2" >/dev/null
+check test "$(rewritten "$out2")" = 'grep -rn bar --include="*.ts" .'
+# R20c 前置しないモードの未引用 scalar: 画面向け（PreToolUse の systemMessage）とエージェント向け
+#   （PostToolUse の additionalContext）は別の種類で、それぞれ 1 回だけ出す。
+out1="$(srun 'ls $X' r20-c)"
+out2="$(srun 'ls $X' r20-c)"
+check jq -e '.systemMessage | contains("単語分割されません")' <<< "$out1" >/dev/null
+check jq -e "$silent" <<< "$out2" >/dev/null
+out1="$(srun 'ls $X' r20-c PostToolUse)"
+out2="$(srun 'ls $X' r20-c PostToolUse)"
+check jq -e '.hookSpecificOutput.hookEventName == "PostToolUse" and (.hookSpecificOutput.additionalContext | contains("単語分割"))' <<< "$out1" >/dev/null
+check jq -e "$silent" <<< "$out2" >/dev/null
+# R20d 書き換えられない deny は 2 回目も同じ判定と理由。集約入口は deny で返した回の通知を出し済みに数えないので、
+#   同居する scalar 警告も 2 回目に出る。集約入口を通さない単独起動（記録を取り消す側がいない）では 2 回目に落ちる。
+out1="$(srun 'grep --include=$X* . $Y' r20-d)"
+out2="$(srun 'grep --include=$X* . $Y' r20-d)"
+check is_deny "$out1"
+check is_deny "$out2"
+check test "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "$out2")" = "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "$out1")"
+check jq -e 'has("systemMessage")' <<< "$out1" >/dev/null
+check jq -e 'has("systemMessage")' <<< "$out2" >/dev/null
+check test ! -e "$nstate/notices/r20-d/main/zsh-scalar-screen"
+for i in 1 2; do
+  out="$(spay 'grep --include=$X* . $Y' r20-d2 PreToolUse | env SHELL=/bin/zsh CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" FF_DEV_TOOLKIT_STATE_DIR="$nstate" bash "$target")"
+  check is_deny "$out"
+  if [ "$i" -eq 1 ]; then check jq -e 'has("systemMessage")' <<< "$out" >/dev/null; else check jq -e 'has("systemMessage") | not' <<< "$out" >/dev/null; fi
+done
+# R20e 別のセッションは改めて出す。session_id が無い回・記録を作れない回は毎回出す（黙らせる側へ倒さない）。
+out1="$(srun 'ls $X' r20-e)"
+check jq -e '.systemMessage | contains("単語分割されません")' <<< "$out1" >/dev/null
+for i in 1 2; do
+  out="$(srun 'ls $X' '')"
+  check jq -e '.systemMessage | contains("単語分割されません")' <<< "$out" >/dev/null
+done
+: > "$tmp/notice-not-a-dir"
+for i in 1 2; do
+  out="$(NSTATE="$tmp/notice-not-a-dir" srun 'ls $X' r20-f)"
+  check jq -e '.systemMessage | contains("単語分割されません")' <<< "$out" >/dev/null
+done
+for sid in '../r20' 'a/b' 'a b'; do
+  out="$(srun 'ls $X' "$sid")"
+  check jq -e '.systemMessage | contains("単語分割されません")' <<< "$out" >/dev/null
+done
+check test ! -e "$nstate/r20"
+# R20f 判定不能の通知は出し済みのセッションでも毎回出す（走査 awk の失敗。PreToolUse・PostToolUse とも）。
+for i in 1 2; do
+  out="$(spay 'ls $X' r20-c PreToolUse | env SHELL=/bin/zsh CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" FF_DEV_TOOLKIT_STATE_DIR="$nstate" FF_ZSH_GLOB_AWK=false bash "$target")"
+  check jq -e '.systemMessage | startswith("zsh 展開ガード:")' <<< "$out" >/dev/null
+  out="$(spay 'ls $X' r20-c PostToolUse | env SHELL=/bin/zsh CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" FF_DEV_TOOLKIT_STATE_DIR="$nstate" FF_ZSH_GLOB_AWK=false bash "$target")"
+  check jq -e '.hookSpecificOutput.additionalContext | startswith("zsh 展開ガード:")' <<< "$out" >/dev/null
+done
+# R20g 集約入口が通知を deny で返した回（別のガードの deny）は出し済みに数えず、次の呼び出しで改めて出す。
+out1="$(spay 'bash tests/run-all.sh $ARGS 2>&1 | tail -20' r20-g PreToolUse | jq -c '.permission_mode = "bypassPermissions"' \
+  | env SHELL=/bin/zsh CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" FF_DEV_TOOLKIT_STATE_DIR="$nstate" bash "$batch" "$target" "$exit_guard")"
+check jq -e '.hookSpecificOutput.permissionDecision == "deny" and .hookSpecificOutput.updatedInput == null' <<< "$out1" >/dev/null
+check test ! -e "$nstate/notices/r20-g/main/zsh-word-split"
+out2="$(PM=bypassPermissions srun 'ls $X' r20-g)"
+check jq -e '(.systemMessage | contains("SH_WORD_SPLIT")) and .hookSpecificOutput.updatedInput.command == "setopt SH_WORD_SPLIT; ls $X"' <<< "$out2" >/dev/null
+check test -d "$nstate/notices/r20-g/main/zsh-word-split"
+# R20h サブエージェント（hook 入力の agent_id）は親と別に数える。agent_id を記録のキーに使えない回は毎回出す。
+apay() { spay "$1" "$2" "$3" | jq -c --arg a "$4" '.agent_id = $a'; }
+for i in 1 2; do
+  out="$(apay 'ls $X' r20-c PreToolUse sub-1 | env SHELL=/bin/zsh CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" FF_DEV_TOOLKIT_STATE_DIR="$nstate" bash "$batch" "$target")"
+  [ -n "$out" ] || out='{}'
+  if [ "$i" -eq 1 ]; then
+    check jq -e '.systemMessage | contains("単語分割されません")' <<< "$out" >/dev/null
+  else
+    check jq -e "$silent" <<< "$out" >/dev/null
+  fi
+  out="$(apay 'ls $X' r20-c PostToolUse sub-1 | env SHELL=/bin/zsh CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" FF_DEV_TOOLKIT_STATE_DIR="$nstate" bash "$target")"
+  [ -n "$out" ] || out='{}'
+  if [ "$i" -eq 1 ]; then
+    check jq -e '.hookSpecificOutput.additionalContext | contains("単語分割")' <<< "$out" >/dev/null
+  else
+    check jq -e "$silent" <<< "$out" >/dev/null
+  fi
+  out="$(apay 'ls $X' r20-c PreToolUse '../x' | env SHELL=/bin/zsh CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" FF_DEV_TOOLKIT_STATE_DIR="$nstate" bash "$batch" "$target")"
+  check jq -e '.systemMessage | contains("単語分割されません")' <<< "$out" >/dev/null
+done
+check test ! -e "$nstate/notices/x"
 echo "zsh rewrite: $pass checks passed"

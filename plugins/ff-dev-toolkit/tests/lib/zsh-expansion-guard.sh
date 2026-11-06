@@ -13,6 +13,8 @@
 # 非停止の経路）で返し、equals は何も返さない（実行済みで止められず、止める判断は
 # PreToolUse が済ませている）。判定不能は PostToolUse でも実行を止めず、`$` を含む呼び出しに
 # 限り未検査である旨だけを additionalContext で知らせる（fail-soft）。
+# 判定不能の通知は必ず「zsh 展開ガード:」で始め、検出の警告はそれ以外で始める。guard-zsh-glob.sh は
+# この接頭辞で両者を分け、検出の警告だけを同じセッションで 1 回に絞る（Issue `#2616`）。
 input=""
 IFS= read -r -d '' input || true
 [ "${FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD:-0}" != 1 ] || exit 0

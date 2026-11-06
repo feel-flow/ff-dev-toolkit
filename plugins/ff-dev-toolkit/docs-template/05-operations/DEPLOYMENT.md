@@ -1,10 +1,10 @@
 ---
 title: "DEPLOYMENT"
-version: "1.8.0"
+version: "1.9.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-10-29"
+updated: "2026-11-05"
 changeImpact: "medium"
 ---
 
@@ -56,7 +56,7 @@ changeImpact: "medium"
 gh issue create --title "feat: ..." --body "..."
 
 # 2. ブランチ作成
-git checkout -b "feature/123-feature-name"
+git checkout -b "feature/#123-feature-name"
 
 # 3. PR作成（push の直後に通常 PR として作る）
 gh pr create --base develop --title "..." --body "..."
@@ -81,7 +81,7 @@ Git Flowベースで、**テスト・セルフレビュー（PR 作成後・マ�
 **段が減ることはない。** 変更規模で変わるのは各段の重さで、フルではさらに段が増える（下の tier を参照）。
 
 1. **Issue作成** - 作業の起点
-2. **ブランチ作成** - `feature/{issue-num}-{name}`
+2. **ブランチ作成** - `feature/#{issue-num}-{name}`
 3. **実装・コミット** - AI駆動開発
 4. **テスト・検証** - `npm run quality:local` 等
 5. **PR作成** - push の直後に通常 PR として作る（構造化されたPR本文）
@@ -102,12 +102,16 @@ Git Flowベースで、**テスト・セルフレビュー（PR 作成後・マ�
 | tier     | 判定                                 | 基準との差                                                                                             |
 | -------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------ |
 | **フル** | 配布・リリースへ影響する path を含む | 標準の段に**加えて**、CHANGELOG への記載・回帰ゲートの全件実行・リリース準備と公開反映が段として増える |
-| **軽量** | 変更が `.md` のみ                    | `/spec-driven` が軽量モードで動く（G1〜G2 を簡略化）                                                   |
-| **標準** | 上記以外（実装変更）                 | 上の段をそのまま通す（基準）                                                                           |
+| **軽量** | 変更が `.md` のみで、契約 path を含まない | `/spec-driven` が軽量モードで動く（G1〜G2 を簡略化）                                                   |
+| **標準** | 上記以外（実装変更・契約 path の `.md`） | 上の段をそのまま通す（基準）                                                                           |
 
 **tier は他の規則を免除しない。** 配布対象を変更した回の CHANGELOG 記載や、テストを触った回の全件実行のように、`07-project-management/TASKS.md` の完了の定義が tier と独立に課す要求はそのまま残る。フル行はそれらが**必ず**要る場合を示すもので、軽量・標準が免除されるという意味ではない。
 
-**tier はレビューの本数も減らさない。** レビューの*深さ*（どのレビュアーを何本回すか）は別の判定軸で、プロジェクトが `scripts/review-level.sh`（レビュー深度）を持つならそちらが決める。2 つを同じ表に混ぜると、同じ変更に対してどちらが支配するのか読めなくなる。tier が決めるのは段の重さ（`/spec-driven` のモード・CHANGELOG・リリース系の段）だけである。
+**tier はレビューの本数も減らさない。** レビューの*深さ*（どのレビュアーを何本回すか）は別の判定軸で、決定木の根の答えを `${CLAUDE_PLUGIN_ROOT}/scripts/review-route.sh` がレーン構成へ写す。2 つを同じ表に混ぜると、同じ変更に対してどちらが支配するのか読めなくなる。tier が決めるのは段の重さ（`/spec-driven` のモード・CHANGELOG・リリース系の段）だけである。
+
+**契約 path の `.md` は軽量にしない。** 契約 path は決定木（`tree.tsv` の `rule root contract-path`）の一覧で、`SKILL.md` や入口の文書のように 1 行でも挙動が変わるものを指す。tier は `.md` だけの変更をこの一覧と照合し、当たれば標準にする。フルへは上げない（段が増えるのは配布・リリースへ影響するときだけ）。判定できない回も軽量へ倒さず標準にする。
+
+**「重要な path」の一覧は 3 つあり、統合しない。** 問いが別なので、一覧が違っていてよい。tier のフルは配布・リリースへ影響するか、決定木の contract-path は行数で軽さを測れないか、全件ゲートの契約面は差分から影響先を言い切れるかを問う。
 
 `workflow-tier.sh --list-rules` が判定パターンの実効値を出力する。**パターンそのものをここへ書き写さない**（禁止を宣言した文の中で第 2 の正本を作らない）。既定はツールキット同梱物の形に合わせてあり、導入先プロジェクトは `WORKFLOW_TIER_FULL_PATTERNS` に自プロジェクトの配布・リリース成果物の path を与えて置き換える。書き写した値は上書きされた環境で嘘になる。
 
@@ -139,8 +143,8 @@ release/*     ← リリース準備
 
 **命名規則**:
 
-- `feature/{issue-number}-{description}` 例: `feature/123-user-auth`
-- `hotfix/{issue-number}-{description}` 例: `hotfix/456-security-patch`
+- `feature/#{issue-number}-{description}` 例: `feature/#123-user-auth`
+- `hotfix/#{issue-number}-{description}` 例: `hotfix/#456-security-patch`
 - `release/{version}` 例: `release/1.2.0`
 
 ## 2. CI/CDパイプライン
@@ -306,6 +310,15 @@ PRマージ後のブランチ切り替え忘れを防ぐため、セッション
 ## Changelog
 
 - 2026-09-08 追記: プラグイン変数がない直接利用でも取得できる公開配布元を明記（ai-spec-driven-development#525）。
+
+### [1.9.0] - 2026-11-05
+
+#### 変更
+
+- 軽量 tier の条件を「`.md` のみ」から「`.md` のみで、契約 path を含まない」へ狭めた。`SKILL.md` や入口の文書の修正が軽量モードへ入らない
+- レビューの深さを決める実体を `review-route.sh` に訂正し、配布されていないレビュー深度スクリプトの記述を外した
+- 「重要な path」の 3 つの一覧を統合しない理由を追記した
+- ブランチ名の例を `<type>/#<番号>-<slug>` の形へ揃えた
 
 ### [1.8.0] - 2026-10-29
 

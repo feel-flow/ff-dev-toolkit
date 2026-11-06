@@ -10,7 +10,7 @@
 #
 # 記録する 2 つの事象:
 #   start … `git checkout -b|-B <branch>` / `git switch -c|-C|--create|--force-create <branch>`
-#           （ブランチ名 `<type>/#<n>-<slug>` から Issue 番号 n を取る）
+#           （ブランチ名から Issue 番号 n を取る。読み方の正本は scripts/lib/branch-issue.sh）
 #   end   … `gh pr merge [<PR>]`（PR の head ブランチ名から Issue 番号を取る。PR 指定が
 #           番号・URL なら `gh pr view --json headRefName` で引き、省略時は cwd の現在の
 #           ブランチを使う）
@@ -82,14 +82,9 @@ strip_quotes() {
   printf '%s' "$s"
 }
 
-# ブランチ名 → Issue 番号（`<type>/#<n>-<slug>`）。該当しなければ空。`#` は必須 —
-# 任意にすると `chore/2026-09-23-cleanup` のような日付入りの名前を Issue 2026 と読む
-issue_of_branch() {
-  local re='^[A-Za-z0-9_.-]+/#([0-9]+)([-_/].*)?$'
-  if [[ "$1" =~ $re ]]; then
-    printf '%s' "${BASH_REMATCH[1]}"
-  fi
-}
+# ブランチ名 → Issue 番号の規則は共有 lib が持つ（hook ごとに複製しない）。
+# shellcheck source=../scripts/lib/branch-issue.sh
+. "${BASH_SOURCE[0]%/*}/../scripts/lib/branch-issue.sh" 2>/dev/null || exit 0
 
 EVENT=""
 BRANCH=""
@@ -212,7 +207,7 @@ if [ "$EVENT" = "end" ]; then
   fi
 fi
 
-ISSUE="$(issue_of_branch "$BRANCH")"
+ISSUE="$(ff_branch_issue "$BRANCH")"
 [ -n "$ISSUE" ] || exit 0
 
 command -v git >/dev/null 2>&1 || exit 0

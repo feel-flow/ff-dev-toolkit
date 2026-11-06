@@ -45,7 +45,7 @@
 # 導入先の追加宣言は同じ環境変数から読むので、GATE_NAME へは複製せず、先頭語だけを
 # 候補フィルタへ渡す（正確な起動判定は共有検出器。下の関数の注記を参照）。
 #
-# 止めるのは検出器が出す 4 タグすべてである。いずれも OBS-003 の同じクラス
+# 止めるのは検出器が出す 5 タグすべてである。いずれも OBS-003 の同じクラス
 # （「赤い結果が緑として観測される」）で、タグを選り分けること自体が検出器の判定を
 # この hook 側で再決定することになる:
 #   gate-exit-swallowed  ゲート起動を含む行が診断・出力整形で終端している。起動した
@@ -59,6 +59,10 @@
 #   pipe-exit-read       出力整形フィルタで終わるパイプラインの直後で `$?` を読んでいる
 #                        （`cmd | tail -20; echo "EXIT=$?"` は tail の rc を読む）
 #   pipestatus           `PIPESTATUS` を参照している（zsh では空へ展開されて機能しない）
+#   pipe-and-chain       `&&` の左辺が tail / tee で終わるパイプラインになっている
+#                        （`check --strict 2>&1 | tail -4 && push` は tail の rc で短絡するので、
+#                        検査が失敗しても push へ進む。Issue `#2593`、導入先で実測）。同じ入力の
+#                        中で先に `set -o pipefail` を宣言した形は止めない（判定は検出器）
 #
 # ## 誤検出の面（実測してから決めた）
 #
@@ -115,7 +119,7 @@
 #   - 検出器が違反を報告したのに、その出力を `開始行:タグ:論理行` として解釈できない
 #
 # fail-closed の面は**候補コマンドに限る**。生の入力に検出器が当たりうる綴り
-# （`$?` / `PIPESTATUS` / `$GATE_NAME`）が 1 つも無ければ、検出器を読む前に無音で通す。
+# （`$?` / `PIPESTATUS` / `$GATE_NAME` / `|` の後ろの `&&`）が 1 つも無ければ、検出器を読む前に無音で通す。
 # こうしないと検出器が壊れた瞬間に**すべての** Bash 呼び出しが止まり、復旧作業そのものが
 # できなくなる。
 #
@@ -285,7 +289,7 @@ case "$input" in
   *) exit 0 ;;
 esac
 case "$input" in
-  *'$?'*|*PIPESTATUS*|*"$GATE_NAME"*) : ;;
+  *'$?'*|*PIPESTATUS*|*"$GATE_NAME"*|*'|'*'&&'*|*'|'*'\u0026\u0026'*) : ;;
   *timeout*|*gtimeout*|*sleep*) : ;;
   *rg*) rg_word_candidate "$input" || has_raw_consumer_gate_candidate "$input" || exit 0 ;;
   *) has_raw_consumer_gate_candidate "$input" || exit 0 ;;
@@ -463,7 +467,7 @@ esac
 
 # rawのcwd/transcriptだけに宣言があっても停止しない。実commandで対象を絞ってから故障を扱う。
 case "$cmd" in
-  *'$?'*|*PIPESTATUS*|*"$GATE_NAME"*) : ;;
+  *'$?'*|*PIPESTATUS*|*"$GATE_NAME"*|*'|'*'&&'*) : ;;
   *) has_consumer_gate_candidate "$cmd" || exit 0 ;;
 esac
 
@@ -501,7 +505,7 @@ fi
 # heredoc を落とした後にもう一度候補判定する（本文だけが綴りを持っていた入力を
 # 検出器へ渡さない）。
 case "$code_only" in
-  *'$?'*|*PIPESTATUS*|*"$GATE_NAME"*) : ;;
+  *'$?'*|*PIPESTATUS*|*"$GATE_NAME"*|*'|'*'&&'*) : ;;
   *) has_consumer_gate_candidate "$code_only" || exit 0 ;;
 esac
 
@@ -634,12 +638,30 @@ case "$first_tag" in
   pipestatus)
     what="\`PIPESTATUS\` を参照しています。**zsh では空へ展開されて機能しません**（このホストの既定シェルが zsh の場合、比較は常に成立しません）。"
     ;;
+  pipe-and-chain)
+    what="\`&&\` の左辺が tail / tee で終わるパイプラインです。**\`&&\` の短絡に使われるのは tail / tee の終了コード**なので、左辺のコマンドが失敗しても右辺（push・マージなど）へ進みます。"
+    ;;
   *)
     what="終了コードの扱いが誤読・握り潰しの形になっています。"
     ;;
 esac
 
-if [ "$launch_ok" -eq 1 ]; then
+pipefail_unsafe_re='[|][[:space:]]*(head|less|more)([[:space:]]|$)|grep[[:space:]]+(-[A-Za-z]*q|--quiet)'
+file_form="  <測りたいコマンド> > <ログ> 2>&1
+  rc=\$?; tail -4 <ログ>; [ \"\$rc\" -eq 0 ] && <次>"
+if [ "$first_tag" = pipe-and-chain ]; then
+  # 同じ行に途中で読むのをやめる段（head / less / more / grep -q）があると、pipefail の下では
+  # その手前のコマンドが SIGPIPE（141）で落ち、後続が走らなくなる。そのときは pipefail を勧めない
+  if [[ ! "$first_line" =~ $pipefail_unsafe_re ]] \
+    && printf 'set -o pipefail; %s\n' "$first_line" | bash -n 2>/dev/null; then
+    fix="  set -o pipefail; ${first_line}
+（または左辺の出力をファイルへ受けて rc を保つ:
+${file_form}）"
+  else
+    fix="${file_form}
+（同じ行に head / less / more / grep -q の段があるため、set -o pipefail の前置は勧めません — 途中で読むのをやめる段の手前が SIGPIPE で落ちます）"
+  fi
+elif [ "$launch_ok" -eq 1 ]; then
   fix="  ${launch}
   rc=\$?; echo \"EXIT=\$rc\"; exit \$rc"
 else
@@ -654,7 +676,7 @@ ${what}
   ${first_line}
 終了コードを伝播させる形へ書き換えてください:
 ${fix}
-ポイント: 診断（\`echo\` / \`tail\`）は**出してよい**が、その後に \`exit \$rc\` まで書いて伝播させること。\`|| true\` / \`; exit 0\` / 末尾に \`| tail\` を足す形も同じ偽の緑になるので同じタグで止まります。\`&&\` だけは例外です（短絡するのでゲートが赤なら後続は走りません）。
+ポイント: 診断（\`echo\` / \`tail\`）は**出してよい**が、その後に \`exit \$rc\` まで書いて伝播させること。\`|| true\` / \`; exit 0\` / 末尾に \`| tail\` を足す形も同じ偽の緑になるので同じタグで止まります。\`&&\` は左辺がパイプで終わらないときだけ例外です（短絡するのでゲートが赤なら後続は走りません。左辺がパイプなら短絡に使われるのはパイプ終端の終了コードです）。
 判定の正本は ${DETECTOR_SHOWN} で、この hook は判定を持ちません（走査面だけを足しています）。
 どうしてもこの形で実行する必要がある場合:
   1) このコマンドに限って通す: コマンドの**先頭**へ環境代入 FF_EXIT_CODE_ACK=1 を付けて再実行する

@@ -60,7 +60,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ## 前提と引数
 
-- PRはマージ済み、資料単独は `--source` と `--issue` の両方。`docs/08-knowledge/PLAYBOOK.md` が存在し、ブランチは `<default-branch>` / `chore/ace-from-*` または最新origin/defaultのdetached（[手順](references/curate.md#worktreeセッションからの知見記録)）。cleanup後に実行
+- PRはマージ済み、資料単独は `--source` と `--issue` の両方。`docs/08-knowledge/PLAYBOOK.md` が存在し、ブランチは `<default-branch>` / `chore/ace-from-*` または最新origin/defaultのdetached（[手順](references/curate.md#worktreeセッションからの知見記録)）。保護・判定不能なら手順 1 で編集前に移る。cleanup後に実行
 - `$ARGUMENTS` — `[PR番号] [--source <資料パスまたはURL>]... [--issue <番号>]`。資料単独はsourceとissue必須。不正入力は変更前に拒否。資料は指定範囲のみ、取得失敗は未確認。domain正本: [ACE ドメイン知識契約](../../docs-template/05-operations/deployment/ace-domain.md)
 - sourceはACE_ARGSの1要素にし `$ARGUMENTS` をevalしない。検証: `ace-curate-input.ts`（ACE_MODE / PR_NUMBER / ISSUE_NUMBER を出す。exit 2なら変更しない）:
 
@@ -76,6 +76,22 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 <!--1b0bbdaa3ef899b7-->
 MCP: 取得値: MCP の Issue number/url、merged PR number/title/url/mergedAt/state。形式: repo固定JSON、mergedAt順。渡し先: PR_NUMBER/ISSUE_NUMBER と ACE_ID_PREFIX/ACE_BRANCH/ACE_ORIGIN。不足時: MCP必須不足は停止。
+
+**編集前の保護判定（必須）**: Playbook への最初の編集より前に `probe` を実行し、protected なら `ACE_BRANCH`、判定不能なら detached HEAD へ移ってから書く（unprotected と既存知見ブランチはそのまま）。MCP raw は手順 5 と同じ `--github-input` を付ける。
+
+```bash
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-shebang-cr.sh" || exit $?
+probe_out="$(FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit probe)" || { echo "保護判定が成立しない（rc=$?）。停止" >&2; exit 1; }
+echo "$probe_out"
+start_branch="$(git branch --show-current)" || exit 1
+if [[ "$start_branch" != chore/ace-from-* ]]; then
+  case "$probe_out" in
+    *"protection=unprotected"*) : ;;
+    *"protection=protected"*) git switch -c "$ACE_BRANCH" || { echo "${ACE_BRANCH} を作れない（既存ならそのブランチで再実行。空なら削除）" >&2; exit 1; } ;;
+    *) [[ -z "$start_branch" ]] || git switch --detach || exit 1 ;;
+  esac
+fi
+```
 
 ### 2. Phase 1: Generate（知見抽出 — サブエージェント委譲が既定）
 
@@ -152,15 +168,13 @@ domainでは同梱契約の4行形式でEvidence / Verification / Distill-Toを�
 
 ### 5. コミット
 
-**既定（推奨）— デフォルトブランチ直マージ**: 保護されていない default branch にのみ適用。**保護判定（必須・直 push を試す前に行う）**は `probe`。既存知見ブランチは PR 経由へ。判定・commitlint・保留合流は [references/curate.md](references/curate.md)。script での追記は [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う。
+**既定（推奨）— デフォルトブランチ直マージ**: 保護されていない default branch にのみ適用。**保護判定（必須・直 push を試す前に行う）**は手順 1 の `probe`（編集前）で済ませ、ここでは現在のブランチで分岐する。既存知見ブランチは PR 経由へ。判定・commitlint・保留合流は [references/curate.md](references/curate.md)。script での追記は [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う。
 
 MCP raw の利用時は下の各 knowledge-commit 呼出しに同じ `--github-input /absolute/index.json` を付ける（取得形と PLAN / read-back は [curate.md](references/curate.md#github-file-input)）。
 
 ```bash
-FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-shebang-cr.sh" || exit $?
 commit_type="knowledge"
-probe_out="$(FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit probe)" || { echo "保護判定が成立しない（rc=$?）。停止" >&2; exit 1; }
-case "$probe_out" in *"protection=protected"*) protected=1 ;; *) protected=0 ;; esac
+protected=0   # 保護判定は手順 1 で済み、保護時は知見ブランチ上にいる
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit add --ace-playbook docs/08-knowledge/PLAYBOOK.md --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" --category "<category[, category...]>" --type "${commit_type}" || exit 1
 ace_defer="${ACE_DEFER_TO_RETRO:-0}"   # 事前注入 hook が 1 を指示した回だけ add で止め /retrospective へ合流
 if [[ "$ace_defer" == 1 ]]; then echo "commit と push は /retrospective の書き込みへ合流させます"; exit 0; fi
@@ -170,7 +184,8 @@ if [[ "$current_branch" == chore/ace-from-* ]]; then ACE_BRANCH="$current_branch
 if [[ "$protected" == 1 ]]; then push_rc=3; else FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit push; push_rc=$?; fi
 case "$push_rc" in
   0) : ;;
-  3) FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit pr --branch "$ACE_BRANCH" --title "${commit_type}: ${ACE_ID} ${ACE_SUMMARY}" --body "${ACE_ORIGIN} から知見抽出" || exit 1 ;;  # 保護 → PR 経由
+  3) [[ -n "$current_branch" ]] || git switch -c "$ACE_BRANCH" || exit 1
+     FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit pr --branch "$ACE_BRANCH" --title "${commit_type}: ${ACE_ID} ${ACE_SUMMARY}" --body "${ACE_ORIGIN} から知見抽出" || exit 1 ;;  # 保護 → PR 経由
   *) echo "push 失敗（rc=${push_rc}。non-fast-forward なら references/curate.md の再試行へ）" >&2; exit 1 ;;
 esac
 ```

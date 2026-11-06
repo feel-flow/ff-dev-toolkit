@@ -136,6 +136,7 @@
 #   順に5/1/4/2件赤（各rc=1、bash -n rc=0）。走査後復元は最終状態が一致してもmulti実走査だけ赤。
 # 空振り検出: consumer context helper不在・読めない・同名0byte・mode集合0、実tracked入力から危険形を
 #   消す各写しは親の集合検査または実走査検査1件で赤（対照8/0、各rc=1、2026-10-22）。
+# 空振り検出: case 35 の pipe-and-chain（Issue `#2593`）は、検出の print を外す・pipefail の宣言を無視する・解除を宣言扱いにする・フェンス開始で状態を戻さない・`||` まで対象にする・tail / tee 以外で終わる左辺まで止める・`|&` を background と読む 7 変異が各 rc=1。無変異対照は rc=0（2026-11-04 WSL 実測）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

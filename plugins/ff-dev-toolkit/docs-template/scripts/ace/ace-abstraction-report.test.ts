@@ -1131,6 +1131,13 @@ function multipartiteEntries(parts: number): AbstractionEntry[] {
 
 describe("統合候補の計算予算", () => {
   const dense = { minJaccard: 0 };
+  // 既定の上限まで実際に列挙する（保持 10,000 組で retained-groups の打ち切り）ので、この
+  // describe の中でも計算が重い。実測: 単体では ~0.3 秒。ところがリリースの gate 段
+  // （run-all.sh の並列実行）では 5.4〜6.0 秒かかり、既定の 5 秒を超えて赤くなった。
+  // 同期処理なので、このテストの timeout は実行を途中で止めず、終わった後の経過時間で
+  // 赤にするだけ。打ち切りが効かなくなる退行を検出するのはアサーションで、timeout は
+  // 極端な遅さを赤にする閾値として、負荷時の実測に約 5 倍の余裕を取る。
+  const DEFAULT_BUDGET_TEST_TIMEOUT_MS = 30_000;
 
   it("規模の小さい入力は密でも予算に届かず、全組（3^4 = 81）を列挙する", () => {
     const analysis = analyzeMergeCandidates(multipartiteEntries(4), dense);
@@ -1171,12 +1178,15 @@ describe("統合候補の計算予算", () => {
     expect(pairing.groups.length).toBe(0);
   });
 
-  it("既定の予算でも指数個の組を全件は保持しない", () => {
+  it("既定の予算でも指数個の組を全件は保持しない", ({ task }) => {
+    // 第 3 引数を落とすと黙って既定の 5 秒へ戻るので、上限が効いていることも確かめる。
+    expect(task.timeout).toBe(DEFAULT_BUDGET_TEST_TIMEOUT_MS);
     // 3^10 = 59049 個の極大クリーク。打ち切らなければ保持の既定上限を超える。
     const analysis = analyzeMergeCandidates(multipartiteEntries(10), dense);
-    expect(analysis.truncated).not.toBeNull();
+    // 既定値では計算予算より先に保持の上限で止まる（上の timeout の根拠もこの前提に立つ）。
+    expect(analysis.truncated).toEqual({ reason: "retained-groups", limit: DEFAULT_MAX_RETAINED_GROUPS });
     expect(analysis.groups.length).toBeLessThanOrEqual(DEFAULT_MAX_RETAINED_GROUPS);
-  });
+  }, DEFAULT_BUDGET_TEST_TIMEOUT_MS);
 
   it("表示の上限や JSON 出力では予算を迂回できず、打ち切りはレポートに残る", () => {
     const analysis = analyzeMergeCandidates(multipartiteEntries(6), { ...dense, maxSearchWork: 20_000 });

@@ -136,9 +136,10 @@
 #
 # Host delegation (--delegate-to-host, review only):
 #   Why: the claude-code lane spawns the `claude` CLI, which uses whatever account that
-#   CLI is logged into. When only that account is out of quota, the lane cannot run even
-#   though the host session is still working on a different account, and `claude auth`
-#   has no per-invocation account selection — so the CLI side cannot fix it.
+#   CLI is logged into. When only that account is out of quota, or its OAuth session has
+#   expired (a non-interactive run cannot finish `claude auth login`), the lane cannot run
+#   even though the host session is still working, and `claude auth` has no per-invocation
+#   account selection — so the CLI side cannot fix it.
 #   (grok host: headless `grok -p` lanes return no review body; Issue `#2118`.)
 #   What changes: for the delegated lane only (claude-code by default, or the
 #   --delegate-to-host=<cli> value), no CLI is started. The prompt this run would have

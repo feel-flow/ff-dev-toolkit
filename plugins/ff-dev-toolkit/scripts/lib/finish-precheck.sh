@@ -8,15 +8,198 @@ if [[ "${_finish_precheck_loading:-}" != "1" ]]; then
   exit 2
 fi
 
+# Issue 本文・コメントの走査。フェンス（``` / ~~~）と HTML コメントの中は数えない。
+# mode=unchecked は行頭の空白のあとの「- [ ]」だけを原文のまま出す（「* [ ]」は対象外）。
+# mode=visible はコメントを剥がした後の空でない行を全部出す。
+# フェンスの中では HTML コメントを開かない。終了フェンスはコメントを剥がす前の行で見る。
+# 終了は開始と同じ文字で、開始以上の長さのときだけ閉じる。
+# インラインコードの中の開始記号はコメントにしない。
+ff_precheck_scan_lines() { # <unchecked|visible>
+  awk -v mode="$1" '
+    BEGIN { in_fence = 0; fence_ch = ""; fence_len = 0; in_comment = 0 }
+    function take_visible(raw,    i, n, out, rest, c) {
+      out = ""
+      i = 1
+      n = length(raw)
+      while (i <= n) {
+        if (in_comment) {
+          rest = substr(raw, i)
+          if (substr(rest, 1, 3) == "-->") { in_comment = 0; i += 3; continue }
+          i++
+          continue
+        }
+        c = substr(raw, i, 1)
+        if (c == "`") {
+          out = out c
+          i++
+          while (i <= n && substr(raw, i, 1) != "`") {
+            out = out substr(raw, i, 1)
+            i++
+          }
+          if (i <= n) { out = out substr(raw, i, 1); i++ }
+          continue
+        }
+        rest = substr(raw, i)
+        if (substr(rest, 1, 4) == "<!--") { in_comment = 1; i += 4; continue }
+        out = out c
+        i++
+      }
+      return out
+    }
+    {
+      raw = $0
+      sub(/\r$/, "", raw)
+      if (in_fence) {
+        rest = raw
+        sub(/^[[:space:]]+/, "", rest)
+        n = 0
+        while (n < length(rest) && substr(rest, n + 1, 1) == fence_ch) n++
+        tail = substr(rest, n + 1)
+        if (n >= fence_len && tail ~ /^[[:space:]]*$/) in_fence = 0
+        next
+      }
+      vis = take_visible(raw)
+      rest = vis
+      sub(/^[[:space:]]+/, "", rest)
+      if (match(rest, /^[`~]/)) {
+        fence_ch = substr(rest, 1, 1)
+        fence_len = 0
+        while (fence_len < length(rest) && substr(rest, fence_len + 1, 1) == fence_ch) fence_len++
+        # バッククォートのフェンスの info string にバッククォートは書けない（その行はインラインコード）。
+        # unchecked は従来の判定のまま残す。
+        if (fence_len >= 3 && !(mode == "visible" && fence_ch == "`" && index(substr(rest, fence_len + 1), "`"))) {
+          in_fence = 1
+          next
+        }
+      }
+      if (mode == "unchecked") {
+        if (vis ~ /^[[:space:]]*- \[ \]/) print raw
+      } else if (vis ~ /[^[:space:]]/) {
+        print vis
+      }
+    }
+  '
+}
+
+ff_precheck_unchecked_lines() {
+  ff_precheck_scan_lines unchecked
+}
+
+# ack の表記を CLOSES= と同じ小文字の owner/repo#N へ揃える。#N は TARGET_REPO で修飾する。
+ff_precheck_normalize_ack() {
+  local raw="$1" owner repo num
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  if [[ "$raw" =~ ^https?://[^/]+/([^/]+)/([^/]+)/issues/([0-9]+)$ ]]; then
+    owner="$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')"
+    repo="$(printf '%s' "${BASH_REMATCH[2]}" | tr '[:upper:]' '[:lower:]')"
+    printf '%s/%s#%s\n' "$owner" "$repo" "${BASH_REMATCH[3]}"
+    return 0
+  fi
+  if [[ "$raw" =~ ^#([0-9]+)$ || "$raw" =~ ^([0-9]+)$ ]]; then
+    num="${BASH_REMATCH[1]}"
+    printf '%s#%s\n' "$(printf '%s' "$TARGET_REPO" | tr '[:upper:]' '[:lower:]')" "$num"
+    return 0
+  fi
+  if [[ "$raw" =~ ^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#([0-9]+)$ ]]; then
+    owner="$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')"
+    repo="$(printf '%s' "${BASH_REMATCH[2]}" | tr '[:upper:]' '[:lower:]')"
+    printf '%s/%s#%s\n' "$owner" "$repo" "${BASH_REMATCH[3]}"
+    return 0
+  fi
+  return 1
+}
+
+ff_precheck_ack_has() {
+  awk -v t="$1" '$0 == t { found = 1 } END { exit found ? 0 : 1 }'
+}
+
+# Closes 対象の本文。file 入力は gh を呼ばない。失敗は未チェック 0 件にしない。
+ff_precheck_fetch_issue_body() {
+  local tok="$1" owner num err text json
+  owner="${tok%%#*}"
+  num="${tok##*#}"
+  [[ "$owner" != "$tok" && "$num" =~ ^[0-9]+$ ]] || die_env "Issue トークンが owner/repo#N ではありません: ${tok}" "CLOSES= の値を確かめて再実行する"
+  if [[ -n "$github_input" ]]; then
+    jq -n --arg repository "$github_repository" --arg issue "$tok" '{repository:$repository, issue:$issue}' >"$github_tmp/issue-scope.json" || exit 2
+    github_file_read "$github_input" finish.precheck.issue-body "$github_tmp/issue-scope.json" initial "$github_tmp/position.json" >"$github_tmp/issue-body.json" || exit 2
+    jq -er 'if has("body") and (.body == null or (.body | type == "string")) then (.body // "") else error("body") end' "$github_tmp/issue-body.json" \
+      || die_env "Issue ${tok} の本文が文字列ではありません" "file 入力の body を文字列か null にして再実行する"
+    return 0
+  fi
+  err="$(mktemp)" || die_env "一時ファイルを作れません" "TMPDIR を書ける場所へ向けて再実行する"
+  if ! json="$(gh issue view "$num" --repo "$owner" --json body 2>"$err")"; then
+    text="$(cat "$err")"
+    rm -f "$err"
+    die_env "Issue ${tok} の本文を取得できません（gh: ${text}）。取得失敗を未チェック 0 件とは読まない" "gh issue view ${num} --repo ${owner} --json body が通る状態で finish.sh precheck を再実行する"
+  fi
+  rm -f "$err"
+  printf '%s' "$json" | jq -er 'if has("body") and (.body == null or (.body | type == "string")) then (.body // "") else error("body") end' \
+    || die_env "Issue ${tok} の本文が文字列ではありません" "gh issue view の JSON を確かめて再実行する"
+}
+
 # ── precheck ───────────────────────────────────────────────────────────────────
+# 変更クラスは決定木の根の判定から導く。別に判定を持つと契約 path の優先が抜け、経路が full の
+# 契約変更を docs-only と記録する（KPI のクラス別比較が崩れる）。判定できない回は軽い側へ倒さず
+# other にする。Jev は使わない（FF_JEV_MODE=off）— クラスは集計の区分なので規則だけで決める。
+# 呼び出し元の PR_JSON を読み、呼び出し元の change_class へ置く（引数で渡すと長い本文で argv の
+# 上限に当たる。$(...) で受けると shebang 検査の停止がサブシェルの中で終わる）。
+ff_precheck_change_class() {
+  local lines files out
+  change_class="other"
+  lines="$(printf '%s' "$PR_JSON" | jq -r '(.additions // 0) + (.deletions // 0)' | tr -d '\r')" || return 0
+  [[ "$lines" =~ ^[0-9]+$ ]] || return 0
+  files="$(printf '%s' "$PR_JSON" | jq -r '(.files // [])[].path' | tr -d '\r')" || return 0
+  [[ -n "$files" ]] || return 0
+  assert_bundled_shebang_lf "$plugin_root/scripts/decision-tree/route.sh"
+  out="$(printf '%s\n' "$files" | FF_JEV_MODE=off FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "$plugin_root/scripts/decision-tree/route.sh" \
+    --files-from - --lines "$lines" 2>/dev/null)" || return 0
+  case $'\n'"$out"$'\n' in
+    *$'\n'DT_ROUTE=fast$'\n'*) : ;;
+    *) return 0 ;;
+  esac
+  case $'\n'"$out"$'\n' in
+    *$'\n'DT_REASON=docs-only$'\n'*) change_class="docs-only" ;;
+    *$'\n'DT_REASON=small-diff$'\n'*) change_class="small" ;;
+  esac
+  return 0
+}
+
+# <Issue 番号> <EFFORT 行> — 4 指標がすべて (unmeasured) なら rc 0。行の形が変わって判定できない回は
+# rc 1 にして、計上先へ置き換えず読めた行をそのまま出す（実測を黙って捨てない側へ倒す）。
+ff_precheck_metrics_unmeasured() {
+  local key
+  for key in wallclock_actual_h instruction_bytes review_rounds gate_minutes; do
+    case $'\n'"$2"$'\n' in
+      *$'\n'"EFFORT_${1}_${key}=(unmeasured)"$'\n'*) : ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
 cmd_precheck() {
   local PR_NUMBER="" MERGE_SUBJECT="" MERGE_BODY="" have_subject=0 have_body=0 GATE_RECORD="" have_gate_record=0
   local MERGE_METHOD="squash" have_method=0
+  local -a ACK_RAW=() PM_ACK_RAW=() PM_ACK_REASON=() pm_paths=()
+  local pm_armed=0 pm_count=0 pm_issue_hit=0 pm_ack_norm="" pm_path_hit=0 pm_unacked=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --subject) [[ $# -ge 2 ]] || usage; MERGE_SUBJECT="$2"; have_subject=1; shift 2 ;;
       --body) [[ $# -ge 2 ]] || usage; MERGE_BODY="$2"; have_body=1; shift 2 ;;
       --gate-record) [[ $# -ge 2 ]] || usage; GATE_RECORD="$2"; have_gate_record=1; shift 2 ;;
+      --ack-unchecked)
+        [[ $# -ge 2 && -n "$2" ]] || usage
+        ACK_RAW+=("$2")
+        shift 2
+        ;;
+      --ack-post-merge)
+        ff_precheck_post_merge_take_ack "$@"
+        shift 4
+        ;;
+      --ack-post-merge-reason)
+        die_env "--ack-post-merge-reason は --ack-post-merge の直後に渡します" "--ack-post-merge <owner/repo#N> --ack-post-merge-reason '<理由>' の形で再実行する"
+        ;;
       --merge-method)
         [[ $# -ge 2 ]] || usage
         # 2 回目は値が同じでも受け付けない（値が違えば後勝ち・先勝ちのどちらで読んだかを生成物から判別できず、
@@ -33,6 +216,16 @@ cmd_precheck() {
       *) [[ -z "$PR_NUMBER" ]] || usage; PR_NUMBER="$1"; shift ;;
     esac
   done
+  # 削除の宣言は PR を読む前に確かめる。未設定と 0/1 以外は、削除する側へ倒さない。
+  case "${FF_MERGE_DELETE_SEPARATE-0}" in
+    0|1) ;;
+    *) die_env "FF_MERGE_DELETE_SEPARATE の値が不正です: ${FF_MERGE_DELETE_SEPARATE}（0 または 1）" "未設定か 0（既定。削除を付ける）または 1（merge だけ）を渡して再実行する" ;;
+  esac
+  case "${FF_DELETE_PUSH_SKIP_HOOKS-1}" in
+    0|1) ;;
+    *) die_env "FF_DELETE_PUSH_SKIP_HOOKS の値が不正です: ${FF_DELETE_PUSH_SKIP_HOOKS}（0 または 1）" "未設定か 1（既定。削除 push はフックを起動しない）または 0（フックを残す）を渡して再実行する" ;;
+  esac
+  ff_precheck_post_merge_config
   is_pr_number "$PR_NUMBER" || die_env "PR 番号が数字ではありません: ${PR_NUMBER:-（空）}" "finish.sh precheck <PR番号> の形で渡す"
   [[ "$have_subject" -eq "$have_body" ]] || die_env "--subject と --body は両方渡す（片方だけだと squash メッセージの供給源がリポジトリ設定へ戻る）" "両方を渡して再実行する"
   if [[ "$have_subject" -eq 1 && -z "$MERGE_SUBJECT" ]]; then
@@ -51,6 +244,8 @@ cmd_precheck() {
   need_bundled check-closing-keywords.sh
   need_bundled check-merge-freshness.sh
   need_bundled effort-report.sh
+  need_bundled decision-tree/route.sh
+  need_bundled lib/branch-issue.sh
 
   local PR_JSON PR_FIELDS="number,state,isDraft,headRefName,headRefOid,baseRefName,title,body,closingIssuesReferences,commits,statusCheckRollup,additions,deletions,files,isCrossRepository"
   PR_JSON="$(gh_pr_view_or_die "$PR_NUMBER" "$PR_FIELDS" initial)" || exit $?
@@ -233,19 +428,80 @@ cmd_precheck() {
   fi
   echo "MERGE_MESSAGE_GATE=${message_gate}"
 
+  # Closes 対象の本文に未チェックの受け入れ条件が残る回は、後段の停止理由を上書きしない。
+  # 取得失敗は 0 件と読まず rc 2。ack は対象 Issue ごとに残り、未チェック行は隠さない。
+  local ack_norm="" raw ack_tok tok issue_body_file body line issue_unchecked=0 unacked=0 ac_count=0
+  if [[ ${#ACK_RAW[@]} -gt 0 ]]; then
+    for raw in "${ACK_RAW[@]}"; do
+      ack_tok="$(ff_precheck_normalize_ack "$raw")" || die_env "--ack-unchecked の値が owner/repo#N ではありません: ${raw}" "owner/repo#N、#N、または Issue の URL を渡して再実行する"
+      ack_norm="${ack_norm}${ack_tok}"$'\n'
+      printf 'AC_ACKED=%s\n' "$ack_tok"
+    done
+  fi
+  ff_precheck_post_merge_prepare "$PR_JSON" "$base_ref" "$head_oid"
+  if [[ -n "$CLOSES_UNION" ]]; then
+    while IFS= read -r tok; do
+      [[ -n "$tok" ]] || continue
+      issue_body_file="$(mktemp)" || die_env "一時ファイルを作れません" "TMPDIR を書ける場所へ向けて再実行する"
+      ff_precheck_fetch_issue_body "$tok" >"$issue_body_file" \
+        || die_env "Issue ${tok} の本文を取得できません。取得失敗を未チェック 0 件とは読まない" "gh issue view が通る状態で finish.sh precheck を再実行する"
+      body="$(cat "$issue_body_file")"
+      rm -f "$issue_body_file"
+      issue_unchecked=0
+      while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        printf 'AC_UNCHECKED=%s\t%s\n' "$tok" "$line"
+        ac_count=$((ac_count + 1))
+        issue_unchecked=1
+      done < <(printf '%s\n' "$body" | ff_precheck_unchecked_lines)
+      if [[ "$issue_unchecked" -eq 1 ]] && ! printf '%s\n' "$ack_norm" | ff_precheck_ack_has "$tok"; then
+        unacked=1
+      fi
+      if [[ "$pm_path_hit" -eq 1 ]]; then
+        ff_precheck_post_merge_scan_issue "$tok" "$body" "$PR_NUMBER"
+        if [[ "$pm_issue_hit" -eq 1 ]] && ! printf '%s\n' "$pm_ack_norm" | ff_precheck_ack_has "$tok"; then
+          pm_unacked=1
+        fi
+      fi
+    done <<<"$CLOSES_UNION"
+    echo "AC_UNCHECKED_COUNT=${ac_count}"
+    if [[ "$unacked" -eq 1 && -z "$blocked_reason" ]]; then
+      blocked_reason="Closes 対象の Issue 本文に未チェックの受け入れ条件が残っています（AC_UNCHECKED=）"
+      blocked_next="未チェックを確認してチェックしてから finish.sh precheck を再実行する。マージ後にしか測れない項目は本文を Refs に変えて手順 1 から再実行する。対象外として残す項目は理由を本文に書き、--ack-unchecked <owner/repo#N> を付けて再実行する"
+    fi
+  fi
+  ff_precheck_post_merge_verdict
+
   # ── 3. 工数の実測（Closes 群の同一リポジトリ Issue） ──
-  local change_class repo_l
-  change_class="$(printf '%s' "$PR_JSON" | jq -r 'if (((.files // []) | length) > 0 and ([(.files // [])[].path | test("[.]md$")] | all)) then "docs-only" elif ((.additions // 0) + (.deletions // 0)) <= 10 then "small" else "other" end')"
+  local change_class repo_l measured_on=""
+  ff_precheck_change_class
   repo_l="$(printf '%s' "$TARGET_REPO" | tr '[:upper:]' '[:lower:]')"
+  # 実測はブランチの Issue 番号をキーに 1 本だけ記録される。同じ PR が閉じる他の Issue（bundle の
+  # 子など）を読むと必ず (unmeasured) になり、未計測の KPI へ混ざるので、計上先の番号を出す。
+  # ブランチの Issue が Closes に無い回は計上先の本文が書き戻されず記録が消えるので、従来どおり読む。
+  assert_bundled_shebang_lf "$plugin_root/scripts/lib/branch-issue.sh"
+  # shellcheck source=branch-issue.sh
+  . "$plugin_root/scripts/lib/branch-issue.sh" \
+    || die_env "ブランチ名の解析を読み込めません" "ff-dev-toolkit を再導入してから skill を呼び直す"
+  ff_branch_issue_parse "$head_ref"
+  case $'\n'"$CLOSES_UNION"$'\n' in
+    *$'\n'"${repo_l}#${_branch_issue_value}"$'\n'*) [[ -z "$_branch_issue_value" ]] || measured_on="$_branch_issue_value" ;;
+  esac
   while IFS= read -r tok; do
     [[ -n "$tok" ]] || continue
     case "$tok" in
       "${repo_l}#"*)
-        local n="${tok#*#}"
+        local n="${tok#*#}" metrics
         assert_bundled_shebang_lf "$plugin_root/scripts/effort-report.sh"
-        FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "$plugin_root/scripts/effort-report.sh" --issue-metrics "$n" --repo-dir "$repo_root" 2>/dev/null \
-          | awk -v n="$n" -F'=' 'NF >= 2 { key = $1; sub(/^[^=]*=/, ""); print "EFFORT_" n "_" key "=" $0 }' \
-          || printf 'EFFORT_%s_%s=(unmeasured)\n' "$n" wallclock_actual_h "$n" instruction_bytes "$n" review_rounds "$n" gate_minutes
+        metrics="$(FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "$plugin_root/scripts/effort-report.sh" --issue-metrics "$n" --repo-dir "$repo_root" 2>/dev/null \
+          | awk -v n="$n" -F'=' 'NF >= 2 { key = $1; sub(/^[^=]*=/, ""); print "EFFORT_" n "_" key "=" $0 }')" \
+          || metrics="$(printf 'EFFORT_%s_%s=(unmeasured)\n' "$n" wallclock_actual_h "$n" instruction_bytes "$n" review_rounds "$n" gate_minutes)"
+        # 自分のブランチで実測が残っている Issue は計上先へ置き換えない（累積の実測を捨てない）
+        if [[ -n "$measured_on" && "$n" != "$measured_on" ]] && ff_precheck_metrics_unmeasured "$n" "$metrics"; then
+          echo "EFFORT_${n}_measured_on=${measured_on}"
+        else
+          printf '%s\n' "$metrics"
+        fi
         echo "EFFORT_${n}_change_class=${change_class}" ;;
       *) echo "EFFORT_SKIPPED=${tok}（別リポジトリの Issue。記録は作業中のリポジトリの行だけを読む）" ;;
     esac
@@ -522,53 +778,71 @@ cmd_precheck() {
   # base / head が別 worktree に保持されていれば、既存の互換経路として separate-push にする。
   # この経路では照合済み head OID の lease を明示する。--repo を明示した gh v2.102.0 はローカル
   # ブランチを切り替え・削除しないため、その後始末は /merge-cleanup が担当する。
-  # 一覧が取れない回は保持者 0 とみなさず（fail-open で --delete-branch 付きを出さない）、生成しない
-  local wt_list wt_path="" wt_phys="" wt_branch="" base_held="" head_held="" line
-  wt_list="$(git worktree list --porcelain 2>&1)" \
-    || die_env "worktree の一覧を取得できません（git worktree list: ${wt_list}）。保持者を判定できないため merge コマンドを生成しない" "git worktree list --porcelain が通る状態（壊れた worktree は git worktree prune）に直してから finish.sh precheck を再実行する"
-  while IFS= read -r line; do
-    case "$line" in
-      "worktree "*)
-        wt_path="${line#worktree }"; wt_branch=""
-        # repo_root は pwd -P の物理パス。git はパスを別の綴りで返しうる（Windows の Git Bash では
-        # `C:/repo` に対して repo_root が `/c/repo`）ので、同じく物理パスへ揃えてから比べる。揃えないと
-        # 自分の worktree を保持者と読み、毎回 --delete-branch を落としていた（Issue `#2018`）。
-        # 解決できない（消えた worktree）ときは綴りのまま比べる
-        wt_phys="$(CDPATH='' cd -P -- "$wt_path" 2>/dev/null && pwd -P)" || wt_phys="$wt_path" ;;
-      "branch refs/heads/"*)
-        wt_branch="${line#branch refs/heads/}"
-        [[ "$wt_phys" == "$repo_root" ]] && continue
-        [[ "$wt_branch" == "$base_ref" ]] && base_held="$wt_path"
-        [[ "$wt_branch" == "$head_ref" ]] && head_held="$wt_path" ;;
-    esac
-  done <<<"$wt_list"
+  # 一覧が取れない回は保持者 0 とみなさず（fail-open で --delete-branch 付きを出さない）、生成しない。
+  # 消費側がマージと削除を分けると宣言した回は一覧を見ず、merge だけを出す。
   local DELETE_FLAG=" --delete-branch" delete_mode="delete-branch" head_delete=""
-  if [[ -n "$base_held" || -n "$head_held" ]]; then
-    DELETE_FLAG=""; delete_mode="separate-push"
-    [[ -z "$base_held" ]] || echo "BASE_HELD_BY=${base_held}"
-    [[ -z "$head_held" ]] || echo "HEAD_HELD_BY=${head_held}"
-    # リモートブランチの削除は同一リポジトリの PR に限る（fork の PR の head は相手のリポジトリにあり、
-    # origin の同名ブランチは別物）。削除は照合した先端 OID を lease に載せ、マージ後に同名ブランチが
-    # 再利用されていればサーバー側で拒否させる
-    if [[ "$is_cross" == "false" ]]; then
-      head_delete="lease"
-    else
-      head_delete="skipped-fork"
-      echo "⚠️  head ブランチの削除コマンドは生成しません（isCrossRepository=${is_cross}: fork の PR、または判定不能）" >&2
+  if [[ "${FF_MERGE_DELETE_SEPARATE-0}" == "1" ]]; then
+    DELETE_FLAG=""
+    delete_mode="separate-consumer"
+    echo "DELETE_BRANCH_NOTE=マージと削除を分ける設定のため、MERGE_COMMAND は gh pr merge だけで削除は付けない"
+  else
+    local wt_list wt_path="" wt_phys="" wt_branch="" base_held="" head_held="" line
+    wt_list="$(git worktree list --porcelain 2>&1)" \
+      || die_env "worktree の一覧を取得できません（git worktree list: ${wt_list}）。保持者を判定できないため merge コマンドを生成しない" "git worktree list --porcelain が通る状態（壊れた worktree は git worktree prune）に直してから finish.sh precheck を再実行する"
+    while IFS= read -r line; do
+      case "$line" in
+        "worktree "*)
+          wt_path="${line#worktree }"; wt_branch=""
+          # repo_root は pwd -P の物理パス。git はパスを別の綴りで返しうる（Windows の Git Bash では
+          # `C:/repo` に対して repo_root が `/c/repo`）ので、同じく物理パスへ揃えてから比べる。揃えないと
+          # 自分の worktree を保持者と読み、毎回 --delete-branch を落としていた（Issue `#2018`）。
+          # 解決できない（消えた worktree）ときは綴りのまま比べる
+          wt_phys="$(CDPATH='' cd -P -- "$wt_path" 2>/dev/null && pwd -P)" || wt_phys="$wt_path" ;;
+        "branch refs/heads/"*)
+          wt_branch="${line#branch refs/heads/}"
+          [[ "$wt_phys" == "$repo_root" ]] && continue
+          [[ "$wt_branch" == "$base_ref" ]] && base_held="$wt_path"
+          [[ "$wt_branch" == "$head_ref" ]] && head_held="$wt_path" ;;
+      esac
+    done <<<"$wt_list"
+    if [[ -n "$base_held" || -n "$head_held" ]]; then
+      DELETE_FLAG=""; delete_mode="separate-push"
+      [[ -z "$base_held" ]] || echo "BASE_HELD_BY=${base_held}"
+      [[ -z "$head_held" ]] || echo "HEAD_HELD_BY=${head_held}"
+      # リモートブランチの削除は同一リポジトリの PR に限る（fork の PR の head は相手のリポジトリにあり、
+      # origin の同名ブランチは別物）。削除は照合した先端 OID を lease に載せ、マージ後に同名ブランチが
+      # 再利用されていればサーバー側で拒否させる
+      if [[ "$is_cross" == "false" ]]; then
+        head_delete="lease"
+      else
+        head_delete="skipped-fork"
+        echo "⚠️  head ブランチの削除コマンドは生成しません（isCrossRepository=${is_cross}: fork の PR、または判定不能）" >&2
+      fi
+      echo "HEAD_DELETE=${head_delete}"
     fi
-    echo "HEAD_DELETE=${head_delete}"
   fi
   echo "DELETE_BRANCH_MODE=${delete_mode}"
   # リモートブランチの削除は merge の成功に条件付ける（`&&` で 1 コマンドにする）。別行にすると
   # merge が失敗（checks 未完了・先端不一致・競合）した回にも削除だけが走り、未マージの PR の
   # head ブランチが消えて PR が閉じる
-  local delete_tail="" delete_body="" delete_script="$plugin_root/scripts/lib/finish-delete-merged-head.sh"
+  local delete_tail="" delete_body="" stripped="" delete_script="$plugin_root/scripts/lib/finish-delete-merged-head.sh"
   if [[ "$head_delete" == "lease" ]]; then
     need_bundled lib/finish-delete-merged-head.sh
     assert_bundled_shebang_lf "$delete_script"
     delete_body="$(cat "$delete_script")" \
       || die_env "head 削除の同梱 script を読めません。merge コマンドを生成しない" "ff-dev-toolkit を再導入してから skill を呼び直す"
     [[ -n "$delete_body" ]] || die_env "head 削除の同梱 script が空です。merge コマンドを生成しない" "ff-dev-toolkit を再導入してから skill を呼び直す"
+    case "${FF_DELETE_PUSH_SKIP_HOOKS-1}" in
+      0)
+        stripped="${delete_body//SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 /}"
+        [[ "$stripped" != "$delete_body" ]] || die_env "削除 push からフック回避を外せません" "同梱の削除 script にフック回避の代入があることを確かめて再実行する"
+        delete_body="$stripped"
+        echo "DELETE_PUSH_HOOKS=kept"
+        ;;
+      *)
+        echo "DELETE_PUSH_HOOKS=skipped"
+        ;;
+    esac
     q "$delete_body" >/dev/null && q "$repo_root" >/dev/null && q "$head_ref" >/dev/null && q "$REMOTE_HEAD" >/dev/null \
       || die_env "引用に失敗（sed が使えない）。merge コマンドを生成しない" "sed を PATH に戻して再実行する"
     # 生成時に本文を固定する。マージ後に plugin が更新・除去されても、このコマンドは単体で動く。

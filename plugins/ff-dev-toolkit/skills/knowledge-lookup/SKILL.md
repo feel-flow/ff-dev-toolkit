@@ -51,13 +51,13 @@ GitHub MCP などで取得済みの raw JSON を使う場合は `--github-input 
 
 ### キーワード検索（実装・レビュー前）
 
-変更対象領域のキーワード（モジュール名・コマンド名・症状の語）を 1 つ以上渡す。既定は OR、`--all` で AND。
+検索語の選び方・途中の引き直し・語と結果の記録は [git-workflow の「着手前の Playbook 参照（ACE Reuse）」](../../docs-template/05-operations/deployment/git-workflow.md#着手前の-playbook-参照ace-reuse)を正本として実行する。実装語／作業クラス語の各検索に、1つ以上のキーワードを渡す。既定は OR、`--all` で AND。
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/knowledge-lookup.sh" --root "$(git rev-parse --show-toplevel)" <キーワード>...
 ```
 
-出力は store ごと・状態ごとのグループで並ぶ。末尾の `RECORD ace=… obs=…` 行が、git-workflow「着手前の Playbook 参照」が要求する記録（ヒット ID / `0 件` / `Playbook なし` / `読み取り失敗（理由）`）にそのまま転記できる形になっている。台帳側の語は `台帳なし`。
+出力は store ごと・状態ごとのグループで並ぶ。末尾の `RECORD ace=… obs=…` 行を正本節の各検索の結果欄へ転記する（ヒット ID / `0 件` / `Playbook なし` / `読み取り失敗（理由）`。台帳側の語は `台帳なし`）。`RECORD` 自体に検索語や時点は含まれないため、それらを結果と対応付ける記録方法も正本節に従う。
 
 ### promoted × open の突き合わせ（`/retrospective` 観察チェックリスト第 0 項）
 

@@ -155,6 +155,22 @@
 # 変異検出: run_orch の FF_RUN_ALL_FULL 分離だけを外すと、外側は未設定でも neutral ケースの明示 FULL=1 が再検査へ漏れ、recheck 1 で赤（2026-10-23 実測、release-runtime 149 pass / 1 fail、exit 1）。健全性悪化時の全件実行は正常のまま。
 # 空振り検出: FF_SYNC_SHA_RELEASE_SCRIPT の明示不在と同名空ファイルはどちらも exit 1（2026-10-23 実測）。空ファイルの全件実行コマンドは 0 件一致となり赤で、検査対象の欠落を skip・緑へ倒さない。
 # 変異検出: gateのfast環境分離・部分出力拒否・鮮度分類器の部分拒否・再検査の環境分離・NESTED保持を各々除去すると実runtimeの新規ケースが赤（5/5）。正常対照は緑、外側FULL未設定/1のsuiteは各157pass（2026-10-23）。
+# 変異検出（後着断片の再集約と承認した版の照合。Issue `#2462` / `#2482`。2026-11-04 実測、判定と lib を写した検査用ツリーへ 1 件ずつ注入して変異 4 件すべて赤転 / SURVIVED 0 件）:
+# 変異検出: 後着断片の基点の版を準備前の版ではなく今の版にすると 35 件、--expect-version の無い本実行の再集約を止める行を外すと 3 件、prepare_finalize の承認版照合を外すと 2 件（承認と違う版の準備を push する）、resume_guard の呼び出しを外すと 3 件（Release の後で止まった再開が承認していない版のタグ・Release を作る）が赤。
+# 変異検出（構成上の固定。独立レビューの指摘で足したケース）: RELEASE_OPEN を worktree ごとの記録へ戻すと別 worktree のケースが、
+# preflight の承認待ち書きかけの採用拒否を外すと --resume-with-edits のケースが、準備が要らない回の照合（main の expect_version_guard）を
+# 外すと 9.9.9 のケースが、dry-run の照合を外すと dry-run のケースが赤になる（各ケースはその 1 行だけが止める形で組んだ）。
+# 変異検出: 修正前のスクリプト（develop の 20043194）へ新しいケースを当てると、後着断片の dry-run が prepare 段で「準備が途中で止まった疑い」で止まり、再開ケースは承認していない次の版のタグと Release を作って released になる（いずれも赤）。
+# 2026-11-04（Issue `#2619`）: 後着断片は準備済みの版節へ畳まず、新しい版として準備する形へ変えた（準備済みの版はタグを打たない中間版として残る）。上の「基点の版を今の版にすると 35 件」は同じ版節へ再集約していた頃の実測で、今の bump の基点（stage_prepare の base）は準備済みの版（今の版）で、準備前の版（LATE_BASE）は版幅の読み直しにだけ使う。
+# 変異検出（後着断片の新しい版としての準備と、昇格直後の共有 CHANGELOG の実物の判定。Issue `#2619`。2026-11-04 実測、判定と lib を写した検査用ツリーへ 1 件ずつ注入し、hook 無しの release-runtime の正常対照 165 pass / 0 fail に対して変異 5 件すべて赤転 / SURVIVED 0 件）:
+# 変異検出: 修正前の release-prepare-functions.sh（同じ版節への再集約）へ戻すと 21 件が赤。準備済みの版を承認した --expect-version の本実行は、本番の v0.176.0 と同じく昇格直後の changelog-fragments（stub が呼ぶ実物の判定が direct-edit）で止まる。
+# 変異検出: changelog-fragments の stub を常に緑へ戻すと、判定の記録（fragments-judgement.log）を照合する 3 件が赤。後着断片の基点を準備前の版（LATE_BASE）へ戻すと 37 件、--expect-version の無い本実行で後着断片を止める行を外すと 8 件が赤。判定 lib から release-prep の許容を外すと、最初の通常の準備が昇格直後の changelog-fragments で止まり、release-runtime が中断して赤（exit 1）。
+# 変異検出（承認した dry-run の HEAD への本実行の結び付け。Issue `#2622`。2026-11-04 実測、判定と lib を写した検査用ツリーへ 1 件ずつ注入し、hook 無しの release-runtime の正常対照 182 pass / 0 fail に対して変異 13 件すべて赤転 / SURVIVED 0 件。前進を止め損ねた変異はその後のケースの起点がずれ、release-runtime が途中で中断して exit 1 になるものを含む）:
+# 変異検出: main の approved_head_guard の呼び出しを外す、照合を preflight の fetch / pull より前へ移す（pull 前の HEAD と比べる）、公開対象に触れる前進を続ける側へ倒す — の 3 件は、承認後に別 clone から公開対象と同じ版幅の断片が入るケースが released まで進んで赤（版は承認した値のままなので --expect-version の照合を通る）。
+# 変異検出: changelog.d だけの前進を続ける側へ倒すと同じ checkout の changelog ケースと --approved-head を渡した dry-run のケースが、分岐を続ける側へ倒すと分岐のケースが、解決できない承認 HEAD を続ける側へ倒すとそのケースが、neutral の前進でも止めると neutral のケースが赤。本実行の対での指定（--expect-version と --approved-head）を要求しないと片方だけのケースが released まで進んで赤。
+# 変異検出: 自身の release コミットを件名だけで判定すると件名を名乗る他人の公開変更のケースが、自身の release コミットを除外しないと gate で止まった後の再実行の 2 ケースが、比較リンクの追従コミットを除外しないと footer の push で止まった後の再実行のケースが赤。dry-run の RELEASE_HEAD= を出さないと最初の dry-run のケースほかが、判定の途中で HEAD が動いても出すと HEAD が動いた dry-run のケースが赤。
+# 変異検出（自身の release コミットの SHA の記録と、承認後のリリース機構だけの前進。Issue `#2622` のレビュー対応。2026-11-04 実測、作業ツリーを写した検査用ツリーへ 1 件ずつ注入し、hook ありの release-runtime の正常対照 191 pass / 0 fail に対して変異 2 件とも赤転）:
+# 変異検出: own_release_commit の記録照合を外して件名と変えたファイルだけで判定すると、準備の件名を名乗り plugin.json の description だけを変える他人のコミットのケースが released まで進んで赤（以降のケースは起点がずれ、release-runtime が途中で中断して exit 1）。approved_head_guard で tooling を neutral と同じく続けると、リリース機構だけの前進のケースが released まで進んで赤（187 pass / 5 fail）。
 # 空振り検出: gate-modeの新規case本体を空動作へ置換しても到達フラグが未設定でexit 1（実測）。環境記録や鮮度の正常会計に針が当たる肯定対照を持ち、空出力を成功根拠にしない。
 
 # 空振り検出: 同期の展開前 tree 種別検査を除く対照は source/destination LICENSE symlink の dry/real を4件検出して rc=1、通常対照 rc=0（2026-10-28、有限の隔離 sentinel のみ）。
@@ -939,13 +955,14 @@ contains_exactly '`UNVERIFIED=yes` で抜けた = 判定不能。取りこぼし
 # 本節は (7) より前に置く（(7) の末尾で release-runtime を走らせるので、静的な針を先に出す）。
 echo "-- (8) 承認文への dry-run 実測値の転記 --"
 APPROVAL_BLOCK_EXPECTED="$(cat <<'APPROVAL_BLOCK_EOF'
-**承認の求め方（承認文は dry-run の実測値を転記して作る。OBS-018 / Issue `#1917`）**: ユーザーへ承認を求める**前に** `scripts/release-dev-toolkit.sh --dry-run`（`--only` を付けない全段の dry-run）を stdout と stderr の両方を受けて実行し、承認文にはその出力の `PLAN:` 行（実行予定コマンド。外向き操作を含む）と `RELEASE_VERSION=`（次の版番号）を**そのまま転記する**。段数・版番号を自分で推定して書かない — 承認時点で確定できる値を未確定のまま書くと、適用段の実測と食い違って承認後に範囲の作り直しや訂正が出る。
+**承認の求め方（承認文は dry-run の実測値を転記して作る。OBS-018 / Issue `#1917`）**: ユーザーへ承認を求める**前に** `scripts/release-dev-toolkit.sh --dry-run`（`--only` を付けない全段の dry-run）を stdout と stderr の両方を受けて実行し、承認文にはその出力の `PLAN:` 行（実行予定コマンド。外向き操作を含む）と `RELEASE_VERSION=`（次の版番号）・`RELEASE_HEAD=`（dry-run が判定した HEAD の SHA）を**そのまま転記する**。段数・版番号を自分で推定して書かない — 承認時点で確定できる値を未確定のまま書くと、適用段の実測と食い違って承認後に範囲の作り直しや訂正が出る。
 
-- 承認を求めてよいのは、dry-run が `RELEASE_RESULT=dry-run`（exit 0）で終わり、`RELEASE_VERSION=` 行が出ていて、`dry-run はここで止める` の NOTE 行が無い回（全段を完走した回）だけ
-- preflight が書きかけの段を見つけた回は `RELEASE_RESULT=dry-run`（exit 0）でも途中で止まっており `RELEASE_VERSION=` が出ない。この回は承認を求めず、巻き戻しの `PLAN:` 行を報告し、巻き戻し後に dry-run を回し直して完走してから承認を求める
+- 承認を求めてよいのは、dry-run が `RELEASE_RESULT=dry-run`（exit 0）で終わり、`RELEASE_VERSION=` と `RELEASE_HEAD=` の行が出ていて、`dry-run はここで止める` の NOTE 行が無い回（全段を完走した回）だけ
+- preflight が書きかけの段を見つけた回は `RELEASE_RESULT=dry-run`（exit 0）でも途中で止まっており `RELEASE_VERSION=` と `RELEASE_HEAD=` が出ない。この回は承認を求めず、巻き戻しの `PLAN:` 行を報告し、巻き戻し後に dry-run を回し直して完走してから承認を求める
 - dry-run が `RELEASE_RESULT=stopped`（exit 1）または `RELEASE_RESULT=unavailable`（exit 2）で終わったら**承認を求めない**。stderr の `NG:` 行の停止理由と次の一手をユーザーへ報告して止まる
 - dry-run が `RELEASE_RESULT=not-needed` なら承認は不要（リリースするものが無い）。その旨だけを報告する
-- 承認後に本実行するまでに develop が進んだ（`git rev-parse HEAD` が dry-run 時と違う）ときは、`scripts/release-dev-toolkit.sh --advance-check <dry-run 時の HEAD>` で前進を分類し、dry-run を回し直す。次の 3 条件をすべて満たせば**再承認なしで本実行へ進んでよい**（承認した外向き操作の中身が変わらないため。v0.157.0 で一度だけ出した条件付き承認を恒常化した。Issue `#2202`）: (a) `ADVANCE=neutral`（新しいコミットが公開対象 = `--list-targets` の prefix・リリース機構 = 後段が実行する `scripts/` 配下・`changelog.d` を 1 ファイルも変えない） (b) 回し直した dry-run の `RELEASE_VERSION=` が承認時と同じ (c) `PLAN:` 行が、同期 commit の件名に入る SSOT の SHA 以外は承認時と同一。どれか 1 つでも外れたら（`ADVANCE=public` / `tooling` / `changelog` / `diverged`・版が変わった・SHA 以外の PLAN 行が変わった）従来どおり転記値を差し替えてから承認を取り直す
+- 承認後に本実行するまでに develop が進んだ（`git rev-parse HEAD` が承認した `RELEASE_HEAD=` と違う）ときは、`scripts/release-dev-toolkit.sh --advance-check <承認した RELEASE_HEAD>` で前進を分類し、dry-run を回し直す。次の 3 条件をすべて満たせば**再承認なしで本実行へ進んでよい**（承認した外向き操作の中身が変わらないため。v0.157.0 で一度だけ出した条件付き承認を恒常化した。Issue `#2202`）: (a) `ADVANCE=neutral`（新しいコミットが公開対象 = `--list-targets` の prefix・リリース機構 = 後段が実行する `scripts/` 配下・`changelog.d` を 1 ファイルも変えない） (b) 回し直した dry-run の `RELEASE_VERSION=` が承認時と同じ (c) `PLAN:` 行が、同期 commit の件名に入る SSOT の SHA 以外は承認時と同一。どれか 1 つでも外れたら（`ADVANCE=public` / `tooling` / `changelog` / `diverged`・版が変わった・SHA 以外の PLAN 行が変わった）従来どおり転記値を差し替えてから承認を取り直す。(a) と (b) は本実行のスクリプトも照合する（次項）ので、確かめ損ねても外れた前進は公開されない
+- 本実行には、ユーザーが承認した dry-run の `RELEASE_VERSION=` と `RELEASE_HEAD=` を `--expect-version <版> --approved-head <SHA>` で対にして渡す（回し直した dry-run の値へ差し替えるのは承認を取り直したときだけ。本実行で片方だけを渡すと使い方の誤りで exit 64）。スクリプトは出そうとしている版が承認した版と違えば、準備の push・同期・タグ・Release の前に `RELEASE_RESULT=stopped-needs-approval`（exit 1）で止まる。preflight で develop の最新を取り込んだ後には、承認した HEAD から先に入ったコミットを (a) と同じ判定で分類し、前進が無いか `neutral` なら続け、`public` / `tooling` / `changelog` / `diverged` の回は同じ結果で止まって `ADVANCE=` / `ADVANCE_RANGE=` / `ADVANCE_PATH=` の行を出す。承認した HEAD を解決できない回は `ADVANCE=unknown` と `REASON=` の行を出して同じ結果で止まる（版を変えない前進 — 承認後に入った同じ版幅の断片など — は版の照合を通るので、承認範囲の照合はこちらが担う。Issue `#2622`）。この実行自身の release コミット（準備と比較リンクの追従。スクリプトが作ったコミットの SHA の記録に載り、件名と変えたファイルも準備・追従の形のものだけ）は前進に数えないので、途中で止まった本実行は同じ引数のまま再実行して続きから進む。次の 2 つの回は、渡さない本実行も同じ結果で止まる（Issue `#2482`）: (1) タグ未作成の準備済み版へ断片が後着した回（dry-run は `LATE_FRAGMENTS=new-version` を出し、準備済みの版をタグを打たない中間版として残すことと、後着断片を新しい版として準備することを `PLAN:` に出す。中間版は Release の本文と件名へ畳み込まれる。Issue `#2462` / `#2619`） (2) Release の後で止まった本実行の再実行で、その間に新しい公開対象の変更が入った回。`stopped-needs-approval` が出たら dry-run を回し直し、`PLAN:` / `RELEASE_VERSION=` / `RELEASE_HEAD=` を転記して承認を取り直す。後着断片は必ず版を変えるので、準備済みの版を承認した `--expect-version` は照合で止まる
 - 本実行の gate 段の**走行中**に develop が進んだ回は、スクリプトが同じ判定 (a) で扱う（承認の取り直しは要らない）: run-all の赤がすべて鮮度分類（`✗ stale`）の suite で、前進が neutral なら HEAD を origin/develop へ進めて鮮度の suite だけを同じモードで再検査し、緑なら続行する（`GATE_STALE_RECHECK=green` の行が出る）。公開対象・リリース機構・`changelog.d` のどれかに触れる前進と鮮度以外の赤は従来どおり止まる
 APPROVAL_BLOCK_EOF
 )"
@@ -954,7 +971,7 @@ APPROVAL_BLOCK_ACTUAL="$(awk 'index($0, "**承認の求め方（承認文は dry
 if [[ -z "$APPROVAL_BLOCK_ACTUAL" ]]; then
   bad "手順 R に「承認の求め方」段落が無い（dry-run 先行と PLAN: / RELEASE_VERSION= の転記の規定が消えた）"
 elif [[ "$APPROVAL_BLOCK_ACTUAL" == "$APPROVAL_BLOCK_EXPECTED" ]]; then
-  ok "手順 R の「承認の求め方」段落が全文一致（dry-run 先行・転記・完走の条件・途中停止・stopped / unavailable・not-needed・develop 前進と再承認不要の 3 条件・gate 走行中の前進）"
+  ok "手順 R の「承認の求め方」段落が全文一致（dry-run 先行・RELEASE_HEAD= を含む転記・完走の条件・途中停止・stopped / unavailable・not-needed・develop 前進と再承認不要の 3 条件・--expect-version と --approved-head の対と stopped-needs-approval・gate 走行中の前進）"
 else
   bad "手順 R の「承認の求め方」段落が期待と違う（改訂したら本 suite の期待文も同じ PR で更新する）"
   diff <(printf '%s\n' "$APPROVAL_BLOCK_EXPECTED") <(printf '%s\n' "$APPROVAL_BLOCK_ACTUAL") | sed 's/^/    | /' >&2 || true
@@ -1006,13 +1023,19 @@ echo "-- (7) リリーススクリプトの段の順序と同期元 SHA の契�
 # 段の実行順（main の呼び出し行）。check → prepare → gate → sync → tag → release → footer → report。
 # ゲートより前に同期・タグ・Release が来る並べ替えは、不可逆操作の後で検査する退行になる。
 R_CHECK="$(release_exact_line_of 'stage_check')"
-R_PREPARE="$(release_exact_line_of '[[ "$NEED_PREPARE" -eq 0 ]] || stage_prepare')"
+R_PREPARE="$(release_exact_line_of '  stage_prepare')"
 R_GATE="$(release_exact_line_of '  stage_gate')"
 R_SYNC="$(release_exact_line_of '  stage_sync')"
 R_TAG="$(release_exact_line_of '  stage_tag')"
 R_REL="$(release_exact_line_of '  stage_release')"
 R_FOOTER="$(release_exact_line_of '  stage_footer')"
 R_REPORT="$(release_exact_line_of 'stage_report')"
+R_PREFLIGHT="$(release_exact_line_of 'stage_preflight')"
+R_APPROVED="$(release_exact_line_of 'approved_head_guard')"
+# 承認した dry-run の HEAD との照合（Issue `#2622`）は preflight の fetch / pull の後・check 段の前。pull より前だと取り込んだ前進を
+# 分類から落とし、check 段より後だと準備・同期へ進む回が照合の前に出る
+assert_order "$R_PREFLIGHT" "$R_APPROVED" "順序(7): 承認した HEAD との照合が preflight（fetch / pull）より後" "順序(7): 承認した HEAD との照合が preflight より前 — 取り込んだ前進を分類しない退行"
+assert_order "$R_APPROVED" "$R_CHECK" "順序(7): 承認した HEAD との照合がリリース要否の判定・準備より前" "順序(7): 承認した HEAD との照合が判定より後ろ — 照合の前に準備へ進む退行"
 assert_order "$R_CHECK" "$R_PREPARE" "順序(7): リリース要否の判定が準備より前" "順序(7): 準備が判定より前にある"
 assert_order "$R_PREPARE" "$R_GATE" "順序(7): 準備が定期実行点ゲートより前（ゲートは release コミットを含む HEAD を検査する。ADR-042）" "順序(7): ゲートが準備より前にある — 準備後の HEAD を検査しない退行"
 assert_order "$R_GATE" "$R_SYNC" "順序(7): 定期実行点ゲートが同期より前" "順序(7): ゲートが同期より後ろにある — 不可逆操作の後で検査する退行"

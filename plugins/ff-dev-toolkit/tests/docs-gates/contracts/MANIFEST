@@ -7,6 +7,7 @@ delegation-scratchpad.tsv
 git-workflow-concurrent-session.tsv
 git-workflow-heredoc.tsv
 git-workflow-sub-issues.tsv
+knowledge-work-class.tsv
 review-wait-prep.tsv
 bot-review-wait.tsv
 review-alternative-before-wait.tsv

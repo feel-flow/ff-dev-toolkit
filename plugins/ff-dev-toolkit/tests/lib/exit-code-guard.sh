@@ -23,6 +23,22 @@
 #                   読む形は `echo "EXIT=$?"` / `rc=$?` のほか `if [ $? -ne 0 ]` /
 #                   `[[ $? -ne 0 ]]` / `test $? -eq 0` / `exit $?` / `return $?` / `case $? in`
 #   pipestatus      PIPESTATUS を参照している（zsh では空へ展開されて機能しない）
+#   pipe-and-chain  `&&` の左辺が `tail` / `tee` で終わるパイプラインになっている
+#                   （`check --strict 2>&1 | tail -4 && push`。`|&` の綴りも同じ）。`&&` の短絡に
+#                   使われるのはパイプ終端の rc なので、左辺の検査が失敗しても後続へ進む
+#                   （Issue `#2593`。導入先で `--strict` の失敗後に push まで進んだ実測）。
+#                   同じ単位で先に `set -o pipefail`（`set -euo pipefail` 等。`shopt -so pipefail`
+#                   も同じ）を宣言していれば止めない — パイプの rc は失敗した段のものになる。
+#                   `set +o pipefail` で解除した後は再び止める。ゲート起動の行で
+#                   gate-exit-swallowed が出る回は重ねて出さない。
+#                   終端を tail / tee に限るのは、検査の出力の末尾を見せる・ログへ残す形が事故の形で、
+#                   head / less / more / cat / wc で終わる左辺は読むだけの確認（`git status | head -2 &&`）が
+#                   大半を占めるため（止めると確認のたびに deny の往復が生じる）。head は途中で読むのを
+#                   やめるので、pipefail を足すと左辺が SIGPIPE（141）で落ちる点でも書き換え案に向かない。
+#                   既知の限界: グループ実行（`{ cmd | tail; } && x`）とバッククォートの中は追わない
+#                   対象外: `||`（`| head -1 || true` の握り潰しや、`| tee log || exit 1` で tee
+#                   自身の書き込み失敗を見る用法が正しい形として多数ある）と、grep / jq の終端
+#                   （終端そのものの成否を測る用法がある）
 #   gate-exit-swallowed
 #                   ゲート起動を含む論理行が、ゲートの成否を運ばない区間で終端している。
 #                   `$?` の読み方とは**別の壊れ方**である — 読む側は正しくても、起動した
@@ -90,6 +106,12 @@
 # pipefail 下の `cmd 2>&1 | tee "$LOG"; rc=$?` は動く形だが、この検出器は赤にする。
 # pipefail の有無は静的には決まらず、読み手が `set -o pipefail` の到達を追う形へは寄せない。
 # tee はファイルへ落として `$?` を直接読む形（`cmd >"$LOG" 2>&1; rc=$?`）へ書き換える。
+# pipe-and-chain だけは同じ単位の `set -o pipefail` を追う（非対称は意図的）。`&&` の左辺は
+# 「失敗したら止まる」ことを期待して書かれ、pipefail を前置すればその期待どおりに動く
+# （Issue `#2593` の AC）。一方 `$?` を読む形は pipefail 下でも tee 等で終端の成否を混ぜるので、
+# 従来どおりファイルへ落とす形へ寄せる。追うのは単位（ファイル・フェンス・stdin）の中の
+# 宣言だけで、関数やサブシェルの中で宣言した pipefail がそこで終わることは追わない
+# （宣言の後ろは単位の終わりまで止めない側へ倒れる。既知の限界）。
 #
 # 導入先の追加ゲート（任意、hook / 走査プロセスの環境へ export する）:
 #   FF_EXIT_CODE_GUARD_GATES  改行区切りの literal command prefix（例: npm run ci:local）。
@@ -173,11 +195,12 @@ function strip_subst(s,   i, n, c, nx, out, depth) {
   }
   return out
 }
-function is_pipe(s,   k, arr, t, w) {
-  if (s !~ /[|]/) return 0
+function pipe_last_word(s,   k, arr, t, w) {
+  if (s !~ /[|]/) return ""
   k = split(s, arr, "[|]")
   t = arr[k]
-  sub(/^[[:space:]]*/, "", t)
+  # `cmd |& tail` の `&` は stderr も渡すパイプの綴りで、最終段の一部ではない
+  sub(/^[[:space:]]*&?[[:space:]]*/, "", t)
   w = t
   sub(/[[:space:]].*$/, "", w)
   # `| sudo tee x` / `| command head -1` / `| LC_ALL=C wc -l` は先頭語がフィルタではない。
@@ -188,6 +211,10 @@ function is_pipe(s,   k, arr, t, w) {
     sub(/[[:space:]].*$/, "", w)
   }
   sub(/^.*\//, "", w)
+  return w
+}
+function is_pipe(s,   w) {
+  w = pipe_last_word(s)
   return (w ~ /^(head|tail|less|more|cat|tee|wc)$/)
 }
 # 区間の前置きを剥がす。グループ実行の括弧（`{` / `(` と対応する `}` / `)`）、環境変数代入、
@@ -293,6 +320,8 @@ function is_bg_amp(s, i,   j, p, nx) {
   p = (j >= 1) ? substr(s, j, 1) : ""
   nx = substr(s, i + 1, 1)
   if (p == ">" || p == "<") return 0
+  # `|&` は stderr も渡すパイプ（`2>&1 |` と同じ）。background 起動の区切りではない
+  if (p == "|") return 0
   if (nx == ">" || nx == "-" || nx ~ /[0-9]/) return 0
   return 1
 }
@@ -575,6 +604,35 @@ function unit_end() {
   print g_start ":gate-exit-dropped:" g_line
   g_state = 0
 }
+# 区間が pipefail を宣言 / 解除するか（1 = 宣言 / -1 = 解除 / 0 = どちらでもない）。
+# 見るのは `set` の `-o pipefail`（`-euo pipefail` のように他の 1 文字オプションと束ねた形を含む）・
+# `+o pipefail` と、`shopt` の `-so pipefail` / `-s -o pipefail` / `-uo pipefail`。
+function pipefail_decl(s,   t) {
+  t = strip_prefix(s)
+  if (t ~ /^set[[:space:]]/) {
+    if (t ~ /[[:space:]]-[A-Za-z]*o[[:space:]]+pipefail([[:space:]]|$)/) return 1
+    if (t ~ /[[:space:]][+][A-Za-z]*o[[:space:]]+pipefail([[:space:]]|$)/) return -1
+    return 0
+  }
+  if (t ~ /^shopt[[:space:]]/ && t ~ /[[:space:]]pipefail([[:space:]]|$)/ && t ~ /[[:space:]]-[A-Za-z]*o/) {
+    if (t ~ /[[:space:]]-[A-Za-z]*s/) return 1
+    if (t ~ /[[:space:]]-[A-Za-z]*u/) return -1
+  }
+  return 0
+}
+# `&&` の左辺が tail / tee で終わるパイプか（タグ pipe-and-chain。判定の範囲はヘッダ）。
+# 区間を実行順に見て、pipefail の宣言・解除を同じ行の後続区間と後続行へ持ち越す（pipefail_on）。
+function pipe_and_chain(m,   segs, seps, n, i, d, hit) {
+  n = split_segments(m, segs, seps)
+  hit = 0
+  for (i = 1; i <= n; i++) {
+    d = pipefail_decl(segs[i])
+    if (d == 1) pipefail_on = 1
+    else if (d == -1) pipefail_on = 0
+    if (i < n && seps[i] == "&&" && pipefail_on == 0 && pipe_last_word(segs[i]) ~ /^(tail|tee)$/) hit = 1
+  }
+  return hit
+}
 function analyze(line, start,   m, k, arr, i, hit, swallowed) {
   if (index(line, "PIPESTATUS") && mask(line, 1) ~ /\$\{?PIPESTATUS/) print start ":pipestatus:" line
   m = strip_subst(mask(line))
@@ -588,6 +646,8 @@ function analyze(line, start,   m, k, arr, i, hit, swallowed) {
   # ゲートの成否を運ばない。区間が 2 つ以上あるときだけ見る（単体起動は正しい形）。
   swallowed = gate_swallowed(m)
   if (swallowed) print start ":gate-exit-swallowed:" line
+  # pipefail の状態は毎行更新する（gate-exit-swallowed の行でも宣言は後続行へ効く）
+  if (pipe_and_chain(m) && !swallowed) print start ":pipe-and-chain:" line
   track_gate(line, start, m, swallowed)
   prev_pipe = is_pipe(arr[k]) ? 1 : 0
 }
@@ -707,7 +767,7 @@ BEGIN {
     if (prefix != "") consumer_gates[++consumer_gate_n] = prefix
   }
 }
-FNR == 1 { unit_close(); buf = ""; prev_pipe = 0; in_block = 0; g_state = 0; g_pvar = ""; hd_n = 0; hd_cnt = 0 }
+FNR == 1 { unit_close(); buf = ""; prev_pipe = 0; in_block = 0; g_state = 0; g_pvar = ""; hd_n = 0; hd_cnt = 0; pipefail_on = 0 }
 { sub(/\r$/, "") }
 mode != "md" { feed($0, FNR); next }
 in_block == 0 {
@@ -722,7 +782,7 @@ in_block == 0 {
     sub(/[[:space:]].*$/, "", info)
     in_block = 1
     is_bash = (info ~ /^(bash|sh|shell|zsh)$/) ? 1 : 0
-    buf = ""; prev_pipe = 0; g_state = 0; g_pvar = ""; hd_n = 0; hd_cnt = 0
+    buf = ""; prev_pipe = 0; g_state = 0; g_pvar = ""; hd_n = 0; hd_cnt = 0; pipefail_on = 0
   }
   next
 }
@@ -894,6 +954,9 @@ ${hits}
     echo "  pipe-exit-read: パイプを外し、出力をファイルへ受けて終了コードを直接読む（cmd >log 2>&1; rc=\$?）" >&2
     echo "                  pipefail 下の tee も赤にする（静的には pipefail の到達を決められない）— ファイルへ落として \$? を直接読む形へ寄せる" >&2
     echo "  pipestatus:     PIPESTATUS は zsh では空へ展開されて機能しない — 使わない" >&2
+    echo "  pipe-and-chain: \`cmd | tail && next\` は tail の rc で短絡するので、cmd が失敗しても next へ進む。" >&2
+    echo "                  ファイルへ受けて rc を保つ（cmd >log 2>&1; rc=\$?; tail log; [ \"\$rc\" -eq 0 ] && next）か、" >&2
+    echo "                  同じ単位で先に set -o pipefail を宣言する" >&2
     echo "  gate-exit-swallowed: ゲート起動を含む行を診断・出力整形で終端しない。プロセスの終了コードが" >&2
     echo "                  その診断のもの（0）になり、background 実行の完了通知や CI ステップが" >&2
     echo "                  「赤いゲートを緑」と断定する。診断を出したいなら伝播まで書く:" >&2
@@ -902,7 +965,7 @@ ${hits}
     echo "                  抜け道も塞いである: 末尾へ \`| tail\` \`| head\` を足す・\`; echo\` や" >&2
     echo "                  \`; tail log\` を足す・\`|| echo\` で失敗時だけ診断する・\`|| true\` や" >&2
     echo "                  \`; exit 0\` で握り潰す — いずれも同じ偽の緑になるので同じタグで止まる" >&2
-    echo "                  \`&&\` だけは例外（短絡するのでゲートが赤なら後続は走らない）。ログを" >&2
+    echo "                  \`&&\` は左辺がパイプで終わらないときだけ例外（短絡するのでゲートが赤なら後続は走らない）。ログを" >&2
     echo "                  読ませたいなら伝播させたうえで別コマンドで読む" >&2
     echo "  gate-exit-dropped: ゲート起動の後続の行が rc を伝播させずに終端している（改行区切りで" >&2
     echo "                  \`rc=\$?\` ⏎ \`echo\` だけを置き、末尾の \`exit \$rc\` を落とした形）。上と同じ" >&2

@@ -7,6 +7,9 @@
 # 固定するのは「順序・分岐・再開（冪等）・外向き操作の有無」で、各スクリプトの判定そのものは
 # それぞれの suite が持つ。gh も stub（Release 一覧・作成・公開時刻・PR 照会）で、ネットワークへ
 # 出ない。version bump と版節昇格はオーケストレータ自身の処理なので実物で検証する。
+# 例外として、昇格直後の changelog-fragments の stub は共有 CHANGELOG の直接編集の判定だけ実物
+# （tests/lib/shared-changelog-judge.sh）を通す。常に緑の stub だと、本番の判定が止める準備（version
+# 据え置きの版節の書き換え）を模擬が緑で通してしまう（Issue `#2619`）。
 #
 # 引数: $1 = 検査対象のオーケストレータ / $2 = 同期提案 hook（無ければ hook のケースを省く）
 # 終了コード: 0 = 全件 pass / 1 = 退行
@@ -30,7 +33,7 @@ for need in "$REPO_ROOT/scripts/lib/release-in-flight-functions.sh" "$REPO_ROOT/
   "$REPO_ROOT/scripts/lib/release-environment-functions.sh" \
   "$REPO_ROOT/scripts/lib/release-partial-write-functions.sh" "$REPO_ROOT/scripts/lib/release-prepare-functions.sh" \
   "$REPO_ROOT/scripts/lib/release-publish-functions.sh" \
-  "$SCRIPT_DIR/release-gate-mode-runtime.sh" \
+  "$SCRIPT_DIR/release-gate-mode-runtime.sh" "$SCRIPT_DIR/../lib/shared-changelog-judge.sh" \
   "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/commit-identity-functions.sh"; do
   [[ -f "$need" ]] || { echo "✗ オーケストレータの依存 lib がありません: $need" >&2; exit 1; }
 done
@@ -118,6 +121,11 @@ build_ssot_stubs() { # $1=SSOT root
   write_stub "$r/scripts/check-release-required.sh" <<'STUB'
 #!/usr/bin/env bash
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)" || exit 2
+# dry-run の判定の途中で同じ checkout の HEAD が動いた回（判定していない HEAD を RELEASE_HEAD= に出さないことの針。Issue `#2622`）
+if [[ -f "$RELEASE_RT_STATE/check.move-head" ]]; then
+  rm -f "$RELEASE_RT_STATE/check.move-head"
+  git -c user.name="Same Checkout" -c user.email=same@example.com commit -q --allow-empty -m "moved during dry-run"
+fi
 if [[ -f "$RELEASE_RT_STATE/check.force" ]]; then
   cat "$RELEASE_RT_STATE/check.force"
   exit "$(cat "$RELEASE_RT_STATE/check.force.rc")"
@@ -131,8 +139,10 @@ if [[ -f "$RELEASE_RT_STATE/check.attr" && "$ver" != "$latest" ]] && grep -qF '`
   echo "ATTRIBUTION_PATH=scripts/stale.sh -> plugins/ff-dev-toolkit/scripts/stale.sh (v${latest} と同一 object)"
   echo "RELEASE_CHECK=ATTRIBUTION_DRIFT"; echo "REASON=stub: 新版節の 1 path が公開側最新タグと同一"; exit 1
 fi
-if [[ "$ver" == "$latest" && "$frag" -gt 0 ]]; then
-  echo "RELEASE_CHECK=RELEASE_REQUIRED"; echo "REASON=stub: 未消費断片 ${frag} 件"; exit 1
+# 実物と同じく、未消費断片があれば版の値にかかわらず準備が要る（bump 済みなら準備が未完了の疑い。Issue `#2462`）
+if [[ "$frag" -gt 0 ]]; then
+  [[ "$ver" != "$latest" ]] || { echo "RELEASE_CHECK=RELEASE_REQUIRED"; echo "REASON=stub: 未消費断片 ${frag} 件"; exit 1; }
+  echo "RELEASE_CHECK=RELEASE_REQUIRED"; echo "REASON=stub: bump 済みだが未消費断片 ${frag} 件（準備が未完了の疑い）"; exit 1
 fi
 echo "RELEASE_CHECK=OK"; echo "REASON=stub: 準備不要"; exit 0
 STUB
@@ -344,11 +354,30 @@ n=$(( $(cat "$RELEASE_RT_STATE/contract.calls" 2>/dev/null || echo 0) + 1 )); ec
 if [[ "$n" == "$(cat "$RELEASE_RT_STATE/contract.fail-at" 2>/dev/null)" ]]; then echo "✗ changelog-contract verify: stub 失敗" >&2; exit 1; fi
 echo "✓ changelog-contract verify"
 STUB
+  # changelog-fragments: 共有 CHANGELOG の直接編集の判定だけは実物の関数を呼ぶ（Issue `#2619`）。実物の
+  # cases/footer.sh と同じく origin/HEAD を解決して fetch し、base が HEAD の祖先であることを確かめてから判定する。
+  # 分類は fragments-judgement.log へ残す（prepare_finalize は緑だった検査の出力を捨てるので、判定を通った証拠になる）
   write_stub "$r/plugins/ff-dev-toolkit/tests/changelog-fragments/verify.sh" <<'STUB'
 #!/usr/bin/env bash
 echo changelog-fragments >>"$RELEASE_RT_STATE/suites.log"
 if [[ -f "$RELEASE_RT_STATE/fragments.fail-once" ]]; then rm -f "$RELEASE_RT_STATE/fragments.fail-once"; echo "✗ changelog-fragments verify: stub 失敗" >&2; exit 1; fi
-echo "✓ changelog-fragments verify"
+here="$(cd "$(dirname "$0")" && pwd -P)"
+root="$(git -C "$here" rev-parse --show-toplevel)" || { echo "✗ changelog-fragments: リポジトリのルートを解決できない" >&2; exit 1; }
+lib="$here/../lib/shared-changelog-judge.sh"
+if [[ -f "$lib" ]]; then . "$lib"; fi
+declare -F ff_shared_changelog_judge >/dev/null || { echo "✗ changelog-fragments: 共有 CHANGELOG の判定 lib を読めない: $lib" >&2; exit 1; }
+ref="$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD)" || { echo "✗ changelog-fragments: origin/HEAD が無い" >&2; exit 1; }
+git -C "$root" fetch -q origin "+refs/heads/${ref#origin/}:refs/remotes/${ref}" || { echo "✗ changelog-fragments: ${ref} を fetch できない" >&2; exit 1; }
+git -C "$root" merge-base --is-ancestor "$ref" HEAD || { echo "✗ changelog-fragments: base（${ref}）が先行している" >&2; exit 1; }
+rc=0
+ff_shared_changelog_judge "$root" "$ref" || rc=$?
+printf '%s\n' "${SHARED_CHANGELOG_VERDICT:-なし}" >>"$RELEASE_RT_STATE/fragments-judgement.log"
+if [[ "$rc" -ne 0 ]]; then
+  echo "  ✗ 通常 PR が共有 CHANGELOG を直接編集（実物の判定: ${SHARED_CHANGELOG_VERDICT:-なし}）" >&2
+  echo "✗ changelog-fragments verify: 1 件失敗" >&2
+  exit 1
+fi
+echo "✓ changelog-fragments verify（共有 CHANGELOG: ${SHARED_CHANGELOG_VERDICT}）"
 STUB
   # gate 段の鮮度の再検査が名指しする suite の実在（中身は run-all の stub が明示引数の呼び出しとして代行する）
   write_stub "$r/plugins/ff-dev-toolkit/tests/shared-version-convergence/verify.sh" <<'STUB'
@@ -367,6 +396,9 @@ cp "$REPO_ROOT/scripts/lib/release-in-flight-functions.sh" "$REPO_ROOT/scripts/l
   "$REPO_ROOT/scripts/lib/release-environment-functions.sh" "$REPO_ROOT/scripts/lib/release-partial-write-functions.sh" \
   "$REPO_ROOT/scripts/lib/release-prepare-functions.sh" "$REPO_ROOT/scripts/lib/release-publish-functions.sh" "$SSOT/scripts/lib/"
 cp "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/commit-identity-functions.sh" "$SSOT/plugins/ff-dev-toolkit/scripts/lib/"
+# changelog-fragments の stub が呼ぶ共有 CHANGELOG の判定（実物。検査対象のオーケストレータではなく本 suite と同じ木から写す）
+mkdir -p "$SSOT/plugins/ff-dev-toolkit/tests/lib"
+cp "$SCRIPT_DIR/../lib/shared-changelog-judge.sh" "$SSOT/plugins/ff-dev-toolkit/tests/lib/"
 build_ssot_stubs "$SSOT"
 build_release_environment_fixture
 printf '{\n  "name": "ff-dev-toolkit",\n  "version": "0.31.0",\n  "description": "fixture"\n}\n' \
@@ -391,6 +423,8 @@ git init -q --bare "$SSOT_ORIGIN"
 git -C "$SSOT" remote add origin "$SSOT_ORIGIN"
 git -C "$SSOT" push -q origin develop
 git -C "$SSOT" branch -q --set-upstream-to=origin/develop develop
+# 共有 CHANGELOG の判定は origin/HEAD を base にする（実物の cases/footer.sh と同じ）
+git -C "$SSOT" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/develop
 
 # ── fixture: 疑似公開 clone ───────────────────────────────────────────────────
 mkdir -p "$PUB_SEED/plugins/ff-dev-toolkit/.claude-plugin"
@@ -420,6 +454,10 @@ run_orch() { # 引数はオーケストレータへ
   OUT="$("$ENV_BIN" -u FF_RUN_ALL_FULL bash "$SSOT/scripts/release-dev-toolkit.sh" --public "$PUB" "$@" 2>&1)" || RC=$?
 }
 has() { [[ "$OUT" == *"$1"* ]]; }
+# dry-run の RELEASE_HEAD=（承認文へ転記し、本実行へ --approved-head で渡す値。Issue `#2622`）。40 桁の行がちょうど 1 行のときだけ出す
+release_head() { printf '%s\n' "$OUT" | awk -F= '/^RELEASE_HEAD=/ { n++; v = $2 } END { if (n == 1 && v ~ /^[0-9a-f]+$/ && length(v) == 40) print v }'; }
+# RELEASE_HEAD= の行（行頭一致）があるか。停止文の次の一手も RELEASE_HEAD= に触れるので、部分一致の has では見ない
+has_head_line() { [[ $'\n'"$OUT" == *$'\n'"RELEASE_HEAD="* ]]; }
 stage_order() { printf '%s\n' "$OUT" | awk '/^RELEASE_STAGE=/ { sub(/^RELEASE_STAGE=/, ""); sub(/ .*/, ""); printf "%s%s", (n++ ? " " : ""), $0 }'; }
 dump() { printf '%s\n' "$OUT" | sed 's/^/    | /' >&2; }
 count_runall() { if [[ -f "$STATE/runall.log" ]]; then grep -c . "$STATE/runall.log"; else echo 0; fi; }
@@ -463,6 +501,12 @@ if has "RELEASE_VERSION=0.32.0" && ! has "RELEASE_VERSION=0.31.0"; then
   ok "dry-run の RELEASE_VERSION= は模擬昇格後の次の版（承認文へ転記する値）"
 else
   bad "dry-run が次の版の RELEASE_VERSION= を出さない"; dump
+fi
+# 承認文へ一緒に転記し、本実行へ --approved-head で渡す HEAD（Issue `#2622`）。判定した HEAD の 40 桁を 1 行だけ出す
+if [[ "$(release_head)" == "$head_before" ]]; then
+  ok "全段を完走した dry-run は RELEASE_HEAD=（判定した HEAD の 40 桁）を 1 行だけ出す"
+else
+  bad "dry-run が判定した HEAD の RELEASE_HEAD= を 1 行だけ出さない（${head_before}）"; dump
 fi
 if [[ "$(stage_order)" == "preflight check prepare gate sync tag release footer report" ]]; then
   ok "dry-run の段の順序: preflight → check → prepare → gate → sync → tag → release → footer → report"
@@ -768,6 +812,16 @@ fi
 : >"$STATE/fragments.fail-once"
 run_orch
 if [[ "$RC" -eq 1 ]] && has "NG: [prepare]" && [[ -n "$(git -C "$SSOT" status --porcelain)" ]]; then
+  # 書きかけを見つけた dry-run は巻き戻しの PLAN だけを出して途中で止まる。全段を判定していないので、承認の対象になる
+  # RELEASE_HEAD= を出さない（Issue `#2622`）。作業ツリーの書きかけにも触れない
+  _dirty_before="$(git -C "$SSOT" status --porcelain)"
+  run_orch --dry-run
+  if [[ "$RC" -eq 0 ]] && has "RELEASE_RESULT=dry-run" && has "dry-run はここで止める" && ! has_head_line \
+    && [[ "$(git -C "$SSOT" status --porcelain)" == "$_dirty_before" ]]; then
+    ok "書きかけを見つけた dry-run は巻き戻しの PLAN だけで止まり、RELEASE_HEAD= を出さない（作業ツリーにも触れない）"
+  else
+    bad "書きかけを見つけた dry-run が RELEASE_HEAD= を出した、または作業ツリーを変えた (rc=$RC)"; dump
+  fi
   run_orch
   if [[ "$RC" -eq 0 ]] && has "書きかけで止まった変更（記録と一致）を戻し" && has "RELEASE_VERSION=0.35.0" \
     && [[ "$(jq -r .version "$SSOT/plugins/ff-dev-toolkit/.claude-plugin/plugin.json")" == 0.35.0 ]]; then
@@ -901,8 +955,8 @@ fi
 git -C "$SSOT" checkout -q -- oss/ff-dev-toolkit/CHANGELOG.md.bak
 run_orch --resume-with-edits --dry-run
 if [[ "$RC" -eq 0 ]] && has "採用した作業ツリーの再判定: RELEASE_CHECK=OK（rc=0）" && has "RELEASE_RESULT=dry-run" \
-  && [[ "$(git -C "$SSOT" rev-parse HEAD)" == "$head_before" ]] && ! grep -q '^adopted=1$' "$WRITING"; then
-  ok "--resume-with-edits --dry-run は直した内容の再判定（RELEASE_CHECK=OK）を出し、記録も作業ツリーも変えない"
+  && [[ "$(git -C "$SSOT" rev-parse HEAD)" == "$head_before" && "$(release_head)" == "$head_before" ]] && ! grep -q '^adopted=1$' "$WRITING"; then
+  ok "--resume-with-edits --dry-run は直した内容の再判定（RELEASE_CHECK=OK）と承認する HEAD（RELEASE_HEAD=）を出し、記録も作業ツリーも変えない"
 else
   bad "--resume-with-edits --dry-run が違う (rc=$RC)"; dump
 fi
@@ -1126,6 +1180,514 @@ else
   bad "--summary を付けた中間版の Release の件名・本文が期待と違う (rc=$RC): $(cat "$STATE/title-v${NEWV2}" 2>/dev/null)"; dump
 fi
 
+echo '-- release: タグ未作成の準備済み版への後着断片（Issue `#2462` / `#2619`） --'
+# 後着断片は準備済みの版節へ畳まず、新しい版として準備する。準備済みの版はタグを打たない中間版として残り、
+# Release の本文と件名へ畳み込まれる。同じ版のまま畳むと version 据え置きの CHANGELOG 編集になり、昇格直後の
+# changelog-fragments（stub が呼ぶ実物の判定）で止まる
+cur_ver() { jq -r .version "$SSOT/plugins/ff-dev-toolkit/.claude-plugin/plugin.json"; }
+next_patch() { cur_ver | awk -F. '{ print $1 "." $2 "." ($3 + 1) }'; }
+release_commits() { local s; s="$(origin_subjects)"; printf '%s\n' "$s" | grep -cx "release: ff-dev-toolkit v$1" || true; }
+section_of() { awk -v h="## [$1] - " 'index($0, h) == 1 { f = 1; next } f && /^## \[/ { exit } f' "$SSOT/oss/ff-dev-toolkit/CHANGELOG.md"; }
+section_count() { awk -v h="## [$1] - " 'index($0, h) == 1 { n++ } END { print n + 0 }' "$SSOT/oss/ff-dev-toolkit/CHANGELOG.md"; }
+section_date_of() { awk -v h="## [$1] - " 'index($0, h) == 1 { print substr($0, length(h) + 1); exit }' "$SSOT/oss/ff-dev-toolkit/CHANGELOG.md"; }
+has_pub_tag() { git -C "$PUB_ORIGIN" rev-parse --verify --quiet "refs/tags/v$1" >/dev/null; }
+judgement() { cat "$STATE/fragments-judgement.log" 2>/dev/null || true; }
+# 修正だけの準備（patch）を push した後、gate で止める（準備済み・タグ未作成の版を作る）
+printf '%s\n' '- 準備した修正' >"$SSOT/changelog.d/130.fixed.late-base.md"
+commit_push "fix: late base"
+LATEV="$(next_patch)"
+: >"$STATE/public-layout.red"
+: >"$STATE/fragments-judgement.log"
+run_orch
+rm -f "$STATE/public-layout.red"
+LATED="$(section_date_of "$LATEV")"
+if [[ "$RC" -eq 1 ]] && has "NG: [gate]" && origin_has_subject "release: ff-dev-toolkit v${LATEV}" && ! has_pub_tag "$LATEV" \
+  && [[ "$(judgement)" == release-prep ]]; then
+  ok "（前提）patch の準備 v${LATEV} を push した後、タグの前（gate 段）で止まる（昇格直後の共有 CHANGELOG の判定は実物で release-prep）"
+else
+  bad "（前提）準備済み・タグ未作成の状態を作れない (rc=$RC judgement=$(judgement))"; dump
+fi
+# 同じ版幅の断片（修正）が後着する
+printf '%s\n' '- 後着した修正' >"$SSOT/changelog.d/131.fixed.late-same.md"
+commit_push "fix: late fragment"
+NEXT1="$(next_patch)"
+head_before="$(git -C "$SSOT" rev-parse HEAD)"
+run_orch --dry-run
+if [[ "$RC" -eq 0 ]] && has "RELEASE_RESULT=dry-run" && has "RELEASE_VERSION=${NEXT1}" && has "LATE_FRAGMENTS=new-version" \
+  && has "後着断片（fixed×1）: 準備済み・タグ未作成の v${LATEV} はタグを打たない中間版として残し" \
+  && has "PLAN: ## [${LATEV}] - ${LATED} は開き直さず、タグを打たない中間版として残す" \
+  && has "PLAN: version ${LATEV} → ${NEXT1}（patch" && ! has "[Unreleased] へ戻す" && ! has "準備が途中で止まった疑い" \
+  && [[ "$(release_head)" == "$head_before" ]] \
+  && [[ "$(git -C "$SSOT" rev-parse HEAD)" == "$head_before" && -z "$(git -C "$SSOT" status --porcelain)" ]]; then
+  ok "後着断片の dry-run は stop せず、準備済みの v${LATEV} を中間版として残し後着断片を v${NEXT1} として準備する PLAN を出して完走する"
+else
+  bad "後着断片の dry-run が新しい版の準備を出さない (rc=$RC)"; dump
+fi
+# 承認した dry-run の HEAD（本実行へ --approved-head で渡す。以降の本実行はこの dry-run を承認したものとして回す）
+LATE_HEAD="$(release_head)"
+run_orch
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped-needs-approval" && has "後着断片（fixed×1）" \
+  && [[ "$(git -C "$SSOT" rev-parse HEAD)" == "$head_before" && -z "$(git -C "$SSOT" status --porcelain)" && "$(release_commits "$LATEV")" -eq 1 ]]; then
+  ok "--expect-version を渡さない本実行は、後着断片を準備せず・何も書かずに承認待ちで止まる"
+else
+  bad "承認を取り直さない本実行が後着断片を準備した、または承認待ちで止まらない (rc=$RC)"; dump
+fi
+run_orch --dry-run --expect-version "$LATEV"
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped-needs-approval" && has "承認した版（--expect-version ${LATEV}）" \
+  && ! has_head_line && [[ -z "$(git -C "$SSOT" status --porcelain)" ]]; then
+  ok "dry-run も、準備済みの版（v${LATEV}）を承認した --expect-version では承認待ちで止まる（何も書かない・途中で止まった dry-run は RELEASE_HEAD= を出さない）"
+else
+  bad "dry-run が準備済みの版の承認で止まらない (rc=$RC)"; dump
+fi
+pub_before="$(git -C "$PUB_ORIGIN" rev-parse main)"
+: >"$STATE/fragments-judgement.log"
+run_orch --expect-version "$LATEV" --approved-head "$LATE_HEAD"
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped-needs-approval" && has "承認した版（--expect-version ${LATEV}）" \
+  && ! origin_has_subject "release: ff-dev-toolkit v${NEXT1}" && [[ "$(release_commits "$LATEV")" -eq 1 ]] \
+  && ! has_pub_tag "$NEXT1" && ! has_pub_tag "$LATEV" && [[ "$(git -C "$PUB_ORIGIN" rev-parse main)" == "$pub_before" && -z "$(judgement)" ]]; then
+  ok "準備済みの版（v${LATEV}）を承認した古い --expect-version の本実行は、版が v${NEXT1} に変わるので準備の push より前に照合で止まる"
+else
+  bad "古い承認の版で後着断片の準備を push した、または止まらない (rc=$RC judgement=$(judgement))"; dump
+fi
+run_orch --resume-with-edits
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped-needs-approval" && has "承認待ちで止まった実行が残したもの" \
+  && ! origin_has_subject "release: ff-dev-toolkit v${NEXT1}"; then
+  ok "承認待ちで止まった書きかけは、--expect-version の無い --resume-with-edits では採用しない"
+else
+  bad "承認待ちの書きかけを承認なしで採用した、または止まらない (rc=$RC)"; dump
+fi
+# 承認を取り直した版で準備する。gate で止めて v${NEXT1} もタグ未作成のまま残す（次の後着の前提）
+: >"$STATE/public-layout.red"
+: >"$STATE/fragments-judgement.log"
+run_orch --expect-version "$NEXT1" --approved-head "$LATE_HEAD"
+rm -f "$STATE/public-layout.red"
+NEXT1D="$(section_date_of "$NEXT1")"
+late_section="$(section_of "$LATEV")"
+next1_section="$(section_of "$NEXT1")"
+if [[ "$RC" -eq 1 ]] && has "NG: [gate]" && has "LATE_FRAGMENTS=new-version" && has "書きかけで止まった変更（記録と一致）を戻し" \
+  && origin_has_subject "release: ff-dev-toolkit v${NEXT1}" && [[ "$(release_commits "$LATEV")" -eq 1 && "$(release_commits "$NEXT1")" -eq 1 ]] \
+  && [[ "$(section_count "$LATEV")" -eq 1 && "$(section_count "$NEXT1")" -eq 1 && "$LATED" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] \
+  && [[ "$late_section" == *"- 準備した修正"* && "$late_section" != *"- 後着した修正"* ]] \
+  && [[ "$next1_section" == *"- 後着した修正"* && "$next1_section" != *"- 準備した修正"* ]] \
+  && [[ "$(judgement)" == release-prep && ! -f "$SSOT/changelog.d/131.fixed.late-same.md" ]] \
+  && ! has_pub_tag "$LATEV" && ! has_pub_tag "$NEXT1"; then
+  ok "承認を取り直した v${NEXT1} の本実行は、v${LATEV} の版節を残したまま後着断片を新しい版節へ集約し、実物の共有 CHANGELOG の判定（release-prep）を通って release コミットを push する"
+else
+  bad "後着断片を新しい版として準備できない、または実物の判定を通らない (rc=$RC judgement=$(judgement))"; dump
+  printf '%s\n' "$late_section" | sed 's/^/    | late: /' >&2; printf '%s\n' "$next1_section" | sed 's/^/    | next: /' >&2
+fi
+# 中間版を挟んだ状態から、さらに版幅を上げる断片（追加）が後着する
+printf '%s\n' '- 再び後着した追加' >"$SSOT/changelog.d/134.added.late-again.md"
+commit_push "feat: late again"
+NEXT2="$(next_minor)"
+run_orch --dry-run
+if [[ "$RC" -eq 0 ]] && has "RELEASE_VERSION=${NEXT2}" && has "LATE_FRAGMENTS=new-version" \
+  && has "PLAN: ## [${NEXT1}] - ${NEXT1D} は開き直さず、タグを打たない中間版として残す" && has "PLAN: version ${NEXT1} → ${NEXT2}（minor"; then
+  ok "中間版（v${LATEV}）を挟んだ準備済みの v${NEXT1} への後着も判別し、v${NEXT1} を中間版として残して v${NEXT2} の準備を PLAN に出す"
+else
+  bad "中間版を挟んだ状態からの後着を判別しない (rc=$RC)"; dump
+fi
+NEXT2_HEAD="$(release_head)"
+: >"$STATE/fragments-judgement.log"
+run_orch --expect-version "$NEXT2" --approved-head "$NEXT2_HEAD"
+notes="$(cat "$STATE/notes-v${NEXT2}" 2>/dev/null || true)"
+if [[ "$RC" -eq 0 ]] && has "RELEASE_RESULT=released" && has "RELEASE_VERSION=${NEXT2}" && has "LATE_FRAGMENTS=new-version" \
+  && [[ "$(section_count "$NEXT2")" -eq 1 && "$(section_count "$NEXT1")" -eq 1 && "$(section_count "$LATEV")" -eq 1 ]] \
+  && [[ "$(section_of "$NEXT2")" == *"- 再び後着した追加"* && "$(release_commits "$NEXT2")" -eq 1 && "$(judgement)" == release-prep ]] \
+  && has_pub_tag "$NEXT2" && ! has_pub_tag "$NEXT1" && ! has_pub_tag "$LATEV" \
+  && grep -qx "v${NEXT2}" "$STATE/releases" && ! grep -qx "v${NEXT1}" "$STATE/releases" && ! grep -qx "v${LATEV}" "$STATE/releases" \
+  && [[ "$notes" == *"本リリースはタグを打っていない v${NEXT1}・v${LATEV} の変更を含みます。"* ]] \
+  && grep -qx "## v${NEXT1} の変更（タグを打っていない中間版・${NEXT1D}）" "$STATE/notes-v${NEXT2}" \
+  && grep -qx "## v${LATEV} の変更（タグを打っていない中間版・${LATED}）" "$STATE/notes-v${NEXT2}" \
+  && [[ "$notes" == *"- 後着した修正"* && "$notes" == *"- 準備した修正"* && "$notes" == *"- 再び後着した追加"* ]] \
+  && [[ "$(cat "$STATE/title-v${NEXT2}" 2>/dev/null)" == *"（v${NEXT1}・v${LATEV} を含む）" ]] \
+  && [[ -z "$(git -C "$SSOT" status --porcelain)" ]]; then
+  ok "承認した v${NEXT2} の本実行は、タグを打たない中間版 v${NEXT1}・v${LATEV} の節を版ごとに Release の本文へ載せ、件名にも畳み込んで出す"
+else
+  bad "中間版を畳み込む後着断片のリリースが期待と違う (rc=$RC judgement=$(judgement))"; dump
+  printf '%s\n' "$notes" | sed 's/^/    | notes: /' >&2
+  sed 's/^/    | title: /' "$STATE/title-v${NEXT2}" >&2 2>/dev/null || true
+fi
+
+echo '-- release: 承認した dry-run の HEAD への結び付け（Issue `#2622`） --'
+# 版を変えない前進（承認後に入った同じ版幅の断片など）は --expect-version の照合を通る。本実行は承認した dry-run の
+# RELEASE_HEAD= を --approved-head で受け、preflight が取り込んだ前進を --advance-check と同じ三分類にかけて止める。
+# preflight の pull が取り込む前進を確かめるケース（(a)・(d)・(d2)・(d3)・(f)）は、承認後の前進を別 clone から origin へ
+# push する（同じ checkout の commit_push は preflight の pull を起こさないので、pull が取り込んだ前進を分類から落とす
+# 退行を検出できない）。(b) は pull を伴わない同じ checkout の前進を意図して使う
+# footer の push を 1 回だけ拒む hook（この節と次節の再開のケースが使う。reject-footer がある回だけ効く）
+mkdir -p "$SSOT_ORIGIN/hooks"
+cat >"$SSOT_ORIGIN/hooks/pre-receive" <<'HK'
+#!/usr/bin/env bash
+while read -r old new ref; do
+  if [[ "$ref" == refs/heads/develop && -f "$RELEASE_RT_STATE/reject-footer" ]] \
+    && [[ "$(git log -1 --format=%s "$new")" == "release: CHANGELOG 比較リンクを"* ]]; then
+    rm -f "$RELEASE_RT_STATE/reject-footer"; echo "rejected footer once" >&2; exit 1
+  fi
+done
+exit 0
+HK
+chmod +x "$SSOT_ORIGIN/hooks/pre-receive"
+side_approve="$TMP/side-approve"
+git clone -q "$SSOT_ORIGIN" "$side_approve"
+side_fresh() { git -C "$side_approve" fetch -q origin && git -C "$side_approve" checkout -q -B develop origin/develop; }
+side_push() { # $1=メッセージ（別セッションの作業 clone の変更を develop へ push する）
+  git -C "$side_approve" add -A
+  git -C "$side_approve" -c user.name="Side Session" -c user.email=side@example.com commit -qm "$1"
+  git -C "$side_approve" push -q origin HEAD:refs/heads/develop
+}
+advance_path_count() { printf '%s\n' "$OUT" | awk '/^ADVANCE_PATH=/ { n++ } END { print n + 0 }'; }
+# 承認待ちで止まった回に外向き操作が無いこと（タグ・Release・公開側 main・release コミット・run-all・作業ツリー）
+no_outward() { # $1=版 $2=公開側 main の前の値 $3=run-all の前の回数 $4=その版の release コミットの前の数
+  ! has_pub_tag "$1" && ! grep -qx "v$1" "$STATE/releases" && [[ "$(git -C "$PUB_ORIGIN" rev-parse main)" == "$2" ]] \
+    && [[ "$(count_runall)" -eq "$3" && "$(release_commits "$1")" -eq "$4" ]] \
+    && [[ -z "$(git -C "$SSOT" status --porcelain --untracked-files=all)" ]]
+}
+# (a) 同じ版幅の断片で承認した後、別セッションが公開対象の変更と同じ版幅の断片を develop へ入れる（版は変わらない）
+printf '%s\n' '- 承認した修正' >"$SSOT/changelog.d/150.fixed.approved.md"
+commit_push "fix: approved"
+APV="$(next_patch)"
+run_orch --dry-run
+APPROVED="$(release_head)"
+if [[ "$RC" -eq 0 ]] && has "RELEASE_VERSION=${APV}" && [[ -n "$APPROVED" && "$APPROVED" == "$(git -C "$SSOT" rev-parse HEAD)" ]]; then
+  ok "（前提）同じ版幅の断片の dry-run が v${APV} と承認する HEAD（RELEASE_HEAD=）を出す"
+else
+  bad "（前提）承認する dry-run の RELEASE_VERSION= / RELEASE_HEAD= が期待と違う (rc=$RC)"; dump
+fi
+side_fresh
+printf '%s\n' '- 承認後に別セッションが入れた修正' >"$side_approve/changelog.d/151.fixed.after-approval.md"
+printf '%s\n' '- after approval' >>"$side_approve/plugins/ff-dev-toolkit/scripts/changes.txt"
+side_push "fix: after approval"
+side_sha="$(git -C "$side_approve" rev-parse HEAD)"
+pub_before="$(git -C "$PUB_ORIGIN" rev-parse main)"
+runs_before="$(count_runall)"
+: >"$STATE/fragments-judgement.log"
+run_orch --expect-version "$APV" --approved-head "$APPROVED"
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped-needs-approval" \
+  && has "NG: [preflight] 承認した dry-run の後に develop が公開対象を変えるコミットで進んだ（${APPROVED:0:12}..${side_sha:0:12}）" \
+  && has "ADVANCE=public" && has "ADVANCE_RANGE=${APPROVED:0:12}..${side_sha:0:12}" \
+  && has "ADVANCE_PATH=plugins/ff-dev-toolkit/scripts/changes.txt" && has "ADVANCE_PATH=changelog.d/151.fixed.after-approval.md" \
+  && [[ "$(advance_path_count)" -eq 2 ]] && has "--approved-head <RELEASE_HEAD> で渡して再実行する" \
+  && [[ "$(git -C "$SSOT" rev-parse HEAD)" == "$side_sha" && -f "$SSOT/changelog.d/150.fixed.approved.md" ]] \
+  && [[ -f "$SSOT/changelog.d/151.fixed.after-approval.md" && -z "$(judgement)" ]] \
+  && no_outward "$APV" "$pub_before" "$runs_before" 0; then
+  ok "承認後に別セッションが公開対象と同じ版幅の断片を入れた回は、版が同じでも preflight の取り込みの後に ADVANCE=public で承認待ちに止まる（準備・同期・タグ・Release をせず、断片を消費しない）"
+else
+  bad "承認後に入った公開対象の変更を承認待ちで止めない、または何かを書き換えた (rc=$RC)"; dump
+fi
+# 承認待ちで止まった後に、承認の引数を付けずに本実行し直しても、止めた前進を公開しない
+run_orch
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped-needs-approval" \
+  && has "前回の本実行は承認した HEAD からの前進（${APPROVED:0:12}..${side_sha:0:12}）で承認待ちに止まっている" \
+  && [[ -f "$SSOT/changelog.d/151.fixed.after-approval.md" ]] \
+  && no_outward "$APV" "$pub_before" "$runs_before" 0; then
+  ok "承認待ちで止まった後に引数無しで本実行し直しても、承認待ちのまま止まる（止めた前進を準備・同期・タグ・Release しない）"
+else
+  bad "承認待ちで止まった後の引数無しの本実行が、止めた前進を進めた (rc=$RC)"; dump
+fi
+# (b) 承認を取り直した後、同じ checkout で changelog.d だけを変えるコミットが入る（pull を伴わない前進）
+run_orch --dry-run
+APPROVED="$(release_head)"
+if [[ "$RC" -eq 0 ]] && has "RELEASE_VERSION=${APV}" && [[ "$APPROVED" == "$side_sha" ]]; then
+  ok "（前提）承認を取り直した dry-run は、別セッションの前進を含む HEAD を RELEASE_HEAD= に出す（版は v${APV} のまま）"
+else
+  bad "（前提）承認を取り直した dry-run の RELEASE_HEAD= が期待と違う (rc=$RC)"; dump
+fi
+printf '%s\n' '- 承認後に入った断片だけ' >"$SSOT/changelog.d/152.fixed.changelog-only.md"
+git -C "$SSOT" add -A
+git -C "$SSOT" commit -qm "docs: changelog only after approval"
+git -C "$SSOT" push -q origin develop
+cl_sha="$(git -C "$SSOT" rev-parse HEAD)"
+pub_before="$(git -C "$PUB_ORIGIN" rev-parse main)"
+runs_before="$(count_runall)"
+run_orch --dry-run --approved-head "$APPROVED"
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped-needs-approval" && has "ADVANCE=changelog" && ! has_head_line \
+  && no_outward "$APV" "$pub_before" "$runs_before" 0; then
+  ok "--approved-head を渡した dry-run も同じ照合で承認待ちに止まる（RELEASE_HEAD= を出さない・何も書かない）"
+else
+  bad "--approved-head を渡した dry-run が承認後の前進で止まらない (rc=$RC)"; dump
+fi
+run_orch --expect-version "$APV" --approved-head "$APPROVED"
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped-needs-approval" \
+  && has "NG: [preflight] 承認した dry-run の後に develop が changelog.d を変えるコミットで進んだ（${APPROVED:0:12}..${cl_sha:0:12}）" \
+  && has "ADVANCE=changelog" && has "ADVANCE_PATH=changelog.d/152.fixed.changelog-only.md" && [[ "$(advance_path_count)" -eq 1 ]] \
+  && [[ -f "$SSOT/changelog.d/152.fixed.changelog-only.md" ]] && no_outward "$APV" "$pub_before" "$runs_before" 0; then
+  ok "承認後に changelog.d だけを変えるコミットが入った回（同じ checkout・pull なし）も ADVANCE=changelog で承認待ちに止まる"
+else
+  bad "承認後の changelog.d だけの前進を承認待ちで止めない (rc=$RC)"; dump
+fi
+# (c) 使い方の誤りと、照合できない承認 HEAD（解決できない・分岐した）
+run_orch --expect-version "$APV"
+_pair_rc1="$RC"; _pair_msg1=0; has "--expect-version と --approved-head で対にして渡す" && _pair_msg1=1
+run_orch --approved-head "$APPROVED"
+if [[ "$_pair_rc1" -eq 64 && "$_pair_msg1" -eq 1 && "$RC" -eq 64 ]] && has "--expect-version と --approved-head で対にして渡す"; then
+  ok "本実行に --expect-version と --approved-head の片方だけを渡すと、使い方の誤り（rc=64）で何もせずに止まる"
+else
+  bad "本実行が --expect-version / --approved-head の片方だけを受けた (rc=${_pair_rc1}/${RC})"; dump
+fi
+run_orch --expect-version "$APV" --approved-head "${APPROVED:0:12}"
+if [[ "$RC" -eq 64 ]] && has "40 桁の小文字 16 進"; then
+  ok "--approved-head は 40 桁の小文字 16 進以外を使い方の誤りで拒む"
+else
+  bad "--approved-head の形を検査しない (rc=$RC)"; dump
+fi
+_incompat=0
+for _args in "--dry-run --only gate" "--advance-check ${APPROVED}" "--due"; do
+  # shellcheck disable=SC2086  # 引数の組を語へ分ける
+  run_orch $_args --approved-head "$APPROVED"
+  if [[ "$RC" -eq 64 ]] && has "--approved-head は --only / --due / --advance-check と同時に指定できない"; then _incompat=$((_incompat + 1)); else dump; fi
+done
+if [[ "$_incompat" -eq 3 ]]; then
+  ok "--approved-head は --only / --advance-check / --due と同時に指定できない（rc=64）"
+else
+  bad "--approved-head と --only / --advance-check / --due の同時指定を受けた（拒否 ${_incompat} / 3）"
+fi
+pub_before="$(git -C "$PUB_ORIGIN" rev-parse main)"
+runs_before="$(count_runall)"
+run_orch --expect-version "$APV" --approved-head deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped-needs-approval" && has "をこの clone で解決できない" \
+  && no_outward "$APV" "$pub_before" "$runs_before" 0; then
+  ok "解決できない承認 HEAD は、承認した範囲を確かめられないので承認待ちに止まる（neutral へ倒さない）"
+else
+  bad "解決できない承認 HEAD で止まらない (rc=$RC)"; dump
+fi
+_sib="$(git -C "$SSOT" commit-tree "HEAD^{tree}" -p "HEAD~1" -m "sibling of the approved HEAD")"
+run_orch --expect-version "$APV" --approved-head "$_sib"
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped-needs-approval" && has "ADVANCE=diverged" && has "の祖先でない" \
+  && no_outward "$APV" "$pub_before" "$runs_before" 0; then
+  ok "今の HEAD の祖先でない承認 HEAD（分岐）は ADVANCE=diverged で承認待ちに止まる"
+else
+  bad "分岐した承認 HEAD で止まらない (rc=$RC)"; dump
+fi
+# (d) 件名だけ release コミットを名乗る他人のコミット（準備と比較リンクの追従の両方の件名）が公開対象を変える
+run_orch --dry-run
+APPROVED="$(release_head)"
+[[ "$RC" -eq 0 && -n "$APPROVED" ]] || { bad "（前提）承認を取り直す dry-run が完走しない (rc=$RC)"; dump; }
+side_fresh
+printf '%s\n' '- forged prepare subject' >>"$side_approve/plugins/ff-dev-toolkit/scripts/changes.txt"
+side_push "release: ff-dev-toolkit v${APV}"
+printf '%s\n' '- forged footer subject' >>"$side_approve/plugins/ff-dev-toolkit/scripts/footer-forged.txt"
+side_push "release: CHANGELOG 比較リンクを v${APV} へ追従"
+pub_before="$(git -C "$PUB_ORIGIN" rev-parse main)"
+runs_before="$(count_runall)"
+run_orch --expect-version "$APV" --approved-head "$APPROVED"
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped-needs-approval" && has "ADVANCE=public" \
+  && has "ADVANCE_PATH=plugins/ff-dev-toolkit/scripts/changes.txt" && has "ADVANCE_PATH=plugins/ff-dev-toolkit/scripts/footer-forged.txt" \
+  && [[ "$(advance_path_count)" -eq 2 ]] && ! has "承認後の前進に数えない" && no_outward "$APV" "$pub_before" "$runs_before" 1; then
+  ok "release コミットの件名だけを名乗り、準備・比較リンクの追従の書き込み先の外を変える他人のコミットは前進として数え、承認待ちに止まる"
+else
+  bad "件名だけ release コミットを名乗る他人の公開変更を前進から外した (rc=$RC)"; dump
+fi
+# (d2) 件名に加えて変えたファイルも準備の書き込み先の部分集合（plugin.json の description だけ）に収まる他人のコミット。
+# 件名と変えたファイルだけでは自身の準備コミットと区別できないので、本スクリプトが作ったコミットの SHA の記録で判別する
+run_orch --dry-run
+APPROVED="$(release_head)"
+[[ "$RC" -eq 0 && -n "$APPROVED" ]] && has "RELEASE_VERSION=${APV}" || { bad "（前提）承認を取り直す dry-run が v${APV} で完走しない (rc=$RC)"; dump; }
+side_fresh
+jq '.description = "forged description after approval"' "$side_approve/plugins/ff-dev-toolkit/.claude-plugin/plugin.json" >"$TMP/side-pj" \
+  && mv "$TMP/side-pj" "$side_approve/plugins/ff-dev-toolkit/.claude-plugin/plugin.json"
+side_push "release: ff-dev-toolkit v${APV}"
+forged_pj_sha="$(git -C "$side_approve" rev-parse HEAD)"
+pub_before="$(git -C "$PUB_ORIGIN" rev-parse main)"
+runs_before="$(count_runall)"
+run_orch --expect-version "$APV" --approved-head "$APPROVED"
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped-needs-approval" \
+  && has "NG: [preflight] 承認した dry-run の後に develop が公開対象を変えるコミットで進んだ（${APPROVED:0:12}..${forged_pj_sha:0:12}）" \
+  && has "ADVANCE=public" && has "ADVANCE_PATH=plugins/ff-dev-toolkit/.claude-plugin/plugin.json" \
+  && [[ "$(advance_path_count)" -eq 1 ]] && ! has "承認後の前進に数えない" \
+  && [[ "$(git -C "$SSOT" rev-parse HEAD)" == "$forged_pj_sha" ]] && no_outward "$APV" "$pub_before" "$runs_before" 2; then
+  ok "準備の件名を名乗り plugin.json の description だけを変える他人のコミットは、自身の準備コミットの記録に無いので前進として数え、ADVANCE=public で承認待ちに止まる"
+else
+  bad "件名と書き込み先の部分集合だけで、他人の manifest の変更を自身の release コミットとして前進から外した (rc=$RC)"; dump
+fi
+# (d3) 承認後にリリース機構（scripts/）だけを変えるコミットが別 clone から入る
+run_orch --dry-run
+APPROVED="$(release_head)"
+[[ "$RC" -eq 0 && -n "$APPROVED" ]] && has "RELEASE_VERSION=${APV}" || { bad "（前提）承認を取り直す dry-run が v${APV} で完走しない (rc=$RC)"; dump; }
+side_fresh
+printf '%s\n' '- side tool after approval' >>"$side_approve/scripts/side-tool.txt"
+side_push "chore: side tool after approval"
+tool_sha="$(git -C "$side_approve" rev-parse HEAD)"
+pub_before="$(git -C "$PUB_ORIGIN" rev-parse main)"
+runs_before="$(count_runall)"
+run_orch --expect-version "$APV" --approved-head "$APPROVED"
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped-needs-approval" \
+  && has "NG: [preflight] 承認した dry-run の後に develop がリリース機構（scripts/）を変えるコミットで進んだ（${APPROVED:0:12}..${tool_sha:0:12}）" \
+  && has "ADVANCE=tooling" && has "ADVANCE_RANGE=${APPROVED:0:12}..${tool_sha:0:12}" \
+  && has "ADVANCE_PATH=scripts/side-tool.txt" && [[ "$(advance_path_count)" -eq 1 ]] \
+  && [[ "$(git -C "$SSOT" rev-parse HEAD)" == "$tool_sha" ]] && no_outward "$APV" "$pub_before" "$runs_before" 2; then
+  ok "承認後にリリース機構（scripts/）だけを変えるコミットが別 clone から入った回は ADVANCE=tooling で承認待ちに止まる（承認していないスクリプトで準備・同期・タグ・Release しない）"
+else
+  bad "承認後のリリース機構だけの前進を承認待ちで止めない (rc=$RC)"; dump
+fi
+# (e) この実行自身の release コミット（準備・比較リンクの追従）は前進に数えず、同じ引数の再実行で続きから進む
+run_orch --dry-run
+APPROVED="$(release_head)"
+[[ "$RC" -eq 0 && -n "$APPROVED" ]] && has "RELEASE_VERSION=${APV}" || { bad "（前提）承認を取り直す dry-run が v${APV} で完走しない (rc=$RC)"; dump; }
+: >"$STATE/public-layout.red"
+run_orch --expect-version "$APV" --approved-head "$APPROVED"
+rm -f "$STATE/public-layout.red"
+prep_sha="$(git -C "$SSOT_ORIGIN" rev-parse develop)"
+if [[ "$RC" -eq 1 ]] && has "NG: [gate]" && has "ADVANCE=none" \
+  && [[ "$(git -C "$SSOT_ORIGIN" log -1 --format=%s develop)" == "release: ff-dev-toolkit v${APV}" ]] && ! has_pub_tag "$APV"; then
+  ok "（前提）承認した v${APV} の準備を push した後、gate で止まる"
+else
+  bad "（前提）承認した版の準備の後に gate で止まる状態を作れない (rc=$RC)"; dump
+fi
+: >"$STATE/reject-footer"
+run_orch --expect-version "$APV" --approved-head "$APPROVED"
+rm -f "$STATE/reject-footer"
+footer_sha="$(git -C "$SSOT" rev-parse HEAD)"
+if [[ "$RC" -eq 1 ]] && has "NG: [footer]" && ! has "RELEASE_RESULT=stopped-needs-approval" && has "ADVANCE=none" \
+  && has "この実行の release コミット（v${APV}）は承認後の前進に数えない: ${prep_sha:0:12}" \
+  && has_pub_tag "$APV" && grep -qx "v${APV}" "$STATE/releases" \
+  && [[ "$(git -C "$SSOT" log -1 --format=%s)" == "release: CHANGELOG 比較リンクを v${APV} へ追従" \
+    && "$(git -C "$SSOT_ORIGIN" rev-parse develop)" == "$prep_sha" ]]; then
+  ok "同じ引数の再実行は、gate の前に push した自身の準備コミットを前進に数えずに続きから進む（footer の push を拒んで止める）"
+else
+  bad "自身の準備コミットを承認後の前進として止めた、または footer まで進まない (rc=$RC)"; dump
+fi
+run_orch --expect-version "$APV" --approved-head "$APPROVED"
+apv_section="$(section_of "$APV")"
+if [[ "$RC" -eq 0 ]] && has "RELEASE_RESULT=released" && has "RELEASE_VERSION=${APV}" && has "ADVANCE=none" \
+  && has "この実行の release コミット（v${APV}）は承認後の前進に数えない: ${prep_sha:0:12} ${footer_sha:0:12}" \
+  && origin_has_subject "release: CHANGELOG 比較リンクを v${APV} へ追従" && [[ "$(release_commits "$APV")" -eq 3 ]] \
+  && [[ "$apv_section" == *"- 承認した修正"* && "$apv_section" == *"- 承認後に別セッションが入れた修正"* && "$apv_section" == *"- 承認後に入った断片だけ"* ]] \
+  && [[ ! -f "$SSOT/changelog.d/150.fixed.approved.md" && -z "$(git -C "$SSOT" status --porcelain --untracked-files=all)" ]]; then
+  ok "比較リンクの追従コミットも自身の release コミットとして数えず、同じ引数の再実行が released まで進む（件名を名乗る他人のコミット 2 件は数のうえでも別扱い）"
+else
+  bad "自身の release コミットを含む範囲の再実行が完了しない (rc=$RC)"; dump
+fi
+# (f) 承認後の neutral な前進（公開対象・リリース機構・changelog.d の外だけ）は承認を取り直さずに出す
+printf '%s\n' '- 中立の前進の後に出す修正' >"$SSOT/changelog.d/153.fixed.neutral-after.md"
+commit_push "fix: neutral after"
+NV="$(next_patch)"
+# 判定の途中で同じ checkout の HEAD が動いた dry-run は、判定していない HEAD を RELEASE_HEAD= に出さずに止まる
+: >"$STATE/check.move-head"
+run_orch --dry-run
+rm -f "$STATE/check.move-head"
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped" && has "dry-run の間に HEAD が" && ! has_head_line \
+  && [[ "$(git -C "$SSOT" log -1 --format=%s)" == "moved during dry-run" ]]; then
+  ok "判定の途中で HEAD が動いた dry-run は、判定していない HEAD を RELEASE_HEAD= に出さずに止まる"
+else
+  bad "判定の途中で HEAD が動いた dry-run が RELEASE_HEAD= を出した、または止まらない (rc=$RC)"; dump
+fi
+# 動いた HEAD（空のコミット）を origin へ揃えて、以降の承認の起点にする
+git -C "$SSOT" push -q origin develop
+run_orch --dry-run
+APPROVED="$(release_head)"
+[[ "$RC" -eq 0 && -n "$APPROVED" ]] && has "RELEASE_VERSION=${NV}" || { bad "（前提）neutral の前進の前の dry-run が v${NV} で完走しない (rc=$RC)"; dump; }
+side_fresh
+mkdir -p "$side_approve/plugins/ff-media-toolkit"
+printf '%s\n' '- neutral after approval' >>"$side_approve/plugins/ff-media-toolkit/approved-neutral.txt"
+side_push "docs: neutral after approval"
+neutral_sha="$(git -C "$side_approve" rev-parse HEAD)"
+run_orch --expect-version "$NV" --approved-head "$APPROVED"
+if [[ "$RC" -eq 0 ]] && has "RELEASE_RESULT=released" && has "RELEASE_VERSION=${NV}" && has "ADVANCE=neutral" \
+  && has "ADVANCE_RANGE=${APPROVED:0:12}..${neutral_sha:0:12}" && [[ "$(advance_path_count)" -eq 0 ]] \
+  && git -C "$SSOT" merge-base --is-ancestor "$neutral_sha" HEAD && has_pub_tag "$NV" \
+  && [[ -z "$(git -C "$SSOT" status --porcelain --untracked-files=all)" ]]; then
+  ok "承認後の前進が neutral なら、承認を取り直さずに承認した v${NV} を released まで出す"
+else
+  bad "承認後の neutral な前進で止まった、または完了しない (rc=$RC)"; dump
+fi
+
+echo '-- release: Release の後で止まった本実行の再開（Issue `#2482`） --'
+# footer の push を 1 回だけ拒む hook（pre-receive）は前節で置いた
+release_open() { awk -F= '$1 == "RELEASE_OPEN" { v = $2 } END { print v }' "$SSOT/.git/ff-release-cycle"; }
+# (a) footer の push が失敗した後に、別セッションの公開対象の変更（断片付き）が develop へ入る
+printf '%s\n' '- 再開の追加' >"$SSOT/changelog.d/140.added.resume.md"
+commit_push "feat: resume"
+RV="$(next_minor)"
+: >"$STATE/reject-footer"
+run_orch
+if [[ "$RC" -eq 1 ]] && has "NG: [footer]" && git -C "$PUB_ORIGIN" rev-parse --verify --quiet "refs/tags/v${RV}" >/dev/null \
+  && grep -qx "v${RV}" "$STATE/releases" && [[ "$(release_open)" == "$RV" ]]; then
+  ok "（前提）v${RV} のタグ・Release の後、footer の push で止まる（RELEASE_OPEN=${RV} が残る）"
+else
+  bad "（前提）footer 段で止まる状態を作れない (rc=$RC)"; dump
+fi
+side_resume="$TMP/side-resume"
+git clone -q "$SSOT_ORIGIN" "$side_resume"
+git -C "$side_resume" checkout -q -B develop origin/develop
+printf '%s\n' '- 別セッションの修正' >"$side_resume/changelog.d/141.fixed.side-resume.md"
+printf '%s\n' '- side resume' >>"$side_resume/plugins/ff-dev-toolkit/scripts/changes.txt"
+git -C "$side_resume" add -A
+git -C "$side_resume" -c user.name="Side Session" -c user.email=side@example.com commit -qm "fix: side resume"
+git -C "$side_resume" push -q origin develop
+git -C "$SSOT" fetch -q origin
+git -C "$SSOT" rebase -q origin/develop
+RV2="$(printf '%s\n' "$RV" | awk -F. '{ print $1 "." $2 "." ($3 + 1) }')"
+# 再開の記録は worktree をまたいで読む（別 worktree から回しても、承認していない新しい版を未承認と告げる）
+wt_resume="$TMP/wt-resume"
+git -C "$SSOT" worktree add -q --detach "$wt_resume" origin/develop
+# 追跡外の型検査用依存（環境確認の前提。.gitignore の node_modules/ はディレクトリだけに当たる）を写す
+cp -R "$SSOT/plugins/ff-media-toolkit/node_modules" "$wt_resume/plugins/ff-media-toolkit/node_modules"
+RC=0
+OUT="$("$ENV_BIN" -u FF_RUN_ALL_FULL RELEASE_RT_MEDIA="$(cd "$wt_resume" && pwd -P)/plugins/ff-media-toolkit" bash "$wt_resume/scripts/release-dev-toolkit.sh" --public "$PUB" --dry-run 2>&1)" || RC=$?
+if [[ "$RC" -eq 0 ]] && has "前回の本実行（v${RV}）は Release の後で止まっている" && [[ -f "$SSOT/.git/ff-release-cycle" ]]; then
+  ok "Release の後で止まった記録（ff-release-cycle）は git の共通ディレクトリにあり、別 worktree の実行からも見える"
+else
+  bad "別 worktree の実行が再開の記録を読まない (rc=$RC)"; dump
+fi
+git -C "$SSOT" worktree remove --force "$wt_resume"
+run_orch
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped-needs-approval" && has "前回の本実行（v${RV}）" \
+  && origin_has_subject "release: CHANGELOG 比較リンクを v${RV} へ追従" && ! origin_has_subject "release: ff-dev-toolkit v${RV2}" \
+  && ! git -C "$PUB_ORIGIN" rev-parse --verify --quiet "refs/tags/v${RV2}" >/dev/null && ! grep -qx "v${RV2}" "$STATE/releases" \
+  && [[ -z "$(git -C "$SSOT" status --porcelain)" ]]; then
+  ok "Release の後で止まった本実行の再開は、footer を済ませ、承認していない新しい版（v${RV2}）の準備・タグ・Release を作らずに止まる"
+else
+  bad "再開が承認していない新しい版へ進んだ、または footer を済ませない (rc=$RC)"; dump
+fi
+run_orch --dry-run
+if [[ "$RC" -eq 0 ]] && has "RELEASE_VERSION=${RV2}" && has "前回の本実行（v${RV}）は Release の後で止まっている"; then
+  ok "再開状態の dry-run は新しい版（v${RV2}）の PLAN を出し、本実行に --expect-version が要ることを告げる"
+else
+  bad "再開状態の dry-run が新しい版を出さない (rc=$RC)"; dump
+fi
+run_orch --expect-version "$RV2" --approved-head "$(release_head)"
+if [[ "$RC" -eq 0 ]] && has "RELEASE_RESULT=released" && has "RELEASE_VERSION=${RV2}" && ! has "LATE_FRAGMENTS=" \
+  && git -C "$PUB_ORIGIN" rev-parse --verify --quiet "refs/tags/v${RV2}" >/dev/null && [[ -z "$(release_open)" ]]; then
+  ok "承認を取り直した版を渡すと、タグ作成済みの版の後に来た断片は新しい版（v${RV2}）として出し、サイクルを閉じる"
+else
+  bad "承認を取り直した後の本実行が完了しない (rc=$RC)"; dump
+fi
+# (b) 断片が入っていない同じ再開は、従来どおり footer → report で完了する
+printf '%s\n' '- 再開だけ' >"$SSOT/changelog.d/142.added.resume-only.md"
+commit_push "feat: resume only"
+RV3="$(next_minor)"
+: >"$STATE/reject-footer"
+run_orch
+first_rc="$RC"
+tags_mid="$(git -C "$PUB_ORIGIN" tag -l | grep -c . || true)"
+runs_before_guard="$(count_runall)"
+run_orch --expect-version 9.9.9 --approved-head "$(git -C "$SSOT" rev-parse HEAD)"
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped-needs-approval" && has "承認した版（--expect-version 9.9.9）" \
+  && [[ "$(count_runall)" -eq "$runs_before_guard" ]]; then
+  ok "準備が要らない回も、今の版が --expect-version と違えば gate より前に止まる"
+else
+  bad "準備が要らない回の承認版照合が効かない (rc=$RC)"; dump
+fi
+run_orch
+if [[ "$first_rc" -eq 1 && "$RC" -eq 0 ]] && has "RELEASE_RESULT=released" && has "RELEASE_VERSION=${RV3}" \
+  && has "RELEASE_STAGE=footer STATUS=done" && has "RELEASE_STAGE=report STATUS=done" \
+  && [[ "$(git -C "$PUB_ORIGIN" tag -l | grep -c . || true)" -eq "$tags_mid" && -z "$(release_open)" ]]; then
+  ok "断片の無い再開は、従来どおり footer → report で完了する（新しいタグを作らない）"
+else
+  bad "断片の無い再開が完了しない (rc=${first_rc}→${RC})"; dump
+fi
+rm -f "$SSOT_ORIGIN/hooks/pre-receive"
+run_orch --expect-version v1.2.3
+if [[ "$RC" -eq 64 ]]; then ok "--expect-version は X.Y.Z 以外を使い方の誤りで拒む"; else bad "--expect-version の形を検査しない (rc=$RC)"; fi
+# dry-run は版と HEAD の対での指定を要求しないので、--approved-head を付けずに --expect-version と --only の組を拒む行だけへ当てる
+run_orch --dry-run --expect-version 1.2.3 --only gate
+if [[ "$RC" -eq 64 ]] && has "--expect-version は --only / --due / --advance-check と同時に指定できない"; then
+  ok "--expect-version は --only と同時に指定できない"
+else
+  bad "--expect-version と --only を同時に受けた (rc=$RC)"; dump
+fi
+
 echo "-- release: 承認後の develop の前進の分類（--advance-check） --"
 # 承認した HEAD からの前進を neutral / public / tooling / changelog の 4 分類（+ 両方・前進なし・分岐・判定不能）で
 # 確かめる。SKILL「承認の求め方」の再承認不要の条件 (a) を機械で決める口で、gate 段の鮮度の再検査も同じ判定
@@ -1238,9 +1800,18 @@ for _kind in public tooling changelog; do
     bad "gate 走行中の ${_kind} の前進で止まらない、または再検査・同期した (rc=$RC)"; dump
   fi
   run_orch
-  # changelog.d の前進が足した断片は版の準備より後に届いたので、その版の footer 周回が「新しい変更が入った」で
-  # 止まり、次の実行が次の版として集約する（既存の挙動。ここでは以降のケースの起点を揃える後片付け）
-  if [[ "$_kind" == changelog && "$RC" -eq 1 ]] && has "footer 追従の間に新しい公開対象の変更が develop へ入った"; then run_orch; fi
+  # changelog.d の前進が足した断片は準備の後・タグの前に届いた後着断片（Issue `#2462` / `#2619`）。本実行は承認を
+  # 取り直すまで準備せず、dry-run の RELEASE_VERSION= を --expect-version で渡した回だけ新しい版として準備する
+  # （準備済みの版はタグを打たない中間版として残る。以降のケースの起点を揃える）
+  if [[ "$_kind" == changelog ]]; then
+    if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped-needs-approval" && has "後着断片"; then
+      run_orch --dry-run
+      _late_ver="$(printf '%s\n' "$OUT" | awk -F= '/^RELEASE_VERSION=/ { print $2 }')"
+      if [[ "$RC" -eq 0 ]] && has "LATE_FRAGMENTS=new-version"; then run_orch --expect-version "$_late_ver" --approved-head "$(release_head)"; else bad "changelog の前進の後着断片を dry-run が新しい版として準備しない (rc=$RC)"; dump; fi
+    else
+      bad "changelog の前進の後着断片で本実行が承認待ちに止まらない (rc=$RC)"; dump
+    fi
+  fi
   [[ "$RC" -eq 0 ]] || { bad "${_kind} の前進で止まった後の再実行が完了しない (rc=$RC)"; dump; }
 done
 # 鮮度の赤に変更起因の赤が混ざる回は、前進が neutral でも従来どおり止める

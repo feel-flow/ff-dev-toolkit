@@ -2,6 +2,7 @@
 # gh/file acquisition parity; no network, real writes only to disposable Git fixtures.
 # 空振り検出: 2026-10-22 macOSで17種を実測。case不在/読めない/空集合/書式変更/名前だけ残す、source不在/空/名前だけ残す、helper読めない、MCP fixture不在、親/worker早期exit0、scalar抽出0、ready集合0は全てrc1。
 # 空振り検出: scratchのsource写しで最終PR phaseをinitialへ戻す・必須field検査を迂回する・次thread cursorを捨てる変異も全てrc1。正常8 goldenは6面bytes一致。抽出0/重複の負対照は完全なready出力を起点にする。
+# 空振り検出: 2026-11-05（Issue `#2636`）macOSで正常92件。マージ後工程の判定の停止の設定行を消す → 2件赤、file入力でrawのfilesを信じる → 10件赤（decoyだけの一覧でgitの差分を読まなくなる）、http_statusの検査を外す → 1件赤。コメントのpage/last欠落・配列でない応答の各ケースはrc2とdiagnosticを照合する。
 # Optional arguments: plugin root, case manifest, evidence directory.
 # run-all-required: yes — 必須raw不足の停止とgh/file6面一致を検証し、取得失敗を成功へ倒さない
 # 空振り検出: 2026-10-23 R1で明示incomplete/non200 guardの逆変異は4件だけ赤、attemptを常時1へ戻す逆変異もCheckRun/StatusContextの成功・失敗4件だけ赤。正常69件・ready8件はrc0。
@@ -42,7 +43,7 @@ PLUGIN="$2"; CASES="$3"; TMP="$4"; EVIDENCE="${5:-}"
 PASS=0; FAIL=0; READY=0
 ok() { printf '  ✓ %s\n' "$1"; PASS=$((PASS + 1)); }
 bad() { printf '  ✗ %s\n' "$1" >&2; FAIL=$((FAIL + 1)); }
-for file in scripts/finish.sh scripts/lib/finish-precheck.sh scripts/lib/abs-path.sh scripts/lib/github-input.sh scripts/lib/merge-message.sh scripts/lib/shell-quote.sh scripts/link-sub-issues.sh scripts/merge-cleanup.sh tests/lib/git-fixture.sh; do
+for file in scripts/finish.sh scripts/lib/finish-precheck.sh scripts/lib/finish-precheck-post-merge.sh scripts/lib/abs-path.sh scripts/lib/github-input.sh scripts/lib/merge-message.sh scripts/lib/shell-quote.sh scripts/link-sub-issues.sh scripts/merge-cleanup.sh tests/lib/git-fixture.sh; do
   [ -s "$PLUGIN/$file" ] && [ -r "$PLUGIN/$file" ] || { bad "source missing/unreadable/empty: $file"; exit 1; }
 done
 if ! jq -e 'type == "array" and length > 0 and (map(.name) | unique | length) == length and
@@ -102,6 +103,7 @@ case "$1 $2" in
   'pr view') cat "$t/pr.json" ;;
   'repo view') cat "$t/repo.json" ;;
   'pr checks') exit 0 ;;
+  'issue view') case "$*" in *'--json comments'*) cat "$t/issue-comments-gh.json" ;; *) cat "$t/issue-body.json" ;; esac ;;
   'api graphql') case "$*" in *after=*) cat "$t/threads2.json" ;; *) cat "$t/threads1.json" ;; esac ;;
   *) echo 'unexpected gh call' >&2; exit 98 ;;
 esac
@@ -137,10 +139,12 @@ index_base() {
     {operation:"finish.precheck.pr",scope:{repository:$repository,pr:7},phase:"initial",body:($dir+"/pr.json")},
     {operation:"finish.precheck.pr",scope:{repository:$repository,pr:7},phase:"after-threads",body:($dir+"/pr.json")},
     {operation:"finish.precheck.repo",scope:{repository:$repository},phase:"initial",body:($dir+"/repo.json")},
+    {operation:"finish.precheck.issue-body",scope:{repository:$repository,issue:"owner/repo#7"},phase:"initial",body:($dir+"/issue-body.json")},
     {operation:"finish.precheck.threads",scope:{repository:$repository,pr:7,first:100,comments_first:100},phase:"after-checks",body:($dir+"/threads1.json")},
     {operation:"finish.precheck.checks-retry",scope:{repository:$repository,pr:7},phase:"checks-retry",attempt:1,body:($dir+"/pr.json")}
   ]}' >"$TMP/index.json"
 }
+printf '%s\n' '{"body":""}' >"$TMP/issue-body.json"
 extract() { # output / destination prefix: require exactly the five lines and whole block
   local key n=0
   for key in PRECHECK KEYWORD_GATE MERGE_MESSAGE_GATE FRESH_STATUS REVIEW_THREADS_UNANSWERED; do
@@ -186,7 +190,7 @@ while IFS=$'\t' read -r name refs separate checks pages fork thread_kind; do
   jq '.data.repository.pullRequest.reviewThreads.pageInfo={hasNextPage:false,endCursor:null}' "$TMP/threads1.json" >"$TMP/threads2.json"
   index_base
   if [ "$pages" = true ]; then
-    jq --arg body "$TMP/threads2.json" '.responses += [(.responses[3] | .cursor="next" | .body=$body)]' "$TMP/index.json" >"$TMP/next"; mv "$TMP/next" "$TMP/index.json"
+    jq --arg body "$TMP/threads2.json" '.responses += [(.responses[] | select(.operation=="finish.precheck.threads") | .cursor="next" | .body=$body)]' "$TMP/index.json" >"$TMP/next"; mv "$TMP/next" "$TMP/index.json"
   fi
   if [ "$separate" = true ]; then g -C "$WORK" worktree add -q "$TMP/base-holder" develop; fi
   (cd "$WORK"; bash "$PLUGIN/scripts/record-gate-head.sh" --gate tests/run-all.sh --status pass --mode fixture) >/dev/null 2>&1
@@ -212,6 +216,48 @@ negative() { # name / wanted rc / index / diagnostic needle
   if [ "$RC" -eq "$2" ] && ! grep -qxF MERGE_COMMAND_BEGIN "$TMP/negative.out" && { grep -F "$4" "$TMP/negative.err" >/dev/null || grep -F "$4" "$TMP/negative.out" >/dev/null; }; then ok "$1"; else bad "$1 rc=$RC"; cat "$TMP/negative.err" >&2; fi
   save_case "$1"
 }
+# マージ後工程の判定: コメントは page / last で全件を示し、変更ファイルは raw に頼らず git で読む。
+# 設定は worker の env -i の内側で 1 ケースずつ渡す（既存ケースの出力を変えない）。
+jq --arg closes "$(printf 'Closes #%s' 7)" '.body=$closes | .closingIssuesReferences=[] | .statusCheckRollup=[] | .files=[{path:"decoy"}]' "$TMP/pr.json" >"$TMP/pm-pr.json"
+pm_marker='<!-- close-issue-report:PR-7 -->'
+jq -n --arg b "$(printf '%s\n| 本番適用 は後で | 達成 |' "$pm_marker")" '[{body:$b}]' >"$TMP/pm-page1.json"
+printf '[]\n' >"$TMP/pm-empty.json"
+jq -n --slurpfile page "$TMP/pm-page1.json" '{comments:$page[0]}' >"$TMP/issue-comments-gh.json"
+pm_index() { # <responses へ足す jq 式>
+  jq --arg repository "$URL" --arg pr "$TMP/pm-pr.json" --arg page1 "$TMP/pm-page1.json" --arg empty "$TMP/pm-empty.json" \
+    '(.responses[] | select(.operation=="finish.precheck.pr") | .body)=$pr
+     | def comments($page; $last; $body): {operation:"finish.precheck.issue-comments",scope:{repository:$repository,issue:"owner/repo#7"},phase:"initial",page:$page,last:$last,body:$body};
+     '"$1" "$TMP/base-index.json" >"$TMP/pm-index.json"
+}
+pm_file() { # <rc> <stdout か stderr の針> <ケース名>
+  FF_POST_MERGE_TERMS='本番適用' FF_POST_MERGE_PATHS='feature' run file pm "$PLUGIN/scripts/finish.sh" precheck 7 --github-input "$TMP/pm-index.json"
+  if [ "$RC" -eq "$1" ] && grep -F "$2" "$TMP/pm.out" "$TMP/pm.err" >/dev/null; then ok "post-merge file: $3"; else bad "post-merge file: $3 rc=$RC"; cat "$TMP/pm.out" "$TMP/pm.err" >&2; fi
+}
+pm_index '.responses += [comments(1; false; $page1), comments(2; true; $empty)]'
+pm_file 1 'POST_MERGE_GATE=blocked' 'report line through page/last blocks; decoy raw files do not hide the git diff'
+grep -qxF 'POST_MERGE_PATH=feature' "$TMP/pm.out" && ok 'post-merge file: path read from git diff, not raw files' || bad 'post-merge file: raw files decided the path'
+grep -E '^POST_MERGE_' "$TMP/pm.out" >"$TMP/pm-file.lines"
+cp "$TMP/pm.out" "$TMP/pm-file.out"
+jq '.files=[{path:"feature"}]' "$TMP/pm-pr.json" >"$TMP/pr-saved.json"; cp "$TMP/pr.json" "$TMP/pr-keep.json"; cp "$TMP/pr-saved.json" "$TMP/pr.json"
+FF_POST_MERGE_TERMS='本番適用' FF_POST_MERGE_PATHS='feature' run gh pm "$PLUGIN/scripts/finish.sh" precheck 7
+cp "$TMP/pr-keep.json" "$TMP/pr.json"
+grep -E '^POST_MERGE_' "$TMP/pm.out" >"$TMP/pm-gh.lines"
+if [ "$RC" -eq 1 ] && [ -s "$TMP/pm-file.lines" ] && cmp -s "$TMP/pm-file.lines" "$TMP/pm-gh.lines"; then ok 'post-merge gh/file parity'; else bad "post-merge gh/file differ rc=$RC"; cat "$TMP/pm-file.lines" "$TMP/pm-gh.lines" >&2; fi
+pm_index '.responses += [comments(1; true; $empty)]'
+pm_file 0 'POST_MERGE_GATE=clear' 'no comments at all stays clear'
+pm_index '.'
+pm_file 2 'finish.precheck.issue-comments' 'missing comments operation is rc 2'
+pm_index '.responses += [comments(1; true; $empty) | del(.last)]'
+pm_file 2 'last がありません' 'page without last is rc 2'
+pm_index '.responses += [comments(1; false; $empty)]'
+pm_file 2 'last:true の無い空ページ' 'empty page without last:true is rc 2'
+pm_index '.responses += [comments(1; true; $page1)]'
+pm_file 2 '最後のページが空ではありません' 'nonempty terminal page is rc 2'
+pm_index '.responses += [comments(1; true; $empty) | .http_status=503]'
+pm_file 2 '200 ではありません' 'non-200 comments page is rc 2'
+printf '{"comments":[]}\n' >"$TMP/pm-object.json"
+pm_index '.responses += [comments(1; true; "'"$TMP/pm-object.json"'")]'
+pm_file 2 '配列ではありません' 'non-array comments is rc 2'
 # Keep legal nulls in raw; only missing fields fail closed in the new file branch.
 cp "$TMP/threads1.json" "$TMP/nonempty-thread.json"
 for field in author body path line originalLine; do

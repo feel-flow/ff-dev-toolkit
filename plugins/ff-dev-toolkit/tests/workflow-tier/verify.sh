@@ -39,6 +39,7 @@
 #
 # 空振り検出: spec-driven 本線のバイト数ゲートは、本線が無いと wc が失敗して「(wc 失敗)」で赤、
 # 本線へ約 5 KB を足して上限を越えさせる変異で「上限を超えた」の赤（実測）。
+# 空振り検出: light の判定の既定値を light へ変えると、契約 path の .md・tree.tsv 不在・route.sh 不在の検査が赤になる（2026-11-05 実測）。
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -133,6 +134,40 @@ expect_tier light ".md のみ" "docs/MASTER.md" "README.md"
 # AC-3: 実装ファイルを含む
 expect_tier standard "実装ファイルを含む" "plugins/ff-dev-toolkit/skills/spec-driven/SKILL.md" "scripts/x.sh"
 expect_tier standard ".md 以外が 1 件でも混じれば standard" "docs/MASTER.md" "tests/x/verify.sh"
+# 契約 path の .md は light にしない。full へは上げない（skills を full にすると全 PR が full へ落ちる）
+expect_tier standard "SKILL.md だけの変更" "plugins/ff-dev-toolkit/skills/spec-driven/SKILL.md"
+expect_tier standard "リポジトリ直下の skills の SKILL.md" "skills/close-issue/SKILL.md"
+expect_tier standard "skills の references の .md だけの変更" "plugins/ff-dev-toolkit/skills/close-issue/references/effort.md"
+expect_tier standard "CLAUDE.md だけの変更" "CLAUDE.md"
+expect_tier standard "AGENTS.md だけの変更" "AGENTS.md"
+expect_tier standard "DECISIONS.md だけの変更" "docs/06-reference/DECISIONS.md"
+expect_tier standard "契約 path と通常の .md の混在" "docs/guide.md" "CLAUDE.md"
+expect_tier full "docs-template の .md は従来どおり full" "plugins/ff-dev-toolkit/docs-template/05-operations/DEPLOYMENT.md"
+
+# 契約 path を判定できない回は light へ倒さない（tree.tsv の無い写しで実測する）
+_tier_copy="$(make_tmpdir ff-tier-no-tree)" || _tier_copy=""
+if [ -n "$_tier_copy" ]; then
+  mkdir -p "$_tier_copy/.claude-plugin" "$_tier_copy/scripts/decision-tree"
+  cp "$PLUGIN_ROOT/.claude-plugin/plugin.json" "$_tier_copy/.claude-plugin/plugin.json"
+  cp "$TIER_SH" "$_tier_copy/scripts/workflow-tier.sh"
+  cp "$PLUGIN_ROOT/scripts/decision-tree/route.sh" "$_tier_copy/scripts/decision-tree/route.sh"
+  _no_tree="$(bash "$_tier_copy/scripts/workflow-tier.sh" "docs/MASTER.md" 2>/dev/null | sed -n 's/^WORKFLOW_TIER=//p')"
+  if [ "$_no_tree" = "standard" ]; then
+    ok "tree.tsv が読めないとき .md のみでも standard（light へ倒さない）"
+  else
+    bad "tree.tsv が読めないときの分類が standard ではありません（実際: ${_no_tree:-（出力なし）}）"
+  fi
+  rm -f "$_tier_copy/scripts/decision-tree/route.sh"
+  _no_route="$(bash "$_tier_copy/scripts/workflow-tier.sh" "docs/MASTER.md" 2>/dev/null | sed -n 's/^WORKFLOW_TIER=//p')"
+  if [ "$_no_route" = "standard" ]; then
+    ok "route.sh が無いとき .md のみでも standard（light へ倒さない）"
+  else
+    bad "route.sh が無いときの分類が standard ではありません（実際: ${_no_route:-（出力なし）}）"
+  fi
+  rm -rf "$_tier_copy"
+else
+  tmp_unavailable "tree.tsv 不在の検査" "判定できない回の分類は未実測"
+fi
 
 # fail-closed: 判定材料が 0 件でも light へは倒さない
 _empty="$(printf '' | bash "$TIER_SH" --paths-from - 2>/dev/null | sed -n 's/^WORKFLOW_TIER=//p')"
@@ -178,8 +213,9 @@ fi
 
 # full パターンは差し替えられる（導入先プロジェクトは配布物の場所が違う）
 _ov="$(WORKFLOW_TIER_FULL_PATTERNS='(^|/)dist/' bash "$TIER_SH" "dist/app.js" 2>/dev/null | sed -n 's/^WORKFLOW_TIER=//p')"
-_ov2="$(WORKFLOW_TIER_FULL_PATTERNS='(^|/)dist/' bash "$TIER_SH" "plugins/ff-dev-toolkit/docs-template/MASTER.md" 2>/dev/null | sed -n 's/^WORKFLOW_TIER=//p')"
-if [ "$_ov" = "full" ] && [ "$_ov2" = "light" ]; then
+_ov2="$(WORKFLOW_TIER_FULL_PATTERNS='(^|/)dist/' bash "$TIER_SH" "docs-template/MASTER.md" 2>/dev/null | sed -n 's/^WORKFLOW_TIER=//p')"
+# 置換なら docs-template は full から外れる。契約 path なので light ではなく standard で止まる
+if [ "$_ov" = "full" ] && [ "$_ov2" = "standard" ]; then
   ok "WORKFLOW_TIER_FULL_PATTERNS が既定を置き換える（追加ではなく置換）"
 else
   bad "full パターンの上書きが効いていません（dist=${_ov:-なし} / docs-template=${_ov2:-なし}）"
@@ -810,6 +846,9 @@ else
       # 1b) 同じ入力に対し、--no-renames を外した複製は light へ落ちること（= フラグの効力）
       MUTANT="$GIT_ROOT/mutant-workflow-tier.sh"
       sed 's/--no-renames //g' "$TIER_SH" > "$MUTANT"
+      # light の判定は隣の決定木を読む。無いと判定不能で standard へ倒れ、フラグの効力を測れない
+      mkdir -p "$GIT_ROOT/decision-tree"
+      cp "$PLUGIN_ROOT/scripts/decision-tree/route.sh" "$PLUGIN_ROOT/scripts/decision-tree/tree.tsv" "$GIT_ROOT/decision-tree/"
       _tm="$(confirmed_tier "$MUTANT")"
       if [ "$_tm" = "light" ]; then
         ok "--no-renames を外すと同じ移動が light へ落ちる（フラグが実際に守っている）"

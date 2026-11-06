@@ -272,8 +272,11 @@ capture_repo_snapshot() {
 # Usage: get_diff_content "develop"
 get_diff_content() {
   local base_branch="${1:-$(detect_base_branch)}"
+  # --irreversible-delete は削除ファイルの本文（preimage）だけを省く。
+  # diff --git のパスは残る。変更行の diff は付けても付けなくても同じである
+  # （git 2.47 で実測）。指紋用の `git diff --cached -- pathspec` は別関数のまま。
   if [[ "${STAGED_DIFF:-false}" == "true" ]]; then
-    if git diff --cached 2>/dev/null; then
+    if git diff --irreversible-delete --cached 2>/dev/null; then
       return 0
     fi
     echo "ERROR: Failed to get staged diff content." >&2
@@ -283,15 +286,15 @@ get_diff_content() {
   # 判定する。ここも同じ和集合をプロンプトへ載せる。ブランチ差分だけを返すと、
   # BASE...HEAD が空で staged / unstaged 変更だけがある pre-commit 経路で、ガードは
   # 通るのに 0 byte の diff をレビューして成功する。
-  if ! git diff "${base_branch}...HEAD" 2>/dev/null; then
+  if ! git diff --irreversible-delete "${base_branch}...HEAD" 2>/dev/null; then
     echo "WARNING: Could not diff against '${base_branch}', falling back to HEAD diff." >&2
-    if git diff HEAD 2>/dev/null; then
+    if git diff --irreversible-delete HEAD 2>/dev/null; then
       return 0
     fi
     echo "ERROR: Failed to get diff content. Are you in a git repository with commits?" >&2
     return 1
   fi
-  if git diff HEAD 2>/dev/null; then
+  if git diff --irreversible-delete HEAD 2>/dev/null; then
     return 0
   fi
   echo "ERROR: Failed to get working-tree diff content." >&2

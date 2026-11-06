@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: 作業クラス参照はknowledge-lookupの不在・空化・正本参照削除、点検の節外移動・義務弱化・記録欠落の成功扱い・事後検索の事前扱いの7変異をrc=1で検出（2026-10-24実測。無変異対照rc=0）。
 # 空振り検出: 旧経路の承認参照/完成本文/保留marker/例外禁止/closeを外す5変異と旧経路文書の不在・空の2変異は各rc=1、正常対照244件pass（2026-10-29 macOS実測）。
 # 空振り検出: 外部公開の正本不在・空・見出し変更と、metadata失敗/host-private条件/コメント等全書込み/完成本文/既承認/包括指示/env境界の各欠落は全10変異がrc=1（2026-10-29 macOS実測）。正常対照は240件pass。
 #
@@ -99,6 +100,7 @@ REF_EFFORT="$SKILL_REFS/effort.md"
 REF_AUTOTRIGGER="$SKILL_REFS/auto-trigger.md"
 REF_LEDGER="$SKILL_REFS/ledger.md"
 ACE_CURATE="$PLUGIN_ROOT/skills/ace-curate/SKILL.md"
+KNOWLEDGE_LOOKUP="$PLUGIN_ROOT/skills/knowledge-lookup/SKILL.md"
 GIT_WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
 WORKFLOW_PRINCIPLES="$PLUGIN_ROOT/docs-template/05-operations/deployment/workflow-principles.md"
 DEPLOYMENT="$PLUGIN_ROOT/docs-template/05-operations/DEPLOYMENT.md"
@@ -180,7 +182,7 @@ preflight_contains() {
 
 echo "== retrospective 契約検査 =="
 
-REQUIRED_FILES=("$SKILL" "$REF_FILING" "$REF_PROMOTION" "$REF_LEGACY" "$REF_AUTOTRIGGER" "$REF_EFFORT" "$REF_LEDGER" "$ACE_CURATE" "$GIT_WORKFLOW" "$WORKFLOW_PRINCIPLES" "$DEPLOYMENT" "$OSS_README")
+REQUIRED_FILES=("$SKILL" "$REF_FILING" "$REF_PROMOTION" "$REF_LEGACY" "$REF_AUTOTRIGGER" "$REF_EFFORT" "$REF_LEDGER" "$ACE_CURATE" "$KNOWLEDGE_LOOKUP" "$GIT_WORKFLOW" "$WORKFLOW_PRINCIPLES" "$DEPLOYMENT" "$OSS_README")
 if [[ "$IS_MONOREPO" -eq 1 ]]; then
   REQUIRED_FILES+=("$ROOT_README")
 fi
@@ -197,6 +199,20 @@ if [[ "$MISSING_INPUTS" -ne 0 ]]; then
   echo "✗ retrospective contract verify: 入力が欠落しているため検査を中断しました" >&2
   exit 1
 fi
+
+# 作業クラス参照の規定は git-workflow に置き、skill は正本への参照と効果の点検を持つ。
+section_contains "$KNOWLEDGE_LOOKUP" "### キーワード検索（実装・レビュー前）" \
+  '検索語の選び方・途中の引き直し・語と結果の記録は [git-workflow の「着手前の Playbook 参照（ACE Reuse）」](../../docs-template/05-operations/deployment/git-workflow.md#着手前の-playbook-参照ace-reuse)を正本として実行する。' \
+  "作業クラス参照: knowledge-lookup が手順正本を参照する"
+section_contains "$SKILL" "## 観察チェックリスト" \
+  '[正本](../../docs-template/05-operations/deployment/git-workflow.md#着手前の-playbook-参照ace-reuse)で二系統・新クラス移行前の再検索・適用／見落としを点検する。' \
+  "作業クラス参照: retrospective が適用と見落としを点検する"
+section_contains "$GIT_WORKFLOW" "#### 着手前の Playbook 参照（ACE Reuse）" \
+  '新しい作業クラスに入らなかった回は「移行なし」、記録が無い回は「未確認」とする。' \
+  "作業クラス参照: 移行なしと記録の欠落を区別する"
+section_contains "$GIT_WORKFLOW" "#### 着手前の Playbook 参照（ACE Reuse）" \
+  '後から検索して、変更前に引いていたことにはしない。' \
+  "作業クラス参照: 事後検索を変更前の証拠にしない"
 
 # ── A. チェーン記載の相互整合 ────────────────────────────────────────────────
 # 同じチェーンでも導線ごとに表記が違う（バッククォート付きの 3 トークン / 「ACE」を

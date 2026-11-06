@@ -20,6 +20,70 @@
 
 ## [Unreleased]
 
+## [0.177.0] - 2026-11-06
+
+### 破壊的変更
+
+- レビュー走行中ガード（hooks/guard-review-in-flight.sh）の PreToolUse matcher が、Edit、Write、MultiEdit、NotebookEdit、Bash、Agent、Task に TaskStop を加えた形へ変わった。発火イベントは PreToolUse のまま。
+- 導入先は設定を書き替えなくてよい。同じ hook が以前のツールを受け、TaskStop は task_id が一致するレーンを閉じるだけで呼び出しを止めない。古い matcher のままでは TaskStop でレーンが閉じないので、この版の hook を使う。
+
+### 追加
+
+- finish.sh precheck に、Closes のままマージ後の工程が残る Issue を止める判定を足した。`FF_POST_MERGE_TERMS`（語）と `FF_POST_MERGE_PATHS`（パス）を両方設定した導入先で、設定したパスを含む PR の Closes 対象の本文と完了報告に語の行があると止まる。Refs へ変えるか、`--ack-post-merge` と `--ack-post-merge-reason` で理由を残して進む。両方未設定の導入先は挙動が変わらない
+
+### 変更
+
+- 着手前の知見参照を実装語と作業クラス語の別検索にし、fixture・静的検査・hook 経路など新しい作業を始める前にも引き直す手順を追加した。知見の記録へ移る前と、同じセッションで別の Issue へ入る前も引き直す。検索語と結果を判断ログへ対応付け、振り返りで知見の適用と見落としを点検する。既存の検索出力形式は維持する。
+- multi-review のレビュー diff は削除ファイルの中身を省き、削除したパスと変更行は残します。Codex の入力が 1048576 文字を超えるときは CLI を起動せず、プロンプトが長すぎる旨と、別の基点か変更の分割を案内します。バイト数がその上限以下のときは文字数計測に python3 を使いません。
+- Claude をホストにしているとき、claude-code レーンが認証拒否または利用枠切れで落ちると、個別の再実行より先にホスト委譲の手順を案内します。認証拒否の文言を失敗分類に加え、同じ CLI の残りの観点は起動しません。
+- finish.sh precheck は、Closes 対象の Issue 本文にある未チェックの `- [ ]` で止まり、Refs 対象は見ない。例外は `--ack-unchecked` で、未チェック行は出力に残る
+- `FF_MERGE_DELETE_SEPARATE=1` のとき、マージコマンドは `gh pr merge` だけで、ブランチ削除とフック回避の代入を付けない
+- `FF_DELETE_PUSH_SKIP_HOOKS=0` のとき、削除 push は consumer の git hook を起動する。未設定時はコードを運ばない削除なので hook を起動しない
+- finish.sh cleanup は委譲先の全文を作業ツリーの外へ残し、成功時の標準出力には要約と `CLEANUP_RC` と `CLEANUP_LOG` を出す。終了コードが 0 でない回、要約が前の警告を参照する回、`--verbose` は全文も出す。HOME も状態ディレクトリも無いときは、ログを TMPDIR（無ければ /tmp）の ff-dev-toolkit へ置く
+- ブランチ名の Issue に工数ブロックが無いときの注意（`hooks/warn-missing-ff-effort.sh`）に、`effort_ai_planned` は create-issue の見積もりの目安表に従って最小 1.0h とする旨を足した。bundle では最小値を親・子それぞれではなく束ね全体に当てることも添えた。着手後に追記した予定値が最小値を下回り、予定どおり終わっても見積もりの外れとして記録されるのを防ぐ
+- cwd ガード（`guard-background-cwd.sh`）が出していた止めない警告（`systemMessage` の数行）を廃止した。対象は、linked worktree のあるリポジトリで絶対パスの `cd` で始まらない Bash を実行したときの警告と、モノレポ（root 直下の `packages/`、または子ディレクトリの `package.json` 2 つ以上）で `run_in_background` 付きの Bash を実行したときの警告（linked worktree の無いリポジトリを含む）。この警告は利用者の画面にだけ表示されてエージェントには届かず、worktree を常用する環境では画面を埋めていた。`hookSpecificOutput.additionalContext` へ移す形も、Claude Code の CLI と Remote Control の画面に表示されるため採らなかった。
+- linked worktree のあるリポジトリで、先頭が相対パスの `cd` で始まる Bash を止める動作（再実行可能な deny）は変わらない。止めたときの案内の最後の 1 文は、意図どおりのツリーで走らせたい場合の通し方を、環境変数の前置（hook はコマンドの前置を読まないので効かない）ではなく repo root から始まる絶対パスの `cd` として示す形へ改めた。`cd` の直後が空白・タブ以外の空白文字（改ページ・全角空白など。シェルはその語を `cd` と読まない）の呼び出しは止めない。
+- 相対パスの `cd` で始まらない呼び出しでは git を起動せずに終えるので、Bash 呼び出しごとの hook の負荷も下がる。
+- 警告を止めるために `FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1` を設定していた場合は、この版へ更新したあと外すと、相対パスの `cd` を止める動作が戻る。
+- zsh ホストの Bash ガード（`guard-zsh-glob.sh`）が止めずに出す通知を、種類ごとに同じセッション・同じエージェントで最初の 1 回だけにした。対象は、未引用の変数の警告（実行前の `systemMessage` と実行後の `additionalContext`）、未引用の語を引用する書き換えの通知、権限モードが `bypassPermissions` のときに `setopt SH_WORD_SPLIT; ` を前置した通知。集約入口の「全ガードの再検査を通過した入力書き換えを採用しました」の 1 行は、ガードが書き換えの通知を付けた回だけ添える。これまでは、未引用の `$VAR` を含む Bash を実行するたびに、Claude Code の CLI と Remote Control の画面へ同じ行が出ていた。
+- 止める判定（deny）と、書き換えそのもの（引用・前置したコマンド）は毎回同じ。判定不能・helper 不在の通知も、壊れていることを隠さないよう毎回出す。通知を載せた結果が deny になった回（別のガードが止めた回を含む）と、集約入口が結果を出せなかった回は、出し済みに数えない。
+- 出した記録は `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/notices/` の下に、セッション ID とエージェント（サブエージェントは hook 入力の agent_id、親は main）ごとのディレクトリとして置く。hook 入力に `session_id` が無い、または記録を作れない環境では、従来どおり毎回出す。
+- 専用の docs 検証の検査（`plugins/ff-dev-toolkit/tests/validate-docs/verify.sh`）が走査のエラー出力を fixture の中へ一時ファイルとして書いていたため、全件ゲートで並走する別の検査が消えかけのファイルを拾って失敗することがあった。一時ファイルを作業ツリーの外へ置くようにした。
+
+### 修正
+
+- npm だけの導入先では、lockfile も packageManager も無い pnpm と yarn を ACE の runner 探索で起動しない。証拠がある pnpm は従来どおり依存確認を止めたまま解決する。git root を確認できないときは cwd の証拠だけを見る。packageManager は最初の文字列値だけを読み、オブジェクトは読み飛ばす。
+- レビュー走行中の書き込み走査が、引用符の途中でつながったパスをシェルと同じく展開するようになった。trap と eval のコマンド文字列は展開してから走査する。cat と tee が同じコマンドの heredoc を 1 つだけ標準出力のリダイレクト先へ書き、その heredoc が標準入力の最後であるとき、そのスクリプトはまだファイルが無くても本文を走査する。プラグインルート配下で読めるスクリプトも本文を走査し、作業ツリーの外と読み取り専用は通し、作業ツリー内への書き込みは止める。Python の str.replace は書き込みとみなさない。Path のリテラルに対する replace は移動元と移動先を書き込みとみなす。Python の単純代入は、その書き込みより前のものだけを書き込み先に使う。式、連結、for、with で束縛し直した名前は、それまでのパスを使わない。
+- TaskStop は task_id がレーンの agent_id または起動時の tool_use_id と一致するレーンだけを閉じる。一致しないレーンは残る。停止の案内は、残ったレーンの意味と、外側のシェルを止めても子プロセスは残ることを書く。
+- 複数の知見を 1 件の knowledge コミットへ畳むとき、件名が commitlint の header 上限を超える場合は先頭の ID と残り件数に短縮し、全 ID は本文へ残す。上限内の件名は ID を並べたままにする。
+- 終了コード誤読ガード（`guard-exit-code.sh`）と同梱の静的検出器が、`&&` の左辺が `tail` / `tee` で終わるパイプラインを止めていなかった。`check --strict | tail -4 && push` は tail の終了コードで短絡するので、検査が失敗しても push へ進む。新しいタグ `pipe-and-chain` で実行前に止め、検出した実コマンドへ `set -o pipefail; ` を前置した書き換え案を出す（同じ行に `head` などの途中で読むのをやめる段があるときは、ファイルへ受けて終了コードを保つ形を出す）。`|&` の綴りも同じく止める。同じ入力・スクリプト・フェンスの中で先に `set -o pipefail` を宣言した形と、パイプの無い `&&` は従来どおり通す。`head` / `cat` / `wc` などで終わる読むだけの確認、`||`、grep / jq の終端は対象外
+- CHANGELOG 断片の検査（`plugins/ff-dev-toolkit/tests/changelog-fragments/verify.sh`）が共有 CHANGELOG の直接編集を見分ける判定を `plugins/ff-dev-toolkit/tests/lib/shared-changelog-judge.sh` へ切り出し、判定表（base と同じ・version を上げた準備・比較リンクの footer 追従だけを許し、version 据え置きの本文編集は直接編集とする）を一時リポジトリで固定した。判定表は変えていないが、作業ツリーの version を読めない回を「版が違う」と読んで許してしまう抜けを塞いだ。リリース手順の模擬検査（`plugins/ff-dev-toolkit/tests/sync-sha-contract/release-runtime.sh`）は、常に通る代用品ではなくこの判定を呼ぶようになり、版を準備した後・タグを打つ前に変更記録の断片が後から届いた回が、準備済みの版をタグの無い中間版として残して新しい版として準備され、判定を通ることと、中間版を挟んだ後にさらに届いた回も準備できて Release の本文と件名に中間版が版ごとに載ることを確かめる
+- リリース手順の模擬検査（`plugins/ff-dev-toolkit/tests/sync-sha-contract/release-runtime.sh`）が、承認した後に develop へ入った変更を、版番号が承認時と同じでも公開しないことを確かめるようになった。別の clone から承認後の変更が届く回・変更記録の断片だけが届く回・件名だけリリースコミットを名乗る他人のコミットが届く回・件名に加えて変えたファイルも準備の形に収まる他人のコミット（plugin.json の説明だけを変えるもの）が届く回・リリース機構だけが変わる回・承認後の前進で止まった後に承認の引数無しで再実行する回は止まり、本実行自身のリリースコミットを含む再実行と、公開対象に触れない前進は完了することを固定した
+- 配布文書が実在しない `scripts/review-level.sh` をレビュー深度の判定器として案内していたのを、実際にレーン数を決める `review-route.sh` へ直した。文書の手順どおりに実行しても動かない状態を解消した。
+- `/spec-driven` の軽量モードへ入る条件を「`.md` のみ」から「`.md` のみで、決定木の契約 path を含まない」へ狭めた。`SKILL.md` や入口の文書の 1 行修正が軽量モードへ入らなくなる。
+- 決定木の契約 path に hook のシェルスクリプト・CI 定義・依存の宣言とロックファイルを足した。10 行以下でも `fast` にならない。
+- `finish.sh precheck` の変更クラス（`docs-only` / `small` / `other`）を決定木の判定から導くようにした。契約面の `.md` を `docs-only` と記録していた食い違いが消える。
+- bundle の子のようにブランチと別番号の Issue で、経過時間などの実測が `(unmeasured)` として未計測の KPI に混ざっていたのを直した。`EFFORT_N_measured_on` を出し、`/close-issue` は `effort_measured_on` を書く。
+- ブランチ名から Issue 番号を読む規則を `scripts/lib/branch-issue.sh` へまとめ、ホストが作る `codex/123-x`・`claude/issue-123-x`・`grok/123-x` も読むようにした。`feature/123-x` のように `#` だけが欠けた名前は、作成時に正しい形を案内する。
+- 配布テンプレートのブランチ名の例を `#` 付きの形へ揃えた。
+- 指示の読み込みバイトの記録に `docs-template/` 配下の `.md` を含めた。
+
+## [0.176.0] - 2026-11-04
+
+### 修正
+
+- リリース手順の模擬検査（`plugins/ff-dev-toolkit/tests/sync-sha-contract/release-runtime.sh`）が、タグを打つ前の準備済み版へ後から届いた変更記録の再集約（版幅が変わらなければ同じ版節へ畳み、上がれば準備し直す）と、Release の後で止まった実行の再開で承認していない新しい版へ進まないことを確かめるようになった。模擬の要否判定も、版を上げた後に未消費の断片が残る状態を準備未完了として扱う実物の判定に揃えた
+- `/ace-curate` が保護判定（`finish.sh knowledge-commit probe`）を手順 5 のコミット直前に行っていたため、default branch が保護された導入先では Playbook への最初の編集が default の作業ツリーで始まり、導入先の編集ガードに毎回止められていた。判定を手順 1（Playbook への最初の編集より前）へ移して判定結果を表示し、保護されていれば知見ブランチ、判定できなければ detached HEAD へ移ってから書く。保護されていない default branch での直 push は従来どおり
+- 専用セキュリティゲートの検査（`plugins/ff-dev-toolkit/tests/security-review-gate/verify.sh`）のうち、主担当 grok-cli のセッション内レビューが無効なときに Codex Security の diff scan へのフォールバックを判定するケースが、実機の PATH に `codex` があることを前提にしていた。`codex` の無い環境（GitHub Actions の runner など）では 3 ケースが失敗し、security-diff-scan の不在を確かめるケースは `codex` の不在だけで通っていた。検査が `codex` のスタブを PATH の先頭へ置き、スキル不在の理由まで確かめるようにして、実行環境に左右されず同じ判定になるようにした
+- Bash の集約 hook の検査（`plugins/ff-dev-toolkit/tests/run-all/bash-hook-batch.sh`）で、時間切れを模す子が CPU を回し続けるループだったため、検査側の打ち切りで集約入口が強制終了されると子が孤児として残り、CPU を使い続けていた。子を CPU を使わない待機に変えたうえで、POSIX では集約入口を専用のプロセスグループで起動して戻る前にグループごと止め、強制終了しても子が残らないことを確かめるケースを足した（killpg の無い Windows の Python ではこのケースを回さず、未検査として skip 行を出す）
+- ACE の抽象度レポートの検査（`docs-template/scripts/ace/ace-abstraction-report.test.ts`）のうち、既定の上限（保持 10,000 組）まで統合候補を実際に列挙するケースが、単体では約 0.3 秒で通るのに、全件ゲートの並列実行の下では 5 秒を超えて vitest の既定の時間切れで失敗していた。このケースにだけ 30 秒の上限を付け、上限が効いていることも同じケースで確かめるようにした。あわせて、打ち切りが起きたことだけでなく、その理由（保持件数の上限）と上限値まで確かめるようにした。実装は変えていない
+
+### セキュリティ
+
+- 同梱 MCP の lockfile で、開発用依存の re2js を 2.8.6 から 2.8.7（最初の修正版）へ上げ、GHSA-gg6h-894w-4m9c（lookbehind の照合が二次時間になる）に対応した。markdownlint の最新版も 2.8.6 を固定で要求するため、`package.json` の `overrides` で markdownlint 配下に限って 2.8.7 を指定している。markdownlint が 2.8.7 以上を要求する版を出したら、markdownlint をその版へ上げたうえでこの上書きを削除する。
+- MCP SDK の runtime 依存連鎖で、@hono/node-server を 2.0.12 から 2.1.5 へ上げ、GHSA-rmxm-3fg6-px4f（`serveStatic` がパスを二重にデコードし、静的パスのミドルウェアを迂回できる）に対応した（依存元の既存範囲内）。
+- どちらも配布用 stdio MCP（`dist/index.js`）には含まれない。clean install 後の再ビルド結果はビルド入力・バイトとも同一（SHA-256 a0965d2f8937c1f00ebb5dea39b1d29739750ab07a1b62d7d3e41241fe6006d7）で、lockfile の audit は 0 件になった。
+
 ## [0.175.0] - 2026-11-03
 
 ### 追加

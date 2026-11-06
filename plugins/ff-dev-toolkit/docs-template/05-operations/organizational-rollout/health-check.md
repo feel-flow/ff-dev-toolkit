@@ -1,10 +1,10 @@
 ---
 title: "Monthly Documentation Health Check"
-version: "1.0.1"
+version: "1.0.2"
 status: "draft"
 owner: "@your-github-handle"
 created: "2026-05-06"
-updated: "2026-09-26"
+updated: "2026-11-05"
 changeImpact: "low"
 ---
 
@@ -190,7 +190,7 @@ comm -23 \
 
 ### Action Items
 
-- [ ] ○○.md を分割（feature/NNN-split-OO で対応）
+- [ ] ○○.md を分割（feature/#NNN-split-OO で対応）
 - [ ] △△.md をアーカイブ
 ```
 

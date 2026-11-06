@@ -26,12 +26,16 @@
 # 規則の評価順（route.sh）: contract-path に当たる path が 1 つでもあれば full →
 # 残りが docs-glob だけなら fast → 変更行数（追加 + 削除）が fast-max-lines 以下なら fast →
 # それ以外は full。判定材料（変更ファイル）が 0 件なら none（ホスト判定へ）。
+# contract-path は「行数で軽さを測れない path」の一覧で、hook の .sh・CI 定義・依存の宣言を含む
+# （1 行でも実行制御や配布に効く）。scripts/workflow-tier.sh の light 判定も同じ一覧を読む。
+# 似た一覧は別の問いを持つので統合しない: workflow-tier.sh の full は配布・リリースへの影響、
+# tests/run-all.sh の CHANGED_FULL_* は差分から影響先を言い切れるか（Issue `#2642`）。
 # security-glob は経路とは独立の分類（セキュリティに関わる変更か）で、docs-glob に当たる path を除いた
 # 残りが 1 つでも当たれば該当とする。大文字小文字を区別しない。既定は汎用の値で、プロジェクトの上書き・
 # 追加は review-route.sh が設定から解決して route.sh の --security-glob / --security-glob-extra へ渡す。
 node	root	choice	依頼の経路 — 変更ファイル一覧（または Issue 本文）から fast / full のどちらで回すか
 rule	root	docs-glob	*.md docs/* changelog.d/* .version-claims/*
-rule	root	contract-path	*/hooks/hooks.json *PUBLIC-SURFACE.md .claude-plugin/* */.claude-plugin/* */skills/*/* */docs-template/* CLAUDE.md AGENTS.md */scripts/decision-tree/* */scripts/jev/questions/* docs/06-reference/HOST-PARITY.md docs/06-reference/DECISIONS.md
+rule	root	contract-path	*/hooks/hooks.json *PUBLIC-SURFACE.md .claude-plugin/* */.claude-plugin/* skills/*/* */skills/*/* docs-template/* */docs-template/* CLAUDE.md AGENTS.md */scripts/decision-tree/* */scripts/jev/questions/* docs/06-reference/HOST-PARITY.md docs/06-reference/DECISIONS.md hooks/*.sh */hooks/*.sh .github/workflows/* */.github/workflows/* .github/actions/* */.github/actions/* package.json */package.json package-lock.json */package-lock.json
 rule	root	fast-max-lines	10
 rule	root	security-glob	*auth* *login* *logout* *signin* *signup* *oauth* *oidc* *saml* *session* *token* *jwt* *csrf* *cors* *password* *passwd* *credential* *secret* *security* *permission* *rbac* *middleware* *payment* *billing* *checkout* *stripe* *webhook* *upload* *crypt* *sanitiz* *fetch* *proxy* .env* */.env* *.sql *migration* *migrate*
 answer	root	fast	node:fast

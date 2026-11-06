@@ -445,6 +445,86 @@ exitcode_expect exit_code_scan_bash_blocks "$EXITCODE_PROBE_MD_TEXT" nohit "" \
   "終了コード検出器が bash 以外のフェンス本文を走査しない（self-test）" \
   "終了コード検出器が bash 以外のフェンスまで走査している"
 
+# Issue `#2593`: `&&` の左辺が出力整形フィルタで終わるパイプ（pipe-and-chain）。`&&` の短絡に使われるのは
+# フィルタの rc なので、導入先では `--strict` の検査が失敗した後も push まで進んだ。同じ単位で先に
+# `set -o pipefail` を宣言した形は止めない。`||` と grep / jq の終端は対象外（正しい用法が多数ある）。
+EXITCODE_PROBE_AND_TAIL='bash scripts/check.sh --strict 2>&1 | tail -4 && npm run push'
+EXITCODE_PROBE_AND_PLAIN='bash scripts/check.sh --strict && npm run push'
+EXITCODE_PROBE_AND_PIPEFAIL='set -o pipefail; bash scripts/check.sh --strict 2>&1 | tail -4 && npm run push'
+EXITCODE_PROBE_AND_PIPEFAIL_PREV='set -euo pipefail'
+EXITCODE_PROBE_AND_PIPEFAIL_PREV="${EXITCODE_PROBE_AND_PIPEFAIL_PREV}
+bash scripts/check.sh 2>&1 | tail -1 && echo next"
+EXITCODE_PROBE_AND_SHOPT='shopt -so pipefail; bash scripts/check.sh | tail -1 && echo next'
+EXITCODE_PROBE_AND_UNSET='set -o pipefail; set +o pipefail; bash scripts/check.sh | tail -1 && echo next'
+EXITCODE_PROBE_AND_OR_TRUE='bash scripts/check.sh | head -1 || true'
+EXITCODE_PROBE_AND_GREP='bash scripts/check.sh | grep ok && echo next'
+EXITCODE_PROBE_AND_HEAD='git status -sb | head -2 && git diff --stat'
+EXITCODE_PROBE_AND_PIPEAMP='bash scripts/check.sh --strict |& tail -4 && npm run push'
+EXITCODE_PROBE_AND_TEE='bash scripts/check.sh 2>&1 | tee check.log && npm run push'
+EXITCODE_PROBE_AND_QUOTED_DECL='echo "set -o pipefail"; bash scripts/check.sh | tail -1 && echo next'
+EXITCODE_PROBE_AND_COMMENT_DECL='# set -o pipefail'
+EXITCODE_PROBE_AND_COMMENT_DECL="${EXITCODE_PROBE_AND_COMMENT_DECL}
+bash scripts/check.sh | tail -1 && echo next"
+EXITCODE_PROBE_AND_MD_UNIT="${EXITCODE_FENCE}bash
+set -o pipefail
+${EXITCODE_FENCE}
+
+${EXITCODE_FENCE}bash
+bash scripts/check.sh | tail -1 && echo next
+${EXITCODE_FENCE}"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_AND_TAIL" hit pipe-and-chain \
+  "終了コード検出器が \`| tail && 次\` を pipe-and-chain として検出できる（self-test。Issue \`#2593\` の AC1）" \
+  "終了コード検出器が \`| tail && 次\` を取りこぼす — 検査が失敗しても後続へ進む形が素通りする"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_AND_PLAIN" nohit "" \
+  "終了コード検出器がパイプの無い \`検査 && 次\` を誤検出しない（self-test。AC2）" \
+  "終了コード検出器がパイプの無い \`&&\` まで止める — 短絡する正しい形を赤にする"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_AND_PIPEFAIL" nohit "" \
+  "終了コード検出器が同じ行で先に \`set -o pipefail\` を宣言した形を誤検出しない（self-test。AC3）" \
+  "終了コード検出器が pipefail の宣言を見ていない — 書き換え案どおりに直した形まで止める"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_AND_PIPEFAIL_PREV" nohit "" \
+  "終了コード検出器が前の行の \`set -euo pipefail\` を同じ単位で持ち越す（self-test）" \
+  "終了コード検出器が前の行の pipefail を持ち越さない — set -euo pipefail のスクリプトが横断走査で赤になる"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_AND_SHOPT" nohit "" \
+  "終了コード検出器が \`shopt -so pipefail\` も宣言として扱う（self-test）" \
+  "終了コード検出器が shopt での pipefail 宣言を見ていない"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_AND_UNSET" hit pipe-and-chain \
+  "終了コード検出器が \`set +o pipefail\` で解除した後は再び検出する（self-test）" \
+  "終了コード検出器が pipefail の解除を見ていない — 一度でも宣言すれば以後を全部通す"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_AND_OR_TRUE" nohit "" \
+  "終了コード検出器が \`| head -1 || true\`（意図した握り潰し）を pipe-and-chain にしない（self-test）" \
+  "終了コード検出器が \`||\` まで pipe-and-chain にしている — 対象は \`&&\` だけ"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_AND_GREP" nohit "" \
+  "終了コード検出器が grep の終端（終端の成否を測る用法）を pipe-and-chain にしない（self-test）" \
+  "終了コード検出器が grep の終端まで pipe-and-chain にしている"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_AND_HEAD" nohit "" \
+  "終了コード検出器が \`| head && 次\`（読むだけの確認）を pipe-and-chain にしない（self-test）" \
+  "終了コード検出器が head で終わる左辺まで止める — 確認のたびに deny の往復が生じる"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_AND_PIPEAMP" hit pipe-and-chain \
+  "終了コード検出器が \`|& tail && 次\`（stderr も渡すパイプ）も検出できる（self-test）" \
+  "終了コード検出器が \`|&\` を background の \`&\` と読んで取りこぼす"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_AND_TEE" hit pipe-and-chain \
+  "終了コード検出器が \`| tee log && 次\` も検出できる（self-test）" \
+  "終了コード検出器が tee で終わる左辺を取りこぼす"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_AND_QUOTED_DECL" hit pipe-and-chain \
+  "終了コード検出器が引用符の中の \`set -o pipefail\` を宣言と数えない（self-test）" \
+  "終了コード検出器が引用符の中の綴りを pipefail の宣言と数えている"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_AND_COMMENT_DECL" hit pipe-and-chain \
+  "終了コード検出器がコメント行の \`set -o pipefail\` を宣言と数えない（self-test）" \
+  "終了コード検出器がコメントの綴りを pipefail の宣言と数えている"
+exitcode_expect exit_code_scan_bash_blocks "$EXITCODE_PROBE_AND_MD_UNIT" hit pipe-and-chain \
+  "終了コード検出器が別のフェンスの pipefail を持ち越さない（self-test。フェンスは別のシェル）" \
+  "終了コード検出器がフェンスをまたいで pipefail を持ち越している — 前のフェンスの宣言で後のフェンスを通す"
+if _ec_gate_both="$(printf '%s\n' "$EXITCODE_PROBE_GATE_PIPE_AND" | exit_code_scan)"; then
+  case "$_ec_gate_both" in
+    *":pipe-and-chain:"*) bad "ゲート起動の \`| tail && echo\` に gate-exit-swallowed と pipe-and-chain を重ねて出している: [$_ec_gate_both]"; EXITCODE_SELFTEST_OK=0 ;;
+    *":gate-exit-swallowed:"*) ok "ゲート起動の \`| tail && echo\` は gate-exit-swallowed だけを出す（pipe-and-chain を重ねない）" ;;
+    *) bad "ゲート起動の \`| tail && echo\` を検出しない: [$_ec_gate_both]"; EXITCODE_SELFTEST_OK=0 ;;
+  esac
+else
+  bad "exit_code_scan を実行できません（ゲート起動の重複タグ検査）"
+  EXITCODE_SELFTEST_OK=0
+fi
+
 # PIPESTATUS の診断が「zsh では機能しない」理由まで言えることを実体で確かめる（AC 3）。
 # 文言が消えるとタグだけ出て理由が伝わらない = 直し方の分からない赤になる。
 if /usr/bin/grep -qF -- 'zsh では空へ展開されて機能しない' "$SCRIPT_DIR/../lib/exit-code-guard.sh"; then

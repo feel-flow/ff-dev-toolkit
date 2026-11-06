@@ -48,17 +48,31 @@ is_running() {
 }
 cleanup() {
   # ホストの timeout / 中断時も、まだ待ち終えていない子だけを停止する。
-  local pid
+  local pid line
   if [ -n "$timer" ]; then kill "$timer" 2>/dev/null || true; wait "$timer" 2>/dev/null || true; fi
   for pid in "${pids[@]}"; do
     if is_running "$pid"; then kill -KILL "$pid" 2>/dev/null || true; fi
   done
   for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
+  # 止めない通知の「出し済み」記録（guard-zsh-glob.sh。Issue `#2616`）は、通知を載せた JSON を deny 以外で
+  # 出せた回だけ残す。別のガードの deny・書き換えの競合・再検査の失敗・子の打ち切り・中断では消し、
+  # 次の呼び出しで改めて出させる。再検査の子（入れ子の集約入口）は記録を親の一覧へ足すだけで消さない。
+  if [ "$notice_owner" -eq 1 ] && [ "$notices_delivered" -ne 1 ] && [ -s "$batch_dir/notices.log" ]; then
+    while IFS= read -r line; do
+      [ -z "$line" ] || rmdir "$line" 2>/dev/null || true
+    done < "$batch_dir/notices.log"
+  fi
   rm -rf "$batch_dir"
 }
+notices_delivered=0
+notice_owner=0
 trap cleanup EXIT
 trap 'exit 0' HUP INT TERM
 printf '%s' "$input" > "$batch_dir/input" || exit 0
+if [ "${ff_bash_hooks_revalidated:-0}" != 1 ]; then
+  notice_owner=1
+  export FF_BASH_HOOKS_NOTICE_LOG="$batch_dir/notices.log"
+fi
 index=0
 for hook in "$@"; do
   # 破損した1本だけを除外し、他の子の拒否判定を失わない。
@@ -225,6 +239,8 @@ if [ "$rewrite_count" -gt 0 ] && [ "$blocking" -ne 2 ] \
   rechecked="$(cat "$batch_dir/rechecked.json")"
   [ -n "$rechecked" ] || rechecked='{}'
   printf '%s' "$rechecked" | jq -e 'type == "object"' >/dev/null || reject_rewrite '書き換え後の再検査出力が不正です。'
+  # 採用の一文はガードの書き換え通知に添える。ガードが通知を出さなかった回（同じセッションで出し済み。
+  # Issue `#2616`）は添えず、呼び出しごとに画面へ 1 行出さない。updatedInput は通知の有無に依らず同じ。
   merged="$(printf '%s' "$merged" | jq --argjson checked "$rechecked" --argjson update "$rewritten_input" '
     . as $original
     | . * $checked
@@ -234,7 +250,9 @@ if [ "$rewrite_count" -gt 0 ] && [ "$blocking" -ne 2 ] \
     | .hookSpecificOutput.additionalContext = ([$original.hookSpecificOutput.additionalContext // empty, $checked.hookSpecificOutput.additionalContext // empty] | join("\n"))
     | if .hookSpecificOutput.permissionDecision == "deny" then .
       else .hookSpecificOutput.updatedInput = $update
-        | .hookSpecificOutput.additionalContext += "\n全ガードの再検査を通過した入力書き換えを採用しました。コマンドはまだ実行していません。" end
+        | if .hookSpecificOutput.additionalContext == "" then .
+          else .hookSpecificOutput.additionalContext += "\n全ガードの再検査を通過した入力書き換えを採用しました。コマンドはまだ実行していません。" end end
+    | if .hookSpecificOutput.additionalContext == "" then del(.hookSpecificOutput.additionalContext) else . end
     | if $original.hookSpecificOutput.permissionDecision == "ask" and .hookSpecificOutput.permissionDecision != "deny"
       then .hookSpecificOutput.permissionDecision = "ask" | .hookSpecificOutput.permissionDecisionReason = $original.hookSpecificOutput.permissionDecisionReason else . end
   ')" || reject_rewrite '再検査の結果を集約できません。'
@@ -243,6 +261,13 @@ if [ "$blocking" -eq 2 ]; then
   # exit 2 ではホストは stdout を採用しないため、他の子の復旧案内も stderr へ運ぶ。
   printf '%s\n' "$merged" >&2
 else
-  printf '%s\n' "$merged"
+  # 子の打ち切りがあった回は、打ち切られた子が作った記録の通知も届いていないので「届いた」に数えない。
+  # 判定を読めない回も「届いた」に数えない（記録を消す = 次の呼び出しで改めて出す側へ倒す）。
+  final_decision="$(printf '%s' "$merged" | jq -r '.hookSpecificOutput.permissionDecision // "none"' 2>/dev/null)" || final_decision=""
+  final_decision="${final_decision//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
+  if printf '%s\n' "$merged" && [ "${#expired_notes[@]}" -eq 0 ] \
+    && [ -n "$final_decision" ] && [ "$final_decision" != deny ]; then
+    notices_delivered=1
+  fi
 fi
 finish

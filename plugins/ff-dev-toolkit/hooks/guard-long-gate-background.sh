@@ -103,10 +103,11 @@
 #
 # ## 出力チャネル
 #
-# PreToolUse には「実行を許しつつ agent に警告文を見せる」チャネル
-# （`additionalContext`）は無い。`systemMessage` は利用者向けの表示チャネルで
-# **エージェントのコンテキストには入らない**（guard-background-cwd.sh がこの非対称を
-# 実測で確認し、deny へ寄せた経緯を持つ）。行動を変えるのは委譲先エージェント自身
+# `systemMessage` は利用者向けの表示チャネルで**エージェントのコンテキストには入らない**
+# （guard-background-cwd.sh がこの非対称を実測で確認し、deny へ寄せた経緯を持つ）。
+# PreToolUse の `additionalContext` はエージェントへ届くが、Claude Code の CLI と
+# Remote Control の画面にも表示される（2026-11-04 実測。Issue `#2614`）ので、止めない
+# 警告の出口にはしない。行動を変えるのは委譲先エージェント自身
 # なので、届く唯一のチャネルである `permissionDecision: "deny"` の
 # `permissionDecisionReason` で返す。可視化だけの対策は受け入れ条件を満たさない。
 #

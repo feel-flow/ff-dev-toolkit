@@ -740,10 +740,11 @@ else
     # （scripts/grok/hook-shim.sh、Issue `#2116`）。生成物のイベント集合・置換・シム経由起動と、
     # grok 形式の入力で展開後の guard が deny することを一時領域で固定する。
     "$SCRIPT_DIR/grok-hooks-sync/verify.sh"
-    # PreToolUse（Bash）の background cwd ガード（hooks/guard-background-cwd.sh）。
-    # モノレポ判定・background 判定・先頭コマンドの絶対 cd 判定の 3 条件と、警告が
-    # ブロックでない（systemMessage のみ）ことを stdin JSON fixture で固定する。
-    # 絶対化イディオム（コマンド置換・変数展開）を誤警告しない線引きも併せて見る。
+    # PreToolUse（Bash）の cwd ガード（hooks/guard-background-cwd.sh）。linked worktree のある
+    # repo で先頭が相対パスの cd を deny することと、deny の面を広げない線引き（絶対パス・
+    # 置換・展開・オプション付きの cd、heredoc 本文）を stdin JSON fixture で固定する。
+    # それ以外の呼び出し（廃止した警告面の入力を含む）は systemMessage も additionalContext も
+    # 出さない（stdout が空）ことも見る（Issue `#2614`）。
     "$SCRIPT_DIR/guard-background-cwd/verify.sh"
     # PreToolUse（Bash）の委譲先 長時間ゲート background ガード
     # （hooks/guard-long-gate-background.sh、観測台帳 OBS-036 の対策）。
@@ -1639,7 +1640,6 @@ MISS_PROBE_BASELINE=(
   ace-scripts-mirror
   ace-scripts-typecheck-selftest
   ace-scripts-typecheck
-  adapter-argv-limit
   adapter-base-ref-freshness
   adapter-prompt-utf8
   agent-config-doc-sync
@@ -1658,7 +1658,6 @@ MISS_PROBE_BASELINE=(
   docs-version-changelog-selftest
   docs-version-changelog
   github-labels-setup
-  guard-background-cwd
   guard-checkout-restore
   host-route-parity
   init-docs-placeholder-list

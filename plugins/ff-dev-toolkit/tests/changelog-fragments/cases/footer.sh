@@ -312,24 +312,57 @@ elif ! git -C "$REPO_ROOT" merge-base --is-ancestor "$default_ref" HEAD; then
   # 既に入った編集を自分の変更と読み違える。判定は諦めず、分類だけ鮮度へ寄せる。
   ff_report_stale_base "共有 CHANGELOG の編集判定" "$REPO_ROOT"
   bad "base が先行しているため共有 CHANGELOG 判定が成立しない（鮮度・変更起因ではない）"
-elif git -C "$REPO_ROOT" diff --quiet "$default_ref" -- oss/ff-dev-toolkit/CHANGELOG.md; then
-  ok "通常 PR は共有 CHANGELOG を直接編集しない"
 else
-  base_version="$(git -C "$REPO_ROOT" show "$default_ref:plugins/ff-dev-toolkit/.claude-plugin/plugin.json" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
-  current_version="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$REPO_ROOT/plugins/ff-dev-toolkit/.claude-plugin/plugin.json" | head -1)"
-  base_sha="$(git -C "$REPO_ROOT" rev-parse "${default_ref}^{commit}")"
-  set +e
-  footer_out="$(bash "$REPO_ROOT/scripts/check-full-gate-reuse.sh" --green-sha "$base_sha" 2>&1)"
-  footer_rc=$?
-  set -e
-  if [[ -n "$base_version" && "$current_version" != "$base_version" ]]; then
-    ok "リリース準備だけが共有 CHANGELOG を編集"
-  elif [[ "$footer_rc" -eq 0 && "$footer_out" == *"FULL_GATE_REUSE=CHANGELOG_FOOTER_ONLY"* ]]; then
-    ok "比較リンク footer-only PR だけが version 据え置きで CHANGELOG を編集"
-  else
-    bad "通常 PR が共有 CHANGELOG を直接編集"
-  fi
+  # 判定の本体は tests/lib/shared-changelog-judge.sh（リリースの模擬検査の stub も同じ関数を呼ぶ。Issue `#2619`）
+  shared_changelog_rc=0
+  ff_shared_changelog_judge "$REPO_ROOT" "$default_ref" || shared_changelog_rc=$?
+  case "${shared_changelog_rc}:${SHARED_CHANGELOG_VERDICT}" in
+    0:unchanged) ok "通常 PR は共有 CHANGELOG を直接編集しない" ;;
+    0:release-prep) ok "リリース準備だけが共有 CHANGELOG を編集" ;;
+    0:footer-only) ok "比較リンク footer-only PR だけが version 据え置きで CHANGELOG を編集" ;;
+    *) bad "通常 PR が共有 CHANGELOG を直接編集" ;;
+  esac
 fi
+
+# 判定表の固定: 切り出した判定（tests/lib/shared-changelog-judge.sh）を一時リポジトリで 4 分類すべてに当てる。
+# 上の live 判定は手元の状態（多くは unchanged）しか通らないので、「version が base と違う / footer-only だけを
+# 許す」という判定表そのものはここで固定する。タグ未作成の準備済み版へ同じ版のまま断片を畳む編集
+# （version 据え置き）は direct-edit のまま — リリース側は後着断片を新しい版として準備する（Issue `#2619`）。
+JUDGE_FIX="$TMP/shared-changelog-judge"
+mkdir -p "$JUDGE_FIX/scripts" "$JUDGE_FIX/oss/ff-dev-toolkit" "$JUDGE_FIX/plugins/ff-dev-toolkit/.claude-plugin"
+cp "$REPO_ROOT/scripts/check-full-gate-reuse.sh" "$JUDGE_FIX/scripts/check-full-gate-reuse.sh"
+ff_git_fixture_init "$JUDGE_FIX" "footer-test" "footer@example.com"
+judge_write_version() { printf '{\n  "name": "ff-dev-toolkit",\n  "version": "%s"\n}\n' "$1" > "$JUDGE_FIX/plugins/ff-dev-toolkit/.claude-plugin/plugin.json"; }
+judge_write_version 1.1.0
+printf '%s\n' '# Changelog' '' '## [Unreleased]' '' '## [1.1.0] - 2026-01-02' '' '### 修正' '' '- 準備した修正' '' \
+  '[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v1.0.0...HEAD' > "$JUDGE_FIX/oss/ff-dev-toolkit/CHANGELOG.md"
+git -C "$JUDGE_FIX" add -A && git -C "$JUDGE_FIX" commit -qm "release: ff-dev-toolkit v1.1.0"
+git -C "$JUDGE_FIX" update-ref refs/remotes/origin/develop HEAD
+judge_case() { # $1=期待する分類 $2=期待する終了コード $3=見出し
+  local rc=0
+  ff_shared_changelog_judge "$JUDGE_FIX" origin/develop || rc=$?
+  if [[ "$rc" -eq "$2" && "$SHARED_CHANGELOG_VERDICT" == "$1" ]]; then ok "$3"; else bad "$3（rc=${rc} verdict=${SHARED_CHANGELOG_VERDICT:-なし}）"; fi
+}
+judge_case unchanged 0 "共有 CHANGELOG の判定: base と同じなら unchanged"
+# 同じ版のまま準備済みの版節へ断片を畳む編集（version 据え置き・作業ツリーの変更）は直接編集と区別できない
+awk '{ print } $0 == "- 準備した修正" { print "- 後着した修正" }' "$JUDGE_FIX/oss/ff-dev-toolkit/CHANGELOG.md" > "$JUDGE_FIX/cl.new" \
+  && mv "$JUDGE_FIX/cl.new" "$JUDGE_FIX/oss/ff-dev-toolkit/CHANGELOG.md"
+judge_case direct-edit 1 "共有 CHANGELOG の判定: version 据え置きで版節へ項目を足す編集は direct-edit（同じ版への再集約は通らない）"
+# 後着断片を新しい版として準備した形（準備済みの版節は残し、version を上げて新しい版節を足す）
+git -C "$JUDGE_FIX" checkout -q -- oss/ff-dev-toolkit/CHANGELOG.md
+awk '{ print } $0 == "## [Unreleased]" { print ""; print "## [1.1.1] - 2026-01-03"; print ""; print "### 修正"; print ""; print "- 後着した修正" }' \
+  "$JUDGE_FIX/oss/ff-dev-toolkit/CHANGELOG.md" > "$JUDGE_FIX/cl.new" && mv "$JUDGE_FIX/cl.new" "$JUDGE_FIX/oss/ff-dev-toolkit/CHANGELOG.md"
+judge_write_version 1.1.1
+judge_case release-prep 0 "共有 CHANGELOG の判定: version を上げて新しい版節を足す準備は release-prep"
+git -C "$JUDGE_FIX" checkout -q -- oss/ff-dev-toolkit/CHANGELOG.md plugins/ff-dev-toolkit/.claude-plugin/plugin.json
+printf '%s\n' '[1.0.0]: https://github.com/feel-flow/ff-dev-toolkit/releases/tag/v1.0.0' >> "$JUDGE_FIX/oss/ff-dev-toolkit/CHANGELOG.md"
+git -C "$JUDGE_FIX" commit -qam "release: CHANGELOG 比較リンクを v1.0.0 へ追従"
+judge_case footer-only 0 "共有 CHANGELOG の判定: 比較リンクの footer だけのコミットは footer-only"
+printf '%s\n' '- 通常 PR の直接編集' >> "$JUDGE_FIX/oss/ff-dev-toolkit/CHANGELOG.md"
+git -C "$JUDGE_FIX" commit -qam "feat: direct edit"
+judge_case direct-edit 1 "共有 CHANGELOG の判定: version 据え置きの本文編集コミットは direct-edit"
+rm -f "$JUDGE_FIX/plugins/ff-dev-toolkit/.claude-plugin/plugin.json"
+judge_case direct-edit 1 "共有 CHANGELOG の判定: 作業ツリーの plugin.json を読めない回は release-prep にせず direct-edit"
 
 # --- 契約側の要素を消す変更には breaking 断片が要る ---
 # 公開面の一覧（PUBLIC-SURFACE.md）と実体を**同時に**消す PR は、skill-count-consistency の

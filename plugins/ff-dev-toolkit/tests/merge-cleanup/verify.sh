@@ -361,23 +361,32 @@ refuse_cleanup_unreadable empty "が 0 バイトです"
 refuse_cleanup_unreadable cut "読み込み完了の印ではありません"
 refuse_cleanup_unreadable symlink "が symlink です"
 
-# $1: 検査するファイル。delete_remote_branch_with_lease 内の git push が
-# すべて「同一物理行の prefix 代入 SKIP_SIMPLE_GIT_HOOKS=1 と HUSKY=0」なら 0。
+# $1: 検査するファイル。delete_remote_branch_with_lease 内で、
+# フラグ付きの git push が 1 行以上あり、フラグの無い git push は
+# 関数本文に FF_DELETE_PUSH_SKIP_HOOKS があるときだけ許すなら 0。
 # コメント内・XSKIP_ / XHUSKY・=10 / =00 は受理しない。env と git push は同じ行に置くこと。
 # HUSKY=0 は husky v9 の runner（`.husky/_/h`）が本体を呼ばずに exit 0 する値
 # （公開 ff-dev-toolkit#137。SKIP_SIMPLE_GIT_HOOKS だけでは husky の consumer に効かない）。
 delete_push_sets_skip_hooks() {
   awk '
     /^delete_remote_branch_with_lease\(\)/ { in_fn = 1 }
+    in_fn { block = block $0 "\n" }
     in_fn && /^}/ { in_fn = 0 }
-    in_fn && /git[[:space:]]+push/ {
-      seen = 1
-      line = $0
-      sub(/#.*/, "", line)
-      if (line !~ /(^|[^=[:alnum:]_])SKIP_SIMPLE_GIT_HOOKS=1[[:space:]]/) missing = 1
-      if (line !~ /(^|[^=[:alnum:]_])HUSKY=0[[:space:]]/) missing = 1
+    END {
+      has_opt = (block ~ /FF_DELETE_PUSH_SKIP_HOOKS/)
+      n = split(block, lines, "\n")
+      for (i = 1; i <= n; i++) {
+        line = lines[i]
+        if (line !~ /git[[:space:]]+push/) continue
+        seen = 1
+        sub(/#.*/, "", line)
+        flagged = (line ~ /(^|[^=[:alnum:]_])SKIP_SIMPLE_GIT_HOOKS=1[[:space:]]/) && (line ~ /(^|[^=[:alnum:]_])HUSKY=0[[:space:]]/)
+        if (flagged) has_flagged = 1
+        else if (!has_opt) missing = 1
+      }
+      if (seen && has_flagged && !missing) exit 0
+      exit 1
     }
-    END { if (seen && !missing) exit 0; exit 1 }
   ' "$1"
 }
 
@@ -449,6 +458,20 @@ if delete_push_sets_skip_hooks "$TARGET"; then
 else
   bad "delete_remote_branch_with_lease の git push に SKIP_SIMPLE_GIT_HOOKS=1 / HUSKY=0 が揃っていない"
 fi
+printf '%s\n' \
+  'delete_remote_branch_with_lease() {' \
+  '  if [ "${FF_DELETE_PUSH_SKIP_HOOKS-1}" = "1" ]; then' \
+  '    LC_ALL=C SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 git push origin ":refs/heads/$branch"' \
+  '  else' \
+  '    git push origin ":refs/heads/$branch"' \
+  '  fi' \
+  '}' \
+  > "$SKIP_HOOKS_PROBE"
+if delete_push_sets_skip_hooks "$SKIP_HOOKS_PROBE"; then
+  ok "検出器が FF_DELETE_PUSH_SKIP_HOOKS 付きの素の git push を許す（self-test）"
+else
+  bad "検出器がオプトアウト付きの素の git push を拒否する"
+fi
 # --no-verify / hooksPath 無効化 / export は契約外。env の command-scoped 代入だけを許す。
 if awk '
   /^delete_remote_branch_with_lease\(\)/ { in_fn = 1 }
@@ -461,6 +484,78 @@ else
   bad "delete_remote_branch_with_lease が env 以外の hook 回避を使っている"
 fi
 
+
+echo ""
+echo "== 実行: FF_DELETE_PUSH_SKIP_HOOKS =="
+HOOK_RT="$TMP/hook-rt"
+rm -rf "$HOOK_RT"
+mkdir -p "$HOOK_RT/hooks"
+git init -q --bare "$HOOK_RT/origin.git"
+ff_git_fixture_init "$HOOK_RT/repo"
+git -C "$HOOK_RT/repo" config commit.gpgsign false
+git -C "$HOOK_RT/repo" config core.hooksPath "$HOOK_RT/hooks"
+git -C "$HOOK_RT/repo" checkout -q -b feature
+printf 'a\n' >"$HOOK_RT/repo/a.txt"
+git -C "$HOOK_RT/repo" add a.txt
+git -C "$HOOK_RT/repo" commit -qm a
+git -C "$HOOK_RT/repo" remote add origin "$HOOK_RT/origin.git"
+git -C "$HOOK_RT/repo" push -q origin feature
+HOOK_OID="$(git -C "$HOOK_RT/repo" rev-parse HEAD)"
+cat >"$HOOK_RT/hooks/pre-push" <<'HOOK'
+#!/bin/sh
+if [ "${SKIP_SIMPLE_GIT_HOOKS:-}" = "1" ] && [ "${HUSKY:-}" = "0" ]; then
+  printf '%s\n' 'skip=1 husky=skip' >"${HOOK_LOG:?}"
+  exit 0
+fi
+printf '%s\n' 'block=1 husky=run' >"${HOOK_LOG:?}"
+exit 1
+HOOK
+chmod +x "$HOOK_RT/hooks/pre-push"
+awk '
+  /^delete_remote_branch_with_lease\(\)/ { p = 1 }
+  p { print }
+  p && /^}/ { exit }
+' "$TARGET" >"$HOOK_RT/fn.sh"
+run_delete_push() {
+  local mode="$1" rc=0
+  rm -f "$HOOK_RT/log"
+  (
+    set +e
+    # shellcheck disable=SC1091
+    . "$HOOK_RT/fn.sh"
+    WORK_TMP="$(mktemp -d)"
+    cd "$HOOK_RT/repo" || exit 9
+    export HOOK_LOG="$HOOK_RT/log"
+    unset SKIP_SIMPLE_GIT_HOOKS HUSKY
+    if [ "$mode" = keep ]; then
+      export FF_DELETE_PUSH_SKIP_HOOKS=0
+    else
+      unset FF_DELETE_PUSH_SKIP_HOOKS
+    fi
+    delete_remote_branch_with_lease feature "$HOOK_OID"
+  ) >/dev/null 2>&1 || rc=$?
+  printf '%s' "$rc"
+}
+HOOK_RC="$(run_delete_push skip)"
+if [ "$HOOK_RC" = "0" ] && [ "$(cat "$HOOK_RT/log" 2>/dev/null)" = "skip=1 husky=skip" ]; then
+  ok "既定の削除 push は SKIP_SIMPLE_GIT_HOOKS=1 と HUSKY=0 で hook 本体を走らせない"
+else
+  bad "既定の削除 push の hook 観測が違う（rc=${HOOK_RC} log=$(cat "$HOOK_RT/log" 2>/dev/null)）"
+fi
+git -C "$HOOK_RT/origin.git" update-ref refs/heads/feature "$HOOK_OID"
+HOOK_RC="$(run_delete_push keep)"
+if [ "$HOOK_RC" != "0" ] && [ "$(cat "$HOOK_RT/log" 2>/dev/null)" = "block=1 husky=run" ]; then
+  ok "FF_DELETE_PUSH_SKIP_HOOKS=0 の削除 push は hook を起動する"
+else
+  bad "オプトアウトの削除 push が hook を起動していない（rc=${HOOK_RC} log=$(cat "$HOOK_RT/log" 2>/dev/null)）"
+fi
+BAD_ENV_RC=0
+BAD_ENV_ERR="$(FF_DELETE_PUSH_SKIP_HOOKS=yes bash "$TARGET" 1 2>&1 >/dev/null)" || BAD_ENV_RC=$?
+if [ "$BAD_ENV_RC" -eq 1 ] && printf '%s' "$BAD_ENV_ERR" | awk 'index($0, "FF_DELETE_PUSH_SKIP_HOOKS") { f = 1 } END { exit f ? 0 : 1 }'; then
+  ok "FF_DELETE_PUSH_SKIP_HOOKS の不正値は削除の前に rc 1"
+else
+  bad "不正な FF_DELETE_PUSH_SKIP_HOOKS の扱いが違う（rc=${BAD_ENV_RC}）${BAD_ENV_ERR}"
+fi
 
 # ---- fixture: bare origin + clone --------------------------------------------
 

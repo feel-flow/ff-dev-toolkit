@@ -414,8 +414,9 @@ printf '%s\\n' 'fixture-media@1.0.0'
         prepare_globals.append(lines[0])
     prepare_globals_text='\n'.join(prepare_globals)+'\n'
     prepare_driver=T/'prepare-finalize-driver.sh'
-    function_names=['finish','stop','unavailable','mark','plan','kv','capture','release_delegate','prepare_fix_hint','prepare_finalize']
-    prepare_driver.write_text('set -u\nGITHUB_INPUT="$1"; PUBLIC="$2"; CHECK_SCRIPT="$3"\nROOT="$4"; CURRENT_STAGE=prepare; VER=1.1.0; DRY_RUN=1\nPREPARE_PATHS_TEXT=fixture; CHANGELOG=fixture; PLUGIN_JSON=fixture; AGENT_CONFIG=fixture; FRAGMENT_DIR=fixture\nwriting_snapshot() { :; }\n'+prepare_globals_text+''.join(function_source(name) for name in function_names)+'prepare_finalize 1.1.0 fixture\n')
+    # prepare_finalize first compares the approved version (--expect-version); unset here, so the guard passes.
+    function_names=['finish','stop','stop_needs_approval','unavailable','mark','plan','kv','capture','release_delegate','prepare_fix_hint','expect_version_guard','prepare_finalize']
+    prepare_driver.write_text('set -u\nGITHUB_INPUT="$1"; PUBLIC="$2"; CHECK_SCRIPT="$3"\nROOT="$4"; CURRENT_STAGE=prepare; VER=1.1.0; DRY_RUN=1; EXPECT_VERSION=\nPREPARE_PATHS_TEXT=fixture; CHANGELOG=fixture; PLUGIN_JSON=fixture; AGENT_CONFIG=fixture; FRAGMENT_DIR=fixture\nwriting_snapshot() { :; }\n'+prepare_globals_text+''.join(function_source(name) for name in function_names)+'prepare_finalize 1.1.0 fixture\n')
     def prepare_call(file=True):
         e=dict(env)
         if file:e['TEST_REJECT_GH']='1'

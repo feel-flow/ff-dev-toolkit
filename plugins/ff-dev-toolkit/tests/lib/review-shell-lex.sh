@@ -28,7 +28,8 @@
 #     stdout: heredoc 本文だけ（終端行を除く。出現順に連結）。rc は ff_lex_code と同じ
 #   ff_lex_tokens <区間>
 #     stdout: 語を \001 区切りで出す。引用符・`$(…)`・`${…}`・バッククォート・プロセス置換
-#     （`<(…)` / `>(…)`）は 1 語に保ち、**引用符の外の**リダイレクト演算子（`>` `>>` `>|` `&>`
+#     （`<(…)` / `>(…)`）は 1 語に保ち、二重引用符の中の `$(…)` も引用符を閉じない
+#     （`tr -d '"…'` が外側の `"` を終わらせない）。**引用符の外の**リダイレクト演算子（`>` `>>` `>|` `&>`
 #     `&>>` `N>` `>&N` `N>&M` `<` `<<` `<<-` `<<<` `N<` `<&N`）は独立した語として切り出す。
 #     引用符の外の `(` / `)` も独立した語（`((` / `))` は算術式の開き・閉じとして 1 語）
 #     rc: 0 = 成功 / 12 = 引用符が閉じていない / その他 = awk の失敗
@@ -149,7 +150,7 @@ _FF_LEX_CODE_PROG='
 _FF_LEX_TOKENS_PROG='
   function flush() { if (have) { printf "%s%c", cur, 1 } cur = ""; have = 0 }
   function emit(t) { flush(); printf "%s%c", t, 1 }
-  BEGIN { RS = "\001"; sq = sprintf("%c", 39) }
+  BEGIN { RS = "\001"; sq = sprintf("%c", 39); qsp = 0 }
   {
     s = $0; n = length(s); cur = ""; have = 0; q = ""; depth = 0; bdepth = 0
     for (i = 1; i <= n; i++) {
@@ -158,6 +159,11 @@ _FF_LEX_TOKENS_PROG='
       if (q == "$" sq || q == "\"" || q == "`") {
         cur = cur c
         if (c == "\\") { cur = cur nx; i++; continue }
+        # 二重引用符の中の $(...) はコードへ戻す。戻さないと、置換の中の二重引用符が
+        # 外側の引用を閉じ、続く単一引用符が閉じていない引用符になる（tr -d の引用符）。
+        if (q == "\"" && c == "$" && nx == "(") {
+          qsp++; qat[qsp] = depth; q = ""; depth++; cur = cur nx; i++; continue
+        }
         if ((q == "\"" && c == "\"") || (q == "`" && c == "`") || (q == "$" sq && c == sq)) q = ""
         continue
       }
@@ -166,7 +172,10 @@ _FF_LEX_TOKENS_PROG='
         if (c == sq || c == "\"" || c == "`") { q = c; continue }
         if (c == "\\") { cur = cur nx; i++; continue }
         if (c == "(") depth++
-        else if (c == ")") depth--
+        else if (c == ")") {
+          depth--
+          if (qsp > 0 && depth == qat[qsp]) { q = "\""; qsp-- }
+        }
         continue
       }
       if (bdepth > 0) {

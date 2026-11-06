@@ -34,6 +34,13 @@
 # `(unmeasured)` を出し 0 と区別する（`(unavailable)` は出さない — 出たら供給源の配線が
 # 外れている）。
 #
+# 変更クラスの境界は 2026-11-05 に変わった。それ以降の effort_change_class は決定木の根の判定から
+# 導くので、契約 path の .md は other になる。それ以前の値は .md だけなら docs-only と記録しており、
+# 遡って書き換えていないので、クラス別の集計には新旧の定義が混ざる。
+#
+# ブランチと別番号の Issue は実測の行を持たず effort_measured_on を持つ（書き戻し規則は
+# skills/close-issue/references/effort.md）。行が無い Issue は未計測にも書式不正にも数えない。
+#
 # --issue-metrics N は Issue 本文ではなく、hook / ゲートが書くリポジトリ外の記録
 # （${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/ の wallclock.tsv /
 # instruction-bytes.tsv / gate.tsv）と、レビュー巡回カウンタの記録（`<git common dir>/ff-review-rounds/`。
@@ -421,9 +428,10 @@ esac
 #   wall-clock … 最初の start から、それ以降の最後の end まで。end は `gh pr merge` の
 #                **試行時刻**（PreToolUse で記録するので失敗したマージも残る）で、最後の試行を
 #                採る。end が無ければ now まで（/close-issue はマージ直前に呼ぶので、書き戻し
-#                時点までの経過になる）。start が無いときは、対象リポジトリのブランチ
-#                `<type>/#<n>-<slug>` の reflog の最古エントリを開始とみなす（hook 導入前・
-#                変数形のブランチ作成で start を取りこぼした場合の補い。引けなければ unmeasured）
+#                時点までの経過になる）。start が無いときは、対象リポジトリのブランチのうち
+#                その Issue に当たるもの（読み方の正本は lib/branch-issue.sh）の reflog の最古
+#                エントリを開始とみなす（hook 導入前・変数形のブランチ作成で start を取りこぼした
+#                場合の補い。引けなければ unmeasured）
 #   読み込みバイト … その Issue の行の合計 + Issue 未確定（`-`）の行のうち、その Issue
 #                だけを開始したセッションの行（ブランチを切る前に読んだ指示を落とさない。
 #                複数 Issue を開始したセッションの `-` 行はどの Issue にも寄せない）
@@ -434,8 +442,20 @@ metrics_repo_key() { # <dir> → 共通 git dir の絶対パス（引けなけ�
   git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true
 }
 
+# ローカルブランチのうち Issue に当たるものを出す。読み方は hook と同じ lib/branch-issue.sh を
+# 読む（複製すると hook が記録した形を読み手だけ取りこぼす）。lib を読めない回は何も出さない
+# — 補いが効かないだけで、--issue-metrics は止めない。
+metrics_refs_of_issue() { # <repo_dir> <issue>
+  local lib
+  lib="$(dirname "${BASH_SOURCE[0]}")/lib/branch-issue.sh"
+  [ -r "$lib" ] || return 0
+  # shellcheck source=lib/branch-issue.sh
+  . "$lib" 2>/dev/null || return 0
+  git -C "$1" for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null | ff_branches_of_issue "$2"
+}
+
 # start の記録が無い Issue の開始時刻を、対象リポジトリのブランチの reflog から補う。
-# 該当ブランチ（`<type>/#<n>-…`）の reflog の最古エントリの epoch を返す（無ければ空）。
+# 該当ブランチの reflog の最古エントリの epoch を返す（無ければ空）。
 metrics_reflog_start() { # <repo_dir> <issue>
   local dir="$1" issue="$2" br oldest="" t
   command -v git >/dev/null 2>&1 || return 0
@@ -446,8 +466,7 @@ metrics_reflog_start() { # <repo_dir> <issue>
     [ -n "$t" ] || continue
     if [ -z "$oldest" ] || [ "$t" -lt "$oldest" ]; then oldest="$t"; fi
   done <<EOF
-$(git -C "$dir" for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null \
-  | awk -v n="$issue" '$0 ~ ("^[A-Za-z0-9_.-]+/#" n "([-_/].*)?$")')
+$(metrics_refs_of_issue "$dir" "$issue")
 EOF
   [ -n "$oldest" ] && printf '%s' "$oldest"
   return 0
@@ -532,7 +551,7 @@ metrics_issue_report() { # <issue> <metrics_dir> <repo_dir>
 }
 
 # Issue のブランチ名を列挙する（改行区切り・重複除去）。hook の start 記録（wallclock.tsv の
-# branch 列）と、対象リポジトリのローカルブランチ `<type>/#<n>-…`（reflog の補いと同じ規則）を
+# branch 列）と、対象リポジトリのローカルブランチ（reflog の補いと同じ規則）を
 # **併合**する — 片方だけにすると、同じ Issue の別ブランチ（`git worktree add -b` は start を
 # 記録しない）の巡が累積から漏れる。どちらにも無ければ空。
 metrics_issue_branches() { # <issue> <repo_dir> <wc_src> <repo>
@@ -540,8 +559,7 @@ metrics_issue_branches() { # <issue> <repo_dir> <wc_src> <repo>
   from_wc="$(LC_ALL=C awk -F '\t' -v want="$issue" -v repo="$repo" \
     '$1 == want && $2 == "start" && $7 == repo && $6 != "" { print $6 }' "$wc_src" 2>/dev/null)" || from_wc=""
   if command -v git >/dev/null 2>&1; then
-    from_git="$(git -C "$dir" for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null \
-      | awk -v n="$issue" '$0 ~ ("^[A-Za-z0-9_.-]+/#" n "([-_/].*)?$")')" || from_git=""
+    from_git="$(metrics_refs_of_issue "$dir" "$issue")" || from_git=""
   fi
   printf '%s\n%s\n' "$from_wc" "$from_git" | awk 'NF && !seen[$0]++'
   return 0
@@ -592,7 +610,7 @@ $({
 $(metrics_issue_branches "$issue" "$dir" "$wc_src" "$repo")
 EOB
     [ -d "$store" ] && find "$store" -maxdepth 1 -type f -name '*.tsv' 2>/dev/null \
-      | awk -v n="$issue" -F/ '$NF ~ ("^[A-Za-z_]+" n "-.*\\.tsv$")'
+      | awk -v n="$issue" -F/ '$NF ~ ("^[A-Za-z_]+(issue[-_])?" n "-.*\\.tsv$")'
   } | awk 'NF && !seen[$0]++')
 EOF
   if [ "$hit" -eq 1 ] && [ "$broken" -eq 0 ]; then printf 'review_rounds=%d\n' "$total"

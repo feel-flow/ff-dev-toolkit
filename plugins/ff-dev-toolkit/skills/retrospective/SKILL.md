@@ -1,6 +1,6 @@
 ---
 name: retrospective
-description: ワークフローチェーンの末尾（/merge-cleanup → /ace-curate の後）で毎回セッション振り返りを実施し、プロセス・ツール・スキルのメタ知見（手戻り・無駄時間・Keep・過剰動作）を観測台帳へ記録して、閾値に到達した再発から改善提案を最大 3 件出す。「振り返り」「retrospective」「セッション振り返り」「プロセス改善の提案」と言われたとき、または PR を伴わない作業の締めにも単独で使用。実測した観測が無ければ 1 行報告で終了する。
+description: ワークフローチェーンの末尾（/merge-cleanup → /ace-curate の後）で毎回セッション振り返りを実施し、プロセス・ツール・スキルのメタ知見（手戻り・無駄時間・Keep・過剰動作）を観測台帳へ記録して、閾値に到達した再発から改善提案を最大 3 件出す。「振り返り」「retrospective」「セッション振り返り」「プロセス改善の提案」と言われたとき、または PR を伴わない作業の締めにも単独で使用。
 ---
 
 # /retrospective — セッション振り返り（観測の記録とプロセス・ツール改善の提案）
@@ -12,8 +12,6 @@ GitHub MCP の raw-file 入力は[共通契約](../ace-curate/references/curate.
 最初に[共通設定契約](../asdd-init/references/configuration.md)を読み、`scripts/asdd/config.mjs` の `loadConfig(root)` で対象プロジェクトの `.asdd/config.json` を検証する。以下の従来手順より、合意済みの文書構成・機能スイッチ・ワークフローを優先する。設定なしは従来互換、不正設定は自動処理を止めて診断する。
 
 `features.retrospective=false` のとき、ワークフローからの自動実行・起動の催促・「対象外」などの定型報告を行わない。ユーザーがこの振り返りを明示依頼した場合だけ、設定を変えず単発実行する。以下の「毎回」は設定なし、または自動振り返りを選んだ場合に限る。
-
-観測記録と定型コミットは下の「観測の記録」「書き込み」に従う。
 
 ## プラグインルートの固定（必須）
 
@@ -109,6 +107,7 @@ printenv RETROSPECTIVE_MODE
 6. **再現価値のある成功パターン（Keep）** — スキル・テンプレ・hook へ定着させれば再現するもの
 7. **過剰動作** — 不要なスキル発火・過剰な確認・同じ検証の回しすぎで失った時間
 8. **見積もりの当否** — `ff-effort` ブロックを持つ Issue がマージされた場合は [references/effort.md](references/effort.md) の記録帯で乖離率を判定し、3 方向すべてを記録する
+9. **参照の効果** — [正本](../../docs-template/05-operations/deployment/git-workflow.md#着手前の-playbook-参照ace-reuse)で二系統・新クラス移行前の再検索・適用／見落としを点検する。
 
 ## 観測の記録 — 観測台帳（起票の前段バッファ）
 
@@ -116,7 +115,7 @@ printenv RETROSPECTIVE_MODE
 
 ### 台帳は引く store でもある（読み出し経路）
 
-読み側の入口は着手前の `/knowledge-lookup` と観察チェックリスト第 0 項。作成時は報告に「読み側の配線は `/ace-setup` Step 4」を添える。
+作成時は報告に「読み側の配線は `/ace-setup` Step 4」を添える。
 
 ### 記録の前に base の先行を照合する
 

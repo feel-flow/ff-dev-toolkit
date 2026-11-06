@@ -494,6 +494,64 @@ release_lane_by_key() {
   return 0
 }
 
+# レーンファイル名 `鍵.epoch.pid.lane` から鍵を取り出す。
+lane_filename_key() {
+  local base
+  base="${1##*/}"
+  base="${base%.lane}"
+  printf '%s' "$base" | sed -n 's/^\(.*\)\.[0-9][0-9]*\.[0-9][0-9]*$/\1/p'
+}
+
+# `TaskStop` の解放。一致するレーンだけを、対応づけ済みでも閉じる。フォールバックで
+# 別レーンは取らない。2 回目は対象がもう無いので no-op。
+release_lanes_for_taskstop() {
+  local raw id ids="" a key f found claimed tries work
+  [ "$LANE_SAFE" -eq 1 ] || return 0
+  [ -d "$LANE_DIR" ] || return 0
+  while IFS= read -r raw; do
+    [ -n "$raw" ] || continue
+    id="$(sanitize_id "$raw")"
+    [ -n "$id" ] || continue
+    case " ${ids} " in
+      *" ${id} "*) : ;;
+      *) ids="${ids}${ids:+ }${id}" ;;
+    esac
+  done <<EOF
+$(printf '%s' "$input" | jq -r '.tool_input.task_id // "", .tool_input.shell_id // ""' 2>/dev/null)
+EOF
+  [ -n "$ids" ] || return 0
+  tries=0
+  while [ "$tries" -lt 20 ]; do
+    tries=$((tries + 1))
+    found=""
+    for f in "$LANE_DIR"/*.lane; do
+      lane_file_is_safe "$f" || continue
+      key="$(lane_filename_key "$f")"
+      a="$(lane_field "$f" agent_id)"
+      # ids は sanitize 済み（空白も glob も含まない）
+      # shellcheck disable=SC2086
+      for id in $ids; do
+        if [ "$key" = "$id" ] || { [ -n "$a" ] && [ "$a" = "$id" ]; }; then
+          found="$f"
+          break
+        fi
+      done
+      [ -n "$found" ] && break
+    done
+    [ -n "$found" ] || break
+    work="$(lane_temp_dir)" || return 0
+    [ -d "$work" ] && [ ! -L "$work" ] || return 0
+    claimed="${work}/claimed.lane"
+    if ! lane_file_is_safe "$found" || ! mv "$found" "$claimed" 2>/dev/null; then
+      rmdir "$work" 2>/dev/null
+      continue
+    fi
+    rm -f "$claimed" 2>/dev/null
+    rmdir "$work" 2>/dev/null
+  done
+  return 0
+}
+
 # 走行中のレーンを数える。上限より古い（または未来へ大きくずれた）レーンはその場で
 # 削除する — 解放イベントを取りこぼしても凍結が永続しないための出口。**回収したことは
 # 黙って済ませない**（LANE_RECLAIMED を立て、呼び出し側が systemMessage を出す）。
@@ -591,6 +649,11 @@ scan_lanes() {
 #     ため名簿に載らず、絞ると**起動が拒否された委譲レビューのレーンだけが解放されない**。
 #     この経路は `tool_use_id`（無ければ tool_input のハッシュ）で対応づくので、型で
 #     絞らなくても別レーンを掴まない。
+#   - `PreToolUse` の `TaskStop`: `tool_input.task_id`（と `shell_id`）がレーンの
+#     `agent_id` またはファイル名の鍵（起動時の `tool_use_id`）と一致するレーンだけを閉じる。
+#     対応づけ済みでも閉じる。一致しなければ何も閉じない（型名では閉じない。別レビュアーを
+#     巻き込まれて解かない）。TaskStop 自体は止めない。外側のシェルを止めても子プロセスは
+#     残るので、プロセス木はここでは殺さない。
 if [ "$EVENT" = "SubagentStart" ]; then
   agent_type="$(printf '%s' "$input" | jq -r '.agent_type // ""' 2>/dev/null)"
   agent_id="$(printf '%s' "$input" | jq -r '.agent_id // ""' 2>/dev/null)"
@@ -602,6 +665,11 @@ if [ "$EVENT" = "SubagentStop" ]; then
   agent_type="$(printf '%s' "$input" | jq -r '.agent_type // ""' 2>/dev/null)"
   agent_id="$(printf '%s' "$input" | jq -r '.agent_id // ""' 2>/dev/null)"
   is_review_lock_type "$agent_type" && release_lane_by_agent "$agent_id" "$agent_type"
+  exit 0
+fi
+
+if [ "$EVENT" = "PreToolUse" ] && [ "$tool" = "TaskStop" ]; then
+  release_lanes_for_taskstop
   exit 0
 fi
 

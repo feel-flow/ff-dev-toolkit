@@ -42,8 +42,10 @@
 #     FF_MERGE_CLEANUP_PROTECT_BRANCHES で運用に合わせて変更できる（Issue #1056）
 #   - リモート削除は --force-with-lease=<ref>:<期待OID> で行い、照合と削除の間の
 #     push 競合（TOCTOU）をサーバー側で原子的に拒否させる
-#   - 削除 push はコード変更を運ばないため SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 を付ける
+#   - 削除 push はコード変更を運ばないため、既定で SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 を付ける
 #     （consumer の simple-git-hooks / husky のフルゲートを起動しない）。
+#     FF_DELETE_PUSH_SKIP_HOOKS=0 のときだけこの代入を外し、consumer の hook を残す。
+#     未設定と 1 は既定。それ以外は削除の前に rc 1。
 #     core.hooksPath の一時無効化と --no-verify は他の guard まで落とすので使わない
 #   - 対象 PR の head の削除 push は、dry-run と同じ判定（remote_delete_verdict の
 #     read-only な ls-remote --exit-code）で ref の実在と OID 一致を確かめてから行う。
@@ -679,6 +681,11 @@ if [ -z "$PR_NUM" ] || ! [[ "$PR_NUM" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
+case "${FF_DELETE_PUSH_SKIP_HOOKS-1}" in
+  0|1) ;;
+  *) die "FF_DELETE_PUSH_SKIP_HOOKS の値が不正です（0 または 1。未設定は 1）: ${FF_DELETE_PUSH_SKIP_HOOKS}" ;;
+esac
+
 # temp はディレクトリ 1 つにまとめ、trap で確実に回収する
 # （コマンド置換内で配列に追記する方式はサブシェルで消えるため使わない）
 WORK_TMP="$(mktemp -d)" || die "mktemp -d に失敗しました"
@@ -701,18 +708,27 @@ fi
 command -v jq >/dev/null 2>&1 || die "jq が必要です"
 
 # リモート削除の共通関数: --force-with-lease で「期待 OID のときだけ」削除する。
-# 削除 push はコード変更を運ばないため SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 を付ける
+# 削除 push はコード変更を運ばないため、既定で SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 を付ける
 # （consumer の simple-git-hooks / husky のフルゲートを起動しない。husky v9 の runner
 # `.husky/_/h` は HUSKY=0 で本体を呼ばずに exit 0 する）。
+# FF_DELETE_PUSH_SKIP_HOOKS=0 のときだけ代入を外す。export はしない。
 # core.hooksPath の一時無効化と --no-verify は他の guard まで落とすので使わない。
 # 戻り値 0=削除 / 2=既に無い / 3=lease 拒否（競合 push あり） / 1=その他失敗
 delete_remote_branch_with_lease() {
   # $1: branch / $2: expected OID
   local branch="$1" expected="$2" out="" remote_out="" remote_err="" remote_stderr="" remote_oid=""
-  # エラーメッセージの文言照合があるため LC_ALL=C でロケール固定
-  if out="$(LC_ALL=C SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 git push --force-with-lease="refs/heads/$branch:$expected" \
-      origin ":refs/heads/$branch" 2>&1)"; then
-    return 0
+  # エラーメッセージの文言照合があるため LC_ALL=C でロケール固定。
+  # フラグ付きとフラグ無しは同じ物理行に git push を置き、片方が欠ける形へ戻さない。
+  if [ "${FF_DELETE_PUSH_SKIP_HOOKS-1}" = "1" ]; then
+    if out="$(LC_ALL=C SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 git push --force-with-lease="refs/heads/$branch:$expected" \
+        origin ":refs/heads/$branch" 2>&1)"; then
+      return 0
+    fi
+  else
+    if out="$(LC_ALL=C git push --force-with-lease="refs/heads/$branch:$expected" \
+        origin ":refs/heads/$branch" 2>&1)"; then
+      return 0
+    fi
   fi
   if grep -qE 'remote ref does not exist' <<<"$out"; then
     return 2

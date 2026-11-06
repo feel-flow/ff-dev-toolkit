@@ -77,11 +77,12 @@ COLOR_GH
       $1 == "pr view" { pr++ }
       $1 == "pr view" && $2 == "statusCheckRollup" { checks_json++ }
       $1 == "repo view" { repo++ }
+      $1 == "issue view" && $2 == "owner/repo" { issue++ }
       $1 == "pr checks" { watch++ }
       $1 == "api graphql" { threads++ }
-      END { exit !(n == 6 && pr == 3 && checks_json == 1 && repo == 1 && watch == 1 && threads == 1 && !invalid) }
+      END { exit !(n == 7 && pr == 3 && checks_json == 1 && repo == 1 && issue == 1 && watch == 1 && threads == 1 && !invalid) }
     ' "$color_log"; then
-      ok "COLOR2/${color_case}: gh 全6呼出しで3変数が未指定、NO_COLOR を保持（JSON 各境界へ到達）"
+      ok "COLOR2/${color_case}: gh 全7呼出しで3変数が未指定、NO_COLOR を保持（JSON 各境界へ到達）"
     else
       bad "COLOR2/${color_case}: gh の環境または対象経路が不足: $(cat "$color_log")"
     fi

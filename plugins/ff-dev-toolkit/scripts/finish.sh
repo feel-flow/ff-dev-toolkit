@@ -5,8 +5,8 @@
 # skill 本文に残し、機械で決まる部分だけをここで実行して `KEY=値` で報告する。
 #
 # 使い方:
-#   finish.sh precheck <PR番号> [--subject <件名> --body <本文>] [--gate-record <記録のパス>] [--merge-method squash|merge]
-#   finish.sh cleanup [--dry-run] <PR番号>
+#   finish.sh precheck <PR番号> [--subject <件名> --body <本文>] [--gate-record <記録のパス>] [--merge-method squash|merge] [--ack-unchecked <owner/repo#N>] [--ack-post-merge <owner/repo#N> --ack-post-merge-reason <理由>]
+#   finish.sh cleanup [--dry-run] [--verbose] <PR番号>
 #   finish.sh knowledge-commit add    [--claim <文書>] [--ace-playbook <PLAYBOOK>] <knowledge-commit.sh add の引数>
 #   finish.sh knowledge-commit commit [--type <type>] [--force]
 #   finish.sh knowledge-commit status | discard
@@ -59,7 +59,11 @@
 #      保全し、一致する ref だけを lease 付きで削除する。削除拒否後も再照会し、自動削除との
 #      race を不在として扱う。通信失敗・応答不正・期待 OID が残る削除失敗は非 0）。
 #      `SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0` はコード変更を運ばない削除 push だけに付け、consumer の
-#      simple-git-hooks / husky のフルゲートを起動しない。削除本文はコマンドへ埋め込み、マージ後の
+#      simple-git-hooks / husky のフルゲートを起動しない。`FF_DELETE_PUSH_SKIP_HOOKS=0` の回は
+#      生成する削除本文からこの代入を外し、consumer の hook を残す（未設定と 1 は従来どおり）。
+#      `FF_MERGE_DELETE_SEPARATE=1` の回は worktree の保持を見ず、MERGE_COMMAND を gh pr merge
+#      だけにする（`--delete-branch` も削除の尾も付けない）。0 と 1 以外は PR を読む前に rc 2。
+#      削除本文はコマンドへ埋め込み、マージ後の
 #      plugin 更新・除去に依存しない（merge-cleanup.sh と同じ lease 方針。公開 ff-dev-toolkit#137）
 #      merge 対象は取得済みの完全な repository URL を --repo へ固定する。gh v2.102.0 は明示した
 #      --repo の下でローカルの切替・削除を行わないため、後始末は /merge-cleanup へ委譲する。
@@ -70,13 +74,23 @@
 #   PR_NUMBER= PR_STATE= PR_IS_DRAFT= PR_HEAD_REF= PR_HEAD_OID= PR_BASE_REF= PR_TITLE=
 #   TARGET_REPO=owner/repo  MERGE_METHOD=squash|merge
 #   CLOSES=owner/repo#N（繰り返し） REFS=owner/repo#N（繰り返し） AUTO_CLOSE_UNRELIABLE=0|1
+#   AC_UNCHECKED=owner/repo#N<TAB>行（Closes 対象の本文にある未チェック。繰り返し）
+#   AC_UNCHECKED_COUNT=<件数>（Closes 対象があるとき） AC_ACKED=owner/repo#N（--ack-unchecked を渡したとき）
+#   POST_MERGE_ACKED=owner/repo#N<TAB>理由（--ack-post-merge を渡したとき。繰り返し）
+#   以下 4 つは FF_POST_MERGE_TERMS と FF_POST_MERGE_PATHS を設定した導入先だけ（未設定なら 1 行も出ない）:
+#   POST_MERGE_PATH=<パス>（FF_POST_MERGE_PATHS に一致した変更ファイル。繰り返し）
+#   POST_MERGE_HIT=owner/repo#N<TAB>body|report<TAB>行（語に一致した行。ack しても消えない。繰り返し）
+#   POST_MERGE_HIT_COUNT=<件数>（パスが一致して判定した回）
+#   POST_MERGE_GATE=no-closes|no-path|clear|acked|blocked
 #   PR_COMMITS_SOURCE=git|api|unavailable  PR_COMMITS=<短縮 hash> <件名>（繰り返し。`git log --format='%h %s'
 #     origin/<base>..<head>` と同じ行・同じ順。/close-issue 完了報告の「主要コミット」欄へ貼る。自分で書かない）
 #   KEYWORD_GATE=none|ok|conflict-title|conflict-commit  KEYWORD_INSPECTED=<行数>
 #   KEYWORD_CONFLICT=<origin>\t<issue>\t<text> / KEYWORD_SUGGEST=…（抵触があるとき）
 #   MERGE_MESSAGE_GATE=not-required|required|ok|conflict
 #   EFFORT_<N>_<key>=<値>（effort-report.sh --issue-metrics の kv をそのまま）
-#   EFFORT_<N>_change_class=docs-only|small|other
+#   EFFORT_<N>_measured_on=<M>（PR のブランチの Issue M が Closes にあり、N に自分の実測が 1 つも無いとき。
+#     N の 4 指標は出さない。N に実測があれば従来どおり EFFORT_<N>_<key> を出す）
+#   EFFORT_<N>_change_class=docs-only|small|other（決定木の根の判定から導く）
 #   CHECKS=none|passed|failed|unavailable  CHECKS_REPORT=<報告へ貼る文言>
 #   REVIEW_THREADS_SOURCE=graphql|unavailable  REVIEW_THREADS=<総数>  REVIEW_THREADS_UNANSWERED=<件数>（後 2 つは graphql のとき。
 #     unavailable の回は rc 2 で止まり、ページ上限・cursor 空・hasNextPage 不明の回も SOURCE=unavailable + rc 2）
@@ -86,7 +100,9 @@
 #   FRESH_STATUS=0|2  FRESH_REPORT=<報告へ貼る文言>  FRESH_REASON= FRESH_ACTION=（2 のとき）
 #   RERUN_FULL_GATE=no|yes|see-action  RERUN_REASON=
 #   BASE_HELD_BY=<path> HEAD_HELD_BY=<path>（別 worktree が保持しているとき）
-#   DELETE_BRANCH_MODE=delete-branch|separate-push  HEAD_DELETE=lease|skipped-fork（separate-push のとき）
+#   DELETE_BRANCH_MODE=delete-branch|separate-push|separate-consumer  HEAD_DELETE=lease|skipped-fork（separate-push のとき）
+#   DELETE_BRANCH_NOTE=（separate-consumer のとき。削除を付けない理由）
+#   DELETE_PUSH_HOOKS=skipped|kept（lease の削除尾があるとき。kept はフック回避を外した生成）
 #   MERGE_COMMAND_BEGIN … MERGE_COMMAND_END（そのまま実行できる形。書き写さずに貼る）
 #   PRECHECK=ready|undetermined|blocked|no-target
 #
@@ -95,7 +111,9 @@
 #   0  対象 Issue が無い（PRECHECK=no-target。以降の判定を行わない）
 #   1  止める（checks 失敗 / 判定の途中で PR が変わった / 鮮度不一致 / 改題で消せる抵触 / 実際に
 #      渡す squash メッセージの抵触 / Refs 群があるのに --subject と --body が無い / merge commit 方式で
-#      コミットが Refs 運用の Issue を閉じる / 返信の無いレビュースレッドがある）。理由と次の一手を stderr へ
+#      コミットが Refs 運用の Issue を閉じる / 返信の無いレビュースレッドがある / Closes 対象の本文に
+#      未チェックの受け入れ条件が残り、その Issue が --ack-unchecked されていない / 設定したパスを含む PR の
+#      Closes 対象の本文か完了報告に設定した語の行があり、その Issue が --ack-post-merge されていない）。理由と次の一手を stderr へ
 #   2  判定不能・検査不成立（`--merge-method` の不正値・空値・重複（PR を読む前）/ PR 不在 / gh 不通（checks の取得を含む）/
 #      jq 不在 / 鮮度照合の検査不成立、および
 #      FRESH_STATUS=2 で RERUN_FULL_GATE が no でない回）。判定できなかった項目を名指しし、
@@ -105,6 +123,10 @@
 # cleanup: PR の実在と gh の到達を確かめてから scripts/merge-cleanup.sh へ委譲する（終了コードは
 #   委譲先のまま: 0 完了 / 1 中断 / 2 PARTIAL）。未コミット変更ガードの除外指定
 #   FF_MERGE_CLEANUP_IGNORE_PATHS ほか同じ接頭辞の変数は環境変数のまま委譲先へ届く。
+#   委譲先の全文は作業ツリーの外（FF_DEV_TOOLKIT_STATE_DIR、未設定なら ~/.config/ff-dev-toolkit。
+#   HOME も未設定なら ${TMPDIR:-/tmp}/ff-dev-toolkit）のログへ書き、stdout には
+#   「## マージ後 Cleanup 結果」以降と CLEANUP_LOG / CLEANUP_RC を出す。
+#   その見出しが無い回は全文を素通しする。--verbose は全文も出す。ログを置けなければ委譲前に rc 1。
 #
 # knowledge-commit: 共通の書き込み口 scripts/knowledge-commit.sh（add / commit / status / discard。
 #   fixture identity ガード内蔵）を呼ぶ。`add --claim <文書>` は `.version-claims/` を持つリポジトリで
@@ -311,8 +333,8 @@ unset FORCE_COLOR CLICOLOR_FORCE CLICOLOR
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: finish.sh precheck <PR番号> [--subject <件名> --body <本文>] [--gate-record <記録のパス>] [--merge-method squash|merge]
-       finish.sh cleanup [--dry-run] <PR番号>
+Usage: finish.sh precheck <PR番号> [--subject <件名> --body <本文>] [--gate-record <記録のパス>] [--merge-method squash|merge] [--ack-unchecked <owner/repo#N>] [--ack-post-merge <owner/repo#N> --ack-post-merge-reason <理由>]
+       finish.sh cleanup [--dry-run] [--verbose] <PR番号>
        finish.sh knowledge-commit add [--claim <文書>] [--ace-playbook <PLAYBOOK>] --source ace|obs --id <ID> --summary <要約> [--category <c>] [--type <t>] -- <path>...
        finish.sh knowledge-commit commit [--type <t>] [--force]
        finish.sh knowledge-commit status | discard | probe | push
@@ -488,12 +510,13 @@ pr_snapshot() { # stdin: gh pr view の JSON → stdout: 正規化した JSON
 
 # ── cleanup ────────────────────────────────────────────────────────────────────
 cmd_cleanup() {
-  local dry=() PR_NUMBER=""
+  local dry=() PR_NUMBER="" verbose=0
   # 委譲前の前提崩れ（未実行）を委譲先の PARTIAL（一部実行済み。rc 2）と重ねない
   DIE_ENV_RC=1
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dry-run) dry=(--dry-run); shift ;;
+      --verbose) verbose=1; shift ;;
       --github-input) [[ $# -ge 2 && -n "$2" ]] || usage; github_input="$2"; shift 2 ;;
       -h|--help) usage ;;
       -*) echo "✗ 不明な引数: $1" >&2; usage ;;
@@ -511,12 +534,48 @@ cmd_cleanup() {
   pr_state="$(printf '%s' "$pr_json" | jq -r '.state // ""')"
   echo "CLEANUP_PR=${PR_NUMBER}"
   echo "CLEANUP_PR_STATE=${pr_state}"
+  # 全文は作業ツリーの外へ残す。置けないまま委譲すると、失敗の本文がどこにも残らない。
+  # set -u でも HOME 未設定を unbound にしない。既定は XDG。HOME も無い最小環境は TMPDIR。
+  local state_dir=""
+  if [[ -n ${FF_DEV_TOOLKIT_STATE_DIR:-} ]]; then
+    state_dir="${FF_DEV_TOOLKIT_STATE_DIR}"
+  elif [[ -n ${HOME:-} ]]; then
+    state_dir="${HOME}/.config/ff-dev-toolkit"
+  else
+    state_dir="${TMPDIR:-/tmp}/ff-dev-toolkit"
+  fi
+  local log_dir="${state_dir}/logs" log_phys="" log_file=""
+  if ! mkdir -p -- "$log_dir"; then
+    die_env "cleanup のログディレクトリを作成できません: ${log_dir}" "FF_DEV_TOOLKIT_STATE_DIR を書ける場所へ向けて再実行する"
+  fi
+  log_phys="$(CDPATH='' cd -P -- "$log_dir" && pwd -P)" || die_env "cleanup のログディレクトリを解決できません: ${log_dir}" "FF_DEV_TOOLKIT_STATE_DIR を実在するディレクトリへ向けて再実行する"
+  case "$log_phys" in
+    "$repo_root"|"$repo_root"/*)
+      die_env "cleanup のログがリポジトリ内です: ${log_phys}" "FF_DEV_TOOLKIT_STATE_DIR をリポジトリの外へ向けて再実行する"
+      ;;
+  esac
+  log_file="$(mktemp "${log_phys}/finish-cleanup.XXXXXX")" || die_env "cleanup のログファイルを作成できません: ${log_phys}" "FF_DEV_TOOLKIT_STATE_DIR を書ける場所へ向けて再実行する"
   # MERGED でない PR は委譲先が破壊的処理の前に中断する（番号の打ち間違い対策。判定は 1 箇所に置く）
   assert_bundled_shebang_lf "${plugin_root}/scripts/merge-cleanup.sh"
-  local file_args=()
+  local file_args=() rc=0
   [[ -z "$github_input" ]] || file_args=(--github-input "$github_input")
-  FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${plugin_root}/scripts/merge-cleanup.sh" ${dry[@]+"${dry[@]}"} ${file_args[@]+"${file_args[@]}"} "$PR_NUMBER"
-  local rc=$?
+  FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${plugin_root}/scripts/merge-cleanup.sh" ${dry[@]+"${dry[@]}"} ${file_args[@]+"${file_args[@]}"} "$PR_NUMBER" >"$log_file" 2>&1 || rc=$?
+  # 成功時だけ要約する。失敗の回と、要約が見出しより前の警告を参照する回は全文を出す。
+  local summary_file="${log_file}.summary" show_full=0
+  if [[ "$verbose" -eq 1 || "$rc" -ne 0 ]]; then
+    show_full=1
+  elif ! awk 'index($0, "## マージ後 Cleanup 結果") == 1 { found = 1 } found { print } END { exit found ? 0 : 1 }' "$log_file" >"$summary_file"; then
+    show_full=1
+  elif awk 'index($0, "上の警告") { found = 1 } END { exit found ? 0 : 1 }' "$summary_file"; then
+    show_full=1
+  fi
+  if [[ "$show_full" -eq 1 ]]; then
+    cat "$log_file"
+  else
+    cat "$summary_file"
+  fi
+  rm -f -- "$summary_file"
+  echo "CLEANUP_LOG=${log_file}"
   echo "CLEANUP_RC=${rc}"
   return "$rc"
 }
@@ -534,7 +593,14 @@ case "$cmd" in
     # shellcheck source=lib/finish-precheck.sh
     . "$precheck_lib" || die_env "precheck 構成ファイルを読み込めません" "ff-dev-toolkit を再導入してから skill を呼び直す"
     [[ "$_finish_precheck_loaded" == "1" ]] || die_env "precheck 構成ファイルの読み込みが完了していません" "ff-dev-toolkit を再導入してから skill を呼び直す"
-    unset _finish_precheck_loading _finish_precheck_loaded
+    post_merge_lib="$plugin_root/scripts/lib/finish-precheck-post-merge.sh"
+    need_bundled lib/finish-precheck-post-merge.sh
+    assert_bundled_shebang_lf "$post_merge_lib"
+    _finish_precheck_post_merge_loaded=0
+    # shellcheck source=lib/finish-precheck-post-merge.sh
+    . "$post_merge_lib" || die_env "precheck 構成ファイルを読み込めません" "ff-dev-toolkit を再導入してから skill を呼び直す"
+    [[ "$_finish_precheck_post_merge_loaded" == "1" ]] || die_env "precheck 構成ファイルの読み込みが完了していません" "ff-dev-toolkit を再導入してから skill を呼び直す"
+    unset _finish_precheck_loading _finish_precheck_loaded _finish_precheck_post_merge_loaded
     cmd_precheck "$@" ;;
   cleanup) cmd_cleanup "$@" ;;
   knowledge-commit)

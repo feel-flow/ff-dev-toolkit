@@ -28,6 +28,7 @@
 # 変異検出: 例示行の confidence を 0.85 へ変える（文法外）と例示行のパーサ照合が赤（2026-09-25 実測）。
 # 変異検出: プロンプトの例示行を囲む `~~~text` フェンスを外すと、プロンプト全文の抽出検査が fixture / code-review の 2 件とも赤（例示の架空 finding scripts/example.sh:42 が抽出される。2026-09-25 実測）。
 # 空振り検出: プロンプトから例示行を消すと「例示が無い（針が当たらない）」で赤（0 件一致を緑にしない。2026-09-25 実測）。
+# 空振り検出: get_diff_content から --irreversible-delete を外すと「削除本文がレビュー diff に残っている」が赤になる。CODEX_TURN_MAX_CHARS を 999999999 に上げると、上限検査の stub が受理応答を返すため「上限超過のプロンプトでアダプタが 0 終了した」が赤になる（2026-11-04 実測。各 1 件失敗）。
 # 変異検出: adapter-common-git.sh の --staging-dir の判定を `/` 始まりだけへ戻すと「MSYS では C:/… の staging を絶対パスとして受け付ける」が赤（2026-10-26 WSL 実測。Issue `#2367`）。
 
 set -euo pipefail
@@ -1426,6 +1427,140 @@ else
   bad "-C/--cd を持たない codex なのにアダプタが 0 で完走した"
 fi
 assert_residue_clean "起動前の拒否経路" "$RESIDUE_TOKEN" "$LEGACY_REAL_TMP" "$LEGACYTMP" "$LEGACY_REAL_TMP"
+
+echo "== 削除本文の省略と Codex の起動前停止 =="
+
+# 削除本文は省き、パスと変更行は残す。素の diff に本文が在ることを先に固定し、
+# フラグを外した変異が「本文が無い」の緑に倒れないようにする。別リポジトリで行い、
+# 既存の feature/x fixture は触らない。
+DEL_REPO="$TMP/delete-repo"
+ff_git_fixture_init "$DEL_REPO"
+git -C "$DEL_REPO" config commit.gpgsign false
+git -C "$DEL_REPO" switch -q -c develop
+printf '%s\n' 'SECRET-DELETE-BODY' > "$DEL_REPO/deleted.txt"
+printf '%s\n' 'old-keep' > "$DEL_REPO/keep.txt"
+git -C "$DEL_REPO" add deleted.txt keep.txt
+git -C "$DEL_REPO" commit -qm "base"
+git -C "$DEL_REPO" switch -q -c feature/delete
+rm -f "$DEL_REPO/deleted.txt"
+printf '%s\n' 'KEEP-CHANGE-LINE' > "$DEL_REPO/keep.txt"
+git -C "$DEL_REPO" add -A
+git -C "$DEL_REPO" commit -qm "delete and edit"
+git -C "$DEL_REPO" diff develop...HEAD > "$TMP/raw-delete.diff"
+if grep -qF 'SECRET-DELETE-BODY' "$TMP/raw-delete.diff" \
+  && grep -qF 'diff --git a/deleted.txt' "$TMP/raw-delete.diff"; then
+  ok "前提: 素の diff に削除本文とパスが在る"
+else
+  bad "前提: 素の diff に削除本文が無い（検査が空振りする）"
+fi
+(
+  cd "$DEL_REPO" || exit 1
+  # 直接実行しない構成ファイル。set / trap は足さない。
+  # shellcheck disable=SC1091
+  . "$PLUGIN_ROOT/scripts/lib/adapter-common-git.sh"
+  get_diff_content develop
+) > "$TMP/fn-delete.diff"
+if grep -qF 'SECRET-DELETE-BODY' "$TMP/fn-delete.diff"; then
+  bad "削除本文がレビュー diff に残っている"
+else
+  ok "削除本文をレビュー diff から省く"
+fi
+if grep -qF 'diff --git a/deleted.txt' "$TMP/fn-delete.diff" \
+  && grep -qF 'KEEP-CHANGE-LINE' "$TMP/fn-delete.diff" \
+  && grep -qF -- '-old-keep' "$TMP/fn-delete.diff"; then
+  ok "削除パスと変更行は残る"
+else
+  bad "削除パスまたは変更行が落ちた"
+  sed 's/^/    | /' "$TMP/fn-delete.diff" >&2
+fi
+(
+  cd "$REPO" || exit 1
+  # shellcheck disable=SC1091
+  . "$PLUGIN_ROOT/scripts/lib/adapter-common-git.sh"
+  get_diff_content develop
+) > "$TMP/fn-keep.diff"
+git -C "$REPO" diff --irreversible-delete develop...HEAD > "$TMP/flag-keep.diff"
+if cmp -s "$TMP/fn-keep.diff" "$TMP/flag-keep.diff"; then
+  ok "削除の無い diff は --irreversible-delete 付きと一致する"
+else
+  bad "削除の無い diff がフラグ付き git diff と違う"
+fi
+
+# プロトコル上限を超える --diff-file では stub を起動しない。
+# 直前の lock 検査が stub を待ち受けに差し替えているので、受理応答を返す stub に戻す。
+cat > "$STUB/codex" <<SH
+#!/usr/bin/env bash
+${CODEX_HELP_ARM}
+for a in "\$@"; do printf '%s\n' "\$a" >> "$TMP/argv.log"; done
+cat >> "$TMP/stdin.log"
+echo "- Suggestion: stub review output"
+echo "  - verdict: severity=suggestion failure_scenario=no confidence=50"
+SH
+chmod +x "$STUB/codex"
+python3 -I -c 'import pathlib,sys; pathlib.Path(sys.argv[1]).write_bytes(b"x"*1100000)' "$TMP/huge.diff"
+: > "$TMP/argv.log"
+: > "$TMP/stdin.log"
+set +e
+run_isolated PATH="$STUB:$PATH" CODEX_HOME="$TMP/codex-home" \
+  bash "$ADAPTERS_DIR/codex-cli-adapter.sh" "$PERSPECTIVE" "$TMP/cap-out.md" \
+  --base develop --timeout 30 --task-type review --description "fixture" \
+  --diff-file "$TMP/huge.diff" \
+  >"$TMP/cap.log" 2>&1
+CAP_RC=$?
+set -e
+if [ "$CAP_RC" -eq 0 ]; then
+  bad "上限超過のプロンプトでアダプタが 0 終了した"
+elif [ -s "$TMP/argv.log" ]; then
+  bad "上限超過なのに codex を起動した"
+elif grep -qF 'prompt is too long' "$TMP/cap.log" && grep -qF '1048576' "$TMP/cap.log"; then
+  ok "Codex の文字上限を超えたら起動前に止める (rc=$CAP_RC)"
+else
+  bad "起動前停止の文言が無い (rc=$CAP_RC)"
+  tail -30 "$TMP/cap.log" | sed 's/^/    | /' >&2
+fi
+
+# バイト数が上限以下なら python3 が失敗しても起動する。超えて計測できないときは起動しない。
+NOPY="$TMP/nopython"
+mkdir -p "$NOPY"
+cat > "$NOPY/python3" <<SH
+#!/usr/bin/env bash
+printf '%s\n' called >> "$TMP/python3-calls"
+exit 127
+SH
+chmod +x "$NOPY/python3"
+: > "$TMP/argv.log"
+: > "$TMP/python3-calls"
+set +e
+run_isolated PATH="$NOPY:$STUB:$PATH" CODEX_HOME="$TMP/codex-home" \
+  bash "$ADAPTERS_DIR/codex-cli-adapter.sh" "$PERSPECTIVE" "$TMP/nopy-out.md" \
+  --base develop --timeout 30 --task-type review --description "fixture" \
+  >"$TMP/nopy.log" 2>&1
+NOPY_RC=$?
+set -e
+if [ "$NOPY_RC" -eq 0 ] && [ -s "$TMP/argv.log" ] && [ ! -s "$TMP/python3-calls" ]; then
+  ok "バイト数が上限以下なら python3 なしで codex を起動する"
+else
+  bad "上限以下のプロンプトが python3 失敗で止まった (rc=${NOPY_RC})"
+  tail -20 "$TMP/nopy.log" | sed 's/^/    | /' >&2
+fi
+: > "$TMP/argv.log"
+: > "$TMP/python3-calls"
+set +e
+run_isolated PATH="$NOPY:$STUB:$PATH" CODEX_HOME="$TMP/codex-home" \
+  bash "$ADAPTERS_DIR/codex-cli-adapter.sh" "$PERSPECTIVE" "$TMP/nopy-huge-out.md" \
+  --base develop --timeout 30 --task-type review --description "fixture" \
+  --diff-file "$TMP/huge.diff" \
+  >"$TMP/nopy-huge.log" 2>&1
+NOPY_HUGE_RC=$?
+set -e
+if [ "$NOPY_HUGE_RC" -ne 0 ] && [ ! -s "$TMP/argv.log" ] \
+  && grep -qF 'cannot measure the prompt length' "$TMP/nopy-huge.log" \
+  && grep -qF 'python3 failed' "$TMP/nopy-huge.log"; then
+  ok "バイト数が上限を超え python3 が失敗したら codex を起動しない (rc=${NOPY_HUGE_RC})"
+else
+  bad "上限超過かつ python3 失敗でも起動前に止まっていない (rc=${NOPY_HUGE_RC})"
+  tail -20 "$TMP/nopy-huge.log" | sed 's/^/    | /' >&2
+fi
 
 echo
 if [ "$FAIL" -gt 0 ]; then

@@ -3,16 +3,20 @@
 # ブランチ名の Issue に ff-effort ブロックが無いときの注意（PostToolUse / Bash）。
 # 止めない。該当しないときは stdout も stderr も空で exit 0。
 #
-# 対象は、ブランチ名が `<type>/#<n>-<slug>`（`#` 必須。日付だけの名前は Issue にしない）で、
+# 対象は、ブランチ名から Issue 番号を読める（読み方の正本は scripts/lib/branch-issue.sh）か、
+# `#` だけが欠けた `<type>/<n>-<slug>` の形で、
 # 次のどれかでその名前を作る・付け替える呼び出し:
 #   git switch -c|-C|--create|--force-create <branch>
 #   git checkout -b|-B <branch>
 #   git branch -m|-M|--move [<old>] <new>
+#   git worktree add -b|-B <branch> <path>
 # `git -C <path>` があるセグメントは、その作業先の Issue を見る。無いときは hook の cwd。
 # 引用の外の && || ; | と改行だけをコマンドの区切りにする。閉じない引用はそこで切らない。
 # 同じ Issue 番号でも作業先が違うときはそれぞれ見る。注意には作業先を書く。
 # 本文に `<!-- ff-effort:begin -->` が無い Issue だけ、hookSpecificOutput.additionalContext
 # でエージェントへ返す。ブロックがある、番号が無い、gh が無い、取得できないときは無音。
+# `#` だけが欠けた名前は、実測が Issue に紐づかないことを gh の有無に関わらず同じ経路で返す
+# （記録系の hook は読めない名前を無音で落とすので、ここが唯一の知らせる経路になる）。
 # 記録専用の record-effort-wallclock.sh には出力を足さない（あちらは無出力のまま）。
 #
 # fail-soft: 解析できない形、jq 不在、heredoc 除去の失敗は無音。警告文を出す段で jq が
@@ -28,7 +32,7 @@ fi
 asdd_hook_enabled hooks || exit 0
 
 case "$input" in
-  *switch* | *checkout* | *branch*) : ;;
+  *switch* | *checkout* | *branch* | *worktree*) : ;;
   *) exit 0 ;;
 esac
 
@@ -45,7 +49,7 @@ cmd="$(printf '%s' "$input" | jq -r 'if .tool_name == "Bash" then (.tool_input.c
 cmd="${cmd//$'\r'/}"
 [ -n "$cmd" ] || exit 0
 case "$cmd" in
-  *switch* | *checkout* | *branch*) : ;;
+  *switch* | *checkout* | *branch* | *worktree*) : ;;
   *) exit 0 ;;
 esac
 
@@ -62,12 +66,9 @@ strip_quotes() {
   printf '%s' "$s"
 }
 
-issue_of_branch() {
-  local re='^[A-Za-z0-9_.-]+/#([0-9]+)([-_/].*)?$'
-  if [[ "$1" =~ $re ]]; then
-    printf '%s' "${BASH_REMATCH[1]}"
-  fi
-}
+# ブランチ名 → Issue 番号の規則は共有 lib が持つ（hook ごとに複製しない）。
+# shellcheck source=../scripts/lib/branch-issue.sh
+. "${BASH_SOURCE[0]%/*}/../scripts/lib/branch-issue.sh" 2>/dev/null || exit 0
 
 # 相対の git -C は直前の作業先へ足す。最初の相対は hook の cwd から始める。
 repo_join() {
@@ -161,6 +162,23 @@ scan_segment() {
                 fi
                 ;;
             esac
+            ;;
+        esac
+        i=$((i + 1))
+      done
+      ;;
+    worktree)
+      [ "$i" -lt "$n" ] || return 0
+      [ "$(strip_quotes "${toks[$i]}")" = "add" ] || return 0
+      i=$((i + 1))
+      while [ "$i" -lt "$n" ]; do
+        t="$(strip_quotes "${toks[$i]}")"
+        case "$t" in
+          -b | -B)
+            if [ $((i + 1)) -lt "$n" ]; then
+              remember_branch "$(strip_quotes "${toks[$((i + 1))]}")" "$scan_repo"
+              i=$((i + 1))
+            fi
             ;;
         esac
         i=$((i + 1))
@@ -272,43 +290,57 @@ $segments
 EOF
 
 [ -n "$branch_list" ] || exit 0
-command -v gh >/dev/null 2>&1 || exit 0
 
-missing_list=""
+note=""
 while IFS= read -r record; do
   [ -n "$record" ] || continue
-  repo="${record%%$'\t'*}"
   branch_name="${record#*$'\t'}"
   [ -n "$branch_name" ] || continue
-  issue="$(issue_of_branch "$branch_name")"
-  [ -n "$issue" ] || continue
-  if [ -z "$repo" ]; then
-    repo="$CWD"
-  fi
-  case $'\n'"$missing_list" in
-    *$'\n'"${repo}"$'\t'"${issue}"$'\n'*) continue ;;
+  ff_branch_hash_hint "$branch_name"
+  [ -n "$_branch_hash_hint" ] || continue
+  line="ブランチ名 ${branch_name} からは Issue 番号を読めないので、経過時間などの実測が Issue に紐づきません。Issue の作業なら ${_branch_hash_hint} の形にしてください（git branch -m で付け替えられます）。"
+  case " $note " in
+    *" $line "*) continue ;;
   esac
-  body=""
-  view_rc=0
-  body="$(cd "$repo" && GH_PROMPT_DISABLED=1 gh issue view "$issue" --json body --jq .body 2>/dev/null)" || view_rc=$?
-  [ "$view_rc" -eq 0 ] || continue
-  case "$body" in
-    *'<!-- ff-effort:begin -->'*) continue ;;
-  esac
-  missing_list="${missing_list}${repo}"$'\t'"${issue}"$'\n'
+  note="${note:+$note }$line"
 done <<EOF
 $branch_list
 EOF
 
-[ -n "$missing_list" ] || exit 0
+missing_list=""
+if command -v gh >/dev/null 2>&1; then
+  while IFS= read -r record; do
+    [ -n "$record" ] || continue
+    repo="${record%%$'\t'*}"
+    branch_name="${record#*$'\t'}"
+    [ -n "$branch_name" ] || continue
+    issue="$(ff_branch_issue "$branch_name")"
+    [ -n "$issue" ] || continue
+    if [ -z "$repo" ]; then
+      repo="$CWD"
+    fi
+    case $'\n'"$missing_list" in
+      *$'\n'"${repo}"$'\t'"${issue}"$'\n'*) continue ;;
+    esac
+    body=""
+    view_rc=0
+    body="$(cd "$repo" && GH_PROMPT_DISABLED=1 gh issue view "$issue" --json body --jq .body 2>/dev/null)" || view_rc=$?
+    [ "$view_rc" -eq 0 ] || continue
+    case "$body" in
+      *'<!-- ff-effort:begin -->'*) continue ;;
+    esac
+    missing_list="${missing_list}${repo}"$'\t'"${issue}"$'\n'
+  done <<EOF
+$branch_list
+EOF
+fi
 
-note=""
 while IFS= read -r record; do
   [ -n "$record" ] || continue
   repo="${record%%$'\t'*}"
   issue="${record#*$'\t'}"
   [ -n "$issue" ] || continue
-  line="作業先 ${repo} のブランチ名の Issue ${issue} の本文に ff-effort ブロックがありません。skill:create-issue の工数ブロックを追記してください。ブロックが無いと close-issue は実績を記録しません。"
+  line="作業先 ${repo} のブランチ名の Issue ${issue} の本文に ff-effort ブロックがありません。skill:create-issue の工数ブロックを追記してください。ブロックが無いと close-issue は実績を記録しません。effort_ai_planned は skill:create-issue の references/estimation.md の目安表に従い、最小 1.0h とします（bundle では親・子それぞれではなく束ね全体に適用します）。"
   if [ -z "$note" ]; then
     note="$line"
   else

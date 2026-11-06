@@ -97,7 +97,7 @@
 - `PreToolUse :: Bash :: hooks/guard-zsh-glob.sh`
 - `PreToolUse :: Bash :: hooks/record-effort-wallclock.sh`
 - `PreToolUse :: Bash :: hooks/run-bash-hooks.sh`
-- `PreToolUse :: Edit|Write|MultiEdit|NotebookEdit|Bash|Agent|Task :: hooks/guard-review-in-flight.sh`
+- `PreToolUse :: Edit|Write|MultiEdit|NotebookEdit|Bash|Agent|Task|TaskStop :: hooks/guard-review-in-flight.sh`
 - `PreToolUse :: Read|Skill :: hooks/record-instruction-bytes.sh`
 - `PreToolUse :: Write|Edit :: hooks/guard-shell-save.sh`
 - `PreToolUse :: ^mcp__(github|plugin_github_github)__(create_pull_request|update_pull_request)$ :: hooks/guard-pr-followup.sh`
@@ -219,7 +219,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 
 - `FF_EXIT_CODE_GUARD_GATES`（終了コードガードへ追加する導入先ゲート。改行区切りの literal command prefix。hook プロセスの環境へ export する。未設定時は既定互換）
 
-- `FF_DEV_TOOLKIT_STATE_DIR`（工数の実測記録の置き場の親。既定 `$HOME/.config/ff-dev-toolkit`）
+- `FF_DEV_TOOLKIT_STATE_DIR`（工数の実測記録と finish.sh cleanup のログの親。既定 `$HOME/.config/ff-dev-toolkit`）
 - `FF_DEV_TOOLKIT_UPDATE_TTL_NOTIFIED`
 - `FF_LONG_GATE_FOREGROUND_TIMEOUT_MS`
 - `FF_REVIEW_ROUND_LIMIT`（レビュー巡回の上限。既定 2、0 で無効）
@@ -234,14 +234,18 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_JEV_MODE`
 - `FF_JEV_POINTS`
 - `FF_PRINCIPLES_GLOB`
+- `FF_DELETE_PUSH_SKIP_HOOKS`（削除 push のフック回避。未設定と `1` は `SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0`。`0` は consumer の hook を残す）
 - `FF_MERGE_CLEANUP_IGNORE_PATHS`
 - `FF_MERGE_CLEANUP_MERGED_PR_LIMIT`
 - `FF_MERGE_CLEANUP_PROJECTS_DIR`
 - `FF_MERGE_CLEANUP_PROTECT_BRANCHES`
 - `FF_MERGE_CLEANUP_TRANSCRIPTS`
 - `FF_MERGE_CLEANUP_TRANSCRIPT_ARCHIVE_DIR`
+- `FF_MERGE_DELETE_SEPARATE`（`1` のとき `finish.sh precheck` は `gh pr merge` だけを出し、ブランチ削除を付けない。未設定と `0` は従来どおり）
 - `FF_MULTI_AGENT_IGNORE_PATHS`
 - `FF_MULTI_AGENT_LOAD_PER_CORE`（`multi-agent.sh` がレーン起動前に load average と比べる閾値の係数。閾値は論理コア数 × 係数、既定 10、`0` で負荷判定を無効化）
+- `FF_POST_MERGE_PATHS`（`finish.sh precheck` のマージ後工程の判定で見るパス。`:` 区切りの glob。`FF_POST_MERGE_TERMS` と対で設定し、両方未設定なら判定しない）
+- `FF_POST_MERGE_TERMS`（同じ判定で見る語。`:` 区切りの文字どおりの部分一致で、英字の大文字小文字は区別しない）
 - `FF_SWEEP_ARCHIVE_DIR`
 - `FF_SWEEP_PROJECTS_DIR`
 
@@ -455,6 +459,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 
 配布スクリプト・hooks のローカル変数、配布物どうしの受け渡し値、導入先がコピーして所有するスニペット内のローカル変数です。
 
+- `FF_BASH_HOOKS_NOTICE_LOG`（集約入口 `hooks/run-bash-hooks.sh` が、`hooks/guard-zsh-glob.sh` がその呼び出しで作った通知の記録を受け取るファイル）
 - `FF_CHANGELOG_DIGEST_FILE`
 - `FF_CHANGELOG_DIGEST_WIDTH`
 - `FF_DEV_TOOLKIT_AUTO_UPDATE_STAMP`

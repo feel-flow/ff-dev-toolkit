@@ -1101,7 +1101,7 @@ if jq -e '.hooks.PreToolUse[] | select(.matcher | test("Agent")) | .hooks[]
 else
   bad "hooks.json の PreToolUse に guard-review-in-flight.sh が無い"
 fi
-for m in Edit Write MultiEdit NotebookEdit Bash Agent Task; do
+for m in Edit Write MultiEdit NotebookEdit Bash Agent Task TaskStop; do
   if jq -e --arg m "$m" '.hooks.PreToolUse[] | select(.hooks[]? | .command | contains("guard-review-in-flight.sh")) | select(.matcher | test($m))' "$HOOKS_JSON" >/dev/null 2>&1; then
     ok "matcher が $m を含む"
   else
@@ -2290,6 +2290,282 @@ case "$(printf '%s' "$J_OUT" | jq -r '.hookSpecificOutput.permissionDecision // 
 esac
 rm -f "$REPO/patch.py" "$REPO/read.py" "$REPO/fix.js" "$REPO/fix.sh" "$REPO/patch2"
 
+echo "guard-review-in-flight: (k2501) 引用をまたぐパス・trap/eval・同じコマンドのスクリプト・TaskStop"
+write_lock "$LIVE_PID"
+K_SCRATCH="$TEST_OUT/scratch2501"
+mkdir -p "$K_SCRATCH"
+k_silent 'D="$(mktemp -d -t x.XXXXXX)"; rm -rf "$D"/*' "mktemp の直後に /* を足してもツリー外"
+k_deny 'D="./draft"; rm -rf "$D"/*' "ツリー内の変数に /* を足した rm は止まる"
+k_silent "D=\"$K_SCRATCH\"; rm -f \"\$D\"/out/*" "絶対パスの変数に /out/* を足してもツリー外"
+k_silent 'D="$(mktemp -d -t x.XXXXXX)"; trap '"'"'rm -rf "$D"'"'"' EXIT' "trap の rm がツリー外なら通す"
+k_deny 'D="./draft"; trap '"'"'rm -rf "$D"'"'"' EXIT' "trap の rm がツリー内なら止まる"
+printf '%s\n' 'D="./draft"' "trap 'rm -rf \"\$D\"' EXIT" > "$TEST_OUT/trap-in.sh"
+k_deny "bash $TEST_OUT/trap-in.sh" "ファイル内のツリー内 trap は止まる"
+printf '%s\n' 'D="$(mktemp -d -t x.XXXXXX)"' "trap 'rm -rf \"\$D\"' EXIT" > "$TEST_OUT/trap-out.sh"
+k_silent "bash $TEST_OUT/trap-out.sh" "ファイル内のツリー外 trap は通す"
+k_silent 'D="$(mktemp -d -t x.XXXXXX)"; eval "rm -rf \"$D\""' "eval のツリー外 rm は通す"
+k_deny 'eval "rm -rf ./draft"' "eval のツリー内 rm は止まる"
+k_silent 'bash -c '"'"'D="$(mktemp -d -t x.XXXXXX)"; rm -rf "$D"/*'"'"'' "bash -c の変数パスはツリー外"
+K_MAKE="$(cat <<END
+S="$K_SCRATCH"
+cat > "\$S/integ.sh" <<'EOS'
+echo hi
+EOS
+bash "\$S/integ.sh"
+END
+)"
+k_silent "$K_MAKE" "同じコマンドで作った読み取り専用スクリプトは通す"
+K_MAKE_W="$(cat <<END
+S="$K_SCRATCH"
+cat > "\$S/integ.sh" <<'EOS'
+echo x > README.md
+EOS
+bash "\$S/integ.sh"
+END
+)"
+k_deny "$K_MAKE_W" "同じコマンドで作ったスクリプトのツリー内書き込みは止まる"
+K_PY_REPLACE="$(cat <<'PY'
+python3 - <<'EOS'
+s = "abc".replace("a", "b")
+print(s)
+EOS
+PY
+)"
+k_silent "$K_PY_REPLACE" "str.replace だけの python は通す"
+K_PY_OPEN="$(cat <<'PY'
+python3 - <<'EOS'
+open("README.md", "w").write("x")
+EOS
+PY
+)"
+k_deny "$K_PY_OPEN" "open のリテラル書き込みは止まる"
+K_PY_VAR_OUT="$(cat <<'PY'
+python3 - <<'EOS'
+p = "/tmp/ff-ws-outside"
+open(p, "w").write("x")
+EOS
+PY
+)"
+k_silent "$K_PY_VAR_OUT" "代入したツリー外パスへの open は通す"
+K_PY_VAR_IN="$(cat <<'PY'
+python3 - <<'EOS'
+p = "README.md"
+open(p, "w").write("x")
+EOS
+PY
+)"
+k_deny "$K_PY_VAR_IN" "代入したツリー内パスへの open は止まる"
+K_PY_LATER="$(cat <<'PY'
+python3 - <<'EOS'
+p = "README.md"
+open(p, "w").write("x")
+p = "/tmp/review-outside"
+EOS
+PY
+)"
+k_deny "$K_PY_LATER" "書き込みより後の代入では先の open を通さない"
+K_PY_EARLIER="$(cat <<'PY'
+python3 - <<'EOS'
+p = "/tmp/ff-ws-outside"
+open(p, "w").write("x")
+p = "README.md"
+EOS
+PY
+)"
+k_silent "$K_PY_EARLIER" "先に代入したツリー外パスは、後の代入があっても通す"
+K_PY_BOTH="$(cat <<'PY'
+python3 - <<'EOS'
+p = "/tmp/ff-ws-outside"
+open(p, "w").write("x")
+p = "README.md"
+open(p, "w").write("y")
+EOS
+PY
+)"
+k_deny "$K_PY_BOTH" "後の代入を使った二度目の open は止まる"
+K_PY_EXPR="$(cat <<'PY'
+python3 - <<'EOS'
+p = "/tmp/ff-ws-outside"
+p = "README" + ".md"
+open(p, "w").write("x")
+EOS
+PY
+)"
+k_deny "$K_PY_EXPR" "追跡できない再代入の後は古いパスを使わない"
+K_PY_EXPR_OUT="$(cat <<'PY'
+python3 - <<'EOS'
+p = "README.md"
+p = "a" + "b"
+p = "/tmp/ff-ws-outside"
+open(p, "w").write("x")
+EOS
+PY
+)"
+k_silent "$K_PY_EXPR_OUT" "再代入の後の単純なツリー外パスは通す"
+K_PY_PLUS="$(cat <<'PY'
+python3 - <<'EOS'
+p = "/tmp/ff-ws-outside"
+p += "x"
+open(p, "w").write("x")
+EOS
+PY
+)"
+k_deny "$K_PY_PLUS" "+= の後は古いパスを使わない"
+K_PY_EQ="$(cat <<'PY'
+python3 - <<'EOS'
+p = "/tmp/ff-ws-outside"
+p == "README.md"
+open(p, "w").write("x")
+EOS
+PY
+)"
+k_silent "$K_PY_EQ" "比較は代入としてパスを捨てない"
+K_PY_ARGV="$(cat <<'PY'
+python3 - <<'EOS'
+p = "/tmp/ff-ws-outside"
+p = sys.argv[1]
+open(p, "w").write("x")
+EOS
+PY
+)"
+k_deny "$K_PY_ARGV" "リテラルでない再代入の後は古いパスを使わない"
+K_PY_FOR="$(cat <<'PY'
+python3 - <<'EOS'
+p = "/tmp/ff-ws-outside"
+for p in Path(".").glob("*.md"):
+    open(p, "w").write("x")
+EOS
+PY
+)"
+k_deny "$K_PY_FOR" "for で束縛し直した名前は古いパスを使わない"
+K_PY_WITH="$(cat <<'PY'
+python3 - <<'EOS'
+p = "/tmp/ff-ws-outside"
+with open("README.md") as p:
+    pass
+open(p, "w").write("x")
+EOS
+PY
+)"
+k_deny "$K_PY_WITH" "with で束縛し直した名前は古いパスを使わない"
+K_PY_PATH_SRC="$(cat <<'PY'
+python3 - <<'EOS'
+from pathlib import Path
+Path("README.md").replace("/tmp/ff-ws-outside")
+EOS
+PY
+)"
+k_deny "$K_PY_PATH_SRC" "Path リテラルの replace は移動元がツリー内なら止まる"
+K_PY_PATH_DST="$(cat <<'PY'
+python3 - <<'EOS'
+from pathlib import Path
+Path("/tmp/ff-ws-outside").replace("README.md")
+EOS
+PY
+)"
+k_deny "$K_PY_PATH_DST" "Path リテラルの replace は移動先がツリー内なら止まる"
+K_PY_PATH_OUT="$(cat <<'PY'
+python3 - <<'EOS'
+from pathlib import Path
+Path("/tmp/ff-ws-outside").replace("/tmp/ff-ws-outside2")
+EOS
+PY
+)"
+k_silent "$K_PY_PATH_OUT" "Path リテラルの replace は両方ツリー外なら通す"
+k_deny 'CMD="rm -f README.md"; eval "$CMD"' "変数に入れた eval のツリー内 rm は止まる"
+k_silent 'CMD="rm -rf /tmp/ff-ws-outside-eval"; eval "$CMD"' "変数に入れた eval のツリー外 rm は通す"
+k_deny 'eval "$UNSET_REVIEW_VAR"' "展開できない eval は止まる"
+k_deny 'C="rm -f README.md"; trap "$C" EXIT' "変数に入れた trap のツリー内 rm は止まる"
+k_silent 'C="rm -rf /tmp/ff-ws-outside-trap"; trap "$C" EXIT' "変数に入れた trap のツリー外 rm は通す"
+k_deny 'trap "$UNSET_REVIEW_VAR" EXIT' "展開できない trap は止まる"
+K_PRINTF="$(cat <<END
+printf 'rm -f README.md\n' > "$K_SCRATCH/not-created.sh" <<'EOS'
+echo hi
+EOS
+bash "$K_SCRATCH/not-created.sh"
+END
+)"
+k_deny "$K_PRINTF" "printf は heredoc をスクリプト本文にしない"
+K_CAT_ARG="$(cat <<END
+cat "$K_SCRATCH/missing-src" > "$K_SCRATCH/via-cat-arg.sh" <<'EOS'
+echo hi
+EOS
+bash "$K_SCRATCH/via-cat-arg.sh"
+END
+)"
+k_deny "$K_CAT_ARG" "ファイル引数のある cat は heredoc をスクリプト本文にしない"
+K_STDIN_AFTER="$(cat <<END
+cat > "$K_SCRATCH/overridden.sh" <<'EOS' < <(printf '%s\n' 'rm -f README.md')
+echo hi
+EOS
+bash "$K_SCRATCH/overridden.sh"
+END
+)"
+k_deny "$K_STDIN_AFTER" "heredoc より後ろの stdin は本文にしない"
+K_STDIN_BEFORE="$(cat <<END
+cat < /dev/null > "$K_SCRATCH/stdin-before.sh" <<'EOS'
+echo hi
+EOS
+bash "$K_SCRATCH/stdin-before.sh"
+END
+)"
+k_silent "$K_STDIN_BEFORE" "heredoc より前の stdin は本文を置き換えない"
+K_LEX="$(cat <<'PY'
+bash <<'EOS'
+X="$(grep '^KEY=' file | cut -d= -f2- | tr -d '"\r ')"
+printf '%s\n' "$X"
+EOS
+PY
+)"
+k_silent "$K_LEX" "二重引用符の中のコマンド置換は字句解析を壊さない"
+k_deny 'bash -c "echo unterminated' "閉じない引用符は止める"
+printf 'echo hi\n' > "$TEST_OUT/ro-root.sh"
+run_hook "$(bash_json_at 'bash "$FF_DEV_TOOLKIT_ROOT/ro-root.sh"' "$REPO")" "FF_DEV_TOOLKIT_ROOT=$TEST_OUT"
+assert_silent "(k2501) プラグインルートの読み取り専用スクリプトは通す"
+printf 'echo x > README.md\n' > "$TEST_OUT/wr-root.sh"
+run_hook "$(bash_json_at 'bash "$FF_DEV_TOOLKIT_ROOT/wr-root.sh"' "$REPO")" "FF_DEV_TOOLKIT_ROOT=$TEST_OUT"
+assert_deny "(k2501) プラグインルートのスクリプトでもツリー内書き込みは止まる"
+k_deny "bash $TEST_OUT/missing-integ.sh" "まだ無いスクリプトは止まる"
+case "$REASON" in
+  *'ファイルは Write ツールで作り'*) ok "(k2501) 判定不能の案内が Write ツールでの作成を先に出す" ;;
+  *) bad "(k2501) 判定不能の案内が違う: [$REASON]" ;;
+esac
+# shellcheck disable=SC1091
+. "$PLUGIN_ROOT/tests/lib/review-round-counter.sh"
+if rr_bash_is_launch 'kill $(pgrep -f "multi-agent.sh --task review")'; then
+  bad "(k2501) kill の文字列をレビュー起動と数えた"
+else
+  ok "(k2501) コマンド位置に無い multi-agent.sh はレビュー起動ではない"
+fi
+clear_lock
+clear_lanes
+taskstop_json() { jq -n --arg d "$REPO" --arg id "$1" \
+  '{tool_name: "TaskStop", tool_input: {task_id: $id}, cwd: $d, hook_event_name: "PreToolUse"}'; }
+run_hook "$(agent_json 'pr-review-toolkit:code-reviewer' Agent tu-stop-1)"
+run_hook "$(subagent_start_json 'pr-review-toolkit:code-reviewer' agent-stop-1)"
+run_hook "$(agent_json 'pr-review-toolkit:code-reviewer' Agent tu-stop-2)"
+run_hook "$(subagent_start_json 'pr-review-toolkit:code-reviewer' agent-stop-2)"
+run_hook "$(taskstop_json 'agent-stop-1')"
+run_hook "$(edit_json)"
+assert_deny "(k2501) 片方の TaskStop ではもう一方のレーンが残る"
+run_hook "$(taskstop_json 'no-such-agent')"
+assert_silent "(k2501) 一致しない TaskStop 自体は deny しない"
+run_hook "$(edit_json)"
+assert_deny "(k2501) 一致しない TaskStop のあともレーンは残る"
+case "$REASON" in
+  *'TaskStop'*) ok "(k2501) 残ったレーンの deny 文が TaskStop の一致条件を説明する" ;;
+  *) bad "(k2501) deny 文に TaskStop が無い: [$REASON]" ;;
+esac
+run_hook "$(taskstop_json 'agent-stop-2')"
+run_hook "$(edit_json)"
+assert_silent "(k2501) 残りのレーンも agent_id の TaskStop で閉じる"
+clear_lanes
+run_hook "$(agent_json 'pr-review-toolkit:code-reviewer' Agent tu-stop-key)"
+run_hook "$(taskstop_json 'tu-stop-key')"
+run_hook "$(edit_json)"
+assert_silent "(k2501) tool_use_id が一致する TaskStop で未対応づけレーンが閉じる"
+clear_lanes
+
 # Windows では後段（(m) の壊れた symlink の作成）で suite が中断するため、ここへ置く。
 # ---- Windows（Git Bash）: ドライブ付きのパス表記（Issue `#2018`）----
 # Windows の Claude Code は file_path / cwd を `C:\repo\x.md` の形で渡す。修正前の hook は
@@ -2418,6 +2694,10 @@ k_deny "tee src/app.txt" "対: ignored でないツリー内への tee は従来
 m_deny "$(write_json "")" "判定不能: file_path が空の編集系ツールは従来どおり止まる"
 k_deny 'echo x > "$UNSET_VAR_FF_1756/note.md"' "判定不能: 変数展開の書き込み先は ignored かどうか以前に止まる"
 k_deny 'echo x > "$(printf build)/note.md"' "判定不能: コマンド置換の書き込み先は止まる（ignored へ解決しうる形でも）"
+case "$REASON" in
+  *'コマンド置換'*) ok "(k2501) コマンド置換の拒否理由が変数展開に潰れない" ;;
+  *) bad "(k2501) コマンド置換の拒否理由が違う: [$REASON]" ;;
+esac
 
 # --- ignored 判定そのものが失敗する回は deny 側（fail-closed の実測）---
 # 差し替え口 FF_WRITE_SCAN_GIT で `git check-ignore` を起動不能にする。rc 0 以外をすべて

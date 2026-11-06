@@ -60,6 +60,9 @@
 # 候補に限るのは、ヘルパが壊れた瞬間に**すべての** Bash 呼び出しが止まって復旧作業が
 # できなくなるのを避けるため（guard-exit-code.sh と同じ面の切り方）。
 #
+# 止めない通知の頻度（Issue `#2616`。notice_first）は、session_id が無い・記録のキーに使えない・
+# 記録を作れないとき毎回出す側へ倒す（出し済みと判定できないまま黙らせない）。
+#
 # heredoc 本文はデータとして走査対象から落とす（`tests/lib/heredoc-strip.sh`。未終端の
 # rc 3 は `<<` の誤検出とみなし、本文除去前の生コマンドを走査する）。
 #
@@ -81,6 +84,8 @@
 # scalar の対象から外す）。入力書き換えに対応しない環境（Codex / grok / 対応前の Claude Code）は従来の警告・deny のまま。
 # `bash <<'EOF'` へ包み直す案（Issue `#2491` の案 B）は採らない — 包んだ本文はホストの権限判定・安全確認が中身を
 # 読めない形になり、同じ集約入口の終了コードガードの bash -c 書き換えがホストの安全確認で拒否された実測がある。
+# 止めない通知（未引用 scalar の警告の systemMessage・PostToolUse の additionalContext・書き換えの通知）は、
+# 種類ごとに同じセッション・同じエージェントで最初の 1 回だけ出す（Issue `#2616`。deny と updatedInput は毎回同じ）。
 #   - この呼び出しだけ通す: Bash ツールへ渡すコマンドの**先頭の語**を環境代入 `FF_ZSH_GLOB_ACK=1`
 #     にする（前に別の環境代入・文があると無効。引用値の中や途中の文に現れるだけでも無効）。
 #     効く単位は Bash ツールの 1 呼び出しで、先頭に置けば改行で続く文にも効く（guard-exit-code.sh
@@ -135,6 +140,59 @@ case "${host_shell##*/}" in
   *) exit 0 ;;
 esac
 
+# ---- 止めない通知の頻度（Issue `#2616`） --------------------------------------------
+# 止めない通知（未引用 scalar の警告・書き換えの通知）は、通知の種類ごとに同じセッション（hook 入力の
+# session_id）で最初の 1 回だけ出す。PreToolUse の systemMessage も additionalContext も Claude Code の
+# CLI と Remote Control の画面に出るので、呼び出しごとに出すと画面を埋めて読み飛ばされる（ACE-2615-1）。
+# deny と updatedInput（書き換えそのもの）は頻度を絞らない。判定不能・helper 不在の通知（どれも
+# 「zsh 展開ガード:」で始まる）は壊れていることを隠さないよう毎回出す。
+# 出した記録は ${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/notices/<session_id>/<agent_id|main>/<種類>
+# のディレクトリで、mkdir の成否で初回を決める（並行した呼び出しでも初回は 1 つに決まる）。サブエージェントは
+# 親と session_id を共有するが文脈は別なので、hook 入力の agent_id ごとに数える。
+# session_id が無い・記録のキーに使えない・記録を作れないときは、従来どおり毎回出す（黙らせる側へ倒さない）。
+# 集約入口（run-bash-hooks.sh）から呼ばれた回は、作った記録を FF_BASH_HOOKS_NOTICE_LOG へ 1 行ずつ渡す。
+# 集約入口は、通知を載せた JSON を deny 以外で出せなかった回（別のガードの deny・書き換えの競合・
+# 再検査の失敗・打ち切り）にその記録を消し、次の呼び出しで改めて出させる。
+# 同じプロセスで同じ種類をもう一度判定したとき（書き換えを諦めて deny・警告へ戻る経路）は同じ答えを返す。
+notice_key=""
+notice_key_read=0
+notice_decided=" "
+notice_first() { # <種類> — 0: 出す / 1: このセッション（とエージェント）で出し済み
+  local base dir ids sid aid
+  case "$notice_decided" in *" $1 "*) return 0 ;; esac
+  if [ "$notice_key_read" -eq 0 ]; then
+    notice_key_read=1
+    ids="$(printf '%s' "$input" | jq -r '[(.session_id | strings) // "", (.agent_id | strings) // ""] | join("/")' 2>/dev/null)" || ids=""
+    ids="${ids//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
+    sid="${ids%%/*}"
+    aid="${ids#*/}"
+    [ -n "$aid" ] || aid=main
+    case "$sid" in '' | .* | *[!A-Za-z0-9._-]*) sid="" ;; esac
+    case "$aid" in .* | *[!A-Za-z0-9._-]*) sid="" ;; esac
+    [ -z "$sid" ] || notice_key="$sid/$aid"
+  fi
+  [ -n "$notice_key" ] || return 0
+  if [ -n "${FF_DEV_TOOLKIT_STATE_DIR:-}" ]; then
+    base="$FF_DEV_TOOLKIT_STATE_DIR"
+  elif [ -n "${HOME:-}" ]; then
+    base="$HOME/.config/ff-dev-toolkit"
+  else
+    return 0
+  fi
+  dir="$base/notices/$notice_key"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  if mkdir "$dir/$1" 2>/dev/null; then
+    # 集約入口へ渡せない記録は残さない（届かなかった回に取り消せないまま黙らせる側へ倒れる）
+    if [ -n "${FF_BASH_HOOKS_NOTICE_LOG:-}" ] && ! printf '%s\n' "$dir/$1" >> "$FF_BASH_HOOKS_NOTICE_LOG" 2>/dev/null; then
+      rmdir "$dir/$1" 2>/dev/null
+    fi
+    notice_decided="$notice_decided$1 "
+    return 0
+  fi
+  [ -d "$dir/$1" ] && return 1
+  return 0
+}
+
 # 同じホスト入口で equals/scalar も検出する。警告は既存 glob の deny と JSON を分断しない。
 # equals の deny は入力書き換え（下の try_rewrite）を試すまで保留する（Issue `#2255`）。
 expansion_warning=""
@@ -147,14 +205,22 @@ expansion_helper="${BASH_SOURCE[0]%/*}/../tests/lib/zsh-expansion-guard.sh"
 # hookSpecificOutput.additionalContext で返す。glob / equals の停止は PreToolUse の担当なので
 # ここでは走らせない。実行は既に終わっているので、どの失敗経路でも止めない（fail-soft）:
 # jq 不在・JSON でない入力・helper の異常終了は無音、helper 不在は `$` を含むコマンドに限り
-# 未検査である旨を additionalContext で知らせる。
+# 未検査である旨を additionalContext で知らせる。scalar の検出はセッションで 1 回だけ返す（Issue `#2616`）。
 case "$input" in
   *'"PostToolUse"'*)
     if command -v jq >/dev/null 2>&1 \
       && [ "$(printf '%s' "$input" | jq -r '.hook_event_name // empty' 2>/dev/null)" = PostToolUse ]; then
       [ "${FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD:-0}" = 1 ] && exit 0
       if [ -r "$expansion_helper" ]; then
-        printf '%s' "$input" | bash "$expansion_helper" 2>/dev/null || true
+        post_out="$(printf '%s' "$input" | bash "$expansion_helper" 2>/dev/null)" || true
+        if [ -n "$post_out" ]; then
+          post_context="$(printf '%s' "$post_out" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null)" || post_context=""
+          case "$post_context" in
+            '' | 'zsh 展開ガード:'*) : ;;
+            *) notice_first zsh-scalar-agent || post_out="" ;;
+          esac
+          [ -z "$post_out" ] || printf '%s\n' "$post_out"
+        fi
       else
         post_cmd="$(printf '%s' "$input" | jq -r 'select(.tool_name == "Bash") | .tool_input.command | select(type == "string")' 2>/dev/null)"
         post_cmd="${post_cmd//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
@@ -192,12 +258,21 @@ else
   esac
   case "$missing_cmd" in *'$'*) expansion_warning='zsh 展開ガード: helper が不在で未検査です。ff-dev-toolkit を更新・復旧してください。' ;; esac
 fi
+# 未引用 scalar の警告（判定不能の通知ではない systemMessage）を、このセッションで出し済みなら落とす（Issue `#2616`）。
+# 呼ぶのは出力の直前だけにする — expansion_warning は単語分割の書き換えを試すかの合図も兼ねている。
+drop_shown_scalar_warning() {
+  case "$expansion_warning" in
+    '' | 'zsh 展開ガード:'*) : ;;
+    *) notice_first zsh-scalar-screen || expansion_warning="" ;;
+  esac
+}
 emit_expansion_warning() {
   # 保留した equals の deny が未出力のまま抜ける経路があっても、無音の許可にしない。
   if [ -n "$expansion_deny" ]; then
     printf '%s\n' "$expansion_deny"
     return
   fi
+  drop_shown_scalar_warning
   if [ -n "$expansion_warning" ]; then
     jq -n --arg m "$expansion_warning" '{systemMessage: $m}' || printf '%s\n' "$expansion_warning" >&2
   fi
@@ -229,6 +304,7 @@ esac
 
 deny() { # <reason>
   local out rc
+  drop_shown_scalar_warning
   out="$(jq -n --arg reason "$1" --arg warning "$expansion_warning" \
     '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}} + (if $warning != "" then {systemMessage: $warning} else {} end)' 2>/dev/null)"
   rc=$?
@@ -278,7 +354,7 @@ try_rewrite() {
   # 引用の中の CR まで消えてデータが変わるので書き換えない。
   printf '%s' "$input" | jq -e '.tool_input.command | contains("\r") | not' >/dev/null 2>&1 || return 1
   [ "$asdd_unverifiable" -eq 0 ] || return 1
-  local helper fn stripped eq_on exp_hits fixes glob_fix eq_fix line word fix total n rest rewritten listed ordered out split_on has_heredoc context permission_mode
+  local helper fn stripped eq_on exp_hits fixes glob_fix eq_fix line word fix total n rest rewritten listed ordered out split_on has_heredoc context permission_mode warning_out
   # 公式の hook 入力の共通フィールド（default / plan / acceptEdits / auto / dontAsk / bypassPermissions）。
   # 集約入口の再投入は tool_input だけを差し替えるので、再検査の入力にもそのまま残る。
   permission_mode="$(printf '%s' "$input" | jq -r '.permission_mode // empty | select(type == "string")' 2>/dev/null)" || permission_mode=""
@@ -380,21 +456,29 @@ EOF
       case "$(ff_zsh_expansion_scan "$stripped")" in *scalar-list*) return 1 ;; esac
     fi
   fi
+  # 書き換えの通知は種類ごとにセッションで 1 回だけ付ける（Issue `#2616`）。出し済みの回も updatedInput は同じ。
   context=""
-  if [ -n "$listed" ]; then
+  if [ -n "$listed" ] && notice_first zsh-rewrite-quote; then
     listed="${listed#?}"
     listed="${listed//
 /、}"
     context="zsh ガード（zsh-nomatch-glob / equals 展開）: zsh で実行されない未引用の語を引用して書き換える候補を作成しました（${listed}）。次の呼び出しからは最初から引用して書いてください。"
   fi
+  # 書き換えを出せたときだけ expansion_warning を消す（jq が失敗して deny・警告へ戻る回は従来の警告を残す）
   if [ "$split_on" -eq 1 ]; then
-    context="${context}zsh 単語分割ガード: 未引用の名前付き変数（\${NAME} の形）を含む呼び出しを bash と同じ規則で単語分割させるため、呼び出しの先頭に ${FF_ZSH_WORD_SPLIT_PREFIX% } を付ける書き換え候補を作成しました（権限モードが bypassPermissions のときだけ付けます。位置引数の \$1 などだけを含む呼び出しには付きません。外す場合は先頭へ FF_ZSH_EXPANSION_ACK=1）。"
     # 前置で解消する未引用 scalar の警告は出さず、書き換えたことを利用者の画面へ知らせる
-    expansion_warning="zsh 単語分割ガード: 未引用の変数を bash と同じ規則で単語分割させるため、呼び出しの先頭に ${FF_ZSH_WORD_SPLIT_PREFIX% } を付けました（書き換え候補。採用・実行は再検査と通常の権限判定に従います）。"
+    warning_out=""
+    if notice_first zsh-word-split; then
+      context="${context}zsh 単語分割ガード: 未引用の名前付き変数（\${NAME} の形）を含む呼び出しを bash と同じ規則で単語分割させるため、呼び出しの先頭に ${FF_ZSH_WORD_SPLIT_PREFIX% } を付ける書き換え候補を作成しました（権限モードが bypassPermissions のときだけ付けます。位置引数の \$1 などだけを含む呼び出しには付きません。外す場合は先頭へ FF_ZSH_EXPANSION_ACK=1）。"
+      warning_out="zsh 単語分割ガード: 未引用の変数を bash と同じ規則で単語分割させるため、呼び出しの先頭に ${FF_ZSH_WORD_SPLIT_PREFIX% } を付けました（書き換え候補。採用・実行は再検査と通常の権限判定に従います）。"
+    fi
+  else
+    drop_shown_scalar_warning
+    warning_out="$expansion_warning"
   fi
-  out="$(printf '%s' "$input" | jq -c --arg command "$rewritten" --arg context "$context" --arg warning "$expansion_warning" '
-    {hookSpecificOutput: {hookEventName: "PreToolUse", updatedInput: (.tool_input + {command: $command}),
-      additionalContext: ($context + "採用・実行は再検査と通常の権限判定に従います。")}}
+  out="$(printf '%s' "$input" | jq -c --arg command "$rewritten" --arg context "$context" --arg warning "$warning_out" '
+    {hookSpecificOutput: ({hookEventName: "PreToolUse", updatedInput: (.tool_input + {command: $command})}
+      + (if $context != "" then {additionalContext: ($context + "採用・実行は再検査と通常の権限判定に従います。")} else {} end))}
     + (if $warning != "" then {systemMessage: $warning} else {} end)' 2>/dev/null)" || return 1
   [ -n "$out" ] || return 1
   expansion_warning=""

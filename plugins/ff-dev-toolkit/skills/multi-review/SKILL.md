@@ -98,7 +98,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 **900秒/CLI**（`--timeout`）。作業を起動前に列挙し、起動と同じメッセージで着手。尽きたら[長時間ゲートの進捗表示](../../docs-template/05-operations/deployment/git-workflow.md#長時間ゲートの進捗表示)に従う。
 
-**レビュー起動から全 CLI が終端（応答・失敗・タイムアウトのいずれか）に達するまで、オーケストレータ側で作業ツリーを変更しないこと**。変化を検知すると結果は DISCARDED になるが、戻した変更・gitignore 済みパスは見えず、凍結の代わりになる機構ではない。サブエージェント経路では、そちらは結果を DISCARDED にする機構が無い。名簿内の Review Toolkit 等は `guard-review-in-flight.sh` がレーンを開く。ネイティブ直接委譲の凍結・巡管理は手順0の正本に従う。worktree 隔離の起動既定: その規定（隔離時の凍結の扱いを含む）は [Git Workflow ステップ6](../../docs-template/05-operations/deployment/git-workflow.md#ステップ6-セルフレビューpr作成後重要) を正本とする（本書は再掲しない）。隔離は、外部 CLI を同一ツリーで実行する本スキルの経路には適用されず、こちらの凍結はそのまま守る。取りこぼしたレーンは `FF_REVIEW_SUBAGENT_LOCK_MAX_AGE_SECONDS`（既定 14400 秒）と `FF_REVIEW_SUBAGENT_LOCK_PENDING_SECONDS`（既定 1800 秒）で自動回収し、systemMessage で通知する。
+**レビュー起動から全 CLI が終端（応答・失敗・タイムアウトのいずれか）に達するまで、オーケストレータ側で作業ツリーを変更しないこと**。変化を検知すると結果は DISCARDED になるが、戻した変更・gitignore 済みパスは見えず、凍結の代わりになる機構ではない。サブエージェント経路では、そちらは結果を DISCARDED にする機構が無い。名簿内の Review Toolkit 等は `guard-review-in-flight.sh` がレーンを開く。ネイティブ直接委譲の凍結・巡管理は手順0の正本に従う。worktree 隔離の起動既定: その規定（隔離時の凍結の扱いを含む）は [Git Workflow ステップ6](../../docs-template/05-operations/deployment/git-workflow.md#ステップ6-セルフレビューpr作成後重要) を正本とする（本書は再掲しない）。隔離は、外部 CLI を同一ツリーで実行する本スキルの経路には適用されず、こちらの凍結はそのまま守る。
 
 ### 2a. ホスト自身のレーンのホスト委譲
 
@@ -118,7 +118,7 @@ MCP: 取得値: MCP で同じ Issue / PR の最新 body / updated_at を取得�
 <!--d70084c3e53d57e3-->
 分類: 非操作: 書込先の例示。MCPはscratch保存しsource凍結
 
-**利用不可・失敗時（exit 0 の単一縮退も含む）**: 自動fallback無し。`Status: incomplete` は未確認。利用制限時は復旧待ち・予約より先に [失敗時の担当選択](../../docs-template/05-operations/deployment/self-review.md#失敗時の担当選択) に従う。自ホストは **2a** へ。未完了観点の再実行:
+**利用不可・失敗時（exit 0 の単一縮退も含む）**: 自動fallback無し。`Status: incomplete` は未確認。利用制限時は復旧待ち・予約より先に [失敗時の担当選択](../../docs-template/05-operations/deployment/self-review.md#失敗時の担当選択) に従う。取りこぼしたレーンは `FF_REVIEW_SUBAGENT_LOCK_MAX_AGE_SECONDS`（既定 14400 秒）と `FF_REVIEW_SUBAGENT_LOCK_PENDING_SECONDS`（既定 1800 秒）で回収し通知。主担当の🔑/💳は2a。他は主担当のみで完了。未完了観点の再実行:
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --resume --timeout 1800

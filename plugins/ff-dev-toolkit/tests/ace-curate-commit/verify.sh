@@ -37,6 +37,7 @@
 # 空振り検出: 共通 lib の空集合・空 path・icase で0件一致は rc=2、通常 file は rc=0、全ケースで index の同一性を確認（2026-10-28 実測）。
 # 変異検出: commit の読み戻しの停止を外すと 19 が赤（記録外のパスを含むコミットが rc=0）、自動の取り消しを外すと 19 が赤（HEAD が混入コミットのまま）、取り消しの前提（HEAD がこのコミット）の照合を外すと 19b が赤（post-commit が積んだコミットを巻き戻す）、知見のコミットの特定（commit 前の HEAD を親に持つもの）を外して HEAD を照合すると 19b が赤（名指しが post-commit のコミットになる）、Categories の折り返し幅を無効にすると 20 が赤（最長 147 字）、重複除去を外すと 20 が赤、lib の絶対パスの相対化を外すと 21 が赤（`:(literal)/…` を渡す）、`top` の初期化を外すと bash 4 以降で 21 が赤（set -u の unbound）、作業ツリー内の確認を外すと 21b が赤（外のパスがルート直下の同名ファイルへ付け替わる）（2026-10-29 実測。Issue `#2494` / `#2213` / `#2449`）。
 # 21c の断言: MSYS で C:/ を相対のままに戻すと `:(top,literal)C:/…` にならず赤。全 OS で C:/ を絶対にすると、他 OS 側が赤。実機の MSYS / Cygwin では C:/docs が本物のドライブを指すので 21c は理由付きの skip。
+# 空振り検出: 手順 1 の保護判定 fence を Phase 1（2. の見出し）の後ろへ移す・protected の switch -c を外す・unknown を default に留める・probe 呼び出しを消して fence を抽出不能にする 4 変異は各 rc=1（抽出不能は skip へ倒さず赤）。無変異対照は rc=0（2026-11-04 WSL 実測）。
 # 空振り検出: KC_OUTPUTを旧兄弟leafのKC_TMP.outへ戻す独立変異は、合成canaryのbytes不変照合が1件赤（rc=1）。同じ出力部分の無変異対照は2/0、suite全体は169件pass（2026-10-28実測、Issue `#2429`）。
 set -euo pipefail
 
@@ -185,6 +186,10 @@ expect_contains_in "$RULES_FILE" \
 expect_contains_in "$RULES_FILE" \
   'カテゴリが複数でも件名には列挙せず、commit body に記録する' \
   "カテゴリを件名へ列挙しない明示"
+
+expect_contains_in "$RULES_FILE" \
+  '複数の知見を 1 件へ畳む件名が 100 字を超えるときだけ、先頭の ID と残り件数（ほか N 件）に短縮し、全 ID は body に残す。100 字以内の件名は ID を並べたままにする' \
+  "100 字を超える畳み込み件名だけを短縮し、上限内は ID を並べたままにする"
 
 expect_contains_in "$RULES_FILE" \
   '要約を短くするかコミットを分割する' \
@@ -548,6 +553,90 @@ assert_probe "classic 404 + rulesets が non_fast_forward のみ（pull_request 
 
 rm -rf "$PROBE_DIR"
 
+echo "== 手順 1 編集前の保護判定（Phase 1 より前に知見ブランチ / detached へ移る） =="
+# 保護された default branch の導入先では、default の作業ツリーで書き始めた最初の Edit が
+# 編集ガードに止められる（導入先の観測台帳で 7 回）。Phase 2 の Helpful 更新も編集なので、判定を
+# Phase 1（抽出）より前へ置く順序と、
+# 判定ごとの移動先を、SKILL.md の fence をそのまま抽出して stub の finish.sh で実行して固定する。
+probe_lines="$(grep -nF 'knowledge-commit probe)"' "$COMMAND_FILE" | cut -d: -f1 || true)"
+phase1_line="$(grep -n '^### 2\. Phase 1' "$COMMAND_FILE" | cut -d: -f1 || true)"
+if [ -n "$probe_lines" ] && [ "$(printf '%s\n' "$probe_lines" | wc -l | tr -d ' ')" = 1 ] \
+  && [ -n "$phase1_line" ] && [ "$probe_lines" -lt "$phase1_line" ]; then
+  ok "probe の呼び出しは 1 箇所で、Phase 1（2. の見出し）より前にある"
+else
+  bad "probe の呼び出しが 1 箇所かつ Phase 1 より前にない（probe 行: [${probe_lines}] / Phase 1 見出し行: [${phase1_line}]）"
+fi
+expect_fixed_count \
+  'protected=0   # 保護判定は手順 1 で済み、保護時は知見ブランチ上にいる' \
+  1 \
+  "手順 5 は probe を再実行せず、現在のブランチで分岐する"
+expect_fixed_count \
+  '3) [[ -n "$current_branch" ]] || git switch -c "$ACE_BRANCH" || exit 1' \
+  1 \
+  "detached から直 push が保護で拒否された回は、commit を保ったまま知見ブランチを作って PR へ進む"
+
+EB_DIR="$(mktemp -d)"
+awk '
+  /^```bash$/ { infence=1; buf=""; next }
+  infence && /^```$/ { infence=0; if (buf ~ /knowledge-commit probe\)"/) { printf "%s", buf; n++ } next }
+  infence { buf = buf $0 "\n" }
+  END { if (n != 1) exit 3 }
+' "$COMMAND_FILE" >"$EB_DIR/pre-edit.sh" && eb_rc=0 || eb_rc=$?
+mkdir -p "$EB_DIR/root/scripts"
+cat >"$EB_DIR/root/scripts/finish.sh" <<'STUB'
+[ "$1 $2" = "knowledge-commit probe" ] || exit 9
+[ "$STUB_PROTECTION" != fail ] || exit 2
+echo "protection=${STUB_PROTECTION} (default_branch=develop, classic=stub, rulesets=stub)"
+STUB
+printf '%s\n' 'exit 0' >"$EB_DIR/root/scripts/check-shebang-cr.sh"
+EB_REPO="$EB_DIR/repo"
+if [ "$eb_rc" -ne 0 ] || ! grep -q 'git switch' "$EB_DIR/pre-edit.sh"; then
+  bad "手順 1 の保護判定 fence を SKILL.md から 1 つだけ抽出できない（rc=${eb_rc}。skip にしない）"
+elif ! (
+  # shellcheck source=../lib/git-fixture.sh
+  . "$SCRIPT_DIR/../lib/git-fixture.sh" || exit 1
+  ff_git_fixture_init "$EB_REPO" "Pre Edit Branch" "pre-edit-branch@example.com" \
+    && git -C "$EB_REPO" commit -q --allow-empty -m init \
+    && git -C "$EB_REPO" branch -M develop
+); then
+  bad "編集前の保護判定用の Git fixture を作れません（skip にしない）"
+else
+  # <ラベル> <開始: develop|detached|ace> <判定> <期待 rc> <期待の位置: ブランチ名 | (detached)> [既存ブランチを作る: 1]
+  assert_pre_edit() {
+    local mode
+    for mode in -uo -euo; do assert_pre_edit_mode "$mode" "$@"; done
+  }
+  assert_pre_edit_mode() {
+    local mode="$1"; shift
+    local label="${1}（set ${mode} pipefail）" start="$2" protection="$3" want_rc="$4" want_at="$5" pre_exist="${6:-0}" rc=0 at
+    git -C "$EB_REPO" switch -q --force develop || { bad "$label — fixture を develop へ戻せない"; return; }
+    git -C "$EB_REPO" for-each-ref --format='%(refname:short)' 'refs/heads/chore/' | while read -r b; do git -C "$EB_REPO" branch -q -D "$b"; done
+    [ "$pre_exist" = 1 ] && git -C "$EB_REPO" branch -q chore/ace-from-pr-7
+    case "$start" in
+      detached) git -C "$EB_REPO" switch -q --detach ;;
+      ace) git -C "$EB_REPO" switch -q -c chore/ace-from-pr-5 ;;
+    esac
+    ACE_BRANCH=chore/ace-from-pr-7 FF_DEV_TOOLKIT_ROOT="$EB_DIR/root" STUB_PROTECTION="$protection" \
+      bash -c 'set "$3" pipefail; cd -- "$2" || exit 1; . "$1"' -- "$EB_DIR/pre-edit.sh" "$EB_REPO" "$mode" >"$EB_DIR/out" 2>&1 || rc=$?
+    at="$(git -C "$EB_REPO" branch --show-current)"
+    [ -n "$at" ] || at="(detached)"
+    if [ "$rc" = "$want_rc" ] && [ "$at" = "$want_at" ]; then
+      ok "$label"
+    else
+      bad "$label — 期待 rc=${want_rc} / ${want_at}、実際 rc=${rc} / ${at}: $(tr '\n' ' ' <"$EB_DIR/out")"
+    fi
+  }
+  assert_pre_edit "default + protected → 編集前に ACE_BRANCH へ移る" develop protected 0 chore/ace-from-pr-7
+  assert_pre_edit "default + unprotected → default のまま（既定の直 push は変えない）" develop unprotected 0 develop
+  assert_pre_edit "default + unknown → default で書き始めず detached HEAD へ移る" develop unknown 0 "(detached)"
+  assert_pre_edit "detached + protected → 編集前に ACE_BRANCH へ移る" detached protected 0 chore/ace-from-pr-7
+  assert_pre_edit "detached + unknown → detached のまま" detached unknown 0 "(detached)"
+  assert_pre_edit "既存知見ブランチ + protected → そのブランチのまま" ace protected 0 chore/ace-from-pr-5
+  assert_pre_edit "default + protected で ACE_BRANCH が既存 → 名指しして停止し default に留まる" develop protected 1 develop 1
+  assert_pre_edit "probe が判定不成立（非 0） → 停止し default に留まる" develop fail 1 develop
+fi
+rm -rf "$EB_DIR"
+
 echo "== 共通の書き込み口（knowledge-commit.sh）の振る舞い =="
 KC="$PLUGIN_ROOT/scripts/knowledge-commit.sh"
 if [ ! -f "$KC" ]; then
@@ -664,6 +753,67 @@ else
     else
       echo "  ✗ --id の繰り返しが後勝ちで落ちる（$(git log -1 --format=%s)）" >&2; exit 1
     fi
+
+    # 5c. 複数エントリの件名が 100 字を超えるときだけ短縮する。ちょうど 100 は ID を並べたまま。
+    #     超えた件名は先頭 ID と残り件数にし、全 ID は body に残す。hook は 100 字超を拒否する。
+    hooks_dir="$(git rev-parse --absolute-git-dir)/hooks"
+    mkdir -p "$hooks_dir"
+    {
+      printf '%s\n' '#!/bin/bash'
+      printf '%s\n' 'subject="$(sed -n "1p" "$1")"'
+      printf '%s\n' 'len="$(printf "%s" "$subject" | LC_ALL=C awk '"'"'{ print length($0); exit }'"'"')"'
+      printf '%s\n' 'if [ "$len" -gt 100 ]; then echo "header-max-length" >&2; exit 1; fi'
+      printf '%s\n' 'exit 0'
+    } > "$hooks_dir/commit-msg"
+    chmod +x "$hooks_dir/commit-msg"
+    n=1
+    while [ "$n" -le 4 ]; do
+      printf '%s\n' "- exact$n" >> docs/08-knowledge/PLAYBOOK.md
+      id="$(printf 'ACE-2516-EXACT-%05d' "$n")"
+      kc add --source ace --id "$id" --summary "要約$n" --category process -- docs/08-knowledge/PLAYBOOK.md >/dev/null
+      n=$((n + 1))
+    done
+    kc commit >/dev/null
+    exact_subject='knowledge: ACE-2516-EXACT-00001 / ACE-2516-EXACT-00002 / ACE-2516-EXACT-00003 / ACE-2516-EXACT-00004'
+    if [ "$(git log -1 --format=%s)" = "$exact_subject" ]; then
+      echo "  ✓ 件名がちょうど 100 字の複数エントリは ID を並べたままにする"
+    else
+      echo "  ✗ 100 字の件名を短縮した（$(git log -1 --format=%s)）" >&2; exit 1
+    fi
+    n=1
+    while [ "$n" -le 7 ]; do
+      printf '%s\n' "- over$n" >> docs/08-knowledge/PLAYBOOK.md
+      id="$(printf 'ACE-2516-%02d' "$n")"
+      rc=0
+      out="$(kc add --source ace --id "$id" --summary "要約$n" --category process -- docs/08-knowledge/PLAYBOOK.md 2>&1)" || rc=$?
+      if [ "$rc" -ne 0 ]; then
+        echo "  ✗ 100 字超の畳み込みを hook の前に短縮できない（n=${n} rc=${rc} ${out}）" >&2; exit 1
+      fi
+      n=$((n + 1))
+    done
+    kc commit >/dev/null
+    body="$(git log -1 --format=%b)"
+    short_subject='knowledge: ACE-2516-01 ほか 6 件'
+    missing=0
+    n=1
+    while [ "$n" -le 7 ]; do
+      id="$(printf 'ACE-2516-%02d' "$n")"
+      case "$body" in
+        *"- ${id} 要約${n}"*) ;;
+        *) missing=1 ;;
+      esac
+      n=$((n + 1))
+    done
+    case "$body" in
+      *"Categories: process"*) ;;
+      *) missing=1 ;;
+    esac
+    if [ "$(git log -1 --format=%s)" = "$short_subject" ] && [ "$missing" -eq 0 ]; then
+      echo "  ✓ 100 字を超える複数エントリは先頭 ID と残り件数に短縮し、全 ID を body に残す"
+    else
+      echo "  ✗ 100 字超の件名短縮が期待と違う（件名=$(git log -1 --format=%s) body=${body}）" >&2; exit 1
+    fi
+    rm -f "$hooks_dir/commit-msg"
 
     # 6. 使い方の誤り・リポジトリ外のパスは exit 2
     rc=0; kc add --source ace --id OBS-1 --summary s -- docs/08-knowledge/PLAYBOOK.md >/dev/null 2>&1 || rc=$?

@@ -68,9 +68,10 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 - 対象 Issue は `CLOSES=owner/repo#N`（**Closes 運用** = `closingIssuesReferences` ∪ 本文の closing keyword）と `REFS=owner/repo#N`（**Refs 運用** = 本文の `Ref` / `Refs` のうち Closes 群に無いもの）。以降の `gh issue` には URL を渡す（同番号の別リポジトリ Issue を誤更新しない）
 - `closingIssuesReferences` は **PR 本文だけ**を見る（件名の `fix: #N` は API 対象外）。空を理由に打ち切ると Refs が無検査になる。拾う綴りは `Ref` / `Refs` のみ（裸の `#N` 等は対象外）
 - 両群空（`PRECHECK=no-target`）は「参照から検出できる対象 Issue はありません」と報告して終了。件名経由は検出範囲外なので「Issue を閉じない」と断定しない。`AUTO_CLOSE_UNRELIABLE=1`（本文 keyword あり / API 空）も照合し、手順8で手動クローズを案内する
-- 複数 Issue は Issue ごとに手順 3〜6 を繰り返す。`bundle` は sub-issues 全件（`gh api --paginate repos/<owner>/<repo>/issues/<n>/sub_issues --jq '.[].number'`）へ照合を広げ、PR 本文の `Closes` に子と bundle が全部並ぶかを検査する
+- 複数 Issue は Issue ごとに手順 3〜6 を繰り返す。`bundle` は sub-issue 全件へ照合を広げ、PR 本文の `Closes` に子と bundle が全部並ぶかを検査する
+- 未チェック AC、削除の分離、削除 push のフックは [merge-gate](references/merge-gate.md)
 
-<!--a7da2ee356b8eaf4-->
+<!--36d5dfa0b5b9e6e0-->
 MCP: 取得値: MCPでheadRefName/headRefOid と全 sub_issues。形式: PR JSON / 全 page 配列。渡し先: Git fetch/checkout の OID照合と全子のAC/Closes照合。不足時: MCP 必須不足は停止。
 
 ### 2. closing keyword 抵触検査（Refs 運用の Issue がある場合）

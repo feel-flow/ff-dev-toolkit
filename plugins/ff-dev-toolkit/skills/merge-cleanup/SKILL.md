@@ -61,11 +61,12 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 - **前提ツール**: 認証済み `gh` CLI と `jq`（不足していれば冒頭で中断して案内する）。PR 不在・gh 不通は委譲前に **rc 1** で名指しし、復帰手段を出す（黙って 0 で終わらない。委譲先の PARTIAL = rc 2 とは重ねない）
 - **`--dry-run`**（`finish.sh cleanup --dry-run <PR>`）: 1 つも削除せず、「実行した場合に削除されるリモートブランチ・ローカルブランチ・worktree・リモート取り残し」を一覧表示して終わる。保護ブランチ・dirty worktree・fail-closed な縮退の判定は通常実行とまったく同じで、dry-run だけ緩まない。見送った prune とリモート削除の連鎖は read-only の `git ls-remote` で予測して一覧へ含める。動作検証・導入先での初回実行など、確認したい 1 点のためにツールの全副作用を引き受けたくない場面で使う
+- **`--verbose`**（`finish.sh cleanup --verbose <PR>`）: 委譲先へは渡さない。委譲先の標準出力と標準エラーは作業ツリーの外（`FF_DEV_TOOLKIT_STATE_DIR`、未設定なら `~/.config/ff-dev-toolkit`、HOME も未設定なら TMPDIR の `ff-dev-toolkit` の `logs`）へ残す。通常の標準出力は見出し `## マージ後 Cleanup 結果` 以降と `CLEANUP_LOG` / `CLEANUP_RC` だけで、見出しが無い回、終了コードが 0 でない回、要約が「上の警告」を参照する回は全文を出す。`--verbose` は全文も出す。ログを置けない、またはログがリポジトリ内なら委譲前に rc 1
 - **実行する cwd**: 対象PRのheadを保持するリンクworktreeでは破壊的処理の前に中断する。他セッションのcheckoutは変更せず、下のworktree手順からswitchなし掃除へ進む。detached HEAD の linked worktree は switch なし掃除モード。main worktree の detached HEAD は通常モードで base へ戻るため、退避先にしない。
 - **`disable-model-invocation` は意図的に付けない**。実行部が 1 行なのでフラグはスクリプト直叩きで迂回でき破壊的操作を防げない一方、フルオートチェーンが本スキルの実行を求めているため可用性だけが落ちる（ACE-147-1。回帰防止は `tests/skill-frontmatter/verify.sh`）
 - マージ前の base 追随・リベース後の送信は [Git Workflow](../../docs-template/05-operations/deployment/git-workflow.md#base-の取り込みとリベース後の送信) に従う（本スキルが行うマージ済みブランチの削除とは別の手順）
 
-<!--79a18ae02cc1145d-->
+<!--cf2c53c92a04841f-->
 MCP: 取得値: MCP で同じ PR の state / head / base / fork / OID と merged/open 一覧を取得。形式: cleanup-state / cleanup-pr / cleanup-guards の raw JSON を同じ index に保存。渡し先: finish.sh cleanup <PR> --github-input /absolute/index.json へ渡す（jq と Git は必要）。不足時: 必須不足は rc2 で停止、削除 guard の任意不足は SKIP / PARTIAL で保全。gh 専用前提は file 経路には課さない。
 
 ## スクリプトの処理と環境変数
@@ -122,7 +123,7 @@ MCP: 取得値: MCP で同じ PR の state / head / base / fork / OID と merged
 
 ## 安全原則（スクリプトが保証すること）
 
-保護ブランチはローカル・リモートとも絶対に削除しない／未コミット変更を勝手に消さない／他セッションの作業ブランチを切り替えない・worktree を消さない／ガード情報の取得失敗は fail-closed（「取得失敗 = 削除中止」）／トランスクリプトは推測で消さない（`cwd` 照合 + 検証済みアーカイブ）／失敗を握りつぶさない（PARTIAL）／リモート削除の失敗で掃除全体を止めない（消せなかったことは記録して続行）／削除 push で consumer の simple-git-hooks / husky のフルゲートを起動しない（消えた ref へは削除 push 自体を行わない）。
+保護ブランチはローカル・リモートとも絶対に削除しない／未コミット変更を勝手に消さない／他セッションの作業ブランチを切り替えない・worktree を消さない／ガード情報の取得失敗は fail-closed（「取得失敗 = 削除中止」）／トランスクリプトは推測で消さない（`cwd` 照合 + 検証済みアーカイブ）／失敗を握りつぶさない（PARTIAL）／リモート削除の失敗で掃除全体を止めない（消せなかったことは記録して続行）／削除 push で consumer の simple-git-hooks / husky のフルゲートを起動しない（消えた ref へは削除 push 自体を行わない。既定は `SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0`。`FF_DELETE_PUSH_SKIP_HOOKS=0` のときだけこの代入を外して hook を残す。それ以外の値は削除の前に rc 1）。
 
 ## プロジェクト固有処理の拡張ポイント（optional）
 

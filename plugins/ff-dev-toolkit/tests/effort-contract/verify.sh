@@ -59,6 +59,7 @@
 # 変異検出: effort-report.sh --deploy-check のキー名照合を外すと（配備の行を読まない）検査 5b の「なし」・記入済みの 2 件、プレースホルダ（全体が [ … ]）の判定を外すと雛形のまま = unfilled の 1 件、読めない本文を present へ倒すと unavailable の 1 件、空値の判定を外すと空値の 1 件、未閉鎖判定（inblock）を外すと end の無いブロックの 1 件、判定順を「不在 → 破損」へ戻すと end だけの本文の 1 件、trim から全角空白を外す・全角括弧の（未記入）の判定を外すと全角の（未記入）の 1 件、close-issue の照合手順から取得した本文の確定（mv）を外すと統合ケース（5a の位置での単独実行）・保存先・cygpath -m の変換先の 3 件（2026-10-25 再実測）、gh 失敗時の unavailable 報告を外すと gh 失敗ケースの 1 件、排他を --issue-metrics / --unreached-leaves だけへ戻すと --input 併用の 1 件、2 組目のブロックの検出を外すと 1 件、ブロック外の end の検出を外すと余分な end・end だけの本文の 2 件が赤になる（mutation/mut-deploy-key.py / mut-deploy-unfilled.py / mut-deploy-unavailable.py / mut-deploy-empty.py / mut-deploy-unclosed.py / mut-deploy-endonly.py / mut-deploy-fullwidth.py / mut-deploy-fullwidth-paren.py / mut-deploy-step-order.py / mut-deploy-gh-fail.py / mut-deploy-opt-exclusive.py / mut-deploy-twoblocks.py / mut-deploy-extraend.py）。
 # 空振り検出: create-issue の雛形から配備の行を消す・ブロックを切り出せない形にすると 検査 5b が「切り出せません」で赤になる。既存 fixture へ配備の行を 1 件も注入できない（マーカーの綴りが変わった）ときも「注入が成立していない」で赤にし、集計が変わらないことを空の比較で緑にしない。
 # 空振り検出: --issue-metrics に存在しない記録ディレクトリを与えると (unmeasured) を出して exit 0 することを 検査 13a が固定し、0 を出す変異（mutation/mut-metrics-zero.py）で 13a が赤になる。
+# 空振り検出: scripts/lib/branch-issue.sh の接頭辞一覧から grok を外すと 15a / 15b が、年-月の判定を外すと 15a が、record-instruction-bytes.sh の docs-template の分岐を外すと 15e が赤になる（2026-11-05 実測）。入力表の空振りは件数 19 の固定が拾う。
 #
 # 検査の書き方の規律（レビュー由来）:
 #   - 否定アサーション（「〜が無いこと」）で `if grep -q …; then bad; else ok; fi` を
@@ -1047,6 +1048,10 @@ if [ -r "$RR_LIB" ]; then
   MOUT="$(_metrics 77 "$MTMP/m" "$REPO_A")"
   out_has "$MOUT" "review_rounds=(unmeasured)" "13i: 2 本のうち 1 本が壊れていれば読めた分だけの合計（2）を出さず (unmeasured)"
   out_lacks "$MOUT" "review_rounds=2"          "13i: 部分的に読めた合計を実測として出さない"
+  # ホストが作る claude/issue-<n>-… も、ブランチが消えた後の置き場の走査で拾う
+  { printf '# ff-review-rounds v1\n'; printf '%s\t%s\t%s\n' 1 fffffff6 600; } > "$RR_STORE/$(_rr_key 'claude/issue-245-x').tsv"
+  MOUT="$(_metrics 245 "$MTMP/m" "$REPO_A")"
+  out_has "$MOUT" "review_rounds=1" "13i: 削除済みの claude/issue-<n>-… の記録を置き場の走査で拾う"
   # 削除済みブランチ（start 記録なし・ローカルブランチも無い = 最初の PR の後片付けで消えた形）の
   # 記録は置き場の走査で拾う。別 Issue（177）の記録は Issue 77 に当たらない
   { printf '# ff-review-rounds v1\n'; printf '%s\t%s\t%s\n' 1 eeeeeee5 500; } > "$RR_STORE/$(_rr_key 'fix/#77-b').tsv"
@@ -1209,8 +1214,9 @@ if [ -f "$GM_REC" ]; then
   BLOCK="$MTMP/gate-record-block.sh"
   awk '/^# >>> ff-gate-record-block/ { grab = 1; next } /^# <<< ff-gate-record-block/ { grab = 0 } grab { print }' "$RUNNER" > "$BLOCK"
   JSTATE="$MTMP/state-j"
-  mkdir -p "$REPO_G/tests" "$REPO_G/scripts"
+  mkdir -p "$REPO_G/tests" "$REPO_G/scripts/lib"
   cp "$GM_REC" "$REPO_G/scripts/record-gate-minutes.sh"
+  cp "$PLUGIN_ROOT/scripts/lib/branch-issue.sh" "$REPO_G/scripts/lib/branch-issue.sh"
   _run_block() { # <status> <using_default> <fast> → block 内の ff_record_gate_head を実行
     ( cd "$REPO_G/tests" && env FF_DEV_TOOLKIT_STATE_DIR="$JSTATE" FF_GATE_RECORD=0 bash -c '
         set -uo pipefail
@@ -1292,9 +1298,10 @@ if [ -f "$GM_REC" ]; then
     # 1 行だけで、終了後にマーカーが残らないこと（ff_gate_marker_set の呼び出しと後片付けの配線）
     REPO_E="$MTMP/repoE"; ESTATE="$MTMP/state-e"
     if _mk_repo "$REPO_E" >/dev/null; then
-      mkdir -p "$REPO_E/tests/lib" "$REPO_E/tests/leaf" "$REPO_E/tests/child" "$REPO_E/scripts"
+      mkdir -p "$REPO_E/tests/lib" "$REPO_E/tests/leaf" "$REPO_E/tests/child" "$REPO_E/scripts/lib"
       cp "$RUNNER" "$REPO_E/tests/run-all.sh"
       cp "$GM_REC" "$REPO_E/scripts/record-gate-minutes.sh"
+      cp "$PLUGIN_ROOT/scripts/lib/branch-issue.sh" "$REPO_E/scripts/lib/branch-issue.sh"
       [ ! -f "$PLUGIN_ROOT/tests/lib/utf8-locale.sh" ] || cp "$PLUGIN_ROOT/tests/lib/utf8-locale.sh" "$REPO_E/tests/lib/"
       printf '#!/usr/bin/env bash\necho "✓ leaf: pass"\n' > "$REPO_E/tests/leaf/verify.sh"
       printf '%s\n' '#!/usr/bin/env bash' 'd="$(cd "$(dirname "$0")/.." && pwd)"' \
@@ -1323,6 +1330,103 @@ if [ -f "$GM_REC" ]; then
 else
   bad "14i: 記録器が見つかりません: ${GM_REC}"
 fi
+
+echo "検査 15: ブランチ名の解析の入力表と、記録・読み手の経路（behavioral）"
+BI_LIB="$PLUGIN_ROOT/scripts/lib/branch-issue.sh"
+GROK_SHIM="$PLUGIN_ROOT/scripts/grok/hook-shim.sh"
+for _f in "$BI_LIB" "$GROK_SHIM"; do
+  [ -f "$_f" ] || { echo "✗ 検査対象が見つかりません: ${_f}" >&2; exit 1; }
+done
+# 1 行 = <ブランチ名>|<期待する Issue 番号（空 = 読まない）>。表が空でも緑にならないよう件数も固定する
+_bi_seen=0
+while IFS='|' read -r _b _want; do
+  [ -n "$_b" ] || continue
+  _bi_seen=$((_bi_seen + 1))
+  _got="$(bash -c '. "$1" && ff_branch_issue "$2"' _ "$BI_LIB" "$_b" 2>/dev/null)"
+  [ "$_got" = "$_want" ] && ok "15a: ${_b} → ${_want:-（読まない）}" || bad "15a: ${_b}: 期待 [${_want}] 実際 [${_got}]"
+done <<'EOF'
+feature/#2637-x|2637
+fix/#77|77
+codex/#2635-katex|2635
+codex/274-x|274
+claude/264-x|264
+claude/issue-245-x|245
+grok/274-x|274
+codex/2034-hero-video-tests|2034
+codex/2634-10-items|2634
+codex/issue-53-ops|53
+chore/2026-09-23-cleanup|
+codex/2026-09-23-x|
+claude/issue-2026-09-x|
+codex/20261105-x|
+chore/ace-from-pr-7233|
+fix/404-page|
+feature/274-x|
+develop|
+codex/bpr-layout|
+EOF
+[ "$_bi_seen" -eq 19 ] && ok "15a: 入力表 19 件を全件通した" || bad "15a: 入力表の件数が違う: ${_bi_seen}"
+# `/` の直後でない `#` は読まない。名前は公開同期の番号参照検査に当たらないよう組み立てる
+_retro_name="chore/retro-from-pr-6157-"'#'"6156"
+_got="$(bash -c '. "$1" && ff_branch_issue "$2"' _ "$BI_LIB" "$_retro_name" 2>/dev/null)"
+[ -z "$_got" ] && ok "15a: 途中に # を含む振り返りのブランチは読まない" || bad "15a: 途中の # を読んだ: [${_got}]"
+BSTATE="$MTMP/state-branch"
+for _b in codex/274-x claude/issue-245-x grok/31-x; do
+  _run_hook "$WC_HOOK" "$(_bash_payload "git switch -c $_b" "$REPO_A")" FF_DEV_TOOLKIT_STATE_DIR="$BSTATE"
+done
+for _b in codex/2026-09-23-x fix/404-page chore/ace-from-pr-7233; do
+  _run_hook "$WC_HOOK" "$(_bash_payload "git switch -c $_b" "$REPO_A")" FF_DEV_TOOLKIT_STATE_DIR="$BSTATE"
+done
+_b_rows="$(awk -F '\t' '{ print $1 "|" $6 }' "$BSTATE/metrics/wallclock.tsv" 2>/dev/null | tr '\n' ' ')"
+[ "$_b_rows" = "274|codex/274-x 245|claude/issue-245-x 31|grok/31-x " ] \
+  && ok "15b: ホストが作るブランチの start を Issue 番号付きで記録し、Issue でない名前は記録しない" \
+  || bad "15b: wall-clock の記録が期待と違う: [${_b_rows}]"
+# grok の入力（run_terminal_command）をシム経由で渡しても同じ規則で記録する
+_g_before="$(wc -l < "$BSTATE/metrics/wallclock.tsv" | tr -d ' ')"
+jq -n --arg d "$REPO_A" '{tool_name: "run_terminal_command", tool_input: {command: "git switch -c grok/77-x"}, cwd: $d, session_id: "sessG", hook_event_name: "PreToolUse"}' \
+  | env FF_DEV_TOOLKIT_STATE_DIR="$BSTATE" bash "$GROK_SHIM" bash "$WC_HOOK" >/dev/null 2>&1
+_g_last="$(awk -F '\t' 'END { print $1 "|" $6 }' "$BSTATE/metrics/wallclock.tsv" 2>/dev/null)"
+_g_after="$(wc -l < "$BSTATE/metrics/wallclock.tsv" | tr -d ' ')"
+{ [ "$_g_last" = "77|grok/77-x" ] && [ "$_g_after" = "$((_g_before + 1))" ]; } \
+  && ok "15c: grok の hook 入力もシム経由で同じ記録になる" \
+  || bad "15c: シム経由の記録が期待と違う: [${_g_last}] ${_g_before} → ${_g_after}"
+bash "$GM_REC" --seconds 5 --status pass --mode fast --branch codex/274-x --repo-dir "$REPO_A" --metrics-dir "$BSTATE/metrics" >/dev/null 2>&1
+bash "$GM_REC" --seconds 5 --status pass --mode fast --branch fix/404-page --repo-dir "$REPO_A" --metrics-dir "$BSTATE/metrics" >/dev/null 2>&1
+_gm_rows="$(awk -F '\t' '{ print $1 "|" $8 }' "$BSTATE/metrics/gate.tsv" 2>/dev/null | tr '\n' ' ')"
+[ "$_gm_rows" = "274|codex/274-x " ] && ok "15d: ゲートの記録も同じ規則で Issue 番号を読む" || bad "15d: gate.tsv が期待と違う: [${_gm_rows}]"
+# 読み込みバイト: 配布元の docs-template の .md を数え、.md 以外は数えない
+mkdir -p "$REPO_A/docs-template/05-operations" "$REPO_A/docs-template/scripts"
+printf '123456' > "$REPO_A/docs-template/05-operations/x.md"
+printf '1234567890123' > "$REPO_A/docs-template/scripts/a.ts"
+git -C "$REPO_A" checkout -q -b 'codex/555-reads' >/dev/null 2>&1
+_run_hook "$IB_HOOK" "$(_read_payload "$REPO_A/docs-template/05-operations/x.md" "$REPO_A")" FF_DEV_TOOLKIT_STATE_DIR="$BSTATE"
+_run_hook "$IB_HOOK" "$(_read_payload "$REPO_A/docs-template/scripts/a.ts" "$REPO_A")" FF_DEV_TOOLKIT_STATE_DIR="$BSTATE"
+_run_hook "$IB_HOOK" "$(_read_payload "$REPO_A/docs/sub/x.md" "$REPO_A")" FF_DEV_TOOLKIT_STATE_DIR="$BSTATE"
+_ib2="$(awk -F '\t' '{ print $1 "|" $3 }' "$BSTATE/metrics/instruction-bytes.tsv" 2>/dev/null | tr '\n' ' ')"
+[ "$_ib2" = "555|6 555|7 " ] \
+  && ok "15e: docs-template の .md と従来の docs/*.md を数え、.md 以外は数えず、ホストのブランチの Issue へ帰属する" \
+  || bad "15e: 読み込みバイトの記録が期待と違う: [${_ib2}]"
+# reflog の補いも同じ規則でホストのブランチを読む（hook の start が無い Issue）
+mkdir -p "$MTMP/state-empty/metrics"
+_reflog_src="$(bash "$REPORT" --issue-metrics 555 --repo-dir "$REPO_A" --metrics-dir "$MTMP/state-empty/metrics" 2>/dev/null | sed -n 's/^wallclock_source=//p')"
+[ "$_reflog_src" = "reflog" ] && ok "15f: start の無い Issue の開始をホストのブランチの reflog から補う" || bad "15f: wallclock_source が期待と違う: [${_reflog_src}]"
+# 計上先を持つ子は未計測へ数えない。本当に未計測の Issue は従来どおり数える
+_eblock() { printf -- '<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 1.0h\n- effort_ai_actual: 1.0h\n%s\n<!-- ff-effort:end -->\n' "$1"; }
+_measured_line='- effort_measured_on: #'"3"
+jq -n --arg a "$(_eblock "$_measured_line")" \
+  --arg b "$(_eblock "$(printf -- '- effort_wallclock_actual: (unmeasured)\n- effort_instruction_bytes: (unmeasured)\n- effort_review_rounds: (unmeasured)\n- effort_gate_minutes: (unmeasured)')")" \
+  --arg c "$(_eblock "$(printf -- '- effort_wallclock_actual: 2.0h\n- effort_instruction_bytes: 100\n- effort_review_rounds: 1\n- effort_gate_minutes: 3')")" \
+  '[{number: 1, body: $a}, {number: 2, body: $b}, {number: 3, body: $c}]' > "$MTMP/measured-on.json"
+_mkv="$(bash "$REPORT" --input "$MTMP/measured-on.json" --format kv 2>&1)"
+_mv_bad=""
+for _k in wallclock_unmeasured=1 instruction_bytes_unmeasured=1 review_rounds_unmeasured=1 gate_minutes_unmeasured=1 \
+  wallclock_malformed=0 instruction_bytes_malformed=0 review_rounds_malformed=0 gate_minutes_malformed=0 wallclock_population_all=1; do
+  case $'\n'"$_mkv"$'\n' in
+    *$'\n'"$_k"$'\n'*) : ;;
+    *) _mv_bad="${_mv_bad} ${_k}" ;;
+  esac
+done
+[ -z "$_mv_bad" ] && ok "15g: effort_measured_on だけの Issue は未計測・書式不正・母集団のどれにも入らない" || bad "15g: 集計が期待と違う:${_mv_bad} / ${_mkv}"
 rm -rf "$MTMP"
 
 echo

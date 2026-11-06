@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: マージ後工程の判定（Issue `#2636`、post-merge-cases.sh の P subset）は通常362/0（P68件）。修正前は同じ入力で52件赤（P1はrc2のままMERGE_COMMANDまで通過）。scripts/lib/finish-precheck-post-merge.sh と finish-precheck.sh への単独変異は、停止の設定行を消す15件、ackの照合を外す2件、ackを無視する6件、パス条件を外す1件（P2）、コメント取得失敗を0件へ倒す1件（P7b）、100件の一覧を信じる3件（P2d/P2f/P2i）、空の一覧を信じる1件（P2d2）、markerを番号なしへ緩める1件（P1c）、全コメントを対象にする1件（P1c）、理由の制御文字検査を外す3件（P5b）、片方だけの設定を未設定へ倒す2件（P8）、空要素を読み飛ばす7件（P8）、大文字小文字を区別する1件（P1d）、可視行の絞り込みを外す1件（P1e）、インライン三連をフェンスへ戻す1件（P1e2）、未チェックの走査へ例外を広げる1件（P1e4）、報告を連結して走査する1件（P1e3）、停止理由の併記を消す1件（P1g）、gitの出力を引用付きで読む1件（P2i）、当たらない要素の検査を外す4件（P2h）、追跡一覧をcwd基準で読む1件（P2h2）、gitの差分の設定固定を外す1件（P2h3）、CRを残す1件（P2d3）、設定なしで変更ファイルを読む67件で赤（2026-11-05 macOS実測、全変異のbash構文rc0。bash 3.2でも全件緑）。macOSで G6c は TMPDIR を物理パスにしないと赤（`/var` の symlink と `/private/var` の表記差。変更と無関係）、環境に FF_MERGE_DELETE_SEPARATE=1 があると C4 / E / M の13件が赤（suite が隔離していない。変更と無関係）。
 # 空振り検出: 復帰案内の引用（F1c）を足した通常は272/0。finish-precheck.sh を base / head のブランチ名を裸で埋め込む旧形の案内へ戻すと271/1（F1c）で赤（2026-10-28 WSL実測）。
 # 空振り検出: マージ方式（--merge-method、Issue `#2313`）の M subset を足した通常は271/0。emitter へ方式の第9引数を渡さないと267/4（M1/M8/M9/M10）、merge方式のコミット由来抵触の停止を外すと269/2（件名M5・本文M5b）、重複拒否を外すと268/3（M4）、不正値を受理すると267/4（M3）、emitter の方式検証を外すと270/1（M11）、不正値の集合を空にすると267/1（件数照合のM3）で赤（2026-10-28 macOS実測、全変異のbash構文rc0）。
 # 空振り検出: round1の絶対path/basename Usage subsetは2/0。旧helper path解決へ戻すと1/1、finish.sh同名空は0/2、helper不在は0/2で赤（2026-10-22 macOS実測、構文rc0。Usage到達の検査でありmerge実行の測定ではない）。
@@ -55,6 +56,7 @@
 # 空振り検出: kc_restore_default の開始 branch ガードを外すと H14（別 worktree 保持）と H14b/chore の成功・push 失敗・upstream 不一致・PR 作成失敗の4件が赤、復帰処理を return 0 で無効化すると H8 と H14b/default の3失敗経路および H14c が赤になる。H14b の行列を空にすると7件の実行数照合が赤になる（2026-10-22 実測。各 fault の到達・PR 呼出数・remote ref も照合し、針が当たらない stub を緑にしない）。
 # 変異検出: knowledge-commit.sh の commit で混入コミットの自動の取り消しを外すと H12b が赤（混入したコミットが HEAD に残り、続く push が origin へ送る）（2026-10-29 実測。Issue `#2494`）。
 # 空振り検出: default 開始の branch -f を実 Git の develop.lock で失敗させる H14c は、kc_restore_default の失敗時 return 1 を return 0 へ倒すと赤になる（2026-10-22 実測。PR 作成後の rc 1・failed・残存 ref・復帰案内と local/remote の知見 SHA を照合する）。
+# 空振り検出: 計上先の分岐を外すと C8a が、Closes の照合を外すと C8d が、自分の実測の確認を外すと C8e が、ff_precheck_change_class の初期値を docs-only にすると C7g が赤になる（2026-11-05 実測）。
 #
 # 実 gh・ネットワーク・課金は伴わない。一時ディレクトリを作れない環境は skip ではなく
 # 赤（この suite の検査は 1 件も成立していない）。
@@ -66,6 +68,8 @@ set -euo pipefail
 # Bash 3.2 は local 変数の unset 後も外側の export 値を子へ渡しうる。
 # suite の入口で隔離し、色設定は COLOR ケースごとに明示して注入する。
 unset FORCE_COLOR CLICOLOR_FORCE CLICOLOR
+# マージ後工程の判定は導入先の設定で動く。開発者の環境に値があると既存ケースの出力が変わる
+unset FF_POST_MERGE_TERMS FF_POST_MERGE_PATHS
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
@@ -366,10 +370,10 @@ else
   ' "$TARGET" "$PRECHECK_TARGET" "$KC_LIB")"
   launch_n="${launch_gaps%%$'\n'*}"
   launch_rest="${launch_gaps#*$'\n'}"
-  if [ "$launch_n" -eq 11 ] && [ "$launch_rest" = "$launch_n" ]; then
-    ok "S6: finish.sh と knowledge-commit 構成ファイルの同梱スクリプト起動 11 件は、直前 4 行以内に shebang 検査がある"
+  if [ "$launch_n" -eq 12 ] && [ "$launch_rest" = "$launch_n" ]; then
+    ok "S6: finish.sh と knowledge-commit 構成ファイルの同梱スクリプト起動 12 件は、直前 4 行以内に shebang 検査がある"
   else
-    bad "S6: finish.sh の起動が検査の直前に無い、または件数が 11 でない（件数=${launch_n} 欠落行=${launch_rest})"
+    bad "S6: finish.sh の起動が検査の直前に無い、または件数が 12 でない（件数=${launch_n} 欠落行=${launch_rest})"
   fi
   source_gaps="$(awk '
     index($0, ". \"$identity_lib\"") || index($0, ". \"$playbook_lib\"") {
@@ -449,6 +453,8 @@ ROOT_P="$(cd "$ROOT" && pwd -P)"
 cp "$PLUGIN_ROOT/.claude-plugin/plugin.json" "$ROOT/.claude-plugin/plugin.json"
 for f in "$PLUGIN_ROOT"/scripts/*.sh; do cp "$f" "$ROOT/scripts/"; done
 for f in "$PLUGIN_ROOT"/scripts/lib/*; do cp "$f" "$ROOT/scripts/lib/"; done
+mkdir -p "$ROOT/scripts/decision-tree"
+cp "$PLUGIN_ROOT/scripts/decision-tree/route.sh" "$PLUGIN_ROOT/scripts/decision-tree/tree.tsv" "$ROOT/scripts/decision-tree/"
 FINISH="$ROOT/scripts/finish.sh"
 chmod +x "$FINISH"
 
@@ -469,6 +475,8 @@ cat >"$BIN/gh" <<'STUB'
 #   STUB_CHECKS_TIMEOUT=1 … watch が通信エラーで失敗（実値は PR JSON に従う）
 #   STUB_CHECKS_TIMEOUT_ONCE=<path> … 最初の watch だけ通信エラーで失敗
 #   STUB_PR_JSON_AFTER=<path> … pr checks の待機中に PR が編集された体で、STUB_PR_JSON を差し替える
+#   STUB_ISSUE_COMMENTS_FILE=<path> … issue view --json comments が返す JSON（未設定は 0 件）
+#   STUB_ISSUE_COMMENTS_MISSING=1   … issue view --json comments だけ失敗（本文の取得は通る）
 #   STUB_CLASSIC=200|404 / STUB_RULESETS=true|false … api の保護判定
 #   STUB_THREADS_JSON=<path> … api graphql（reviewThreads）が返す JSON（未設定ならスレッド 0 件）
 #   STUB_THREADS_DOWN=1     … api graphql だけ「接続できない」で失敗（他は到達できる）
@@ -501,6 +509,23 @@ case "$1 $2" in
       case "$1" in --jq) jq_expr="$2"; shift 2 ;; *) shift ;; esac
     done
     if [ -n "$jq_expr" ]; then jq -r "$jq_expr" "${STUB_PR_JSON:?}"; else cat "${STUB_PR_JSON:?}"; fi
+    ;;
+  "issue view")
+    if [ "${STUB_ISSUE_MISSING:-0}" = "1" ]; then
+      echo "Could not resolve to an issue" >&2
+      exit 1
+    fi
+    case "$*" in
+      *"--json comments"*)
+        if [ "${STUB_ISSUE_COMMENTS_MISSING:-0}" = "1" ]; then echo "stub: comments unavailable" >&2; exit 1; fi
+        if [ -n "${STUB_ISSUE_COMMENTS_FILE:-}" ]; then cat "$STUB_ISSUE_COMMENTS_FILE"; else echo '{"comments":[]}'; fi
+        exit 0 ;;
+    esac
+    if [ -n "${STUB_ISSUE_BODY_FILE:-}" ]; then
+      jq -n --rawfile body "$STUB_ISSUE_BODY_FILE" '{body:$body}'
+    else
+      jq -n --arg body "${STUB_ISSUE_BODY-}" '{body:$body}'
+    fi
     ;;
   "repo view")
     if [ "${4:-}" = nameWithOwner,url ]; then
@@ -579,14 +604,17 @@ BASE_OID="$(g -C "$WORK" rev-parse origin/develop)"
 
 # PR JSON を組み立てる: <body> <statusCheckRollup JSON>
 write_pr_json() {
+  local files_json='[{"path":"x.txt"}]'
+  [ -z "${PR_FILES_JSON:-}" ] || files_json="$PR_FILES_JSON"
   jq -n --arg body "$1" --arg head "$HEAD_OID" --argjson rollup "$2" --argjson number "$PRN" --argjson cross "${PR_CROSS:-false}" \
+    --argjson files "$files_json" \
     --arg title "feat(#${PRN}): x" --arg headline "${PR_HEADLINE:-fix: #${REFN} x}" --arg cbody "${PR_COMMIT_BODY:-body}" \
     --arg head_ref "${PR_HEAD_REF:-feature/#7-x}" --arg base_ref "${PR_BASE_REF:-develop}" '{
     number: $number, state: "OPEN", isDraft: false, headRefName: $head_ref, headRefOid: $head, isCrossRepository: $cross,
     baseRefName: $base_ref, title: $title, body: $body,
     closingIssuesReferences: (if ($body | test("Closes")) then [{url: ("https://github.com/owner/repo/issues/" + ($number | tostring))}] else [] end),
     commits: [{oid: $head, messageHeadline: $headline, messageBody: $cbody}],
-    statusCheckRollup: $rollup, additions: 20, deletions: 3, files: [{path: "x.txt"}]
+    statusCheckRollup: $rollup, additions: 20, deletions: 3, files: $files
   }' >"$TMP/pr.json"
 }
 export STUB_PR_JSON="$TMP/pr.json"
@@ -601,6 +629,8 @@ run_finish() { # <cwd> <args...>
 
 # shellcheck source=merge-delete-cases.sh
 . "$SCRIPT_DIR/merge-delete-cases.sh"
+# shellcheck source=post-merge-cases.sh
+. "$SCRIPT_DIR/post-merge-cases.sh"
 _ff_finish_precheck_guards
 _ff_finish_repository_url_guards
 
@@ -702,6 +732,132 @@ if has_line "$OUT" "DELETE_BRANCH_MODE=delete-branch" && has_text "$OUT" "gh pr 
 else
   bad "C4: merge コマンドが違う: ${OUT}"
 fi
+# 未チェックの受け入れ条件。既定の stub 本文は空（0 件）なので、ここだけ本文を差し替える。
+printf '%s\n' '- [x] done' >"$TMP/u0-body.md"
+printf '%s\n' '```' '- [ ] fenced' '```' '- [x] also' >>"$TMP/u0-body.md"
+STUB_ISSUE_BODY_FILE="$TMP/u0-body.md" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && has_line "$OUT" "AC_UNCHECKED_COUNT=0" && has_line "$OUT" "PRECHECK=undetermined" \
+  && has_text "$OUT" "MERGE_COMMAND_BEGIN" \
+  && ! awk 'index($0, "AC_UNCHECKED=") == 1 && index($0, "AC_UNCHECKED_COUNT=") != 1 { f = 1 } END { exit f ? 0 : 1 }' <<<"$OUT"; then
+  ok "U0: 未チェック 0 件（チェック済みとフェンス内）は止めず、記録不在の MERGE_COMMAND を出す"
+else
+  bad "U0: 未チェック 0 件の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+cat >"$TMP/u1-body.md" <<'BODY'
+- [x] done
+* [ ] star
+<!--
+- [ ] in comment
+-->
+```
+- [ ] fenced
+```
+- [ ] real one
+BODY
+: >"$STUB_LOG"
+STUB_ISSUE_BODY_FILE="$TMP/u1-body.md" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "PRECHECK=blocked" && has_line "$OUT" "AC_UNCHECKED_COUNT=1" \
+  && has_line "$OUT" "AC_UNCHECKED=owner/repo#7	- [ ] real one" \
+  && ! has_text "$OUT" "MERGE_COMMAND_BEGIN" \
+  && has_text "$ERR" "チェック" && has_text "$ERR" "Refs" && has_text "$ERR" "--ack-unchecked"; then
+  ok "U1: Closes 対象の未チェックは rc 1 で止め、フェンスとコメントは数えず、次の一手を出す"
+else
+  bad "U1: 未チェックの停止が違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+cat >"$TMP/u1b-body.md" <<'BODY'
+```html
+<!-- example
+```
+`<!--` marker
+- [ ] after fence
+BODY
+STUB_ISSUE_BODY_FILE="$TMP/u1b-body.md" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "PRECHECK=blocked" && has_line "$OUT" "AC_UNCHECKED_COUNT=1" \
+  && has_line "$OUT" "AC_UNCHECKED=owner/repo#7	- [ ] after fence" \
+  && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "U1b: フェンス内の未閉鎖コメントとインラインの開始記号は、後続の未チェックを消さない"
+else
+  bad "U1b: フェンスとコメントの組み合わせが未チェックを消している（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+cat >"$TMP/u1c-body.md" <<'BODY'
+````
+```
+- [ ] inside longer fence
+````
+- [ ] after longer fence
+BODY
+STUB_ISSUE_BODY_FILE="$TMP/u1c-body.md" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "PRECHECK=blocked" && has_line "$OUT" "AC_UNCHECKED_COUNT=1" \
+  && has_line "$OUT" "AC_UNCHECKED=owner/repo#7	- [ ] after longer fence" \
+  && ! has_text "$OUT" "inside longer fence" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "U1c: 開始より短いフェンスはコードブロックを閉じず、中の未チェックは数えない"
+else
+  bad "U1c: 短い終了フェンスがコードブロックを閉じている（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+printf '%s\n' '- [ ] should-not-fetch' >"$TMP/u2-body.md"
+write_pr_json "Refs #${REFN}" '[]'
+: >"$STUB_LOG"
+STUB_ISSUE_BODY_FILE="$TMP/u2-body.md" run_finish "$WORK" precheck 7
+if ! awk 'index($0, "issue view") { f = 1 } END { exit f ? 0 : 1 }' "$STUB_LOG"; then
+  ok "U2: Refs だけの PR は Issue 本文を取りに行かない"
+else
+  bad "U2: Refs だけで issue view を呼んでいる: $(cat "$STUB_LOG")"
+fi
+write_pr_json "Closes #${PRN}" '[]'
+STUB_ISSUE_BODY_FILE="$TMP/u1-body.md" run_finish "$WORK" precheck 7 --ack-unchecked 'owner/repo#7'
+if [ "$RC" -eq 2 ] && has_line "$OUT" "AC_ACKED=owner/repo#7" && has_line "$OUT" "AC_UNCHECKED=owner/repo#7	- [ ] real one" \
+  && has_line "$OUT" "PRECHECK=undetermined" && has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "U3: --ack-unchecked は未チェック行を残したまま止めず、MERGE_COMMAND を出す"
+else
+  bad "U3: ack の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+STUB_ISSUE_BODY_FILE="$TMP/u1-body.md" run_finish "$WORK" precheck 7 --ack-unchecked 'owner/repo#8'
+if [ "$RC" -eq 1 ] && has_line "$OUT" "PRECHECK=blocked" && has_line "$OUT" "AC_ACKED=owner/repo#8" \
+  && has_line "$OUT" "AC_UNCHECKED=owner/repo#7	- [ ] real one" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "U4: 別 Issue の ack は対象の未チェックを消さない"
+else
+  bad "U4: 別 Issue の ack が対象を消している（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+: >"$STUB_LOG"
+STUB_ISSUE_MISSING=1 run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && has_text "$ERR" "取得失敗を未チェック 0 件とは読まない" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "U5: Issue 本文の取得失敗は rc 2 で、未チェック 0 件にも MERGE_COMMAND にもしない"
+else
+  bad "U5: 本文取得失敗の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+_ff_finish_post_merge_cases
+write_pr_json "Closes #${PRN}" '[]'
+: >"$STUB_LOG"
+FF_MERGE_DELETE_SEPARATE=yes run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && [ ! -s "$STUB_LOG" ] && has_text "$ERR" "FF_MERGE_DELETE_SEPARATE" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "U6: FF_MERGE_DELETE_SEPARATE の不正値は gh を呼ぶ前に rc 2"
+else
+  bad "U6: 不正な FF_MERGE_DELETE_SEPARATE の扱いが違う（rc=${RC} log=$(cat "$STUB_LOG")）: ${ERR}"
+fi
+: >"$STUB_LOG"
+FF_DELETE_PUSH_SKIP_HOOKS=yes run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && [ ! -s "$STUB_LOG" ] && has_text "$ERR" "FF_DELETE_PUSH_SKIP_HOOKS" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "U6b: FF_DELETE_PUSH_SKIP_HOOKS の不正値は gh を呼ぶ前に rc 2"
+else
+  bad "U6b: 不正な FF_DELETE_PUSH_SKIP_HOOKS の扱いが違う（rc=${RC} log=$(cat "$STUB_LOG")）: ${ERR}"
+fi
+: >"$STUB_LOG"
+FF_DELETE_PUSH_SKIP_HOOKS= run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && [ ! -s "$STUB_LOG" ] && has_text "$ERR" "FF_DELETE_PUSH_SKIP_HOOKS" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "U6c: FF_DELETE_PUSH_SKIP_HOOKS の空文字は未設定と区別し、gh を呼ぶ前に rc 2"
+else
+  bad "U6c: 空の FF_DELETE_PUSH_SKIP_HOOKS の扱いが違う（rc=${RC} log=$(cat "$STUB_LOG")）: ${ERR}"
+fi
+FF_MERGE_DELETE_SEPARATE=1 run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && has_line "$OUT" "DELETE_BRANCH_MODE=separate-consumer" && has_line "$OUT" "DELETE_BRANCH_NOTE=" \
+  && has_text "$OUT" "gh pr merge 7 --repo 'https://github.com/owner/repo' --squash --match-head-commit ${HEAD_OID}" \
+  && ! has_text "$OUT" "--delete-branch" && ! has_text "$OUT" "ff-delete-merged-head" \
+  && ! has_text "$OUT" "SKIP_SIMPLE_GIT_HOOKS" && ! has_text "$OUT" "HUSKY"; then
+  ok "U7: FF_MERGE_DELETE_SEPARATE=1 は gh pr merge だけで、削除とフック回避を付けない"
+else
+  bad "U7: マージと削除を分ける生成が違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+write_pr_json "Closes #${PRN}" '[]'
 if has_line "$OUT" "EFFORT_7_wallclock_source=reflog" && has_line "$OUT" "EFFORT_7_instruction_bytes=(unmeasured)" \
   && has_line "$OUT" "EFFORT_7_change_class=other"; then
   ok "C5: hook の記録が無い Issue はブランチの reflog で開始を補い、読み込みバイトは (unmeasured)（0 と書かない）・変更クラスを出す"
@@ -1222,6 +1378,26 @@ if has_line "$OUT" "DELETE_BRANCH_MODE=separate-push" && has_line "$OUT" "BASE_H
 else
   bad "E1: base 保持時の merge コマンドが違う（rc=${RC}）: ${OUT} / ${ERR}"
 fi
+if has_text "$OUT" "SKIP_SIMPLE_GIT_HOOKS=1" && has_text "$OUT" "HUSKY=0" && has_line "$OUT" "DELETE_PUSH_HOOKS=skipped"; then
+  ok "E1a: 既定の削除 push はフック回避を生成し、DELETE_PUSH_HOOKS=skipped を出す"
+else
+  bad "E1a: 既定のフック回避が生成に無い: ${OUT}"
+fi
+FF_DELETE_PUSH_SKIP_HOOKS=0 run_finish "$WORK" precheck 7
+if has_line "$OUT" "DELETE_BRANCH_MODE=separate-push" && has_line "$OUT" "DELETE_PUSH_HOOKS=kept" \
+  && has_text "$OUT" "&& bash -c" && has_text "$OUT" "ff-delete-merged-head" \
+  && ! has_text "$OUT" "SKIP_SIMPLE_GIT_HOOKS" && ! has_text "$OUT" "HUSKY"; then
+  ok "E1b: FF_DELETE_PUSH_SKIP_HOOKS=0 の生成コマンドからフック回避の代入が消える"
+else
+  bad "E1b: フック回避のオプトアウトが生成に残っている（rc=${RC}）: ${OUT}"
+fi
+FF_MERGE_DELETE_SEPARATE=1 run_finish "$WORK" precheck 7
+if has_line "$OUT" "DELETE_BRANCH_MODE=separate-consumer" && ! has_text "$OUT" "ff-delete-merged-head" \
+  && ! has_text "$OUT" "--delete-branch" && ! has_text "$OUT" "SKIP_SIMPLE_GIT_HOOKS" && ! has_text "$OUT" "HUSKY"; then
+  ok "E1c: 保持 worktree があっても FF_MERGE_DELETE_SEPARATE=1 は削除の尾を付けない"
+else
+  bad "E1c: 保持中の separate-consumer が違う（rc=${RC}）: ${OUT}"
+fi
 # 生成物を改変せず bare origin で実走する（git の削除を stub で成功扱いにしない）。
 _ff_finish_merge_delete_cases
 # fork の PR: origin の同名ブランチは別物なので削除コマンドを生成しない
@@ -1507,9 +1683,88 @@ else
   bad "F10: API 代替の順序が git log と違う（rc=${RC}）: expect=[${EXPECT_API}] got=[${GOT_API}]"
 fi
 
+# ── C''. 変更クラスと実測の計上先 ─────────────────────────────────────────────
+echo
+echo "== C''. precheck: 変更クラスと実測の計上先 =="
+set_pr_shape() { # <行数> <path>...（write_pr_json の files と行数を差し替える）
+  local lines="$1"; shift
+  jq --argjson lines "$lines" '.additions = $lines | .deletions = 0 | .files = ($ARGS.positional | map({path: .}))' \
+    "$TMP/pr.json" --args "$@" >"$TMP/pr-shape.json" && cp "$TMP/pr-shape.json" "$TMP/pr.json"
+}
+expect_change_class() { # <期待> <説明> <行数> <path>...
+  local want="$1" label="$2"; shift 2
+  write_pr_json "Closes #${PRN}" '[]'
+  set_pr_shape "$@"
+  run_finish "$WORK" precheck 7
+  if has_line "$OUT" "EFFORT_7_change_class=${want}"; then
+    ok "$label"
+  else
+    bad "${label}（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+}
+expect_change_class docs-only "C7a: 契約 path を含まない .md だけの変更は docs-only" 3 "docs/guide.md"
+expect_change_class other "C7b: docs-template の .md だけでも契約変更は docs-only にしない" 1 "plugins/ff-dev-toolkit/docs-template/05-operations/deployment/x.md"
+expect_change_class other "C7c: skills の references の .md だけでも契約変更は docs-only にしない" 1 "plugins/ff-dev-toolkit/skills/x/references/y.md"
+expect_change_class small "C7d: 契約 path を含まない 3 行の実装変更は small" 3 "src/app.ts"
+expect_change_class other "C7e: 契約 path を含まない 300 行の実装変更は other" 300 "src/app.ts"
+expect_change_class other "C7f: hooks.json の 1 行変更は small にしない" 1 "plugins/ff-dev-toolkit/hooks/hooks.json"
+cp "$ROOT/scripts/decision-tree/tree.tsv" "$TMP/tree.bak"
+: >"$ROOT/scripts/decision-tree/tree.tsv"
+expect_change_class other "C7g: 決定木が判定できない回は docs-only へ倒さない" 3 "docs/guide.md"
+cp "$TMP/tree.bak" "$ROOT/scripts/decision-tree/tree.tsv"
+
+CHILDN=8
+write_two_closes() { # <head_ref> — PRN と CHILDN の 2 件を閉じる PR
+  PR_HEAD_REF="$1" write_pr_json "Closes #${PRN}
+Closes #${CHILDN}" '[]'
+  jq --arg url "https://github.com/owner/repo/issues/${CHILDN}" '.closingIssuesReferences += [{url: $url}]' "$TMP/pr.json" >"$TMP/pr-two.json" \
+    && cp "$TMP/pr-two.json" "$TMP/pr.json"
+}
+write_two_closes 'feature/#7-x'
+run_finish "$WORK" precheck 7
+if has_line "$OUT" "EFFORT_8_measured_on=7" && ! has_text "$OUT" "EFFORT_8_wallclock" && ! has_text "$OUT" "EFFORT_8_review_rounds" \
+  && has_text "$OUT" "EFFORT_7_wallclock" && ! has_text "$OUT" "EFFORT_7_measured_on" && has_text "$OUT" "EFFORT_8_change_class="; then
+  ok "C8a: ブランチと別番号の Issue は計上先だけを出し、ブランチの Issue の値を複写しない"
+else
+  bad "C8a: 計上先の出力が違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+# 子のブランチに自分の実測が残っている回は、累積の実測を捨てない
+g -C "$WORK" branch "feature/#${CHILDN}-own" >/dev/null 2>&1
+write_two_closes 'feature/#7-x'
+run_finish "$WORK" precheck 7
+if ! has_text "$OUT" "measured_on" && has_line "$OUT" "EFFORT_${CHILDN}_wallclock_source=reflog"; then
+  ok "C8e: 自分のブランチの実測がある Issue は計上先へ置き換えず、実測を出す"
+else
+  bad "C8e: 自分の実測がある Issue の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+g -C "$WORK" branch -D "feature/#${CHILDN}-own" >/dev/null 2>&1
+write_two_closes 'codex/7-x'
+run_finish "$WORK" precheck 7
+if has_line "$OUT" "EFFORT_8_measured_on=7"; then
+  ok "C8b: ホストが作るブランチでも計上先を読む"
+else
+  bad "C8b: ホストのブランチの計上先が違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+write_two_closes 'chore/no-number'
+run_finish "$WORK" precheck 7
+if ! has_text "$OUT" "measured_on" && has_text "$OUT" "EFFORT_8_wallclock" && has_text "$OUT" "EFFORT_7_wallclock"; then
+  ok "C8c: ブランチから Issue 番号を読めない回は計上先を出さず、従来どおり各 Issue を読む"
+else
+  bad "C8c: 番号の無いブランチの扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+write_two_closes 'feature/#9-x'
+run_finish "$WORK" precheck 7
+if ! has_text "$OUT" "measured_on" && has_text "$OUT" "EFFORT_8_wallclock"; then
+  ok "C8d: ブランチの Issue が Closes に無い回は計上先を出さない（書き戻されない番号を指さない）"
+else
+  bad "C8d: Closes に無いブランチの扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+write_pr_json "Closes #${PRN}" '[]'
+
 # ── G. cleanup ────────────────────────────────────────────────────────────────
 echo
 echo "== G. cleanup =="
+export FF_DEV_TOOLKIT_STATE_DIR="$TMP/ff-state"
 write_pr_json "Closes #${PRN}" '[]'
 run_finish "$WORK" cleanup abc
 [ "$RC" -eq 1 ] && ok "G1: PR 番号でない引数は rc 1（委譲先の PARTIAL = 2 と重ねない）" || bad "G1: 不正な PR 番号の扱いが違う（rc=${RC}）"
@@ -1526,11 +1781,109 @@ printf 'ignore=%s\n' "${FF_MERGE_CLEANUP_IGNORE_PATHS:-}"
 exit 2
 STUB
 FF_MERGE_CLEANUP_IGNORE_PATHS='videos/**' run_finish "$WORK" cleanup --dry-run 7
-if [ "$RC" -eq 2 ] && has_line "$OUT" "argv=--dry-run 7" && has_line "$OUT" "root=${ROOT_P}" && has_line "$OUT" "ignore=videos/**" && has_line "$OUT" "CLEANUP_RC=2"; then
+if [ "$RC" -eq 2 ] && has_line "$OUT" "argv=--dry-run 7" && has_line "$OUT" "root=${ROOT_P}" && has_line "$OUT" "ignore=videos/**" && has_line "$OUT" "CLEANUP_RC=2" \
+  && has_line "$OUT" "CLEANUP_LOG="; then
   ok "G4: merge-cleanup.sh へ同一行 handoff で委譲し、--dry-run と PR 番号・FF_MERGE_CLEANUP_IGNORE_PATHS をそのまま渡し、終了コードを素通しする"
 else
   bad "G4: 委譲が違う（rc=${RC}）: ${OUT}"
 fi
+cat >"$ROOT/scripts/merge-cleanup.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' 'preamble-should-not-show'
+printf '%s\n' '## マージ後 Cleanup 結果'
+printf '%s\n' 'summary-line'
+exit 0
+STUB
+run_finish "$WORK" cleanup 7
+G6_LOG="$(awk 'index($0, "CLEANUP_LOG=") == 1 { print substr($0, 13); exit }' <<<"$OUT")"
+if [ "$RC" -eq 0 ] && has_line "$OUT" "summary-line" && has_line "$OUT" "CLEANUP_RC=0" && has_line "$OUT" "CLEANUP_LOG=" \
+  && ! has_text "$OUT" "preamble-should-not-show" && [ -n "$G6_LOG" ] && [ -f "$G6_LOG" ] \
+  && awk 'index($0, "preamble-should-not-show") { f = 1 } END { exit f ? 0 : 1 }' "$G6_LOG"; then
+  case "$G6_LOG" in
+    "$WORK"|"$WORK"/*) G6_INSIDE=1 ;;
+    *) G6_INSIDE=0 ;;
+  esac
+  if [ "$G6_INSIDE" -eq 0 ]; then
+    ok "G6: cleanup の stdout は要約と CLEANUP_RC と CLEANUP_LOG で、全文は作業ツリーの外のログ"
+  else
+    bad "G6: CLEANUP_LOG が作業ツリーの中: ${G6_LOG}"
+  fi
+else
+  bad "G6: 要約出力が違う（rc=${RC} log=${G6_LOG}）: ${OUT}"
+fi
+run_finish "$WORK" cleanup --verbose 7
+if [ "$RC" -eq 0 ] && has_text "$OUT" "preamble-should-not-show" && has_line "$OUT" "summary-line" && has_line "$OUT" "CLEANUP_LOG="; then
+  ok "G6b: --verbose は全文も stdout に出す"
+else
+  bad "G6b: --verbose の出力が違う（rc=${RC}）: ${OUT}"
+fi
+cat >"$ROOT/scripts/merge-cleanup.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' 'warning-before-heading'
+printf '%s\n' '## マージ後 Cleanup 結果'
+printf '%s\n' '上の警告を参照'
+exit 2
+STUB
+run_finish "$WORK" cleanup 7
+if [ "$RC" -eq 2 ] && has_line "$OUT" "warning-before-heading" && has_line "$OUT" "上の警告を参照" \
+  && has_line "$OUT" "CLEANUP_RC=2" && has_line "$OUT" "CLEANUP_LOG="; then
+  ok "G6d: 終了コードが 0 でない回は見出しより前の警告も stdout に出す"
+else
+  bad "G6d: 失敗時の全文出力が違う（rc=${RC}）: ${OUT}"
+fi
+cat >"$ROOT/scripts/merge-cleanup.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' 'warning-before-heading'
+printf '%s\n' '## マージ後 Cleanup 結果'
+printf '%s\n' '削除していない（保護。上の警告を参照）'
+exit 0
+STUB
+run_finish "$WORK" cleanup 7
+if [ "$RC" -eq 0 ] && has_line "$OUT" "warning-before-heading" && has_text "$OUT" "上の警告を参照" \
+  && has_line "$OUT" "CLEANUP_RC=0" && has_line "$OUT" "CLEANUP_LOG="; then
+  ok "G6e: 成功でも要約が上の警告を参照する回は全文を出す"
+else
+  bad "G6e: 警告参照の全文出力が違う（rc=${RC}）: ${OUT}"
+fi
+cat >"$ROOT/scripts/merge-cleanup.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' 'preamble-should-not-show'
+printf '%s\n' '## マージ後 Cleanup 結果'
+printf '%s\n' 'summary-line'
+exit 0
+STUB
+mkdir -p "$TMP/no-home"
+g6c_home_set=0; g6c_home="${HOME-}"; [ -n "${HOME+x}" ] && g6c_home_set=1
+g6c_state="${FF_DEV_TOOLKIT_STATE_DIR-}"
+g6c_tmpdir_set=0; g6c_tmpdir="${TMPDIR-}"; [ -n "${TMPDIR+x}" ] && g6c_tmpdir_set=1
+unset HOME
+unset FF_DEV_TOOLKIT_STATE_DIR
+export TMPDIR="$TMP/no-home"
+run_finish "$WORK" cleanup 7
+if [ "$g6c_home_set" -eq 1 ]; then HOME="$g6c_home"; export HOME; else unset HOME; fi
+export FF_DEV_TOOLKIT_STATE_DIR="$g6c_state"
+if [ "$g6c_tmpdir_set" -eq 1 ]; then TMPDIR="$g6c_tmpdir"; export TMPDIR; else unset TMPDIR; fi
+G6C_LOG="$(awk 'index($0, "CLEANUP_LOG=") == 1 { print substr($0, 13); exit }' <<<"$OUT")"
+# macOS の TMPDIR は /var → /private/var のシンボリックリンクを含むので、物理パスでも照合する
+G6C_TMP_P="$(cd "$TMP" && pwd -P)"
+case "$G6C_LOG" in
+  "$TMP/no-home/ff-dev-toolkit/logs"/* | "$G6C_TMP_P/no-home/ff-dev-toolkit/logs"/*) G6C_PLACE=1 ;;
+  *) G6C_PLACE=0 ;;
+esac
+if [ "$RC" -eq 0 ] && [ "$G6C_PLACE" -eq 1 ] && has_line "$OUT" "summary-line" && has_line "$OUT" "CLEANUP_RC=0" \
+  && ! has_text "$ERR" "unbound variable"; then
+  ok "G6c: HOME も状態ディレクトリも無いときは TMPDIR へログを置き、委譲する"
+else
+  bad "G6c: HOME 未設定のログ先が違う（rc=${RC} log=${G6C_LOG}）: ${OUT} / ${ERR}"
+fi
+FF_DEV_TOOLKIT_STATE_DIR="$WORK/inside-log" run_finish "$WORK" cleanup 7
+if [ "$RC" -eq 1 ] && has_text "$ERR" "リポジトリ内" && ! has_text "$OUT" "argv=" && ! has_text "$OUT" "summary-line"; then
+  ok "G7: ログ先がリポジトリ内なら委譲前に rc 1"
+else
+  bad "G7: リポジトリ内ログの扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+rm -rf "$WORK/inside-log"
+export FF_DEV_TOOLKIT_STATE_DIR="$TMP/ff-state"
 rm -f "$ROOT/scripts/merge-cleanup.sh"
 run_finish "$WORK" cleanup 7
 if [ "$RC" -eq 1 ] && has_text "$ERR" "同梱 script が無いか symlink です"; then

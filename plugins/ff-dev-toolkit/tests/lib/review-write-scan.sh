@@ -53,8 +53,26 @@
 #   - `$(…)` / バッククォートの本文はサブシェルとして再帰走査する（`echo "$(rm x)"` を見逃さない）
 #   - `cd` は相対パスの解決基準を動かす。サブシェル `( … )` と子シェル（`bash -c` / heredoc /
 #     `$(…)`）の中の `cd` は親へ漏らさない（`bash -c 'cd /tmp'; touch README.md` はツリー内）
-#   - 既知の限界: マーカー走査はヒューリスティック（`from os import remove as r` は見逃す）。
-#     `python3 -m MOD` / `eval` / stdin から読むプログラム（`curl … | sh`）は本文が無いので判定不能側。
+#   - パス語は引用符をまたいで展開する（`"$D"/out/*` は `$D` と `/out` を繋いだ 1 語。引用を残した
+#     まま相対パスにすると、ツリー外の一時ディレクトリをツリー内と誤認する）。語全体が単一引用符の
+#     ときだけ展開しない。コマンド置換と `${name:-default}` は判定不能
+#   - `trap` のコマンド文字列と `eval` のコマンド文字列は、トップレベルと同じ走査へ入れる。
+#     `eval` の引数は先に展開する。展開できない `eval` は判定不能（コマンド行では止める）。
+#     関数名だけの `trap name SIGNAL` は本文が無いので走査しない（既知の限界）
+#   - 同じコマンドの heredoc がちょうど 1 つで、`cat`（ファイル引数が無い）または `tee` が
+#     その標準出力をリダイレクトし、その heredoc より後ろに標準入力のリダイレクトが無いときだけ、
+#     リダイレクト先がこれから実行するスクリプトと同じパスなら、まだファイルが無くても heredoc
+#     本文をそのスクリプトとして走査する。後ろの標準入力が heredoc を置き換える形は本文を推測しない。
+#     `printf` のように heredoc を読まないコマンドのリダイレクト先へは載せない
+#   - Python の単純代入（`p = "literal"` / `p = Path("literal")`）は、その書き込み行より前の
+#     ものだけを書き込み先に使う。後の代入では先の書き込み先を書き換えない。式・連結・`+=`・
+#     `for` / `with … as` で束縛し直した名前は、それまでのパスを捨てて判定不能にする。同じ行の
+#     中で代入と書き込みが並ぶ形は追わず、判定不能のままにする
+#   - `Path("literal").replace(...)` は移動元と移動先の両方を書き込みとみなす。`str.replace` は
+#     書き込みではない。変数に入った Path の `.replace` は見分けない
+#   - 既知の限界: マーカー走査はヒューリスティック（`from os import remove as r` と、変数経由の
+#     `Path.replace` は見逃す。`os.replace` はマーカーのまま）。
+#     `python3 -m MOD` / stdin から読むプログラム（`curl … | sh`）は本文が無いので判定不能側。
 #     `npm` / `make` 等のビルドは対象外。ファイル本文の中の変数経由の書き込み（`D=$(git rev-parse
 #     --show-toplevel); echo x > "$D/f"`）は止めない側（上の線引き）。行の途中のコメント（python の
 #     `x = 1  # open("f", "w")`）は文字列と区別できないので落とさない（止める側）
@@ -78,6 +96,9 @@
 WRITE_HIT=0
 WRITE_REASON=""
 WRITE_OVERRIDE=0
+# 同じコマンドの heredoc が作るスクリプト（0=未記録 / 1=1 件 / 2=複数で使わない）
+WS_HEREDOC_N=0
+WS_HEREDOC_TARGET=""
 WRITE_BASE=""      # 相対パスの解決基準（`cd` で動く。空 = 不明）
 WS_ROOT_PHYS=""
 WS_OUTPUT_DIR=".review-results"
@@ -182,7 +203,9 @@ ws_trim() { # <s>
 # それ以外の `$…`（コマンド置換・`${X:-y}` 等）は判定不能。`$(mktemp …)` の代入は一時領域
 # （ツリー外）として扱う — 走行中の規定が勧める「`mktemp -d` へ下書き」を止めないため。
 # ただしテンプレートにディレクトリが付く形（`mktemp -d ./x.XXXXXX`）はその配置先で判定する。
-WS_ENV_PATH_VARS=" HOME TMPDIR TMP TEMP USER LOGNAME CLAUDE_PROJECT_DIR RUNNER_TEMP XDG_RUNTIME_DIR XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME "
+# FF_DEV_TOOLKIT_ROOT / CLAUDE_PLUGIN_ROOT / GROK_PLUGIN_ROOT はパスであって秘密ではない。
+# 任意の継承変数はここへ足さない（値を拒否理由へ写さないため）。
+WS_ENV_PATH_VARS=" HOME TMPDIR TMP TEMP USER LOGNAME CLAUDE_PROJECT_DIR RUNNER_TEMP XDG_RUNTIME_DIR XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME FF_DEV_TOOLKIT_ROOT CLAUDE_PLUGIN_ROOT GROK_PLUGIN_ROOT "
 expand_vars() { # <文字列> → 展開後を stdout。解決できなければ 1
   local s="$1" out="" name val rest
   while :; do
@@ -228,6 +251,43 @@ expand_vars() { # <文字列> → 展開後を stdout。解決できなければ
     out="${out}${val}"
   done
 }
+# 値がシェルの 1 語か（引用符と `$(…)` / バッククォートの中の空白は語を割らない）。
+# 0 = 単純代入の値。1 = `NAME=v cmd` のように後ろにコマンドがある。
+ws_value_is_single_word() { # <value>
+  local s="$1" i=0 n c nx q="" depth=0 bq=0
+  n=${#s}
+  while [ "$i" -lt "$n" ]; do
+    c="${s:$i:1}"
+    if [ -n "$q" ]; then
+      if [ "$c" = "\\" ] && [ "$q" = '"' ]; then i=$((i + 2)); continue; fi
+      if [ "$c" = "$q" ]; then q=""; fi
+      i=$((i + 1))
+      continue
+    fi
+    if [ "$bq" -eq 1 ]; then
+      if [ "$c" = '`' ]; then bq=0; fi
+      i=$((i + 1))
+      continue
+    fi
+    if [ "$c" = "'" ]; then q="'"; i=$((i + 1)); continue; fi
+    if [ "$c" = '"' ]; then q='"'; i=$((i + 1)); continue; fi
+    if [ "$c" = "\\" ]; then i=$((i + 2)); continue; fi
+    if [ "$c" = '`' ]; then bq=1; i=$((i + 1)); continue; fi
+    if [ "$c" = '$' ]; then
+      nx="${s:$((i + 1)):1}"
+      if [ "$nx" = '(' ]; then depth=$((depth + 1)); i=$((i + 2)); continue; fi
+    fi
+    if [ "$depth" -gt 0 ] && [ "$c" = '(' ]; then depth=$((depth + 1)); i=$((i + 1)); continue; fi
+    if [ "$depth" -gt 0 ] && [ "$c" = ')' ]; then depth=$((depth - 1)); i=$((i + 1)); continue; fi
+    if [ "$depth" -eq 0 ]; then
+      case "$c" in
+        [[:space:]]) return 1 ;;
+      esac
+    fi
+    i=$((i + 1))
+  done
+  [ -z "$q" ] && [ "$depth" -eq 0 ] && [ "$bq" -eq 0 ]
+}
 record_assignment() { # <区間> → 単純代入なら VAR_TABLE へ積む（コマンド前置の代入は積まない）
   local seg name value inner tmpl d
   seg="$(ws_trim "$1")"
@@ -241,12 +301,16 @@ record_assignment() { # <区間> → 単純代入なら VAR_TABLE へ積む（�
   name="${seg%%=*}"
   case "$name" in *[!A-Za-z0-9_]*) return 1 ;; esac
   value="${seg#*=}"
+  # 引用符の外に空白がある値は `NAME=v cmd` の前置。ここで 0 を返すと区間の書き込み判定が飛ぶ。
+  # 引用符の中の空白（`CMD="rm -f README.md"`）は値の一部なので記録する。
+  ws_value_is_single_word "$value" || return 1
   # 単一引用符 1 語だけの値（`X='v'`）は展開されないので、値をそのまま記録する（後の `$NAME` 参照でも
-  # 再展開しない）。`X='v' cmd … 'w'` のような前置代入つきのコマンドや混在の語は対象外 — ここで 0 を返すと
-  # 区間の書き込み判定（scan_segment）が丸ごと飛ぶ。
+  # 再展開しない）。
   if ws_single_quoted_word "$value"; then
+    value="$(unquote1 "$value")"
+    case "$value" in *$'\n'*) return 1 ;; esac
     VAR_TABLE="${VAR_TABLE}
-${name}=$(unquote1 "$value")"
+${name}=${value}"
     return 0
   fi
   case "$value" in
@@ -270,9 +334,9 @@ ${name}=$(unquote1 "$value")"
       esac
       ;;
     *'$('* | *'`'*) return 1 ;;
-    *[[:space:]]*) return 1 ;; # `NAME=v cmd …` の前置形
-    *'$'*) value="$(expand_vars "$value")" || return 1 ;;
+    *'$'* | *\"* | *\'*) value="$(ws_expand_shell_word "$value")" || return 1 ;;
   esac
+  case "$value" in *$'\n'*) return 1 ;; esac
   VAR_TABLE="${VAR_TABLE}
 ${name}=${value}"
   return 0
@@ -288,20 +352,120 @@ ws_single_quoted_word() { # <token>
   case "$inner" in *\'*) return 1 ;; esac
   return 0
 }
+# 二重引用符の eval / trap 引数の 1 層を戻す（`\"` `\\` `\$` `` \` ``）。
+ws_unescape_dq() {
+  local s="$1" i=0 n c nx out=""
+  n=${#s}
+  while [ "$i" -lt "$n" ]; do
+    c="${s:$i:1}"
+    if [ "$c" = "\\" ]; then
+      nx="${s:$((i + 1)):1}"
+      case "$nx" in
+        '\' | '"' | '$' | '`') out="${out}${nx}"; i=$((i + 2)); continue ;;
+      esac
+    fi
+    out="${out}${c}"
+    i=$((i + 1))
+  done
+  printf '%s' "$out"
+}
+# シェルの 1 語を展開する（引用符は結果に残さない）。`" $D "/out/*` のように引用が語の途中で
+# 切れても、引用の外と二重引用符の中の `$VAR` だけを展開する。語全体が単一引用符のときは
+# 呼び出し側が先に literal 扱いにするので、ここへは来ない。コマンド置換と `${name:-x}` は 1。
+# WS_EXPAND_WHY に理由（コマンド置換 / 変数展開）を、WS_EXPAND_OUT に展開結果を残す。
+# 呼び出しを $(…) に入れると理由は親へ届かない。理由を読む側はリダイレクトで呼ぶ。
+ws_expand_shell_word() { # <token>
+  local s="$1" i=0 n c nx out="" q="" name rest val
+  WS_EXPAND_WHY=""
+  WS_EXPAND_OUT=""
+  case "$s" in
+    *\'* | *\"* | *'$'* | *'`'* | *\\*) : ;;
+    *) WS_EXPAND_OUT="$s"; printf '%s' "$s"; return 0 ;;
+  esac
+  n=${#s}
+  while [ "$i" -lt "$n" ]; do
+    c="${s:$i:1}"
+    if [ "$q" = "'" ]; then
+      if [ "$c" = "'" ]; then q=""; else out="${out}${c}"; fi
+      i=$((i + 1))
+      continue
+    fi
+    if [ "$c" = "'" ] && [ "$q" != '"' ]; then
+      q="'"
+      i=$((i + 1))
+      continue
+    fi
+    if [ "$c" = '"' ]; then
+      if [ "$q" = '"' ]; then q=""; else q='"'; fi
+      i=$((i + 1))
+      continue
+    fi
+    if [ "$c" = "\\" ]; then
+      nx="${s:$((i + 1)):1}"
+      if [ "$q" = '"' ]; then
+        case "$nx" in
+          '$' | '`' | '"' | '\\') out="${out}${nx}"; i=$((i + 2)); continue ;;
+        esac
+        out="${out}${c}"
+        i=$((i + 1))
+        continue
+      fi
+      out="${out}${nx}"
+      i=$((i + 2))
+      continue
+    fi
+    if [ "$c" = '$' ] || [ "$c" = '`' ]; then
+      nx="${s:$((i + 1)):1}"
+      if [ "$c" = '`' ] || [ "$nx" = '(' ]; then
+        WS_EXPAND_WHY="コマンド置換"
+        return 1
+      fi
+      if [ "$nx" = '{' ]; then
+        rest="${s:$((i + 2))}"
+        name="${rest%%\}*}"
+        if [ "$name" = "$rest" ]; then WS_EXPAND_WHY="変数展開"; return 1; fi
+        case "$name" in
+          '' | *[!A-Za-z0-9_]*) WS_EXPAND_WHY="変数展開"; return 1 ;;
+        esac
+        val="$(expand_vars "\${${name}}")" || { WS_EXPAND_WHY="変数展開"; return 1; }
+        out="${out}${val}"
+        i=$((i + 2 + ${#name} + 1))
+        continue
+      fi
+      name="$(printf '%s' "${s:$((i + 1))}" | LC_ALL=C sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\).*/\1/p')"
+      if [ -z "$name" ]; then WS_EXPAND_WHY="変数展開"; return 1; fi
+      val="$(expand_vars "\$${name}")" || { WS_EXPAND_WHY="変数展開"; return 1; }
+      out="${out}${val}"
+      i=$((i + 1 + ${#name}))
+      continue
+    fi
+    out="${out}${c}"
+    i=$((i + 1))
+  done
+  if [ -n "$q" ]; then WS_EXPAND_WHY="変数展開"; return 1; fi
+  WS_EXPAND_OUT="$out"
+  printf '%s' "$out"
+  return 0
+}
 # WS_LITERAL_PATHS=1 の間はパスを文字どおりに扱う（Edit / Write のファイルパスや、JavaScript /
 # Python / awk の文字列リテラル。`$` も `~` もシェルの展開ではない）。単一引用符の語も同じ。
 WS_LITERAL_PATHS=0
 resolve_target() { # <path token> → RESOLVED（物理パス）。判定不能は 1 + RESOLVE_WHY
-  local t d rest leaf pd ws_drive literal="${WS_LITERAL_PATHS:-0}"
-  t="$(unquote1 "$1")"
+  local t d rest leaf pd ws_drive exp_rc literal="${WS_LITERAL_PATHS:-0}"
   RESOLVED=""
   RESOLVE_WHY=""
   ws_single_quoted_word "$1" && literal=1
-  if [ "$literal" -ne 1 ]; then
-    case "$t" in
-      *'$('* | *'`'*) RESOLVE_WHY="コマンド置換"; return 1 ;;
-      *'$'*) t="$(expand_vars "$t")" || { RESOLVE_WHY="変数展開"; return 1; } ;;
-    esac
+  if [ "$literal" -eq 1 ]; then
+    t="$(unquote1 "$1")"
+  else
+    # コマンド置換にしない。理由（WS_EXPAND_WHY）はサブシェルから戻らない。
+    ws_expand_shell_word "$1" >/dev/null
+    exp_rc=$?
+    if [ "$exp_rc" -ne 0 ]; then
+      RESOLVE_WHY="${WS_EXPAND_WHY:-変数展開}"
+      return 1
+    fi
+    t="$WS_EXPAND_OUT"
   fi
   case "$t" in
     '') RESOLVE_WHY="空のパス"; return 1 ;;
@@ -624,7 +788,7 @@ ws_extract_substs() { # <区間>
 ws_marker_re() { # <lang> → 正規表現を stdout
   case "$1" in
     python*)
-      printf '%s' 'open\([^)]*["'"'"'][^"'"'"']*[wax+]["'"'"']|open\([^)]*mode *= *["'"'"'][^"'"'"']*[wax+]|write_text\(|write_bytes\(|os\.(remove|unlink|rename|renames|replace|makedirs|mkdir|rmdir|removedirs|truncate|chmod|chown|symlink|link)\(|shutil\.|\.(unlink|rename|replace|touch|mkdir|rmdir|symlink_to|hardlink_to)\(|fileinput\.input\([^)]*inplace|subprocess\.|os\.system\(|os\.popen\(|os\.exec|\.to_(csv|json|excel|parquet)\(|savefig\(|pickle\.dump\(' ;;
+      printf '%s' 'open\([^)]*["'"'"'][^"'"'"']*[wax+]["'"'"']|open\([^)]*mode *= *["'"'"'][^"'"'"']*[wax+]|write_text\(|write_bytes\(|os\.(remove|unlink|rename|renames|replace|makedirs|mkdir|rmdir|removedirs|truncate|chmod|chown|symlink|link)\(|shutil\.|\.(unlink|rename|touch|mkdir|rmdir|symlink_to|hardlink_to)\(|fileinput\.input\([^)]*inplace|subprocess\.|os\.system\(|os\.popen\(|os\.exec|\.to_(csv|json|excel|parquet)\(|savefig\(|pickle\.dump\(|Path\(["'"'"'][^"'"'"']*["'"'"']\)\.replace\(' ;;
     node)
       printf '%s' '(writeFile|appendFile|createWriteStream|copyFile|unlink|rm|rmdir|mkdir|rename|truncate|chmod|cp)(Sync)?\(|child_process|execSync\(|spawn(Sync)?\(|outputFile' ;;
     perl)
@@ -669,6 +833,117 @@ ws_leading_literal() { # <text>
 ws_trailing_literal() { # <text>
   printf '%s\n' "$1" | LC_ALL=C sed -n 's/^.*["'"'"']\([^"'"'"']*\)["'"'"'][^"'"'"']*$/\1/p' | head -n 1
 }
+# python の単純代入（`p = "literal"` / `p = Path("literal")`）だけを、行番号つきで覚える。
+# 式・連結・`+=` は値を覚えず、その名前の既知のパスを捨てる（古いツリー外パスを後の書き込みに
+# 使い続けない）。`==` は代入ではないので捨てない。
+# 書き込み行より後の代入は、それ以前の書き込み先を書き換えない。
+PY_ASSIGN=""
+ws_py_simple_literal() { # <代入の右辺> → リテラル。単純代入でなければ 1
+  local rest="$1" lit="" tail=""
+  case "$rest" in
+    \"*)
+      lit="$(printf '%s\n' "$rest" | LC_ALL=C sed -n 's/^"\([^"]*\)".*/\1/p' | head -n 1)"
+      [ -n "$lit" ] || return 1
+      tail="${rest#\"${lit}\"}"
+      ;;
+    \'*)
+      lit="$(printf '%s\n' "$rest" | LC_ALL=C sed -n "s/^'\\([^']*\\)'.*/\\1/p" | head -n 1)"
+      [ -n "$lit" ] || return 1
+      tail="${rest#\'${lit}\'}"
+      ;;
+    Path\(\"*\"\)*|Path\(\'*\'\)*)
+      lit="$(printf '%s\n' "$rest" | LC_ALL=C sed -n 's/^Path(["'"'"']\([^"'"'"']*\)["'"'"']).*/\1/p' | head -n 1)"
+      [ -n "$lit" ] || return 1
+      tail="${rest#Path(\"${lit}\")}"
+      [ "$tail" = "$rest" ] && tail="${rest#Path('${lit}')}"
+      ;;
+    *) return 1 ;;
+  esac
+  tail="$(ws_trim "$tail")"
+  case "$tail" in
+    '' | '#'*) : ;;
+    *) return 1 ;;
+  esac
+  case "$lit" in *$'\n'*) return 1 ;; esac
+  printf '%s\n' "$lit"
+}
+ws_py_collect() { # <program>
+  local line name rest lit lead lineno=0
+  PY_ASSIGN=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    lineno=$((lineno + 1))
+    line="$(ws_trim "$line")"
+    lead="$(printf '%s\n' "$line" | LC_ALL=C sed -n \
+      -e 's/^for[[:space:]]\{1,\}\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]\{1,\}in[[:space:]].*/\1/p' \
+      -e 's/^with[[:space:]].*[[:space:]]as[[:space:]]\{1,\}\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*:.*/\1/p' \
+      | head -n 1)"
+    if [ -n "$lead" ]; then
+      PY_ASSIGN="${PY_ASSIGN}
+${lineno} ${lead}="
+      continue
+    fi
+    case "$line" in
+      [A-Za-z_]*=*) : ;;
+      *) continue ;;
+    esac
+    name="$(ws_trim "${line%%=*}")"
+    rest="$(ws_trim "${line#*=}")"
+    case "$rest" in
+      =*) continue ;;
+    esac
+    case "$name" in
+      *[!A-Za-z0-9_]*)
+        lead="$(printf '%s\n' "$name" | LC_ALL=C sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*+$/\1/p' | head -n 1)"
+        [ -n "$lead" ] || continue
+        PY_ASSIGN="${PY_ASSIGN}
+${lineno} ${lead}="
+        continue
+        ;;
+    esac
+    if lit="$(ws_py_simple_literal "$rest")"; then
+      PY_ASSIGN="${PY_ASSIGN}
+${lineno} ${name}=${lit}"
+    else
+      PY_ASSIGN="${PY_ASSIGN}
+${lineno} ${name}="
+    fi
+  done <<WS_PY_COLLECT
+$1
+WS_PY_COLLECT
+}
+# <本文> <行の全文> <この行番号より後> → 次に一致した行番号。無ければ 1
+ws_source_line_after() {
+  local n=0 line after="${3:-0}"
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    [ "$n" -gt "$after" ] || continue
+    [ "$line" = "$2" ] || continue
+    printf '%s\n' "$n"
+    return 0
+  done <<WS_SRC_LINE
+$1
+WS_SRC_LINE
+  return 1
+}
+ws_py_lookup() { # <name> <行番号> → その行より前の最後の代入（無ければ空）
+  local name="$1" upto="${2:-0}" row ln rest val=""
+  [ -n "$name" ] || return 0
+  case "$name" in *[!A-Za-z0-9_]*) return 0 ;; esac
+  case "$upto" in '' | *[!0-9]*) return 0 ;; esac
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    ln="${row%% *}"
+    case "$ln" in *[!0-9]*) continue ;; esac
+    [ "$ln" -lt "$upto" ] || continue
+    rest="${row#* }"
+    case "$rest" in
+      "${name}="*) val="${rest#"${name}="}" ;;
+    esac
+  done <<WS_PY_LOOKUP
+$PY_ASSIGN
+WS_PY_LOOKUP
+  [ -n "$val" ] && printf '%s\n' "$val"
+}
 # 本文を判定する。<hb> <lang> <program> <src> <depth>
 ws_judge_program() {
   local hb="$1" lang="$2" prog="$3" src="$4" depth="$5" line lit marker rc
@@ -680,7 +955,11 @@ ws_judge_program() {
     ws_scan_nested "$prog" $((depth + 1))
     return $?
   fi
-  local lines re rest before after
+  local lines re rest before after py_arg py_ident py_from=0 py_at="" py_dest=""
+  case "$lang" in
+    python*) ws_py_collect "$prog" ;;
+    *) PY_ASSIGN="" ;;
+  esac
   lines="$(ws_marker_lines "$lang" "$prog")"
   rc=$?
   case "$rc" in
@@ -693,6 +972,13 @@ ws_judge_program() {
   # （`Path("a").write_text(`）は手前のリテラルを対象にする。対象がリテラルでなければ判定不能
   while IFS= read -r line; do
     [ -n "$line" ] || continue
+    py_at=""
+    case "$lang" in
+      python*)
+        py_at="$(ws_source_line_after "$prog" "$line" "$py_from")" || py_at=""
+        [ -n "$py_at" ] && py_from="$py_at"
+        ;;
+    esac
     rest="$line"
     while :; do
       marker="$(printf '%s' "$rest" | LC_ALL=C "${FF_WRITE_SCAN_GREP:-grep}" -Eo -- "$re" 2>/dev/null | head -n 1)"
@@ -704,6 +990,27 @@ ws_judge_program() {
       before="${rest%%"$marker"*}"
       after="${rest#*"$marker"}"
       case "$marker" in
+        Path*\.replace\()
+          lit="$(printf '%s\n' "$marker" | LC_ALL=C sed -n 's/^Path(["'"'"']\([^"'"'"']*\)["'"'"'])\.replace($/\1/p' | head -n 1)"
+          py_dest="$(ws_leading_literal "$after")"
+          if [ -z "$lit" ] || [ -z "$py_dest" ]; then
+            undeterminable "Path.replace の対象がリテラルではない（${marker}。${src}）" && return 0
+            rest="$after"
+            continue
+          fi
+          WS_LITERAL_PATHS="${WS_PROG_LITERAL:-0}"
+          judge_target "$lit" "${hb} プログラムの ${marker}（${src}）"
+          rc=$?
+          WS_LITERAL_PATHS=0
+          [ "$rc" -eq 0 ] && return 0
+          WS_LITERAL_PATHS="${WS_PROG_LITERAL:-0}"
+          judge_target "$py_dest" "${hb} プログラムの ${marker} の移動先（${src}）"
+          rc=$?
+          WS_LITERAL_PATHS=0
+          [ "$rc" -eq 0 ] && return 0
+          rest="$after"
+          continue
+          ;;
         subprocess.* | os.system\(* | os.popen\(* | os.exec* | child_process* | execSync\(* | spawn* | system* | \`* | shutil.* | FileUtils.* | fileinput.*)
           undeterminable "任意コマンド起動・対象を特定できないユーティリティを使う ${hb} プログラム（${marker}。${src}）" && return 0
           rest="$after"
@@ -716,6 +1023,40 @@ ws_judge_program() {
         *\() lit="$(ws_leading_literal "$after")" ;;
         *) lit="" ;;
       esac
+      if [ -z "$lit" ]; then
+        case "$lang" in
+          python*)
+            case "$marker" in
+              open\(*)
+                py_arg="$(ws_trim "${marker#open(}")"
+                py_arg="$(ws_trim "${py_arg%%,*}")"
+                case "$py_arg" in
+                  '' | *[!A-Za-z0-9_]*) ;;
+                  [A-Za-z_]*) lit="$(ws_py_lookup "$py_arg" "$py_at")" ;;
+                esac
+                ;;
+              .* | write_text\(* | write_bytes\(*)
+                py_ident=""
+                case "$before" in
+                  *Path\(*)
+                    py_ident="${before##*Path(}"
+                    py_ident="${py_ident%%)*}"
+                    py_ident="$(ws_trim "$py_ident")"
+                    ;;
+                esac
+                if [ -z "$py_ident" ]; then
+                  py_ident="$(printf '%s' "$before" | LC_ALL=C sed -n 's/.*[^A-Za-z0-9_]\([A-Za-z_][A-Za-z0-9_]*\)$/\1/p' | head -n 1)"
+                  [ -n "$py_ident" ] || py_ident="$(printf '%s' "$before" | LC_ALL=C sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*$/\1/p' | head -n 1)"
+                fi
+                case "$py_ident" in
+                  '' | *[!A-Za-z0-9_]*) ;;
+                  [A-Za-z_]*) lit="$(ws_py_lookup "$py_ident" "$py_at")" ;;
+                esac
+                ;;
+            esac
+            ;;
+        esac
+      fi
       if [ -z "$lit" ]; then
         undeterminable "${hb} プログラムの書き込み先がリテラルではない（${marker}。${src}）" && return 0
         rest="$after"
@@ -854,6 +1195,12 @@ judge_interpreter() {
         prog="$(LC_ALL=C head -c 262144 "$RESOLVED" 2>/dev/null)"
         src="file"
         srcpath="$RESOLVED"
+      elif [ "${WS_HEREDOC_N:-0}" -eq 1 ] && [ -n "$WS_HEREDOC_TARGET" ] \
+        && [ "$RESOLVED" = "$WS_HEREDOC_TARGET" ] && [ "$HEREDOC_STATE" = "ok" ] \
+        && [ -n "$HEREDOC_BODIES" ]; then
+        # 同じコマンドの heredoc が、まだディスクに無いこのスクリプトを作っている。
+        prog="$HEREDOC_BODIES"
+        src="heredoc"
       else
         undeterminable "スクリプトを読めない（${RESOLVED}）"
         return $?
@@ -923,7 +1270,7 @@ scan_segment() {
   return $rc
 }
 ws_scan_segment_body() {
-  local seg="$1" depth="$2" toks n i tok t target inq hb head seg_override=0 a body lexed wrap="" lrc
+  local seg="$1" depth="$2" toks n i tok t target inq hb head seg_override=0 a body lexed wrap="" lrc ws_hcount ws_ht ws_hi ws_producer="" ws_ops=0 ws_j=0 ws_heredoc_at=-1 ws_stdin_after=0 ws_k=0
   # 語分割は引用符を保つ（`'s/a b/c d/'` を 1 語のまま扱う。Issue `#1868`）。引用符の外の
   # リダイレクト演算子は独立した語として切り出されるので、`hi>f` / `2>/dev/null` も同じ形で読める。
   # 字句解析に失敗した区間（引用符が閉じない）は断片を書き込み先として名指ししないよう、
@@ -1018,6 +1365,93 @@ EOF
   done
   WRITE_OVERRIDE="$seg_override"
   WS_SEG_OVR="$seg_override"
+  # 同じコマンドの heredoc が 1 つだけで、cat（ファイル引数なし）または tee が標準出力へ
+  # 書いているときだけ、そのリダイレクト先を「これから作るスクリプト」として覚える。
+  # printf のように heredoc を読まないコマンドへは載せない。入れ子では外側の記録を上書きしない。
+  if [ "$depth" -eq 0 ]; then
+    ws_hcount=0
+    for ws_ht in "${toks[@]}"; do
+      case "$ws_ht" in
+        '<<' | '<<-') ws_hcount=$((ws_hcount + 1)) ;;
+      esac
+    done
+    if [ "$ws_hcount" -gt 1 ]; then
+      WS_HEREDOC_N=2
+      WS_HEREDOC_TARGET=""
+    elif [ "$ws_hcount" -eq 1 ]; then
+      ws_producer=""
+      if [ "$i" -lt "$n" ]; then ws_producer="${toks[$i]##*/}"; fi
+      case "$ws_producer" in
+        cat | tee) : ;;
+        *) ws_producer="" ;;
+      esac
+      if [ "$ws_producer" = "cat" ]; then
+        ws_ops=0
+        ws_j=$((i + 1))
+        while [ "$ws_j" -lt "$n" ]; do
+          case "${toks[$ws_j]}" in
+            '>' | '>>' | '>|' | '&>' | '&>>' | [0-9]*'>' | [0-9]*'>>' | [0-9]*'>|' | '>&' | '&>&' | '<' | '<<' | '<<-' | '<<<' | [0-9]*'<')
+              ws_j=$((ws_j + 2))
+              continue
+              ;;
+            '>'* | '&>'* | [0-9]*'>&'* | '<'*)
+              ws_j=$((ws_j + 1))
+              continue
+              ;;
+            -*)
+              ws_j=$((ws_j + 1))
+              continue
+              ;;
+            *)
+              ws_ops=$((ws_ops + 1))
+              ws_j=$((ws_j + 1))
+              ;;
+          esac
+        done
+        [ "$ws_ops" -eq 0 ] || ws_producer=""
+      fi
+      if [ -n "$ws_producer" ]; then
+        ws_heredoc_at=-1
+        ws_k=0
+        while [ "$ws_k" -lt "$n" ]; do
+          case "${toks[$ws_k]}" in
+            '<<' | '<<-') ws_heredoc_at=$ws_k; break ;;
+          esac
+          ws_k=$((ws_k + 1))
+        done
+        ws_stdin_after=0
+        ws_k=$((ws_heredoc_at + 1))
+        while [ "$ws_heredoc_at" -ge 0 ] && [ "$ws_k" -lt "$n" ]; do
+          case "${toks[$ws_k]}" in
+            '<'* | '0<'*) ws_stdin_after=1; break ;;
+          esac
+          ws_k=$((ws_k + 1))
+        done
+        [ "$ws_stdin_after" -eq 0 ] || ws_producer=""
+      fi
+      if [ -n "$ws_producer" ]; then
+        ws_hi=0
+        while [ "$ws_hi" -lt "${#toks[@]}" ]; do
+          case "${toks[$ws_hi]}" in
+            '>' | '>>' | '>|' | '&>' | '&>>')
+              ws_ht="${toks[$((ws_hi + 1))]:-}"
+              if [ -n "$ws_ht" ] && resolve_target "$ws_ht"; then
+                if [ "${WS_HEREDOC_N:-0}" -eq 0 ]; then
+                  WS_HEREDOC_TARGET="$RESOLVED"
+                  WS_HEREDOC_N=1
+                else
+                  WS_HEREDOC_N=2
+                  WS_HEREDOC_TARGET=""
+                fi
+              fi
+              break
+              ;;
+          esac
+          ws_hi=$((ws_hi + 1))
+        done
+      fi
+    fi
+  fi
   # c) リダイレクト（区間のどこにあっても書き込み）。語分割が引用符の外の演算子だけを独立した語に
   # するので、演算子の語の次の語が書き込み先。`[[ … ]]` / `(( … ))` の中の `>` / `<` は比較演算子。
   # 書き込み先の位置に来た閉じ括弧・`;;`（`> )` は構文エラーで、ファイル名にはならない）は
@@ -1072,7 +1506,49 @@ EOF
       return 1
       ;;
     pushd | popd) WRITE_BASE=""; return 1 ;;
-    eval) undeterminable "eval は本文を静的に取れない"; return $? ;;
+    trap)
+      local trap_a trap_body="" trap_mode=""
+      for trap_a in "$@"; do
+        case "$trap_a" in
+          -l | --help | -p | -p*) return 1 ;;
+          --) continue ;;
+          -) trap_mode=reset; continue ;;
+          -*) undeterminable "trap のオプションを解釈できない（${trap_a}）"; return $? ;;
+        esac
+        if [ "$trap_mode" = "reset" ]; then continue; fi
+        if [ -z "$trap_mode" ]; then
+          case "$trap_a" in
+            \'*\') trap_body="$(unquote1 "$trap_a")"; trap_mode=cmd ;;
+            [A-Za-z_]*) return 1 ;;
+            *)
+              trap_body="$(ws_expand_shell_word "$trap_a")" || {
+                undeterminable "trap は本文を静的に取れない"
+                return $?
+              }
+              trap_mode=cmd
+              ;;
+          esac
+          continue
+        fi
+      done
+      [ "$trap_mode" = "cmd" ] || return 1
+      ws_scan_nested "$trap_body" $((depth + 1))
+      return $?
+      ;;
+    eval)
+      local eval_body="" eval_a eval_part
+      [ "$#" -gt 0 ] || { undeterminable "eval は本文を静的に取れない"; return $?; }
+      for eval_a in "$@"; do
+        eval_part="$(ws_expand_shell_word "$eval_a")" || {
+          undeterminable "eval は本文を静的に取れない"
+          return $?
+        }
+        if [ -n "$eval_body" ]; then eval_body="${eval_body} ${eval_part}"; else eval_body="$eval_part"; fi
+      done
+      [ -n "$eval_body" ] || { undeterminable "eval は本文を静的に取れない"; return $?; }
+      ws_scan_nested "$eval_body" $((depth + 1))
+      return $?
+      ;;
     git)
       # 別リポジトリ指定（-C）は git 走査の担当。ここでは cwd のリポジトリへの書き込み系だけ
       for a in "$@"; do case "$a" in -C | --git-dir* | --work-tree*) return 1 ;; esac; done
@@ -1523,6 +1999,8 @@ ff_write_scan() { # <生コマンド> <HEREDOC_STATE> <HEREDOC_CODE> <HEREDOC_BO
   HEREDOC_BODIES="$4"
   WS_SUB_DEPTH=0
   WS_IN_FILE=0
+  WS_HEREDOC_N=0
+  WS_HEREDOC_TARGET=""
   # heredoc ヘルパを読めなかった回（hook 側の判定が unavailable）は従来どおり判定不能へ倒す。
   # それ以外は生コマンドからコメントを落としてから heredoc を解き直す（コメント中の `<<` を
   # opener と誤認して「未終端」へ倒さない）。

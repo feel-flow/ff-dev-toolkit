@@ -324,11 +324,20 @@ assert_gate "K2 主担当 grok-cli でも security_review=off → off" yes off
 : > "$TEST_TMP/empty-k.txt"
 run_gate GROK_AGENT=1 -- --files-from "$TEST_TMP/empty-k.txt"
 assert_gate "K2a 判定不能（変更 0 件）でも none へ倒さず grok-session" unknown grok-session
-run_gate GROK_AGENT=1 GROK_SUBAGENTS=0 "CODEX_HOME=$CODEX_OFF" -- --files src/auth/login.ts
+# K3 / K4 / K5 / K8 は「PATH に codex がある」回なので、実機の codex の有無に頼らずスタブを PATH の
+# 先頭へ置く。頼ると codex の無い runner（週次 CI）で K4 / K5 / K8 が赤になり、K3 は codex の不在だけで
+# 緑になる（security-diff-scan の不在を測らない）
+CODEX_STUB_BIN="$TEST_TMP/codex-stub-bin"
+mkdir -p "$CODEX_STUB_BIN"
+printf '#!/bin/sh\nexit 0\n' > "$CODEX_STUB_BIN/codex"
+chmod +x "$CODEX_STUB_BIN/codex"
+WITHCODEX_PATH="$CODEX_STUB_BIN:$PATH"
+run_gate GROK_AGENT=1 GROK_SUBAGENTS=0 "CODEX_HOME=$CODEX_OFF" "PATH=$WITHCODEX_PATH" -- --files src/auth/login.ts
 line="$(kv REVIEW_SECURITY_REPORT_LINE)"
 if [ "$(kv REVIEW_SECURITY_GATE)" = "unverified" ]; then
   case "$line" in
-    *"未確認（実行できる CLI なし"*)
+    *"codex が PATH にありません"*) bad "K3 スタブの codex が PATH に届いていない: [$line]" ;;
+    *"未確認（実行できる CLI なし"*"security-diff-scan が"*"にありません"*)
       case "$line" in
         *指摘なし*) bad "K3 「実行できる CLI なし」の行が「指摘なし」を含む: [$line]" ;;
         *) ok "K3 GROK_SUBAGENTS=0 で security-diff-scan が無い → unverified と「実行できる CLI なし」（指摘なしと書かない）" ;;
@@ -353,7 +362,7 @@ if [ "$(kv REVIEW_SECURITY_GATE)" = "unverified" ]; then
 else
   bad "K3b PATH に codex が無い: gate=[$(kv REVIEW_SECURITY_GATE)] line=[$line]"
 fi
-run_gate GROK_AGENT=1 GROK_SUBAGENTS=0 "CODEX_HOME=$CODEX_ON" -- --files src/auth/login.ts
+run_gate GROK_AGENT=1 GROK_SUBAGENTS=0 "CODEX_HOME=$CODEX_ON" "PATH=$WITHCODEX_PATH" -- --files src/auth/login.ts
 if [ "$(kv REVIEW_SECURITY_GATE)" = "codex-security" ] && [ "$(kv REVIEW_PRIMARY_HOST)" = "grok-cli" ]; then
   line="$(kv REVIEW_SECURITY_REPORT_LINE)"
   case "$line" in
@@ -364,7 +373,7 @@ if [ "$(kv REVIEW_SECURITY_GATE)" = "codex-security" ] && [ "$(kv REVIEW_PRIMARY
 else
   bad "K4 フォールバック: host=[$(kv REVIEW_PRIMARY_HOST)] gate=[$(kv REVIEW_SECURITY_GATE)]"
 fi
-run_gate GROK_AGENT=1 GROK_SUBAGENTS=0 "CODEX_HOME=$CODEX_ON" -- --git --base origin/other
+run_gate GROK_AGENT=1 GROK_SUBAGENTS=0 "CODEX_HOME=$CODEX_ON" "PATH=$WITHCODEX_PATH" -- --git --base origin/other
 assert_gate "K5 フォールバックの diff scan も origin/HEAD の食い違いでは止めない" yes codex-security
 git -C "$REPO" symbolic-ref --delete refs/remotes/origin/HEAD
 run_gate GROK_AGENT=1 -- --git
@@ -381,7 +390,7 @@ case "$(kv REVIEW_SECURITY_GATE)|$line" in
   *) bad "K7 解決できない base: gate=[$(kv REVIEW_SECURITY_GATE)] line=[$line]" ;;
 esac
 git -C "$REPO" symbolic-ref --delete refs/remotes/origin/HEAD
-run_gate GROK_AGENT=1 GROK_SUBAGENTS=0 "CODEX_HOME=$CODEX_ON" -- --git
+run_gate GROK_AGENT=1 GROK_SUBAGENTS=0 "CODEX_HOME=$CODEX_ON" "PATH=$WITHCODEX_PATH" -- --git
 line="$(kv REVIEW_SECURITY_REPORT_LINE)"
 case "$(kv REVIEW_SECURITY_GATE)|$line" in
   "unverified|"*"未確認（diff scan の基点を解決できません"*)

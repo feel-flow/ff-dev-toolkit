@@ -181,7 +181,7 @@ Issue の工数ブロック（`ff-effort`。単位は人時 `h`）の自己申�
 
 ### Bash ガード（PreToolUse）
 
-プラグインをインストールすると、Bash ツールの実行前に 13 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-long-gate-background.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-merge-closing-keyword.sh` / `hooks/guard-issue-labels.sh` / `hooks/guard-sub-issue-id.sh` / `hooks/guard-exit-code.sh` / `hooks/guard-zsh-glob.sh` / `hooks/guard-literal-write.sh` / `hooks/guard-credential-output.sh` / `hooks/guard-wsl-shell.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。「実行を許しつつエージェントに警告文を見せる」チャネルが PreToolUse に無いため、実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。**例外は `guard-exit-code.sh` と `guard-zsh-glob.sh` と `guard-literal-write.sh` と `guard-credential-output.sh` と `guard-wsl-shell.sh` で、判定を完了できないときは候補コマンドに限り停止する**（fail-closed。下記）。
+プラグインをインストールすると、Bash ツールの実行前に 13 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-long-gate-background.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-merge-closing-keyword.sh` / `hooks/guard-issue-labels.sh` / `hooks/guard-sub-issue-id.sh` / `hooks/guard-exit-code.sh` / `hooks/guard-zsh-glob.sh` / `hooks/guard-literal-write.sh` / `hooks/guard-credential-output.sh` / `hooks/guard-wsl-shell.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している（PreToolUse の `additionalContext` はエージェントへ届くが、Claude Code の CLI と Remote Control の画面にも表示されるため、呼び出しごとの警告には使わない）。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。**例外は `guard-exit-code.sh` と `guard-zsh-glob.sh` と `guard-literal-write.sh` と `guard-credential-output.sh` と `guard-wsl-shell.sh` で、判定を完了できないときは候補コマンドに限り停止する**（fail-closed。下記）。
 
 **認証設定の表示ガード（`guard-credential-output.sh`）** は `.npmrc` / `.netrc` /
 `.pypirc` / `.aws/credentials` / `.docker/config.json` / `.config/gh/hosts.yml` /
@@ -223,10 +223,10 @@ Codex の Bash 相当ツールでの実発火は未実測。
 - 既知の限界（判定できず素通しする渡し方）: `--body-file -`（stdin）・プロセス置換・同一コマンド内で生成する一時ファイル・`--fill`・インタラクティブ / web での本文入力
 - 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1`
 
-**cwd ガード（`guard-background-cwd.sh`）** — モノレポで `run_in_background` 付きの Bash を実行するとき、または linked worktree が複数存在するリポジトリで絶対パス以外の `cd` から始まる Bash を実行しようとしたときに、意図と異なるディレクトリでコマンドが走るリスクを警告する。誤警告のコストを優先し、`systemMessage` の警告のみでコマンド自体はブロックしない。
+**cwd ガード（`guard-background-cwd.sh`）** — linked worktree があるリポジトリで、先頭が相対パスの `cd` で始まる Bash を止める（どのツリーで走るかが直前の呼び出し次第で変わるため）。止めた理由文で、先頭を絶対パスの `cd` へ書き換えて再実行するよう案内する。それ以外の呼び出しには何も表示しない。
 
 - 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1`
-- 既知の限界: `systemMessage` は利用者向け表示チャネルでエージェントのコンテキストには入らないため、警告を読んで先頭に `cd` を書き足す判断は人間側に委ねられる
+- 絶対パス・コマンド置換（`cd "$(git rev-parse --show-toplevel)"`）・変数展開・チルダの `cd`、引数なしの `cd`、`cd -`、オプション付きの `cd` は止めない
 
 **工数実績未記入マージガード（`guard-effort-actual.sh`）** — `gh pr merge` が閉じようとしている Issue の本文に `ff-effort` ブロックが存在するのに `effort_ai_actual` が未記入のまま残っている場合、マージ前に停止する。`ff-effort` ブロック自体が無い Issue では発火しない。
 
@@ -258,12 +258,13 @@ Codex の Bash 相当ツールでの実発火は未実測。
 - 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1`
 - 既知の限界: コマンド位置に無い gh（echo の文字列）、変数展開で組み立てるフラグ名、heredoc 本文では判定できず素通しする（fail-open）
 
-**終了コード誤読ガード（`guard-exit-code.sh`）** — 実行しようとしている Bash コマンドが、測りたい処理の終了コードを運ばない形になっているときに停止する。検出する形は 4 つで、終了コードの判定は同梱の静的検出器 `tests/lib/exit-code-guard.sh` をそのまま再利用する。背景実行の待ちの上限と、command -v で見つからない timeout / gtimeout の分類は `tests/lib/wait-bounds.sh` に置く（この hook は判定規則を複製しない）。
+**終了コード誤読ガード（`guard-exit-code.sh`）** — 実行しようとしている Bash コマンドが、測りたい処理の終了コードを運ばない形になっているときに停止する。検出する形は 5 つで、終了コードの判定は同梱の静的検出器 `tests/lib/exit-code-guard.sh` をそのまま再利用する。背景実行の待ちの上限と、command -v で見つからない timeout / gtimeout の分類は `tests/lib/wait-bounds.sh` に置く（この hook は判定規則を複製しない）。
 
 - `gate-exit-swallowed`: 全件ゲートの起動を含む行が診断・出力整形で終端している（`bash …/run-all.sh > log 2>&1; echo "rc=$?"` / `… | tail -20` / `… || true` / `…; exit 0`）。プロセス全体の終了コードが末尾コマンドのものになり、バックグラウンド実行の完了通知や CI ステップが「赤いゲートを緑」と断定する
 - `gate-exit-dropped`: 全件ゲートの起動の**後続の行**が終了コードを伝播させずに終端している（`bash …/run-all.sh > log 2>&1` ⏎ `rc=$?` ⏎ `echo "EXIT=$rc"` のように、推奨形から末尾の `exit $rc` だけを落とした形。`rc=$?` で受けた変数を `exit` / 制御構文 / 他コマンドの引数が参照すれば消費とみなし、`echo` / `printf` だけの参照は診断として数えない）
 - `pipe-exit-read`: `head` / `tail` / `less` / `more` / `cat` / `tee` / `wc` で終わるパイプラインの直後で `$?` を読んでいる（読めるのはフィルタの終了コード）
 - `pipestatus`: `PIPESTATUS` を参照している（zsh では空へ展開されて機能しない）
+- `pipe-and-chain`: `&&` の左辺が `tail` / `tee` で終わるパイプラインになっている（`check --strict 2>&1 | tail -4 && push` は tail の終了コードで短絡するので、検査が失敗しても push へ進む。`|&` の綴りも同じ）。同じ入力・スクリプト・フェンスの中で先に `set -o pipefail` を宣言した形は止めない。`head` / `less` / `more` / `cat` / `wc` で終わる読むだけの確認、`||`、grep / jq の終端は対象外。停止メッセージは検出した実コマンドへ `set -o pipefail; ` を前置した案を出す（同じ行に `head` / `less` / `more` / `grep -q` の段があるときは、SIGPIPE で落ちるのでファイルへ受ける形を出す）
 - なぜ hook が要るか: 静的検出器の入口は 3 つとも**ファイルを入力に取る**ため、エージェントがその場で組み立てた Bash ツール呼び出しには原理的に届かない。同じ形が実行時に再発するのはこの走査面の穴による
 - 通し方: 診断を出したうえで `rc=$?` → `exit $rc` まで書いて伝播させる。停止メッセージは、切り出しが一意に決まる形では**検出した実コマンドを書き換えた案**を出す（決まらない形では一般形だけを出し、誤った案内をしない）。どうしてもその形で実行する場合はコマンドの**先頭**に `FF_EXIT_CODE_ACK=1` を付ける
 - 背景実行では、名簿に無いコマンドが診断の echo で終わり、失敗が 0 として報告される形も止める。前景の同じ形は止めない。通し方は診断の後に終了コードを保存して `exit $rc` まで書く
@@ -277,7 +278,7 @@ Codex の Bash 相当ツールでの実発火は未実測。
 - 意図して赤にする形（正しく動く書き方でも止める。設計判断）: (1) ゲート直後の**引数なしの `exit` / `return`**（`bash …/run-all.sh > log 2>&1; exit` / 改行で分けた `exit` や `return` / `… || exit`）は伝播と見ない — ゲートがパイプ段や `&` の背後に在ると「直前のコマンド」がゲートでなくなり、伝播扱いにすると別の 5 形が無音になるため。(2) **`set -e` の到達は静的に追わない** — `set -e` 下の `bash …/run-all.sh > log 2>&1` ⏎ `後片付け`（`rm -f tmp` 等）は errexit で正しく止まる形だが赤にする（`pipefail` と同じ判断で、読み手が `set -e` の到達を追わなければ正しさが分からない形へは寄せない）。回避はどちらも同じで、ゲート直後で `rc=$?` と受け、後片付けや診断を挟んでから `exit $rc` で明示的に伝播させる（`FF_EXIT_CODE_ACK=1` の前置は、この書き換えができないときの最後の手段）
 - 既知の限界（素通しする形）: 末尾が裸の `&` で終わる background 起動の後続行（終了コードは `wait` が運ぶため追わない）・変数展開やコマンド置換で組み立てた綴り・heredoc 本文（データとして落とす）。改行で区切った 2 行目以降は `gate-exit-dropped` が行をまたいで判定する（`pipe-exit-read` も同様）
 
-**zsh 展開ガード（`guard-zsh-glob.sh` の追加検出）** — zsh ホスト（`CLAUDE_CODE_SHELL`、無ければ `SHELL`）で未引用の `$VAR` / `${VAR}` を `systemMessage` で警告する。実値・配列型・シェル設定を推測しないため、この警告では停止しない。複数引数は配列と `"${args[@]}"`、単一引数は `"$VAR"` を使う。未引用の `=` 始まりの語（`echo ===` / `[ a == b ]`）はコマンドパス展開になるため deny し、語を引用する案を示す。
+**zsh 展開ガード（`guard-zsh-glob.sh` の追加検出）** — zsh ホスト（`CLAUDE_CODE_SHELL`、無ければ `SHELL`）で未引用の `$VAR` / `${VAR}` を `systemMessage` で警告する。実値・配列型・シェル設定を推測しないため、この警告では停止しない。複数引数は配列と `"${args[@]}"`、単一引数は `"$VAR"` を使う。未引用の `=` 始まりの語（`echo ===` / `[ a == b ]`）はコマンドパス展開になるため deny し、語を引用する案を示す。止めない通知（この警告・実行後にエージェントへ返す同じ警告・下記の書き換えの通知）は、種類ごとに同じセッション・同じエージェント（サブエージェントは別に数える）で最初の 1 回だけ出す（Claude Code の CLI と Remote Control の画面を呼び出しごとに埋めないため）。deny・書き換えそのもの・判定不能の通知は毎回同じで、通知を載せた結果が deny になった回は出し済みに数えない。hook 入力に `session_id` が無い、または記録（`${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/notices/`）を作れない環境では毎回出す。
 
 - 入力書き換えに対応した Claude Code 環境で、**権限モードが bypassPermissions のときだけ**、未引用の名前付き変数（`$NAME` / `${NAME}`。一覧値を代入した変数の形を含む）を含む呼び出しの先頭へ `setopt SH_WORD_SPLIT; ` を付けた書き換え候補を返し、bash と同じ単語分割規則にそろえる（`for t in "a b" "c d"; do set -- $t; …` の `set -- $t` や `$(…)` の中の `$NAME` など）。書き換えた呼び出しには scalar の警告を出さない。ほかの権限モード（default / plan / acceptEdits / auto / dontAsk と、hook 入力に権限モードが無い場合）では前置しない — Claude Code は書き換え後の入力に権限ルールを当て、`;` で区切った各文に許可を求めるので、read-only の一覧に無い `setopt` を前置すると、承認なしで通っていた呼び出し（`ls -la $TMPDIR` など）が毎回の承認待ち（dontAsk / `claude -p` では拒否）に変わるため。判定は権限モードだけを見るので、許可ルールを足しても他のモードでは前置されない。位置引数（`$1`）だけを含む呼び出し（`f() { for w in $1; do …; done; }; f "a b c"`）は既存の scalar 検出が数えないので前置されない。別のガードの抜け道（`FF_*_ACK=1`）を先頭に持つ呼び出しは、前置すると抜け道が先頭の語でなくなるので前置せず従来の警告に留める（glob / equals の引用の書き換えは続ける）。入力書き換えに対応しないホスト（Codex / grok）は従来の警告のまま。外すときは先頭の `FF_ZSH_EXPANSION_ACK=1`
 

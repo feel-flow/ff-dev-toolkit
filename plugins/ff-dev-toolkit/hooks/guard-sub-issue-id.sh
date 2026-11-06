@@ -15,9 +15,10 @@
 # 見て止めると正当な呼び出しまで deny する。観測 3 回が全部 `sub_issue_id` なので、
 # フィールド名で絞り、別の integer フィールドで再発したら名簿へ足す。
 #
-# PreToolUse には「実行を許しつつ agent に警告文を見せる」チャネル
-# （`additionalContext`）は無い。届くのは `permissionDecision: "deny"` の
-# `permissionDecisionReason` だけなので、警告は抜け道付きの deny として実装する。
+# 警告は抜け道付きの deny（`permissionDecision: "deny"` の `permissionDecisionReason`）として
+# 実装する。PreToolUse の `additionalContext` はエージェントへ届くが、Claude Code の CLI と
+# Remote Control の画面にも表示される（2026-11-04 実測。Issue `#2614`）ので、止めない警告の
+# 出口にはしない。
 # 抜け道:
 #   - `-F sub_issue_id=`（型付き）に直す
 #   - 同梱の `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/link-sub-issues.sh" --repo OWNER/REPO <parent> <child>...`

@@ -6,6 +6,8 @@
 # 変異検出: 共通 helper の同一 object 判定を常に偽へ倒すと cases/attribution.sh が赤。
 # 変異検出: 未コミットの変更がある path の除外を外すと cases/attribution.sh（作業ツリーで変えた path を誤帰属と読む）と live 断片 contract が赤。
 # 空振り検出: 公開側 clone が無い入力は赤にも黙った緑にもせず、判定しない旨の名指しの警告で通す（開発者の手元に clone が無いのは通常。リリース時の再判定が fail-closed で同じ判定を行う）。不在を赤へ倒す変異で cases/attribution.sh が赤になる（2026-09-24 実測）。
+# 空振り検出: 共有 CHANGELOG の判定 lib（tests/lib/shared-changelog-judge.sh）の不在・読めない（mode 000）・同名の空ファイル・関数名の消失の 4 入力は、いずれも起動直後に名指しの ✗ で exit 1（skip へ倒さない。Issue `#2619`。2026-11-04 実測）。判定表は cases/footer.sh の一時リポジトリで 4 分類（unchanged / release-prep / footer-only / direct-edit）すべてに当てて固定する。
+# 変異検出: 判定 lib の direct-edit を許容（rc 0）へ倒すと cases/footer.sh の direct-edit 2 件、footer-only の許容を外すと footer-only 1 件、release-prep の許容を外すと release-prep 1 件が赤（2026-11-04 実測。各回とも鮮度の赤 2 件の上に足された赤）。
 set -euo pipefail
 
 # 鮮度分岐は「CI か否か」で比較基準の取り方を変える（cases/footer.sh 参照）。fixture が
@@ -30,6 +32,15 @@ TARGET_EXACT_LINK_LIB="${REPO_ROOT:+$REPO_ROOT/plugins/ff-dev-toolkit/scripts/li
 # 診断も出ないまま終わる — base が古い回にだけ起きるので、平時のゲートでは気づけない。
 declare -F ff_report_stale_base >/dev/null \
   || { echo "✗ tests/lib/stale-base.sh の読み込みに失敗（鮮度分岐が 127 で途中死します）" >&2; exit 1; }
+# 共有 CHANGELOG の直接編集の判定（cases/footer.sh とリリースの模擬検査が共有する。Issue `#2619`）。
+# 不在・読めない・関数が無いときは判定を 1 件も行えないので、skip ではなく赤で止める。
+SHARED_CHANGELOG_JUDGE_LIB="$SCRIPT_DIR/../lib/shared-changelog-judge.sh"
+if [[ -f "$SHARED_CHANGELOG_JUDGE_LIB" && -r "$SHARED_CHANGELOG_JUDGE_LIB" ]]; then
+  # shellcheck source=../lib/shared-changelog-judge.sh
+  . "$SHARED_CHANGELOG_JUDGE_LIB"
+fi
+declare -F ff_shared_changelog_judge >/dev/null \
+  || { echo "✗ tests/lib/shared-changelog-judge.sh の読み込みに失敗（共有 CHANGELOG の判定が成立しません）: $SHARED_CHANGELOG_JUDGE_LIB" >&2; exit 1; }
 
 if [[ -z "$REPO_ROOT" || ! -x "$TARGET" ]]; then
   echo "○ skip: CHANGELOG 断片集約器が無い checkout のためスキップ"

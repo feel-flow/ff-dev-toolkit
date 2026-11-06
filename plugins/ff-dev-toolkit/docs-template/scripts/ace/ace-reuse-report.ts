@@ -84,11 +84,14 @@ const CURATION_COMMIT_PREFIX = "knowledge:";
  * 書く契約になっている（SKILL.md 手順5参照）ため、これを安定した目印にする。
  * ただし `Categories:` という語のみを目印にすると、たまたま同名の行を持つ
  * 通常の開発コミットまで除外してしまう（再現例: `fix: ... / Categories: 認証`
- * のような無関係コミット）。件名が `<type>: ACE-<数字>... / ACE-i<Issue番号>...` の形（このスキルが
- * 生成する commit のみが持つ形）であることも同時に要求し、両方が揃った commit
- * だけをキュレーションコミットとみなす。
+ * のような無関係コミット）。件名側は直下の正規表現が求める。任意の type（scope 可）の
+ * あと、任意の `#数字`、そのあと `ACE-` と任意の `i` と数字（`ACE-i425-1` を含む）。
+ * `ほか N 件` は文言条件ではなく、その形で始まる件名の一例である。
+ * 除外は次のいずれか。件名が `knowledge:` で始まる（本文の `Categories:` が無くても
+ * 除外する）。または件名がこの正規表現か pending の正規表現に合い、かつ本文に行頭
+ * `Categories:` がある。
  */
-const CURATION_COMMIT_SUBJECT_PATTERN = /^\w+(?:\([^)]*\))?:\s*ACE-i?\d/u;
+const CURATION_COMMIT_SUBJECT_PATTERN = /^\w+(?:\([^)]*\))?:\s*(?:#\d+\s+)?ACE-i?\d/u;
 /** 採用前候補の保全もcuration。元ACEへの言及を実装での再利用へ数えない。 */
 const PENDING_CURATION_COMMIT_SUBJECT_PATTERN = /^\w+(?:\([^)]*\))?:\s*(?:#\d+\s+)?ACE-pending-(?:PR|ISSUE)-[1-9]\d*-[1-9]\d*\b/u;
 const CURATION_COMMIT_BODY_MARKER_PATTERN = /^Categories:\s/mu;

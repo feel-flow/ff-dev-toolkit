@@ -65,6 +65,7 @@
 # 変異検出: Unicode command名をJSON ASCII escapeした実hookもdenyする。候補対照27/0、raw Unicode候補を外す単独変異は該当1件だけ赤・rc=1、構文0（2026-10-22）。
 # 空振り検出: 検索パスの無い rg（Issue `#2136`）は rg-stdin.sh が持つ。判定ヘルパの不在・awk 失敗・完了印なし・関数不在は rg の起動語を含む呼び出しを判定不能の deny にすることを要求し、常に 0 件を返すヘルパでは RF 系がすべて素通しになって赤になる（2026-11-02 実測）。rg-stdin.sh の失敗はこの suite の失敗として数える。
 # 空振り検出: 背景の名簿外分岐を if (0) にする、または待ちタグの print を別名にする（名前だけ残して中身が変わる）と、該当の deny は素通しになり赤（2026-10-30 実測: 変異 13/14/15 は各 1 件が pass へ落ち、変異検出がそれを赤として数える。正常は 259/0）。
+# 空振り検出: pipe-and-chain（Issue `#2593`）は、検出器の print を外す・pipefail の宣言を無視する・`||` まで対象にする・head で終わる左辺まで止める・前置フィルタ 3 箇所から `|` の後ろの `&&` を外す・書き換え案を一般形へ戻す・head の段がある行へ pipefail を勧める 7 変異が各 rc=1。無変異対照は rc=0（2026-11-04 WSL 実測）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -296,6 +297,35 @@ run_hook 'npm test | tee log; echo "${PIPESTATUS[0]}"'
 case "$REASON" in
   *zsh*) ok "pipestatus は zsh で機能しない旨を名指しする" ;;
   *) bad "pipestatus の案内が汎用文へ退化している: [$REASON]" ;;
+esac
+
+echo "guard-exit-code: && の左辺がフィルタで終わるパイプ（pipe-and-chain。Issue \`#2593\`）"
+# 導入先の実測形。検査（--strict）が失敗しても `| tail -4` の 0 で && が短絡せず push まで進んだ。
+# 前置フィルタ（$? / PIPESTATUS / ゲート名）に当たらない入力なので、フィルタを広げないと検出器へ届かない。
+run_hook 'bash scripts/check-closing-keywords.sh --strict 2>&1 | tail -4 && npm run pr:stage -- push 2>&1 | tail -3'
+assert_fire "\`検査 | tail -4 && push\` を実行前に deny（AC1）"
+case "$REASON" in
+  *pipe-and-chain*) ok "理由文が pipe-and-chain を名指しする" ;;
+  *) bad "理由文に pipe-and-chain が無い: [$REASON]" ;;
+esac
+case "$(fix_block)" in
+  "  set -o pipefail; bash scripts/check-closing-keywords.sh --strict 2>&1 | tail -4 && npm run pr:stage -- push 2>&1 | tail -3"*) ok "書き換え案は検出した実コマンドへ set -o pipefail を前置した形" ;;
+  *) bad "pipe-and-chain の書き換え案が実値になっていない: [$(fix_block)]" ;;
+esac
+run_hook 'bash scripts/check-closing-keywords.sh --strict && npm run pr:stage -- push'
+assert_pass "パイプの無い \`検査 && push\` は従来どおり通す（AC2）"
+run_hook 'set -o pipefail; bash scripts/check-closing-keywords.sh --strict 2>&1 | tail -4 && npm run pr:stage -- push'
+assert_pass "先に set -o pipefail を宣言した形は通す（AC3）"
+run_hook 'git log --oneline | tail -3 || echo none && git status'
+assert_pass "\`| tail -3 || echo none && 次\` は止めない（|| の左辺は対象外。&& の左辺はパイプではない）"
+run_hook 'git status -sb | head -2 && git diff --stat'
+assert_pass "\`| head -2 && 次\`（読むだけの確認）は止めない"
+run_hook 'git log --oneline | head -3 && bash scripts/check.sh --strict 2>&1 | tail -4 && git push'
+assert_fire "同じ行に head の段があっても、tail で終わる左辺の && は deny"
+case "$(fix_block)" in
+  *"set -o pipefail;"*) bad "head の段がある行へ set -o pipefail を勧めている（head の手前が SIGPIPE で落ちる）: [$(fix_block)]" ;;
+  *'rc=$?; tail -4'*) ok "head の段がある行ではファイルへ受けて rc を保つ形を案内する" ;;
+  *) bad "head の段がある行の書き換え案が想定と違う: [$(fix_block)]" ;;
 esac
 
 echo "guard-exit-code: AC1 — 曖昧な切り出しでは実値案を出さない（誤った案内を出さない）"
@@ -1098,7 +1128,9 @@ else
 fi
 
 # 変異 4: 候補の前置フィルタを常に真にする（fail-closed の面が全 Bash 呼び出しへ広がる）
-sed 's/^  \*.\$?.\*|\*PIPESTATUS\*|\*"\$GATE_NAME"\*) : ;;/  *) : ;;/' "$TARGET" > "$MUT"
+# 候補の綴りには `|` の後ろの `&&`（pipe-and-chain）も並ぶ（Issue `#2593`）
+sed 's/^  \*.\$?.\*|\*PIPESTATUS\*|\*"\$GATE_NAME"\*[^)]*) : ;;/  *) : ;;/' "$TARGET" > "$MUT"
+cmp -s "$TARGET" "$MUT" && bad "変異 4 の sed が前置フィルタの行に当たっていない（変異が入っていない）"
 rm -f "$MUT_DIR/tests/lib/exit-code-guard.sh"
 run_hook_on "$MUT" 'git log --oneline -20'
 if [ "$RC" -eq 0 ] && [ "$DECISION" = "deny" ]; then

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 #
 # adapter-argv-limit: diff が OS の argv 上限（ARG_MAX / E2BIG）を超える規模でも
-# 全 4 アダプタがレビューを完走することの実測（Issue #1148 / 公開
-# feel-flow/ff-dev-toolkit#55）。
+# プロンプトを argv に載せず渡すことの実測（公開
+# feel-flow/ff-dev-toolkit#55）。codex だけはプロトコル上限（1048576 文字）を
+# 超えた入力を起動前に止める。ARG_MAX + 256KiB が 1048576 を超える環境だけ、
+# ARG_MAX を超える fixture がその文字上限も超える。下回る環境の codex は他 CLI と同じ 4 点を見る。
 #
 # 背景: 公開リポジトリへ「大きな diff で全 CLI が status 126（Argument list too
 # long）で失敗する」報告が来た。実測条件は 0.36.0 / macOS で、ARG_MAX 1,048,576 に
@@ -15,14 +17,18 @@
 # macOS / Linux の ARG_MAX（1MB / 2MB）を超えない。つまり報告された再現条件その
 # ものは、どの suite でも一度も走っていなかった。ここで実寸の ARG_MAX を跨がせる。
 #
-# 固定するのは 4 点（CLI ごと）:
+# 固定するのは 4 点（claude / copilot / grok）:
 #   1. ARG_MAX を超える diff でもアダプタが 0 終了する（126 で落ちない）
 #   2. 成果物が complete で残る（INCOMPLETE への降格で「完走」を偽らない）
 #   3. argv の総量がプロンプト規模と独立（8KB 未満）
 #   4. diff 全体が stdin / prompt-file 経由で CLI へ届く（末尾マーカーで確認）
+# fixture の diff が 1048576 バイトを超えるとき、codex は起動前に rc=1 で止まり、stub は起動しない。
+# 126 ではないことまでを固定する（E2BIG と上限停止を取り違えない）。
+# diff が文字上限以下なら、codex も他 CLI と同じ 4 点（stdin 経由の完走）を見る。
 #
-# 変異検出: プロンプトを argv へ戻すと 1〜4 が同時に赤くなる（execve が E2BIG を
-# 返してアダプタが 126 で落ちる）。切り詰めて argv に収める変異は 4 が赤くなる。
+# 変異検出: プロンプトを argv へ戻すと claude / copilot / grok の 1〜4 が同時に赤くなる
+# （execve が E2BIG を返してアダプタが 126 で落ちる）。切り詰めて argv に収める変異は 4 が赤くなる。
+# 空振り検出: fixture の diff が 1048576 バイトを超える環境で CODEX_TURN_MAX_CHARS を 999999999 に上げると、codex の「起動前停止になっていない」と「上限超過では stub を起動しない」が赤になる（2026-11-04 実測。2 件失敗）。
 #
 # 実 CLI・ネットワーク・課金は伴わない（PATH 上の stub を叩く）。書き込み不可の
 # 環境、および fixture が現実的なサイズに収まらない環境では skip。
@@ -173,7 +179,7 @@ SH
   chmod +x "$BIN/$cli"
 done
 
-echo "== ARG_MAX 超えの diff で 4 アダプタが完走する（Issue #1148） =="
+echo "== ARG_MAX 超えの diff を argv に載せず渡す =="
 
 check_adapter() { # $1: stub 名 / $2: アダプタファイル名
   local cli="$1" adapter="$2" rc=0 out="$TMP/out-${cli}.md"
@@ -187,6 +193,27 @@ check_adapter() { # $1: stub 名 / $2: アダプタファイル名
   ) >"$TMP/${cli}.log" 2>&1
   rc=$?
   set -e
+
+  # diff 自体が 1048576 バイトを超えるときだけ、文字上限の起動前停止を見る。
+  # ASCII fixture なので文字数はバイト数以下にはならない。プロンプトは diff より長い。
+  if [ "$cli" = "codex" ] && [ "$DIFF_BYTES" -gt 1048576 ]; then
+    argv_bytes="$(wc -c < "$TMP/${cli}-argv.log" | tr -d ' ')"
+    if [ "$rc" -eq 126 ]; then
+      bad "${cli}: rc=126（execve の E2BIG＝プロンプトが argv に戻った形）"
+      tail -8 "$TMP/${cli}.log" | sed 's/^/    | /' >&2
+    elif [ "$rc" -eq 1 ] && grep -qF 'prompt is too long' "$TMP/${cli}.log" && grep -qF '1048576' "$TMP/${cli}.log"; then
+      ok "${cli}: 1048576 文字を超える入力は起動前に止まり、126 ではない (rc=1)"
+    else
+      bad "${cli}: 起動前停止になっていない (rc=${rc})"
+      tail -8 "$TMP/${cli}.log" | sed 's/^/    | /' >&2
+    fi
+    if [ "$argv_bytes" -eq 0 ]; then
+      ok "${cli}: 上限超過では stub を起動しない（argv 0B）"
+    else
+      bad "${cli}: 上限超過なのに stub が起動した（argv ${argv_bytes}B）"
+    fi
+    return 0
+  fi
 
   if [ "$rc" -eq 0 ]; then
     ok "${cli}: ARG_MAX 超えの diff でも 0 終了（126 で落ちない）"

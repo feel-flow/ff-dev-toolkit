@@ -299,7 +299,7 @@ classify_cli_failure_cause() { # <result-file> [tail] → "auth" | "billing" | "
       return 0
     fi
     if grep -qiE \
-      'unauthorized|not logged in|not signed in|authentication (failed|error)|invalid api key|invalid_api_key|expired (token|credential)|token (is |has )?expired|please (log ?in|sign in)|re-?authenticate|(http|status|code)[^0-9]{0,10}401|401[^0-9]{0,12}(unauthorized|http|status)' <<<"$stderr_section"; then
+      'failed to authenticate|oauth session expired|could not be refreshed|unauthorized|not logged in|not signed in|authentication (failed|error)|invalid api key|invalid_api_key|expired (token|credential)|token (is |has )?expired|please (log ?in|sign in)|re-?authenticate|(http|status|code)[^0-9]{0,10}401|401[^0-9]{0,12}(unauthorized|http|status)' <<<"$stderr_section"; then
       printf 'auth\n'
       return 0
     fi
@@ -339,6 +339,14 @@ classify_cli_failure_cause() { # <result-file> [tail] → "auth" | "billing" | "
     ' <<<"$partial_section" 2>/dev/null)" || first_output_line=""
   if grep -qiE "^(you've|you have) hit your [[:alpha:] ]*limit" <<<"$first_output_line"; then
     printf 'billing\n'
+    return 0
+  fi
+  # 認証拒否の claude-code 形。stderr と同じ 3 語だが、部分出力はレビュー本文でも
+  # ありうるので、最初の非空行の行頭（先頭の空白だけ許す）に限る。引用・箇条書き・
+  # フェンスの行はここで落ちる。この分類は案内とスキップにだけ使い、末尾行モード
+  # （主担当のみで完了）は上で return しているので数えない。
+  if grep -qiE '^[[:space:]]*(failed to authenticate|oauth session expired|could not be refreshed)' <<<"$first_output_line"; then
+    printf 'auth\n'
     return 0
   fi
   return 0

@@ -34,6 +34,13 @@
 #   4. workspace を解決する package manager の exec（pnpm / yarn）
 #      （workspace package 側にだけ tsx がある場合の経路。pnpm exec は cwd から
 #        最も近い node_modules/.bin を見るので、対象 package 内で呼べば届く。
+#        ただし呼び出し元にその package manager の証拠が通常ファイルであるときだけ起動する。
+#        lockfile と workspace 設定は cwd から git root まで数える。packageManager は
+#        フィールドがある最寄り package.json の最初の文字列値だけを見る。フィールドが
+#        無ければ親へ進む。文字列でなければ同じファイルの次の値を見る。git root を
+#        確認できないときは cwd だけを見て、祖先は許可しない。読めない package.json は
+#        親の packageManager を継がない。証拠の無い npm だけの導入先で pnpm の exec が
+#        空 lockfile を作るため。
 #        npm exec はここに置かない — 実体は npx と同じくレジストリ取得へ落ちるので、
 #        「ローカルにある物を使う」段と混ぜると解決順の意味が壊れる）
 #   5. npx --yes tsx（ネットワークから取得。従来の案内）
@@ -374,18 +381,104 @@ if [[ ${#RUNNER[@]} -eq 0 ]]; then
   done
 fi
 
-# 4. pnpm、yarn の順に exec を実際に起動して解決させる（lockfile では選ばない）。
+# package.json の最初の packageManager 文字列値。フィールドが無ければ _PM_FOUND=0。
+# オブジェクトや null は読み飛ばし、同じファイルの後続の文字列を見る。
+# 通常ファイルが読めないときは _PM_FOUND=1 と空の値で戻し、親を継がせない。
+# シェルの展開だけを使う（この段は PATH が壊れて awk 等が無い環境でも通る）。
+_pm_field_from_json() { # <file>
+  local content rest
+  _PM_FOUND=0
+  _PM_VALUE=
+  [[ -f "$1" && ! -L "$1" ]] || return 0
+  if [[ ! -r "$1" ]]; then
+    echo "ace-run-ts: package.json を読めないため、上位の packageManager は継がない: $1" >&2
+    _PM_FOUND=1
+    return 0
+  fi
+  if ! content="$(<"$1")"; then
+    echo "ace-run-ts: package.json を読めないため、上位の packageManager は継がない: $1" >&2
+    _PM_FOUND=1
+    return 0
+  fi
+  while [[ "$content" == *'"packageManager"'* ]]; do
+    rest="${content#*\"packageManager\"}"
+    content="$rest"
+    rest="${rest#"${rest%%[![:space:]]*}"}"
+    [[ "${rest:0:1}" == ":" ]] || continue
+    rest="${rest:1}"
+    rest="${rest#"${rest%%[![:space:]]*}"}"
+    # 文字列以外（オブジェクト・null・配列）は、このキーでは確定しない。
+    [[ "${rest:0:1}" == '"' ]] || continue
+    rest="${rest:1}"
+    [[ "$rest" == *'"'* ]] || { _PM_FOUND=1; return 0; }
+    _PM_FOUND=1
+    _PM_VALUE="${rest%%\"*}"
+    return 0
+  done
+}
+
+# cwd から git root まで、symlink ではない通常ファイルだけを見る。
+# git root を確認できないときは cwd だけで打ち切り、祖先の lockfile は許可しない。
+_pm_scan_evidence() {
+  local stop dir saw_field git_err
+  _EV_PNPM=0
+  _EV_YARN=0
+  saw_field=0
+  git_err=""
+  if stop="$(git rev-parse --show-toplevel 2>/dev/null)" && [[ -n "$stop" ]]; then
+    :
+  else
+    git_err="$(git rev-parse --show-toplevel 2>&1 >/dev/null || true)"
+    echo "ace-run-ts: git root を確認できないため、package manager の証拠は cwd だけを見る。" >&2
+    if [[ -n "$git_err" ]]; then
+      printf '  %s\n' "$git_err" >&2
+    fi
+    stop="$PWD"
+  fi
+  dir="$PWD"
+  while :; do
+    if [[ -f "${dir}/pnpm-lock.yaml" && ! -L "${dir}/pnpm-lock.yaml" ]]; then
+      _EV_PNPM=1
+    fi
+    if [[ -f "${dir}/pnpm-workspace.yaml" && ! -L "${dir}/pnpm-workspace.yaml" ]]; then
+      _EV_PNPM=1
+    fi
+    if [[ -f "${dir}/yarn.lock" && ! -L "${dir}/yarn.lock" ]]; then
+      _EV_YARN=1
+    fi
+    if [[ "$saw_field" -eq 0 && -f "${dir}/package.json" && ! -L "${dir}/package.json" ]]; then
+      _pm_field_from_json "${dir}/package.json"
+      if [[ "$_PM_FOUND" -eq 1 ]]; then
+        saw_field=1
+        case "$_PM_VALUE" in
+          pnpm@*) _EV_PNPM=1 ;;
+          yarn@*) _EV_YARN=1 ;;
+        esac
+      fi
+    fi
+    [[ -n "$stop" && "$dir" == "$stop" ]] && break
+    [[ -z "$dir" || "$dir" == "/" ]] && break
+    dir="${dir%/*}"
+    [[ -n "$dir" ]] || dir="/"
+  done
+}
+
+# 4. pnpm、yarn の順に exec を実際に起動して解決させる。
 #    workspace package 側にだけ tsx がある場合の経路（Issue #879 の実測ケース）。
-#    pnpm 11 は exec の依存確認だけで install へ進み、tsx が無くても呼び出し元へ
-#    空 lockfile と node_modules を作る。自動候補ではその確認を command scope で止める。
+#    証拠が無い npm だけの導入先では起動しない（pnpm 11 は exec の依存確認だけで
+#    空 lockfile と node_modules を作る）。証拠がある pnpm はその確認を command scope で止める。
+#    pnpm を不採用にしたあと、yarn の証拠が無ければ yarn は試さない。
 #    cwd・argv は保ち、既存の workspace binary を本来と同じ経路で解決する。
-#    明示 runner は利用者の指定どおり実行し、この自動候補の設定を持ち込まない。
-if [[ ${#RUNNER[@]} -eq 0 ]] && pnpm_config_verify_deps_before_run=false _probe pnpm exec tsx; then
-  RUNNER=(pnpm exec tsx)
-  RUNNER_PNPM_NO_INSTALL=1
-fi
-if [[ ${#RUNNER[@]} -eq 0 ]] && _probe yarn exec tsx; then
-  RUNNER=(yarn exec tsx)
+#    明示 runner は利用者の指定どおり実行し、この自動候補の設定も証拠の判定も通さない。
+if [[ ${#RUNNER[@]} -eq 0 ]]; then
+  _pm_scan_evidence
+  if [[ "$_EV_PNPM" -eq 1 ]] && pnpm_config_verify_deps_before_run=false _probe pnpm exec tsx; then
+    RUNNER=(pnpm exec tsx)
+    RUNNER_PNPM_NO_INSTALL=1
+  fi
+  if [[ ${#RUNNER[@]} -eq 0 && "$_EV_YARN" -eq 1 ]] && _probe yarn exec tsx; then
+    RUNNER=(yarn exec tsx)
+  fi
 fi
 
 # 5. 従来の案内（ネットワークから取得）
@@ -396,6 +489,7 @@ fi
 if [[ ${#RUNNER[@]} -eq 0 ]]; then
   echo "✗ TypeScript を実行できる runner が見つかりません（ACE の必須ゲートを実行できません）" >&2
   echo "  探索した順序: FF_ACE_TS_RUNNER / PATH の tsx / node_modules/.bin/tsx（上位ディレクトリ含む） / pnpm・yarn の exec / npx --yes tsx" >&2
+  echo "  pnpm / yarn は、cwd から git root までに lockfile・workspace 設定・packageManager の証拠があるときだけ起動する。git root を確認できないときは cwd だけを見る。" >&2
   # 候補ごとの判定結果を出す。「起動できない」だけが並ぶなら runner の導入が必要、
   # 「起動したが証拠を出さない」が並ぶなら probe 側の破損を疑うべき、と切り分けられる。
   for _t in ${PROBE_TRIED[@]+"${PROBE_TRIED[@]}"}; do

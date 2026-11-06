@@ -500,7 +500,10 @@ else
     # find/xargs が落ちても「入力が空」と同じ結果になり、docs_blob を対象にした検査が
     # **検査 0 件で pass** へ静かに退化する（#370 と同型）。
     # 「該当なし」と「走査失敗」を分けて、後者は名指しで止める。
-    docs_scan_err="$docs_dir/../.ff-docs-scan.err"
+    # 走査の stderr は tests/ の外（mktemp）へ受ける。fixture の中へ置くと、全件ゲートで並走する
+    # git-fixture-isolation の tests/ 走査が消えかけのファイルを拾って「読み取り不能」で赤になる
+    # （Issue `#2616` の全件ゲートで実測）。TMPDIR が使えない回（ACE-86-2）だけ従来の置き場へ戻す。
+    docs_scan_err="$(mktemp "${TMPDIR:-/tmp}/ff-docs-scan.XXXXXX" 2>/dev/null)" || docs_scan_err="$docs_dir/../.ff-docs-scan.err"
     docs_files="$(find "$docs_dir" -type f -name '*.md' -print 2>"$docs_scan_err")" || {
       echo "  ✗ docs/ の走査に失敗しました: $docs_dir"
       sed 's/^/      find: /' "$docs_scan_err" 2>/dev/null || true

@@ -6,6 +6,7 @@
 # 変異検出: 終了コード2と打ち切りが重なる回で json_timeout を空にする分岐、および解釈できる出力0件経路の emit_timeout_only を外すとそれぞれ赤（2026-10-27 Linux 実測）。
 # 変異検出: reject_rewrite の jq から json_timeout（systemMessage / additionalContext）を外すと、打ち切り×解釈不能 updatedInput のケースが赤（2026-10-27 Linux 実測）。
 # 変異検出: Windows の Git Bash（MSYS / Cygwin）の子の枠 25 秒を外して 10 秒へ戻すと、12 秒かかる子の msys ケースが赤（Issue `#2377`。2026-10-26 WSL 実測）。
+# 変異検出: 打ち切り時にプロセスグループではなく親だけを止める（stop の POSIX 分岐を proc.kill にする）変異と、専用のプロセスグループで起動しない（start_new_session=False）変異は、どちらも回収が親のタイマーの 10 秒枠まで待って経過時間の検査で赤。前者は経過時間の検査を外しても slow.sh の PID が残って赤（Issue `#2603`。2026-11-04 WSL 実測）。生存確認はシグナル 0 で、照会の失敗（権限など）は例外で赤になる。killpg の無い Windows の Python ではこのケースを回さず、字下げした skip 行を出す。
 set -euo pipefail
 ROOT="$(cd "${BASH_SOURCE[0]%/*}/../.." && pwd)"
 # -X utf8: Windows の Python の既定は cp932 で、子の日本語の stderr の復号でも落ちる（Issue `#2022`）
@@ -15,6 +16,7 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -53,11 +55,39 @@ with tempfile.TemporaryDirectory(prefix='ff-batch-test-') as temp:
     env['TMPDIR'] = str(temp)
     env['CLAUDE_PLUGIN_ROOT'] = root.as_posix()
 
+    # 集約入口が Python の timeout で SIGKILL されると EXIT trap が走らず、子が再親化して残る
+    # （Issue `#2603`）。POSIX では専用のプロセスグループで起動し、戻る前にグループごと止める。
+    posix = os.name != 'nt'
+
+    def alive(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    def stop(proc):
+        if not posix:
+            proc.kill()
+            return
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
     def run(hooks, payload='{}', ostype=None, limit=15):
         child_env = env if ostype is None else {**env, 'OSTYPE': ostype}
-        return subprocess.run([BASH, runner.as_posix(), *(Path(h).as_posix() for h in hooks)],
-                              input=payload, text=True, capture_output=True, env=child_env, cwd=temp,
-                              timeout=limit)
+        proc = subprocess.Popen([BASH, runner.as_posix(), *(Path(h).as_posix() for h in hooks)],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, env=child_env, cwd=temp, start_new_session=posix)
+        try:
+            stdout, stderr = proc.communicate(payload, timeout=limit)
+        except BaseException:
+            stop(proc)
+            proc.communicate()
+            raise
+        stop(proc)
+        return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
 
     def stub(name, body):
         path = temp / (name + '.sh')
@@ -145,8 +175,35 @@ with tempfile.TemporaryDirectory(prefix='ff-batch-test-') as temp:
     mode = stub('mode', 'umask >&2')
     direct = subprocess.run([BASH, mode.as_posix()], capture_output=True, text=True)
     assert run([mode]).stderr == direct.stderr
-    slow = stub('slow', 'while :; do :; done')
+    # CPU を回さず、打ち切られなければ枠を十分に超える 1 プロセス（PID を残してから exec する）。
+    # busy-loop は並列実行で CPU を 1 コア占有し、打ち切られると孤児のまま回り続けた（Issue `#2603`）
+    slow_pid = temp / 'slow.pid'
+    slow = stub('slow', 'echo $$ > ' + shlex.quote(slow_pid.as_posix()) + '\nexec sleep 60')
     notice = 'ff-dev-toolkit: hook 1 は時間内に完了しませんでした'
+    if posix:
+        # 親（集約入口）が Python の timeout で SIGKILL される回も、グループごと止めて子を残さない。
+        # SIGKILL では親の EXIT trap が走らず一時入力が残るので、末尾の残留検査と別の TMPDIR で回す。
+        killed = temp / 'killed'
+        killed.mkdir()
+        env['TMPDIR'] = str(killed)
+        start = time.monotonic()
+        try:
+            run([slow], ostype='linux-gnu', limit=2)
+        except subprocess.TimeoutExpired:
+            pass
+        else:
+            raise AssertionError('集約入口が 2 秒で打ち切られなかった')
+        finally:
+            env['TMPDIR'] = str(temp)
+        # グループごと止められなければ、打ち切り後の回収が集約入口の 10 秒枠まで待つ
+        assert time.monotonic() - start < 5, '打ち切った集約入口をプロセスグループごと止められていない'
+        pid = int(slow_pid.read_text())
+        deadline = time.monotonic() + 5
+        while alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not alive(pid), '打ち切った集約入口の子（slow.sh）が残っている'
+    else:
+        print('  ○ skip: killpg の無い Windows の Python のため、集約入口を打ち切った後に子が残らないことは未検査')
     start = time.monotonic()
     result = run([slow, warning, deny], ostype='linux-gnu')
     assert 9 <= time.monotonic() - start < 14

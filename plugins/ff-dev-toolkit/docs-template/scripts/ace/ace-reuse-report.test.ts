@@ -238,6 +238,20 @@ describe("computeReuseStats", () => {
     expect(statsFor(PLAYBOOK_FIXTURE, log).get("ACE-i425-1")).toMatchObject({ gitRefCount: 1, lastGitRefDate: "2026-08-02" });
   });
 
+  it("ほか N 件へ畳んだ件名と Issue 番号付きの件名も Categories 行で除外する", () => {
+    const issueNo = 2516;
+    const folded = `${RS}2026-11-05${FS}knowledge: ACE-449-2 ほか 6 件${FS}- ACE-449-2 要約\n- ACE-005 要約\nCategories: process`;
+    const prefixed = `${RS}2026-11-05${FS}chore: #${issueNo} ACE-449-2 ほか 6 件${FS}- ACE-005 要約\nCategories: process`;
+    expect(statsFor(PLAYBOOK_FIXTURE, folded).get("ACE-005")).toMatchObject({ gitRefCount: 0, lastGitRefDate: null });
+    expect(statsFor(PLAYBOOK_FIXTURE, prefixed).get("ACE-005")).toMatchObject({ gitRefCount: 0, lastGitRefDate: null });
+  });
+
+  it("Issue 番号付きの通常修正は Categories 行があっても除外しない", () => {
+    const issueNo = 2516;
+    const log = `${RS}2026-11-05${FS}fix: #${issueNo} 認証を直す${FS}ACE-005 の教訓を適用\nCategories: process`;
+    expect(statsFor(PLAYBOOK_FIXTURE, log).get("ACE-005")).toMatchObject({ gitRefCount: 1, lastGitRefDate: "2026-11-05" });
+  });
+
   it("Categories: 行を持つ通常コミットは subject が ACE ID 形でなければ除外しない（Issue #1147 レビュー対応）", () => {
     // Categories: という語だけを目印にすると、たまたま同名の行を含む無関係な開発コミット
     // まで再利用計測から除外してしまう。subject が `type: ACE-<番号>...`（このスキルが

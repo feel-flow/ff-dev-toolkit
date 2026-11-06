@@ -148,6 +148,7 @@ if [ ! -x "${BASH_ABS}" ]; then
   bad "bash の絶対パスを解決できません（runner 解決の検査が成立しません）"
   BASH_ABS="/bin/bash"
 fi
+GIT_ABS="$(command -v git || true)"
 
 EMPTY_BIN="${SANDBOX}/emptybin"
 mkdir -p "${EMPTY_BIN}"
@@ -225,6 +226,25 @@ _run() { # <cwd> <PATH> <resolver 引数...>
   RUN_RUNNER=""
   RUN_FAKE_RC=0
 }
+# 祖先の証拠は git root までしか見ない。/tmp の一時領域はリポジトリではないので、
+# その検査だけ git init し、差し替えた PATH へ実 git を足す。
+_git_init_dir() { # <dir>
+  if [ ! -x "${GIT_ABS}" ]; then
+    bad "git の絶対パスを解決できません: $1"
+    return 1
+  fi
+  if ! "${GIT_ABS}" -C "$1" init --quiet >/dev/null 2>&1 || [ ! -d "$1/.git" ]; then
+    bad "git init に失敗しました: $1"
+    return 1
+  fi
+}
+_link_git() { # <bin dir>
+  if [ ! -x "${GIT_ABS}" ]; then
+    bad "git の絶対パスを解決できません（祖先の証拠を検査できません）"
+    return 1
+  fi
+  ln -s "${GIT_ABS}" "$1/git"
+}
 
 # --- 引数境界（引用の退行を判別できる形で測る）-------------------------------
 _run "${FAKE_WS}/packages/docs" "$(_bin_with pnpm yarn npx)" "${STUB_TS}" "arg with space" plain
@@ -275,12 +295,15 @@ case "${RES_OUT}" in
   *)              bad "PATH の tsx が選ばれていません（出力: ${RES_OUT}）" ;;
 esac
 
+# lockfile は置かない。空 lockfile を作らない断言を、証拠ファイル自身で壊さない。
+printf '%s\n' 'packages:' > "${NOBIN}/pnpm-workspace.yaml"
 _run "${NOBIN}" "$(_bin_with pnpm yarn npx)" "${STUB_TS}"
 case "${RES_OUT}" in
   *"runner=pnpm exec tsx"*) ok "tsx 不在なら pnpm exec tsx（workspace 経路。本 Issue の実測ケース）" ;;
   *)                        bad "pnpm exec tsx が選ばれていません（出力: ${RES_OUT}）" ;;
 esac
 
+printf '%s\n' '# yarn.lock' > "${NOBIN}/yarn.lock"
 _run "${NOBIN}" "$(_bin_with yarn npx)" "${STUB_TS}"
 case "${RES_OUT}" in
   *"runner=yarn exec tsx"*) ok "pnpm 不在なら yarn exec tsx へ進む" ;;
@@ -292,6 +315,199 @@ case "${RES_OUT}" in
   *"runner=npx --yes tsx"*) ok "ローカル候補が全滅したときだけ npx --yes tsx へ落ちる" ;;
   *)                        bad "npx --yes tsx が選ばれていません（出力: ${RES_OUT}）" ;;
 esac
+
+# 証拠が無い npm だけの導入先では pnpm / yarn を起動しない。
+# NOBIN の証拠ファイルの祖先にならない兄弟ディレクトリで測る。
+_write_dirty_pm() { # <出力> <ラベル> <作るファイル名>
+  local out="$1" label="$2" dirty="$3"
+  {
+    printf '#!/bin/bash\n'
+    printf 'printf "CALLED %s %%s\\n" "$*" >> "%s"\n' "$label" "${SHIM_LOG}"
+    printf 'printf "dirty\\n" > "${PWD}/%s"\n' "$dirty"
+    printf 'mkdir -p "${PWD}/node_modules"\n'
+    printf 'exit 1\n'
+  } > "${out}"
+  chmod +x "${out}"
+}
+NPM_ONLY="${SANDBOX}/npm-only"
+mkdir -p "${NPM_ONLY}"
+printf '%s\n' \
+  '{' \
+  '  "description": "mentions pnpm and yarn in prose",' \
+  '  "note": "before \"packageManager\" is not a field",' \
+  '  "packageManager": "npm@10.9.2"' \
+  '}' > "${NPM_ONLY}/package.json"
+printf '%s\n' '{ "lockfileVersion": 3 }' > "${NPM_ONLY}/package-lock.json"
+NPM_BIN="$(_bin_with npx)"
+_write_dirty_pm "${NPM_BIN}/pnpm" pnpm pnpm-lock.yaml
+_write_dirty_pm "${NPM_BIN}/yarn" yarn yarn.lock
+_run "${NPM_ONLY}" "${NPM_BIN}" "${STUB_TS}"
+if [ "${RES_RC}" -eq 0 ] && [[ "${RES_OUT}" == *"runner=npx --yes tsx"* ]] \
+  && [[ "$(cat "${SHIM_LOG}")" != *"CALLED pnpm"* ]] \
+  && [[ "$(cat "${SHIM_LOG}")" != *"CALLED yarn"* ]] \
+  && [ ! -e "${NPM_ONLY}/pnpm-lock.yaml" ] && [ ! -e "${NPM_ONLY}/yarn.lock" ] \
+  && [ ! -e "${NPM_ONLY}/node_modules" ]; then
+  ok "npm だけの導入先では pnpm / yarn を起動せず npx を使い、作業ツリーを変えない"
+else
+  bad "npm だけの導入先で pnpm / yarn を起動した（rc=${RES_RC} / ${RES_OUT} / $(cat "${SHIM_LOG}")）"
+fi
+
+NPM_LOCK_ONLY="${SANDBOX}/npm-lock-only"
+mkdir -p "${NPM_LOCK_ONLY}"
+printf '%s\n' '{ "name": "npm-lock-only", "description": "pnpm yarn" }' > "${NPM_LOCK_ONLY}/package.json"
+printf '%s\n' '{ "lockfileVersion": 3 }' > "${NPM_LOCK_ONLY}/package-lock.json"
+LOCK_BIN="$(_bin_with npx)"
+_write_dirty_pm "${LOCK_BIN}/pnpm" pnpm pnpm-lock.yaml
+_write_dirty_pm "${LOCK_BIN}/yarn" yarn yarn.lock
+_run "${NPM_LOCK_ONLY}" "${LOCK_BIN}" "${STUB_TS}"
+if [ "${RES_RC}" -eq 0 ] && [[ "${RES_OUT}" == *"runner=npx --yes tsx"* ]] \
+  && [[ "$(cat "${SHIM_LOG}")" != *"CALLED pnpm"* ]] \
+  && [ ! -e "${NPM_LOCK_ONLY}/pnpm-lock.yaml" ] && [ ! -e "${NPM_LOCK_ONLY}/node_modules" ]; then
+  ok "packageManager が無く package-lock だけの導入先でも pnpm / yarn を起動しない"
+else
+  bad "package-lock だけの導入先で package manager を起動した（rc=${RES_RC} / $(cat "${SHIM_LOG}")）"
+fi
+
+YARN_PM="${SANDBOX}/yarn-pm"
+mkdir -p "${YARN_PM}"
+printf '%s\n' '{ "packageManager" : "yarn@1.22.22" }' > "${YARN_PM}/package.json"
+_run "${YARN_PM}" "$(_bin_with yarn npx)" "${STUB_TS}"
+case "${RES_OUT}" in
+  *"runner=yarn exec tsx"*) ok "packageManager が yarn@ のときだけ yarn を起動する" ;;
+  *) bad "packageManager の yarn@ を証拠にしていません（${RES_OUT}）" ;;
+esac
+
+NEST="${SANDBOX}/pm-nest"
+mkdir -p "${NEST}/app"
+printf '%s\n' '{ "packageManager": "pnpm@9.15.0" }' > "${NEST}/package.json"
+printf '%s\n' '{ "packageManager": "npm@10.9.2" }' > "${NEST}/app/package.json"
+NEST_BIN="$(_bin_with npx)"
+_write_dirty_pm "${NEST_BIN}/pnpm" pnpm pnpm-lock.yaml
+_run "${NEST}/app" "${NEST_BIN}" "${STUB_TS}"
+if [ "${RES_RC}" -eq 0 ] && [[ "${RES_OUT}" == *"runner=npx --yes tsx"* ]] \
+  && [[ "$(cat "${SHIM_LOG}")" != *"CALLED pnpm"* ]] \
+  && [ ! -e "${NEST}/app/pnpm-lock.yaml" ]; then
+  ok "最寄りの packageManager が npm なら、上位の pnpm@ では pnpm を起動しない"
+else
+  bad "上位の packageManager を最寄りより優先した（rc=${RES_RC} / $(cat "${SHIM_LOG}")）"
+fi
+
+INHERIT="${SANDBOX}/pm-inherit/child"
+mkdir -p "${INHERIT}"
+printf '%s\n' '{ "name": "child" }' > "${INHERIT}/package.json"
+printf '%s\n' '{ "packageManager": "pnpm@9.15.0" }' > "${SANDBOX}/pm-inherit/package.json"
+_git_init_dir "${SANDBOX}/pm-inherit"
+INHERIT_BIN="$(_bin_with pnpm npx)"
+_link_git "${INHERIT_BIN}"
+_run "${INHERIT}" "${INHERIT_BIN}" "${STUB_TS}"
+case "${RES_OUT}" in
+  *"runner=pnpm exec tsx"*) ok "packageManager が無い package.json は上位の pnpm@ を証拠にする" ;;
+  *) bad "フィールドの無い package.json から上位へ進んでいません（${RES_OUT}）" ;;
+esac
+
+DEVENG="${SANDBOX}/dev-engines"
+mkdir -p "${DEVENG}"
+printf '%s\n' '{ "devEngines": { "packageManager": { "name": "pnpm", "version": "9.15.0" } }, "packageManager": "pnpm@9.15.0" }' > "${DEVENG}/package.json"
+_run "${DEVENG}" "$(_bin_with pnpm npx)" "${STUB_TS}"
+case "${RES_OUT}" in
+  *"runner=pnpm exec tsx"*) ok "オブジェクトの packageManager のあとの文字列値を証拠にする" ;;
+  *) bad "ネストした packageManager が後続の文字列値を隠しています（${RES_OUT}）" ;;
+esac
+
+OBJ_PARENT="${SANDBOX}/obj-parent"
+mkdir -p "${OBJ_PARENT}/child"
+printf '%s\n' '{ "packageManager": "pnpm@9.15.0" }' > "${OBJ_PARENT}/package.json"
+printf '%s\n' '{ "devEngines": { "packageManager": { "name": "yarn", "version": "1.22.22" } } }' > "${OBJ_PARENT}/child/package.json"
+_git_init_dir "${OBJ_PARENT}"
+OBJ_BIN="$(_bin_with pnpm npx)"
+_link_git "${OBJ_BIN}"
+_write_dirty_pm "${OBJ_BIN}/yarn" yarn yarn.lock
+_run "${OBJ_PARENT}/child" "${OBJ_BIN}" "${STUB_TS}"
+if [ "${RES_RC}" -eq 0 ] && [[ "${RES_OUT}" == *"runner=pnpm exec tsx"* ]] \
+  && [[ "$(cat "${SHIM_LOG}")" != *"CALLED yarn"* ]]; then
+  ok "文字列の無い package.json は親の packageManager 文字列へ進む"
+else
+  bad "オブジェクトの packageManager で親の文字列値を見なくなりました（rc=${RES_RC} / ${RES_OUT}）"
+fi
+
+GIT_FAIL="${SANDBOX}/git-fail"
+mkdir -p "${GIT_FAIL}/child"
+printf '%s\n' 'lockfileVersion: 9.0' > "${GIT_FAIL}/pnpm-lock.yaml"
+printf '%s\n' '{ "packageManager": "npm@10.9.2" }' > "${GIT_FAIL}/child/package.json"
+GF_BIN="$(_bin_with npx)"
+_write_dirty_pm "${GF_BIN}/pnpm" pnpm pnpm-lock.yaml
+_write_dirty_pm "${GF_BIN}/yarn" yarn yarn.lock
+_run "${GIT_FAIL}/child" "${GF_BIN}" "${STUB_TS}"
+if [ "${RES_RC}" -eq 0 ] && [[ "${RES_OUT}" == *"runner=npx --yes tsx"* ]] \
+  && [[ "${RES_OUT}" == *"git root を確認できない"* ]] \
+  && [[ "$(cat "${SHIM_LOG}")" != *"CALLED pnpm"* ]] \
+  && [[ "$(cat "${SHIM_LOG}")" != *"CALLED yarn"* ]] \
+  && [ ! -e "${GIT_FAIL}/child/pnpm-lock.yaml" ] && [ ! -e "${GIT_FAIL}/child/node_modules" ]; then
+  ok "git root を確認できないときは祖先の lockfile で pnpm / yarn を起動しない"
+else
+  bad "git 不在なのに祖先の lockfile を証拠にしました（rc=${RES_RC} / $(cat "${SHIM_LOG}")）"
+fi
+
+UNREAD_ROOT="${SANDBOX}/unreadable-pm"
+mkdir -p "${UNREAD_ROOT}/child"
+printf '%s\n' '{ "packageManager": "pnpm@9.15.0" }' > "${UNREAD_ROOT}/package.json"
+printf '%s\n' '{ "name": "child" }' > "${UNREAD_ROOT}/child/package.json"
+chmod 000 "${UNREAD_ROOT}/child/package.json"
+if [ -r "${UNREAD_ROOT}/child/package.json" ]; then
+  bad "読めない package.json を作れなかったため、親を継がない検査が成立しません"
+else
+  _git_init_dir "${UNREAD_ROOT}"
+  UNREAD_BIN="$(_bin_with pnpm npx)"
+  _link_git "${UNREAD_BIN}"
+  _run "${UNREAD_ROOT}/child" "${UNREAD_BIN}" "${STUB_TS}"
+  if [ "${RES_RC}" -eq 0 ] && [[ "${RES_OUT}" == *"runner=npx --yes tsx"* ]] \
+    && [[ "${RES_OUT}" == *"package.json を読めない"* ]] \
+    && [[ "$(cat "${SHIM_LOG}")" != *"CALLED pnpm"* ]]; then
+    ok "読めない package.json は親の packageManager を継がない"
+  else
+    bad "読めない package.json から親の packageManager を継いでいます（rc=${RES_RC} / ${RES_OUT}）"
+  fi
+fi
+chmod 644 "${UNREAD_ROOT}/child/package.json" 2>/dev/null || true
+
+SYM_EV="${SANDBOX}/sym-ev"
+mkdir -p "${SYM_EV}"
+printf '%s\n' 'lock' > "${SANDBOX}/sym-ev-target"
+ln -s "${SANDBOX}/sym-ev-target" "${SYM_EV}/pnpm-lock.yaml"
+ln -s "${SANDBOX}/sym-ev-target" "${SYM_EV}/yarn.lock"
+ln -s "${SANDBOX}/sym-ev-target" "${SYM_EV}/pnpm-workspace.yaml"
+SYM_BIN="$(_bin_with npx)"
+_write_dirty_pm "${SYM_BIN}/pnpm" pnpm pnpm-lock.yaml
+_write_dirty_pm "${SYM_BIN}/yarn" yarn yarn.lock
+_run "${SYM_EV}" "${SYM_BIN}" "${STUB_TS}"
+if [ "${RES_RC}" -eq 0 ] && [[ "${RES_OUT}" == *"runner=npx --yes tsx"* ]] \
+  && [[ "$(cat "${SHIM_LOG}")" != *"CALLED pnpm"* ]] \
+  && [[ "$(cat "${SHIM_LOG}")" != *"CALLED yarn"* ]]; then
+  ok "symlink の lockfile は package manager の証拠にしない"
+else
+  bad "symlink の lockfile を証拠にして package manager を起動した（$(cat "${SHIM_LOG}")）"
+fi
+
+PNPM_FAIL="${SANDBOX}/pnpm-fail"
+mkdir -p "${PNPM_FAIL}"
+printf '%s\n' 'packages:' > "${PNPM_FAIL}/pnpm-workspace.yaml"
+FAIL_BIN="$(_bin_with npx)"
+{
+  printf '#!/bin/bash\n'
+  printf 'printf "CALLED pnpm %%s\\n" "$*" >> "%s"\n' "${SHIM_LOG}"
+  printf 'exit 1\n'
+} > "${FAIL_BIN}/pnpm"
+chmod +x "${FAIL_BIN}/pnpm"
+_write_dirty_pm "${FAIL_BIN}/yarn" yarn yarn.lock
+_run "${PNPM_FAIL}" "${FAIL_BIN}" "${STUB_TS}"
+if [ "${RES_RC}" -eq 0 ] && [[ "${RES_OUT}" == *"runner=npx --yes tsx"* ]] \
+  && [[ "$(cat "${SHIM_LOG}")" == *"CALLED pnpm"* ]] \
+  && [[ "$(cat "${SHIM_LOG}")" != *"CALLED yarn"* ]] \
+  && [ ! -e "${PNPM_FAIL}/yarn.lock" ] && [ ! -e "${PNPM_FAIL}/node_modules" ]; then
+  ok "pnpm の証拠だけで失敗したときは yarn を起動せず npx へ進む"
+else
+  bad "pnpm 不採用のあと yarn の証拠が無いのに yarn を起動した（$(cat "${SHIM_LOG}")）"
+fi
 
 # 暗黙 install の回帰は同じ隔離 PATH・実 runner を通す。補助ケースの欠落を緑にしない。
 PNPM_CASES="${SCRIPT_DIR}/pnpm-no-install-cases.sh"

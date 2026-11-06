@@ -10,14 +10,15 @@
 #
 # 数える対象:
 #   Read  … `tool_input.file_path` が `*/skills/*/SKILL.md` / `*/references/*.md` /
-#           `*/docs/*.md`（docs 配下の任意の深さ）に当たるもの
+#           `*/docs/*.md`（docs 配下の任意の深さ）/ `*/docs-template/*.md`（プラグインが配る
+#           規定文書の配布元。スキルのリンクはこちらを指す）に当たるもの
 #   Skill … `tool_input.skill` が本プラグインのスキル（`ff-dev-toolkit:<名>` または素の `<名>`
 #           で、本プラグインの `skills/<名>/SKILL.md` が実在するもの）。Skill ツールの本文注入は
 #           Read を経由しないため、Read だけを数えるとスキル本文がまるごと落ちる
 # 値は**ファイルのサイズ**（offset / limit 付きの部分読みでも全体を数える上限値）。
 #
-# Issue 番号は cwd の現在のブランチ名 `<type>/#<n>-<slug>` から取る（`#` は必須。日付入りの
-# ブランチ名を Issue 番号と読まない）。ブランチを切る前
+# Issue 番号は cwd の現在のブランチ名から取る（読み方の正本は scripts/lib/branch-issue.sh）。
+# ブランチを切る前
 # （develop 上で起票・調査している間）の読み込みは Issue 未確定として `-` で記録し、
 # 読み手（`scripts/effort-report.sh --issue-metrics`）が、その Issue だけを開始したセッションの
 # 分として寄せる。
@@ -94,7 +95,7 @@ case "$TOOL" in
       *) if [ "$win_drive" -eq 1 ]; then FILE="$TARGET"; else FILE="$CWD/$TARGET"; fi ;;
     esac
     case "$FILE" in
-      */skills/*/SKILL.md | */references/*.md | */docs/*.md) : ;;
+      */skills/*/SKILL.md | */references/*.md | */docs/*.md | */docs-template/*.md) : ;;
       *) exit 0 ;;
     esac
     ;;
@@ -122,9 +123,12 @@ REPO_KEY="$(git -C "$CWD" rev-parse --path-format=absolute --git-common-dir 2>/d
 [ -n "$REPO_KEY" ] || exit 0
 ISSUE="-"
 branch="$(git -C "$CWD" symbolic-ref --short -q HEAD 2>/dev/null)" || branch=""
-re='^[A-Za-z0-9_.-]+/#([0-9]+)([-_/].*)?$'
-if [[ "$branch" =~ $re ]]; then
-  ISSUE="${BASH_REMATCH[1]}"
+# shellcheck source=../scripts/lib/branch-issue.sh
+if . "${BASH_SOURCE[0]%/*}/../scripts/lib/branch-issue.sh" 2>/dev/null; then
+  ff_branch_issue_parse "$branch"
+  if [ -n "$_branch_issue_value" ]; then
+    ISSUE="$_branch_issue_value"
+  fi
 fi
 
 STATE_PARENT="${FF_DEV_TOOLKIT_STATE_DIR:-}"

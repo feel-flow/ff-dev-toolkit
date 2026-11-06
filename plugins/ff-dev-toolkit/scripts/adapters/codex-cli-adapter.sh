@@ -379,6 +379,29 @@ if [[ "${#CD_NARROW_ARGS[@]}" -gt 0 ]]; then
   require_cd_capability
 fi
 
+# Codex の turn/start が拒否するプロトコル上限（文字数）。モデルの context 窓の
+# 推測ではない。環境変数では緩めない。削除本文は get_diff_content が既に省く
+# （orchestrator が固定した diff を前提とする。--diff-file の中身は呼び出し側の責任）。
+# 委譲経路は run_host_delegation_or_continue が先に return するので、ここには来ない。
+# UTF-8 の文字数はバイト数以下。上限以下のバイト数なら python3 を要しない。
+# 超えるときだけ python3 -I で文字数を数え、計測できなければ起動しない。
+CODEX_TURN_MAX_CHARS=1048576
+prompt_bytes="$(wc -c < "$prompt_file" | tr -d '[:space:]')"
+prompt_chars=""
+if [[ "$prompt_bytes" =~ ^[0-9]+$ && "$prompt_bytes" -le "$CODEX_TURN_MAX_CHARS" ]]; then
+  prompt_chars="$prompt_bytes"
+elif ! prompt_chars="$(python3 -I -c 'import pathlib,sys; data=pathlib.Path(sys.argv[1]).read_bytes(); sys.stdout.write(str(len(data.decode("utf-8"))))' "$prompt_file")"; then
+  prompt_chars=""
+fi
+if [[ ! "$prompt_chars" =~ ^[0-9]+$ ]]; then
+  fail_orchestrator_error "$perspective_name" \
+    "cannot measure the prompt length before starting ${CLI_NAME} (the byte count is over the limit and python3 failed). Refusing to start the CLI."
+fi
+if [[ "$prompt_chars" -gt "$CODEX_TURN_MAX_CHARS" ]]; then
+  printf '%s\n' "Error: prompt is too long: input exceeds the maximum length of ${CODEX_TURN_MAX_CHARS} characters (input_too_large, actual_chars=${prompt_chars}). Deletion bodies are already omitted from the review diff; narrow the review (a different --base, or split the change) and re-run." | tee -a "$stderr_log" >&2
+  fail_cli_task 1 "$stderr_log" "$perspective_name" ""
+fi
+
 # MODEL_ARGS は空になりうる。bash 3.2 では set -u 下で空配列を "${a[@]}" と
 # 展開すると unbound variable で落ちるため ${a[@]+"${a[@]}"} を使う。
 result=$(run_with_timeout --stdin-file "$prompt_file" "$TIMEOUT" \

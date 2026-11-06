@@ -233,13 +233,13 @@ export BEHIND_THRESHOLD="20"
 Claude Codeセッション開始時に以下のような警告が表示されます：
 
 ```
-⚠️  WARNING: 現在のブランチ 'feature/123-add-feature' はリモートに存在しません。
+⚠️  WARNING: 現在のブランチ 'feature/#123-add-feature' はリモートに存在しません。
    PRがマージ済みの可能性があります。
    以下のコマンドで develop ブランチに戻ることを推奨します：
 
    git checkout develop
    git pull origin develop
-   git branch -d feature/123-add-feature
+   git branch -d feature/#123-add-feature
 ```
 
 ### スクリプト詳細

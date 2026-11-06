@@ -29,6 +29,7 @@
 #
 # 書き込み不可の環境（read-only チェックアウト等）では skip して成功扱いにする。
 # 空振り検出: private-reasons-casesは無変異1/0。旧共有PIDパス・staging後の再確認除去・namespace fallback除去・理由writer fallback除去・私有祖先で走査終了・旧一律祖先拒否・空ケースの7変異は、syntax0の隔離コピーで全てrc1（2026-10-28実測）。command substitution・読取可能FIFO/symlink差替拒否・私有祖先の内外・sticky境界・mktemp失敗時の分類と後始末を同一経路で検査する。
+# 空振り検出: stderr の auth 正規表現から failed to authenticate を外すと auth(oauth-auth) と auth(非 Claude ホスト) と auth(逐次 2 観点) が赤になる（2026-11-04 実測。全文の oauth-full は残った語で緑のまま。bad は加算するだけで suite は止まらない）。
 
 set -euo pipefail
 
@@ -1201,6 +1202,7 @@ cp "$STUB/claude" "$TMP/claude-stub.orig"
 cat > "$STUB/claude" <<SH
 #!/usr/bin/env bash
 touch "$TMP/invoked-claude"
+printf '1\n' >> "$TMP/claude-launches"
 cat >/dev/null
 case "\$(cat "$TMP/claude-mode")" in
   weekly-stderr) echo "You've hit your weekly limit · resets 8pm (Asia/Tokyo)" >&2; exit 1 ;;
@@ -1212,6 +1214,14 @@ case "\$(cat "$TMP/claude-mode")" in
   weekly-fenced) printf '%s\n' '\`\`\`text' "You've hit your weekly limit · resets 8pm (Asia/Tokyo)" '\`\`\`'; echo "boom: stub failure" >&2; exit 1 ;;
   # 告知文を stderr に出したまま止まらない形。時間切れ（124）は billing の語があっても断定しない
   weekly-hang) echo "You've hit your weekly limit · resets 8pm (Asia/Tokyo)" >&2; sleep 30 >/dev/null 2>&1; exit 1 ;;
+  # 語ごとに 1 本。全文 1 本だと、regex から 1 語を外しても残った語で緑のままになる。
+  oauth-full) echo "Failed to authenticate: OAuth session expired and could not be refreshed" >&2; exit 1 ;;
+  oauth-auth) echo "Failed to authenticate" >&2; exit 1 ;;
+  oauth-session) echo "OAuth session expired" >&2; exit 1 ;;
+  oauth-refresh) echo "could not be refreshed" >&2; exit 1 ;;
+  oauth-stdout) echo "Failed to authenticate: OAuth session expired and could not be refreshed"; exit 1 ;;
+  oauth-quoted) echo "- Suggestion: Failed to authenticate: OAuth session expired and could not be refreshed"; echo "boom: stub failure" >&2; exit 1 ;;
+  oauth-fenced) printf '%s\n' '\`\`\`text' "Failed to authenticate: OAuth session expired and could not be refreshed" '\`\`\`'; echo "boom: stub failure" >&2; exit 1 ;;
   *) echo "boom: stub failure" >&2; exit 1 ;;
 esac
 SH
@@ -1220,7 +1230,7 @@ chmod +x "$STUB/claude"
 run_ma_claude() { # $1: set | unset（CLAUDECODE）/ $2..: multi-agent.sh の引数 / 出力: rc
   local cc="$1" rc=0
   shift
-  rm -f "$TMP/invoked-"*
+  rm -f "$TMP/invoked-"* "$TMP/claude-launches"
   set +e
   if [[ "$cc" == "set" ]]; then
     run_isolated PATH="$STUB:$PATH" CLAUDECODE=1 bash "$MULTI_AGENT" "$@" >"$TMP/run.log" 2>&1
@@ -1234,7 +1244,7 @@ run_ma_claude() { # $1: set | unset（CLAUDECODE）/ $2..: multi-agent.sh の引
 
 run_claude_lane() { # $1: set | unset（CLAUDECODE）/ 出力: rc
   local rc=0
-  rm -f "$TMP/invoked-"*
+  rm -f "$TMP/invoked-"* "$TMP/claude-launches"
   set +e
   if [[ "$1" == "set" ]]; then
     run_isolated PATH="$STUB:$PATH" CLAUDECODE=1 bash "$MULTI_AGENT" \
@@ -1308,6 +1318,59 @@ for cm in crash weekly-quoted weekly-fenced; do
   fi
 done
 
+# auth（OAuth 失効）。語を 1 つ外すと、その語だけの fixture だけが赤になる。
+# 全文 fixture は実測の 1 行。stdout の行頭だけを auth にし、引用とフェンスはしない。
+for cm in oauth-full oauth-auth oauth-session oauth-refresh oauth-stdout; do
+  echo "$cm" > "$TMP/claude-mode"
+  RC="$(run_claude_lane set)"
+  if [[ "$RC" -ne 0 ]] && grep -q '🔑' "$TMP/run.log" && grep -qF 'claude auth login' "$TMP/run.log" \
+    && grep -q '🤝' "$TMP/run.log" && ! grep -q '💳' "$TMP/run.log" && ! grep -qF 'out of quota' "$TMP/run.log"; then
+    ok "auth(${cm}): 🔑 と claude auth login と 🤝。残高切れの文面にはしない(rc=${RC})"
+  else
+    bad "auth(${cm}): 認証拒否の切り分けか委譲案内が欠けた(rc=${RC})"
+    tail -30 "$TMP/run.log" | sed 's/^/    | /' >&2
+  fi
+  DLG_LINE="$(grep -n '🤝' "$TMP/run.log" | head -1 | cut -d: -f1)"
+  RETRY_LINE="$(grep -n 'No runtime fallback was attempted' "$TMP/run.log" | head -1 | cut -d: -f1)"
+  if [[ -n "$DLG_LINE" && -n "$RETRY_LINE" && "$DLG_LINE" -lt "$RETRY_LINE" ]]; then
+    ok "auth(${cm}): 委譲の手順が個別の再実行案内より先に出る"
+  else
+    bad "auth(${cm}): 案内順が逆（delegate=${DLG_LINE} retry=${RETRY_LINE}）"
+  fi
+done
+
+echo oauth-auth > "$TMP/claude-mode"
+RC="$(run_claude_lane unset)"
+if [[ "$RC" -ne 0 ]] && grep -q '🔑' "$TMP/run.log" && grep -qF 'claude auth login' "$TMP/run.log" \
+  && ! grep -q '🤝' "$TMP/run.log"; then
+  ok "auth(非 Claude ホスト): 🤝 は出さず 🔑 だけ(rc=${RC})"
+else
+  bad "auth(非 Claude ホスト): 🤝 が出た、または 🔑 が無い(rc=${RC})"
+  tail -25 "$TMP/run.log" | sed 's/^/    | /' >&2
+fi
+
+for cm in oauth-quoted oauth-fenced; do
+  echo "$cm" > "$TMP/claude-mode"
+  RC="$(run_claude_lane set)"
+  if ! grep -q '🤝' "$TMP/run.log" && ! grep -q '🔑' "$TMP/run.log" && ! grep -q '💳' "$TMP/run.log"; then
+    ok "auth(${cm}): 引用・フェンスの認証文言では切り分けない(rc=${RC})"
+  else
+    bad "auth(${cm}): 引用・フェンスの認証文言を auth にしている(rc=${RC})"
+    tail -25 "$TMP/run.log" | sed 's/^/    | /' >&2
+  fi
+done
+
+echo oauth-auth > "$TMP/claude-mode"
+RC="$(run_ma_claude set --task review --cli claude-code --perspective code-review \
+  --perspective security-analysis --sequential --base develop --timeout 60)"
+LAUNCHES="$(grep -c '' "$TMP/claude-launches" 2>/dev/null || true)"
+if grep -q '⏭' "$TMP/run.log" && [[ "$LAUNCHES" == "1" ]]; then
+  ok "auth(逐次 2 観点): 2 観点目は起動せずスキップする(launches=${LAUNCHES} rc=${RC})"
+else
+  bad "auth(逐次 2 観点): 起動回数かスキップが違う(launches=${LAUNCHES} rc=${RC})"
+  tail -30 "$TMP/run.log" | sed 's/^/    | /' >&2
+fi
+
 # 時間切れ（124）は stderr に告知文があっても委譲を断定しない（⏱ の補足に留める）。
 echo weekly-hang > "$TMP/claude-mode"
 RC="$(run_ma_claude set --task review --cli claude-code --perspective code-review --base develop --timeout 3)"
@@ -1338,10 +1401,11 @@ else
 fi
 
 # 「主担当のみで完了」の判定（末尾行モード）には stdout 側の告知を数えない。pair で主担当が
-# 完走し、副（claude-code）が利用枠切れで落ちた回: stderr 形は主担当のみで完了（rc 0）+ 🤝、
-# stdout 形は部分出力が残るので完了扱いにしない（その中の指摘を誰も読まなくなる）。
+# 完走し、副（claude-code）が利用枠切れまたは認証拒否で落ちた回: stderr 形
+# （weekly-stderr / oauth-full）は主担当のみで完了（rc 0）+ 🤝、stdout 形
+# （weekly-stdout / oauth-stdout）は部分出力が残るので完了扱いにしない。
 echo ok > "$TMP/codex-mode"
-for cm in weekly-stderr weekly-stdout; do
+for cm in weekly-stderr weekly-stdout oauth-full oauth-stdout; do
   echo "$cm" > "$TMP/claude-mode"
   # 主担当・副は環境変数で固定する（利用者の保存設定に左右されないため）
   rm -f "$TMP/invoked-"*
@@ -1352,18 +1416,18 @@ for cm in weekly-stderr weekly-stdout; do
       --perspective code-review --base develop --timeout 60 >"$TMP/run.log" 2>&1
   RC=$?
   set -e
-  if [[ "$cm" == "weekly-stderr" ]]; then
+  if [[ "$cm" == "weekly-stderr" || "$cm" == "oauth-full" ]]; then
     if [[ "$RC" -eq 0 ]] && grep -qF 'Completed with the main reviewer' "$TMP/run.log" && grep -q '🤝' "$TMP/run.log"; then
-      ok "delegate(pair/stderr): 副の利用枠切れは主担当のみで完了し、委譲の案内も出す(rc=${RC})"
+      ok "delegate(pair/stderr/${cm}): 副の利用枠切れまたは認証拒否は主担当のみで完了し、委譲の案内も出す(rc=${RC})"
     else
-      bad "delegate(pair/stderr): 主担当のみの完了か委譲の案内が欠けた(rc=${RC})"
+      bad "delegate(pair/stderr/${cm}): 主担当のみの完了か委譲の案内が欠けた(rc=${RC})"
       tail -30 "$TMP/run.log" | sed 's/^/    | /' >&2
     fi
   else
     if [[ "$RC" -ne 0 ]] && ! grep -qF 'Completed with the main reviewer' "$TMP/run.log"; then
-      ok "delegate(pair/stdout): stdout 側の告知は主担当のみの完了に数えない(rc=${RC})"
+      ok "delegate(pair/stdout/${cm}): stdout 側の告知は主担当のみの完了に数えない(rc=${RC})"
     else
-      bad "delegate(pair/stdout): 部分出力が残る失敗を主担当のみの完了にしている(rc=${RC})"
+      bad "delegate(pair/stdout/${cm}): 部分出力が残る失敗を主担当のみの完了にしている(rc=${RC})"
       tail -30 "$TMP/run.log" | sed 's/^/    | /' >&2
     fi
   fi

@@ -137,6 +137,8 @@
 #     （`SubagentStop` はサブエージェントが 1 回応答を終えるたびに発火するので、
 #     `SendMessage` で継続されたレビュアーは 1 本で複数回終端イベントを出す）。
 #     対応づいていないレーンしか無い場合だけ、同型の最も古い 1 本へフォールバックする。
+#   - 解放 3: `PreToolUse` の `TaskStop`（`tool_input.task_id` / `shell_id`）。一致する
+#     agent_id または起動時の tool_use_id のレーンだけを閉じる。一致しなければ閉じない。
 #   - 解放 2: `PermissionDenied`（`tool_name` / `tool_input` / `tool_use_id` を持つ）。
 #     **auto mode（分類器）による拒否のときだけ発火する**ので、利用者が手で断った起動は
 #     ここへ来ない。したがってこれは best-effort の追加経路であって、唯一の解放経路には
@@ -851,6 +853,7 @@ if [ "$LANE_LIVE" -gt 0 ]; then
   deny_head="${deny_head}ホストのサブエージェントによるレビューが ${LANE_LIVE} 本走行中です（未終端のレーン）。
 ${LANE_SUMMARY}一部のレビュアーが返ってきただけでは凍結は解けません。残っているレーンが 0 本になるまでこのガードは開きません。
   レーン置き場: ${LANE_DIR}
+TaskStop は task_id がレーンの agent_id、または起動時の tool_use_id（ファイル名の鍵）と一致するレーンだけを閉じます。完了通知のあとにファイルが残っているのは解放の取りこぼし、停止のあとに残っているのは id が一致しなかったレーンです。外側のシェルの TaskStop は子プロセスを止めません。ロックに書いた pid がそのプロセスで、その pid を止めるコマンドはレビューの起動には数えません。
 "
 fi
 if [ -n "$PROTECT_TREES" ]; then
@@ -866,7 +869,14 @@ if [ "$LANE_RECLAIMED" -gt 0 ]; then
 "
 fi
 
-emit_deny "⚠️ ff-dev-toolkit guard（レビュー走行中・作業ツリー編集の抑止）: ${deny_head}${write_note:-}走行中に作業ツリーが動くと、実行後のリビジョン検証が結果を**全破棄**します（数分〜十数分ぶんのレビューが失われます）。サブエージェント経路には破棄の機構が無い代わりに、走行中の編集は「レビュー対象と食い違う指摘」を生みます。完了通知が出るまで編集・commit・checkout をしないでください。
+undetermined_prefix=""
+case "${WRITE_REASON:-}${write_note:-}" in
+  *判定できません*)
+    undetermined_prefix="ファイルは Write ツールで作り、実行は別の呼び出しにしてください。
+"
+    ;;
+esac
+emit_deny "⚠️ ff-dev-toolkit guard（レビュー走行中・作業ツリー編集の抑止）: ${undetermined_prefix}${deny_head}${write_note:-}走行中に作業ツリーが動くと、実行後のリビジョン検証が結果を**全破棄**します（数分〜十数分ぶんのレビューが失われます）。サブエージェント経路には破棄の機構が無い代わりに、走行中の編集は「レビュー対象と食い違う指摘」を生みます。完了通知が出るまで編集・commit・checkout をしないでください。
 待ち時間にできることは multi-review スキルの「レビュー待ち時間の使い方」節を参照してください。
 続行する必要がある場合（走行が既に終わっている / 結果の破棄を承知で編集する）:
   1) ツール非依存の復旧: ロックを消す → rm -- $(shq "$LOCK")

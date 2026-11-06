@@ -51,6 +51,7 @@
 # 空振り検出: route.sh の dt_begin_lines から set -f を外すと (D28) が赤になる（glob が展開されて件数照合が rc 2 の none。2026-10-28 実測）。
 # 空振り検出: route.sh の非コメント行へ here-string を 1 行足すと (J0) が赤になる（2026-10-28 実測）。sandbox を起動できたのに
 #   here-document が成功する環境は (J-probe) が赤になる。
+# 空振り検出: tree.tsv の contract-path から hook の .sh を外すと D5h / D5i が赤になる（2026-11-05 実測）。root.json の criteria から同じ語を外すと D5p が赤になる。
 #
 # J の sandbox 再現（2026-10-28、bash 5.2.37 で実測）:
 #   書き込み不可の TMPDIR だけでは here-document は落ちない。bash は TMPDIR が書けないと
@@ -353,6 +354,23 @@ run_router -- --files plugins/ff-dev-toolkit/skills/close-issue/references/x.md 
 run_router -- --files plugins/ff-dev-toolkit/scripts/decision-tree/tree.tsv --lines 3; assert_route "D5e tree.tsv の 3 行変更は full（木データ自身）" full contract-change rules
 run_router -- --files plugins/ff-dev-toolkit/scripts/jev/questions/root.json --lines 1; assert_route "D5f Jev criteria fixture の 1 行変更は full" full contract-change rules
 run_router -- --files docs/06-reference/HOST-PARITY.md --lines 1; assert_route "D5g HOST-PARITY.md の 1 行変更は full" full contract-change rules
+run_router -- --files plugins/ff-dev-toolkit/hooks/guard-foo.sh --lines 3; assert_route "D5h hook の .sh の 3 行変更は full（実行制御）" full contract-change rules
+run_router -- --files hooks/guard-foo.sh --lines 1; assert_route "D5i リポジトリ直下の hooks の .sh も full" full contract-change rules
+run_router -- --files .github/workflows/ci.yml --lines 2; assert_route "D5j CI 定義の 2 行変更は full" full contract-change rules
+run_router -- --files .github/actions/run-all-setup/action.yml --lines 2; assert_route "D5k 共有 action の 2 行変更は full" full contract-change rules
+run_router -- --files package.json --lines 1; assert_route "D5l package.json の 1 行変更は full（依存の宣言）" full contract-change rules
+run_router -- --files plugins/ff-dev-toolkit/mcp/package-lock.json --lines 2; assert_route "D5m package-lock.json の 2 行変更は full" full contract-change rules
+run_router -- --files src/hooks/useFoo.ts --lines 3; assert_route "D5n hooks という名のアプリのディレクトリは .sh でなければ fast のまま" fast small-diff rules
+run_router -- --files skills/close-issue/SKILL.md --lines 1; assert_route "D5o リポジトリ直下の skills も full" full contract-change rules
+run_router -- --files docs-template/MASTER.md --lines 1; assert_route "D5o リポジトリ直下の docs-template も full" full contract-change rules
+# Jev の criteria は木の一覧を自然文で写している。FF_JEV_MODE=on では規則へ到達しないので、新しい語の欠落を固定する
+for _jev_term in 'hooks/*.sh' '.github/workflows/*' '.github/actions/*' 'package.json' 'package-lock.json'; do
+  if jq -e --arg t "$_jev_term" '.root.criteria.fast | contains($t)' "$QFILE" >/dev/null 2>&1; then
+    ok "D5p Jev の criteria に契約 path の語がある: ${_jev_term}"
+  else
+    bad "D5p Jev の criteria に契約 path の語がない: ${_jev_term}"
+  fi
+done
 run_router -- --files docs/a.md plugins/x.sh; assert_route "D6 行数不明で docs 以外を含めば full" full implementation rules
 run_router -- --files-from /dev/null; assert_route "D7 0 件は none（no-files）" none no-files none
 [ "$(kv DT_TARGET)" = "none" ] && ok "D8 none の行き先は none" || bad "D8 none の行き先: $(kv DT_TARGET)"

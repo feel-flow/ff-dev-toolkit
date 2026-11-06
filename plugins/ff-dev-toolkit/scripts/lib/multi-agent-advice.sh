@@ -37,12 +37,13 @@ grok_host_delegable_perspectives() {
 # review であること、今回の実行が委譲していないこと（委譲中はそもそも CLI を起動しない）、
 # ホストが Claude Code であること（Claude Code は自身が起動するシェルへ CLAUDECODE=1 を
 # 渡す。他ホストへ委譲すると別モデルで claude-code レーンを埋めることになる）、そして
-# 落ちた理由が利用枠切れ（billing）であること。時間切れ（124）は billing の語が stderr に
-# あっても断定しない（個別案内の ⏱ 分岐と同じ扱い）。
+# 落ちた理由が利用枠切れ（billing）または資格情報の拒否（auth）であること。
+# 時間切れ（124）は語が stderr にあっても断定しない（個別案内の ⏱ 分岐と同じ扱い）。
+# 第 1 引数に billing か auth を渡すとその理由だけを返す。省略時は両方。
 host_delegable_perspectives() {
   [[ "$TASK_TYPE" == "review" && "$DELEGATE_TO_HOST" != "true" ]] || return 0
   [[ "${CLAUDECODE:-}" == "1" ]] || return 0
-  local entry task rc cause out=""
+  local want="${1:-}" entry task rc cause out=""
   for entry in $FAILED_TASKS $SKIPPED_TASKS; do
     task="${entry%:*}"
     rc="${entry##*:}"
@@ -51,7 +52,11 @@ host_delegable_perspectives() {
     if [[ -z "$cause" && "$rc" != "124" ]]; then
       cause="$(classify_cli_failure_cause "${OUTPUT_DIR}/${task}.md")"
     fi
-    [[ "$cause" == "billing" ]] || continue
+    if [[ "$want" == "billing" || "$want" == "auth" ]]; then
+      [[ "$cause" == "$want" ]] || continue
+    else
+      [[ "$cause" == "billing" || "$cause" == "auth" ]] || continue
+    fi
     case " ${out} " in *" ${task#*/} "*) ;; *) out="${out:+${out} }${task#*/}" ;; esac
   done
   [[ -z "$out" ]] || printf '%s\n' "$out"
@@ -121,19 +126,37 @@ print_failure_advice() {
     done < <(prompt_too_long_advice_lines)
   fi
 
-  # claude-code レーンの利用枠切れは、ホストが Claude Code なら --delegate-to-host で
-  # ホストのセッションに走らせられる。下の個別案内（同じ CLI の再実行・
-  # codex 代替）はどちらも利用枠切れには効かない — 前者は同じアカウントの枠を使い、
-  # 後者はクロスモデルの独立性を潰す — ので、個別案内より**先に**出す。
-  local delegable_persps
-  delegable_persps="$(host_delegable_perspectives)"
+  # claude-code レーンの利用枠切れまたは認証拒否は、ホストが Claude Code なら
+  # --delegate-to-host でホストのセッションに走らせられる。下の個別案内（同じ CLI の
+  # 再実行・再ログイン・代替 CLI）は、枠切れには同じアカウントを使い、認証拒否は
+  # 非対話では claude auth login を完了できず、代替はクロスモデルの独立性を潰す。
+  # 個別案内より**先に**出す。文言は原因ごと。両方なら両方を書く。
+  local billing_persps auth_persps delegable_persps
+  billing_persps="$(host_delegable_perspectives billing)"
+  auth_persps="$(host_delegable_perspectives auth)"
+  delegable_persps=""
+  local dp
+  for dp in $billing_persps $auth_persps; do
+    case " ${delegable_persps} " in
+      *" ${dp} "*) ;;
+      *) delegable_persps="${delegable_persps:+${delegable_persps} }${dp}" ;;
+    esac
+  done
   if [[ -n "$delegable_persps" ]]; then
     host_self="$(recovery_command "$self" "$recovery_base" "host-${DELEGATION_LANE}")"
-    local dp dp_args=""
+    local dp_args=""
     for dp in $delegable_persps; do dp_args="${dp_args} --perspective ${dp}"; done
     echo "" >&2
-    echo "   🤝 ${DELEGATION_LANE} — the claude CLI's account is out of quota, but this host is a" >&2
-    echo "      Claude Code session whose own account can run the lane. Re-run with" >&2
+    if [[ -n "$billing_persps" ]]; then
+      echo "   🤝 ${DELEGATION_LANE} — the claude CLI's account is out of quota, but this host is a" >&2
+      echo "      Claude Code session whose own account can run the lane." >&2
+    fi
+    if [[ -n "$auth_persps" ]]; then
+      echo "   🤝 ${DELEGATION_LANE} — the claude CLI rejected its credentials. A non-interactive" >&2
+      echo "      session cannot run \`claude auth login\`, but this host is a Claude Code session" >&2
+      echo "      whose own account can run the lane." >&2
+    fi
+    echo "      Re-run with" >&2
     echo "      --delegate-to-host (never with --fresh), run each handoff prompt in a read-only" >&2
     echo "      subagent, write its answer to the output-file the handoff names, then re-run" >&2
     echo "      the same command with --resume added:" >&2

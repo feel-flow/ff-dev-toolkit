@@ -77,9 +77,11 @@ release/*     ← リリース準備ブランチ（developから分岐）
 
 ### ブランチ命名規則
 
-- `feature/{issue-number}-{short-description}` 例: `feature/123-user-auth`
-- `hotfix/{issue-number}-{short-description}` 例: `hotfix/456-security-patch`
+- `feature/#{issue-number}-{short-description}` 例: `feature/#123-user-auth`
+- `hotfix/#{issue-number}-{short-description}` 例: `hotfix/#456-security-patch`
 - `release/{version}` 例: `release/1.2.0`
+
+`#` は省かない。hook はブランチ名から Issue 番号を読み、経過時間などの実測をその Issue へ紐づける。`#` の無い形は読まない（`404-page` のような slug の番号を Issue と記録しないため）ので、実測がどの Issue にも残らない。ホストが自動で付ける `codex/123-x`・`claude/issue-123-x`・`grok/123-x` は例外として読む。規則の正本は `${CLAUDE_PLUGIN_ROOT}/scripts/lib/branch-issue.sh`。
 
 ## ワークフローステップ
 
@@ -147,7 +149,7 @@ printf 'ISSUE_URL=%s ISSUE_NUM=%s\n' "$ISSUE_URL" "$ISSUE_NUM"
 
 既存 Issue への着手時は、分岐前に本文の `<!-- ff-effort:begin -->` ブロック有無を確認する。無ければ `/create-issue` の工数ブロック契約（SKILL.md 手順 3・6。過去実績の3層参照と目安表は `references/estimation.md`）に従って見積もりを既存 Issue 本文へ追記し、既にあれば作り直さず着手を続行する。bundle では本体と子を確認し、既存の予定値を上書きしない。同じ確認は、ブランチ名に Issue 番号がある `git switch -c` / `git checkout -b` / `git branch -m` のあとにも hook が注意だけを返す（止めない。実体は `hooks/warn-missing-ff-effort.sh`）。
 
-工数ブロックの単位は人時（`- effort_unit: h` を宣言し、値は `N.Nh`）。宣言の無い既存ブロックの人日（`N.Nd`）は書き換えない — 集計器が 1d = 8h で人時へ正規化する。ブランチ作成（`git checkout -b` / `git switch -c`）と `gh pr merge` は ff-dev-toolkit の hook（`hooks/record-effort-wallclock.sh`）がブランチ名の Issue 番号をキーに wall-clock の開始 / 終了として記録し、`/close-issue` が `effort_wallclock_actual` として書き戻す（記録先はリポジトリ外の `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/`。書けなくてもワークフローは止まらず、書き戻しが `(unmeasured)` になる）。ブランチ名に `#<Issue番号>` を入れないと開始が記録されない。
+工数ブロックの単位は人時（`- effort_unit: h` を宣言し、値は `N.Nh`）。宣言の無い既存ブロックの人日（`N.Nd`）は書き換えない — 集計器が 1d = 8h で人時へ正規化する。ブランチ作成（`git checkout -b` / `git switch -c`）と `gh pr merge` は ff-dev-toolkit の hook（`hooks/record-effort-wallclock.sh`）がブランチ名の Issue 番号をキーに wall-clock の開始 / 終了として記録し、`/close-issue` が `effort_wallclock_actual` として書き戻す（記録先はリポジトリ外の `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/`。書けなくてもワークフローは止まらず、書き戻しが `(unmeasured)` になる）。ブランチ名から Issue 番号を読めないと開始が記録されない（読める形は上の[ブランチ命名規則](#ブランチ命名規則)）。
 hook に届くのは展開前のコマンド文字列なので、ブランチ名を変数で組む形（`git checkout -b "feature/#${ISSUE_NUM}-x"`）・`git worktree add -b`・`git branch -m` は記録されない（`/close-issue` の読み手はそのときブランチの reflog の最古エントリから開始を補い、引けなければ `(unmeasured)`）。下の例のようにブランチ名をリテラルで書く。残る 2 指標もブランチ名から辿る — レビュー巡回数はレビュー起動ごとの巡回カウンタ（`<git common dir>/ff-review-rounds/`。鍵はブランチ名で、読み手が Issue 番号からブランチを引く）から、ゲート分は `tests/run-all.sh` が終了時に `scripts/record-gate-minutes.sh` で残す所要秒（鍵は開始時のブランチ名の Issue 番号）からで、`/close-issue` が `effort_review_rounds:` / `effort_gate_minutes:` として書き戻す。統合ブランチ・番号の無いブランチで回したレビューとゲートはどの Issue にも数えない。
 
 ```bash
@@ -198,6 +200,16 @@ git diff --stat <前のブランチ> <base ブランチ> -- <対象ディレク�
 実装に入る前に [PLAYBOOK.md](../../08-knowledge/PLAYBOOK.md) の索引（エントリ一覧）を変更対象領域のキーワードで検索し、関連する ACE エントリを読む。Issue 本文に「関連 ACE エントリ」が添付されている場合（`/create-issue` が生成）はそれを起点にする。参照して役立ったエントリは ACE ID で記録する。記録先ごとに届く仕組みが異なる: **コミット件名・本文**への記録は再利用計測 `ace-reuse-report` の入力になり（計測対象は git log の件名・本文のみ。squash merge 後は squash コミットの件名・本文に ACE ID が残るようにする）、**`implementation-notes.md`** への記録（ACE-034 により PR description へ転記される）は `/ace-curate` での `Helpful` カウンター更新の入力になる。ACE サイクルは「書く」（ステップ10）だけでは完結せず、この「読む」導線があって初めて知見が循環する。
 
 この節が手順の正本である。記録の契約: 検索結果は必ず記録し（ヒットした ACE ID / `0 件` / `Playbook なし` / `読み取り失敗（理由）` の 4 種。いずれも「検索を実施した」記録）、空欄のまま先へ進まない。Playbook 不在・読み取り失敗は該当を記録して標準手順を続行する（探索の失敗でタスクを止めない）。`/spec-driven` を使う場合は Step 1（tier 判定の直後）が本節の起動点となり、結果をゲート進行表のタスクサマリー「参照 ACE エントリ」欄へ記録する。スキル側は別手順を定義せず、本節を実行して結果を記録するだけとする。
+
+**実装語と作業クラス語は別々に検索し、系統ごとに結果を記録する。** 実装語は触るファイル・機能・コマンド・症状の語。作業クラス語は「この PR は何をする作業か」を1文で書き、その名詞から選ぶ（例: 「コマンド文字列を解釈するガードを作る」→ `コマンド文字列` / `ガード`、「gh 不在の fixture を作る」→ `gh` / `不在` / `fixture`）。既知の ID だけを引いた結果で二系統の検索を代替しない。
+
+- **絞り込み**: 既定の OR でタイトルと本文の適用条件を確認する。多すぎるときは作業の1文から短い語の組へ分けて再検索する。実装語と作業クラス語を全語 AND にまとめて先例を落とさない。`--all` を使った回も実際の語と条件を記録し、ヒット件数だけで必要な知見を確認済みとしない。
+- **途中の引き直し**: 新しい作業クラスの変更を書き始める前に、その作業を1文で書き、作業クラス語で引き直す。fixture の新設、静的検査の追加、hook の新経路、想定外のゲートの赤を同じ PR で修正する前も対象とする。知見記録（knowledge-commit / claim / stage）へ移る前、同じセッションで別 Issue へ入る前も対象とする。着手前に本体の実装語で引いたことを、副作業の参照の代わりにしない。
+- **語と結果の対応**: 着手前・途中の各検索について、時点、系統（実装語／作業クラス語）、作業の1文、実際の検索語、OR/AND、結果を `implementation-notes.md` またはゲート進行表へ記録する。結果にはその呼び出しの `RECORD` 行（または不在・読み取り失敗の理由）を添え、参照した本文の適用／不適用理由も残す。完了報告とコミット本文にも系統・検索語・ヒットの対応を残し、PR 本文への判断ログ転記と ACE ID 記録は本節の既存契約に従う。
+
+効果は [retrospective の観察チェックリスト](../../../skills/retrospective/SKILL.md#観察チェックリスト)で、引き直した知見の適用と見落としを点検する。検索器の `RECORD` / TSV の形式は変更せず、語・時点は判断ログで結果と対応付ける。
+
+点検では、着手前の二系統の検索記録と、途中の作業クラス移行の有無・変更前の引き直し・検索語とヒット・適用／不適用理由・レビューで初めて見つかった既存知見を照合する。新しい作業クラスに入らなかった回は「移行なし」、記録が無い回は「未確認」とする。検索を実施しただけで効果ありとせず、役立った適用は Keep、引き当て漏れや未適用による手戻りは problem の既存基準で扱う。後から検索して、変更前に引いていたことにはしない。
 
 **観測台帳も同じ導線で引く。** `/retrospective` が育てる観測台帳（[OBSERVATIONS.md](../../08-knowledge/OBSERVATIONS.md)）は書く store であると同時に引く store で、読み出し経路が無いと観測は「再発してから数えられる」だけで再発を防ぐ側に回らない（同じセッションで ACE の知見は作業中に届き、台帳の同じ主張は振り返りの事後にしか突き合わされなかった実測が起点）。本節の実行手段は `/knowledge-lookup`（ff-dev-toolkit）で、PLAYBOOK と台帳を同じキーワードで 1 回引き、store ごと・状態ごとに切り分けて返す。記録の契約は台帳側にも同形で適用する（ヒットした OBS ID / `0 件` / `台帳なし` / `読み取り失敗（理由）`。スクリプト末尾の `RECORD` 行がこの形になっている）。台帳の `promoted` / `mitigated` は「対策あり」として読み、`active` だけを未対策の落とし穴として扱う — 対策があるのに独自の回避策を実装へ持ち込むと対策の二重化になる（読み方の正本は `/knowledge-lookup` の SKILL.md）。台帳を参照しても `Count` は動かさない（`Count` は再発の計上であり参照の計上ではない）。
 
@@ -820,9 +832,9 @@ fix commitと最終ゲートの前に、ステップ6の[自動レビューbot�
 
 > 部分再検証でレビュー用サブエージェントを再起動する場合の起動時規定（read-only 起動の禁止事項列挙と、全エージェントが終端に達するまでの作業ツリー凍結）は、ステップ6「セルフレビューの実行方法」を参照。ここで起動するレビューにも同じ規定が適用される。ホストが worktree 隔離を提供する場合のレビュアー起動既定（`isolation: "worktree"`。隔離したレビュアーには凍結が適用されない）も同節が正本。
 
-> **レビュー深度（Risk-Based Workflow）**: `bash scripts/review-level.sh --base develop` で変更の規模・種別からレビュー深度（1: 軽量 = docs のみ ≤50行は簡潔なレビュー / 2: 標準 = 通常のレビュー観点 / 3: 重点 = 400 行超・実行系ディレクトリ・`*.sh`・`package.json`・ルート直下設定ファイルは multi-review 併用推奨）を判定し、深度を変更のリスクに釣り合わせる。判定は推奨でありブロックしない。**これは [DEPLOYMENT.md](../DEPLOYMENT.md#主要ステップ) の tier とは別の軸である** — tier が決めるのは段の重さで、こちらが決めるのはレビューの深さ。tier はレビューの本数を減らさない。担当の選び方は[選択ルール](./self-review.md#レビュー担当の選択と利用制限時の継続)（正本）に従う。PR 説明に貼れる形式は `--format pr`（レベル＋PR Size Check の `[x]` 判定＋センシティブパス一覧）。
+> **レビュー深度**: 外部 CLI のレーン数は、`${CLAUDE_PLUGIN_ROOT}/scripts/review-route.sh` が決定木の根の答え（`fast` / `full` / `none`）から決め、`multi-review.sh --route` へ渡す（[変更クラス別のレーン数](./multi-cli-review-orchestration.md#モード)）。ネイティブレビューは `review-route.sh` を起動条件にせず、ホストが経路と根拠を記録する（[主担当ホストのネイティブセルフレビュー](./self-review.md#主担当ホストのネイティブセルフレビュー)）。**これは [DEPLOYMENT.md](../DEPLOYMENT.md#主要ステップ) の tier とは別の軸である** — tier が決めるのは段の重さで、こちらが決めるのはレビューの深さ。tier はレビューの本数を減らさない。担当の選び方は[選択ルール](./self-review.md#レビュー担当の選択と利用制限時の継続)（正本）に従う。
 >
-> **push 時の可視化**: `.husky/pre-push` は品質ゲート実行前に review-level 判定を表示し、Level 3 では重点レビューを促す（既定は advisory・非ブロック）。`REVIEW_LEVEL_BLOCK=1 git push` のときだけ Level 3 を push ブロックに昇格できる（opt-in）。変更行数・パスの機械判定は review-level.sh に一本化し、`/assess-impact` はその結果を入力として互換性・アーキテクチャ影響（LOW/MEDIUM/HIGH）を評価する。
+> **`/assess-impact` との関係**: `/assess-impact` は変更量ではなく波及範囲で影響度（LOW / MEDIUM / HIGH）を評価する。経路の判定とは独立なので、経路が `fast` でも影響度は HIGH になりうる。
 >
 > **Note**: 旧構成では GitHub Copilot の `@review-router` エージェント（VS Code Copilot Chat）を標準としていたが、Copilot の従量課金化に伴い既定構成から除外した。課金を許容する場合のオプトインとしては引き続き利用可能（[COPILOT_AGENTS.md](../../06-reference/COPILOT_AGENTS.md) 参照）。
 
@@ -1122,7 +1134,7 @@ merge 対象は取得済みのホストを含むリポジトリ URL を引用し
 | `already-missing` | ref は既に存在しない（GitHub の自動削除を含む） |
 | `preserved-different-oid` | 同名 ref が別 OID のため削除せず保全した |
 
-削除本文は生成済みコマンドに含まれるため、実行時の cwd やマージ後の plugin 更新・除去に依存しない。`SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0` は削除 push だけに付く。完了報告には「リモートブランチを削除したか」を merge の成否とは**別項目**で明示し、上の結果を載せる（`/merge-cleanup` のサマリーも同じ項目を出す）。
+削除本文は生成済みコマンドに含まれるため、実行時の cwd やマージ後の plugin 更新・除去に依存しない。`SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0` は削除 push だけに付く。`FF_MERGE_DELETE_SEPARATE=1` の回は worktree の保持を見ず、生成コマンドを `gh pr merge` だけにする（`DELETE_BRANCH_MODE=separate-consumer`）。`FF_DELETE_PUSH_SKIP_HOOKS=0` の回は、生成する削除 push と `/merge-cleanup` の削除 push からこの代入を外す。完了報告には「リモートブランチを削除したか」を merge の成否とは**別項目**で明示し、上の結果を載せる（`/merge-cleanup` のサマリーも同じ項目を出す）。
 
 #### gh 不在時の MCP merge
 
@@ -1402,13 +1414,13 @@ GitHub Discussions への記録に加え、ACE Playbook への構造化記録を
 
 > このセクションが ACE 知見コミットのマージ方針の **SSOT**。ace-cycle.md / `/ace-curate` 手順5 はここを参照する。
 
-**保護判定（必須・直 push を試す前に行う）**: `<default-branch>` に直 push を止める保護があるかを確認する（branch protection API → rulesets API → いずれも判定不能なら既定を試して拒否メッセージで PR 経路へ切替。手順の詳細は `/ace-curate` 手順5 の references/curate.md）。直 push を止める保護の中身 — classic の PR 必須・必須チェック・push 制限・署名必須・読み取り専用、または rulesets の `pull_request` type — があるときだけ下の既定（直 push）を試みず、chore PR 経路（必須）を使う。force push の禁止だけの classic 保護は `finish.sh knowledge-commit probe` が `classic=protected-no-pr` と出し、rulesets にも `pull_request` type が無ければ `protection=unprotected`（直 push）になる。
+**保護判定（必須・直 push を試す前に行う）**: `<default-branch>` に直 push を止める保護があるかを確認する（branch protection API → rulesets API → いずれも判定不能なら既定を試して拒否メッセージで PR 経路へ切替。`/ace-curate` は手順1で最初の編集より前に判定し、保護時は知見ブランチ・判定不能時は detached HEAD へ移ってから書く。判定の規則は `/ace-curate` の references/curate.md の「コミット（手順 5）の規則」）。直 push を止める保護の中身 — classic の PR 必須・必須チェック・push 制限・署名必須・読み取り専用、または rulesets の `pull_request` type — があるときだけ下の既定（直 push）を試みず、chore PR 経路（必須）を使う。force push の禁止だけの classic 保護は `finish.sh knowledge-commit probe` が `classic=protected-no-pr` と出し、rulesets にも `pull_request` type が無ければ `protection=unprotected`（直 push）になる。
 
 **既定（推奨）— `<default-branch>` 直マージ**: 直 push を止める保護の無い `<default-branch>` にのみ適用（force push の禁止だけの保護は対象に含む）。マージ・cleanup 後の `<default-branch>` で `/ace-curate <PR番号>` を実行し、PLAYBOOK.md 追記を **`<default-branch>` に直接 commit + push** する。PLAYBOOK.md は append-only で構造化されており、ID も PRスコープ式（[エントリID規則](../../08-knowledge/PLAYBOOK.md#エントリid規則)）で衝突しないため、ACE 1 サイクル分の小さな知見追加を毎回 PR 化するのは過剰なオーバーヘッド。
 
 **knowledge コミットの書き込み口（共通）**: `/ace-curate` の PLAYBOOK 追記と `/retrospective` の観測台帳（`OBSERVATIONS.md`）追記は、同梱の `scripts/finish.sh knowledge-commit`（`add` → `commit` → `push`。実体は `scripts/knowledge-commit.sh` で、claim の再生成 `add --claim`・保護判定 `probe`・直 push・PR 経由 `pr` も同じ入口が持つ）で commit を作る。同じセッションで両方が書いた回は 1 コミット（`knowledge: ACE-… / OBS-…`）に畳み、片方だけなら従来どおりの件名の単独コミットになる。commit は記録したパス（PLAYBOOK・台帳と各 claim）へ固定し、コードの変更を含めない。commit の直前に検査用の合成 identity（`fixture` / `*@example.invalid`）を止める。`/ace-curate` は既定ではその場で commit し、チェーンの起動元（振り返りの事前注入 hook の文面）が `ACE_DEFER_TO_RETRO=1` を指示した回だけ `add` までで止める。`/retrospective` はモード判定の直後に保留を確かめ、振り返りを実施しない回でも回収する。
 
-**chore PR 経路**: 大人数チーム、または知見内容自体をレビューに残したい場合は任意エスカレーション、**`<default-branch>` に直 push を止める保護がある場合は必須経路**。`<default-branch>` から `chore/ace-from-pr-<PR番号>` ブランチを切り、PLAYBOOK.md 追記を小さい chore PR として PR レビュー → squash merge する（保護判定・commitlint type 置換の詳細は `/ace-curate` 手順5）。
+**chore PR 経路**: 大人数チーム、または知見内容自体をレビューに残したい場合は任意エスカレーション、**`<default-branch>` に直 push を止める保護がある場合は必須経路**。`<default-branch>` から `chore/ace-from-pr-<PR番号>` ブランチを切り、PLAYBOOK.md 追記を小さい chore PR として PR レビュー → squash merge する（保護判定は `/ace-curate` 手順1、commitlint type 置換の詳細は手順5）。
 
 > **ACE-012 との関係（混同しないこと）**: ACE-012 は _うっかり_ feature 作業を `<default-branch>` に直接 push してしまう事故（ブランチ切り替わりの見落とし）を防ぐルール。一方、本セクションの「`<default-branch>` 直マージ」は `knowledge:`（または commitlint type 許容リストにより置換された type）プレフィックス付きの **knowledge 単独コミット**（PLAYBOOK・観測台帳の追記だけを含む。両方を書いた回は上の書き込み口が 1 コミットに畳む）に限定した _意図的・承認済み_ のフローであり、両者は別物。ACE-012 は引き続き有効（deprecated にしない）。
 
