@@ -732,8 +732,10 @@ expect_sandbox() {
   # 「期待のリテラルと違う」で止まり、「そもそもこの CLI はその値を受け付けず
   # 起動前に落ちる」という本質が出力に現れない。2 つは別の失敗で、後者の方が重い。
   enum="$(declared_enum "$cli")"
-  if [ -z "$enum" ]; then
-    skipped "${label}: enum 照合は対象外（${cli} は受け付ける値の集合を公表していない）"
+  if [ "$cli" = grok-cli ] && [ -z "$enum" ]; then
+    skipped "${label}: enum 照合は対象外（grok-cli は受け付ける値の集合を公表していない）"
+  elif [ -z "$enum" ]; then
+    bad "${label}: ${cli} の宣言 enum が空のため照合できない"
   elif in_set "$SB_VALUE" "$enum"; then
     ok "${label}: '${SB_VALUE}' は ${cli} の宣言 enum の要素"
   else

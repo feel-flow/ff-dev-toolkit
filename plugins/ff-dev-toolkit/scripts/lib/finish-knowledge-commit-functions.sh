@@ -28,6 +28,43 @@ kc_default_branch() { # → default branch 名（origin/HEAD から）
   printf '%s' "${default_ref#origin/}"
 }
 
+# 「まとめて」モード（ADR-083）の関数を読み込む。設定・記録の読み書きは lib/knowledge-delivery-functions.sh、
+# target / push / flush の本体は lib/finish-knowledge-batch-functions.sh、merge commit の直前の合成 identity
+# 判定は lib/commit-identity-functions.sh（knowledge-commit.sh の commit と同じ判定）。
+kc_load_batch() {
+  [[ "${_finish_kc_batch_loaded:-0}" != "1" ]] || return 0
+  local lib
+  for lib in lib/knowledge-delivery-functions.sh lib/commit-identity-functions.sh lib/finish-knowledge-batch-functions.sh; do
+    need_bundled "$lib"
+    assert_bundled_shebang_lf "$plugin_root/scripts/$lib"
+  done
+  # shellcheck source=lib/knowledge-delivery-functions.sh
+  . "$plugin_root/scripts/lib/knowledge-delivery-functions.sh" || die_env "反映先の判定 lib を読み込めません" "ff-dev-toolkit を再導入してから skill を呼び直す"
+  # shellcheck source=lib/commit-identity-functions.sh
+  . "$plugin_root/scripts/lib/commit-identity-functions.sh" || die_env "identity 判定 lib を読み込めません" "ff-dev-toolkit を再導入してから skill を呼び直す"
+  _finish_kc_batch_loading=1; _finish_kc_batch_loaded=0
+  # shellcheck source=lib/finish-knowledge-batch-functions.sh
+  . "$plugin_root/scripts/lib/finish-knowledge-batch-functions.sh" || die_env "まとめるモードの構成ファイルを読み込めません" "ff-dev-toolkit を再導入してから skill を呼び直す"
+  [[ "$_finish_kc_batch_loaded" == "1" ]] || die_env "まとめるモードの構成ファイルの読み込みが完了していません" "ff-dev-toolkit を再導入してから skill を呼び直す"
+  unset _finish_kc_batch_loading
+}
+
+# probe の前段: 手元の origin/<default> 追跡 ref（fetch しない。マージごとの probe の通信を増やさない）の
+# 設定が batch のときだけ target で起点へ移り、`protection=batch` を出す。0 = 処理した / 1 = マージごと
+kc_probe_batch() {
+  local default_ref default
+  default_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" || return 1
+  [[ "$default_ref" == origin/* ]] || return 1
+  default="${default_ref#origin/}"
+  kc_load_batch
+  ff_kd_load "$repo_root" "$default" \
+    || die_env "反映の設定（${KD_CONF_REL}）を読めないか不正です（上の knowledge-delivery: 行）" "origin/${default} の ${KD_CONF_REL} を直してから再実行する"
+  [[ "$KD_MODE" == batch ]] || return 1
+  kc_target probe || return 1
+  echo "protection=batch (default_branch=${default}, staging=${KD_STAGING})"
+  return 0
+}
+
 kc_file_probe() {
   local default_branch owner_repo="" protection="unknown" classic="unknown" rulesets="unknown" classic_out
   default_branch="$(kc_default_branch)" || return 2
@@ -66,6 +103,7 @@ kc_file_probe() {
 }
 
 kc_probe() {
+  if kc_probe_batch; then return 0; fi
   if [[ -n "$github_input" ]]; then kc_file_probe; return $?; fi
   # gh は任意依存: 無ければ API を呼ばず protection=unknown（既定の直 push を試し、拒否されたら PR 経由）
   command -v gh >/dev/null 2>&1 || echo "ℹ️  gh が無いため保護判定は unknown（既定を試し、push が拒否されたら PR 経由へ）" >&2
@@ -146,7 +184,14 @@ kc_assert_scope() { # <default branch> <出力キー> <fast-forward 必須: 1|0>
 }
 
 kc_push() {
-  local default_branch current_branch push_refspec push_log pushed_sha
+  local default_branch current_branch push_refspec push_log pushed_sha state_rc=0
+  kc_load_batch
+  ff_kd_state_read "$repo_root" || state_rc=$?
+  case "$state_rc" in
+    0) kc_push_batch; return $? ;;
+    1) ;;
+    *) die_env "書き込み先の記録（$(ff_kd_state_path "$repo_root")）を読めません" "finish.sh knowledge-commit discard で記録を消し、元のブランチへ戻ってから target をやり直す" ;;
+  esac
   default_branch="$(kc_default_branch)" || exit 2
   # コミット先ブランチの実測ガード: merge-cleanup の退避などで detached HEAD のまま
   # `git push origin <branch>` を打つと、ローカル branch ref が送られ「Everything up-to-date」で
@@ -161,6 +206,8 @@ kc_push() {
     push_refspec="${default_branch}"
   fi
   kc_assert_scope "${default_branch}" KNOWLEDGE_PUSH 1
+  # 設定がまとめるモードなら base へ直接 push しない（kc_assert_scope が origin/<default> を取得済み）
+  kc_batch_guard "${default_branch}" "push"
   # push 出力を実測する: 終了コードと出力の両方を見る。パイプで tee へ流すと push の終了コードが
   # 失われ、non-fast-forward の rejected 出力（`-> branch` を含む）を成功と誤読するため、
   # ファイルへ落としてから照合する。「Everything up-to-date」は失敗の兆候（何も送っていない）
@@ -246,6 +293,18 @@ kc_pr() {
   [[ -n "$branch" && -n "$title" ]] || usage
   [[ -n "$github_input" ]] || need_cmd gh "gh をインストールして gh auth login を済ませる"
   default_branch="$(kc_default_branch)" || exit 2
+  # まとめるモードでは知見 PR を作らない（知見は staging へ push し、base への反映は flush）
+  kc_load_batch
+  local st_rc=0
+  ff_kd_state_read "$repo_root" || st_rc=$?
+  case "$st_rc" in
+    0) die_stop "まとめるモードの書き込み中です（target の記録がある）" "finish.sh knowledge-commit push で ${KD_ST_STAGING} へ送る（PR は作らない）" ;;
+    1) ;;
+    *) die_env "書き込み先の記録（$(ff_kd_state_path "$repo_root")）を読めません" "finish.sh knowledge-commit discard で記録を消してから再実行する" ;;
+  esac
+  # 設定は fetch した後の origin/<default> で判定する（古い追跡 ref のままだと、base へ入った batch を見落とす）
+  kc_fetch_branch "${default_branch}"
+  kc_batch_guard "${default_branch}" "PR を作成"
   current_branch="$(git symbolic-ref -q --short HEAD)" || current_branch=""
   if [[ "$current_branch" == "$default_branch" || "$current_branch" == "$branch" ]]; then
     # ブランチ作成・push より前に送信範囲を確かめる（無関係なコミットを PR ブランチへ載せない）
@@ -373,7 +432,7 @@ kc_ace_playbook_collect() { # <PLAYBOOK>
 kc_add() {
   # `--` より前（書き込み口のオプションと値）と後（明示 pathspec）を別配列に分ける。オプションの値
   # （--category docs 等）を path と取り違えて stage しないため
-  local claim_docs=() args=() pathspecs=() file_args=() default_branch doc ace_playbook=""
+  local claim_docs=() args=() pathspecs=() file_args=() default_branch doc ace_playbook="" claim_base="" claim_pin=()
   [[ -z "$github_input" ]] || file_args=(--github-input "$github_input")
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -392,9 +451,15 @@ kc_add() {
     need_bundled update-version-claim.sh
     need_bundled check-version-claims.sh
     default_branch="$(kc_default_branch)" || exit 2
+    # まとめるモードの書き込み中は、起点を決めた時点の origin/<default> を claim の基準に固定する
+    # （起点の後に base が進んでも、追記は起点のツリーで作っている。進んだ base を基準にすると
+    # 検証が「base が先行」で止まり、取り込む手段も無い）
+    claim_base="origin/${default_branch}"; claim_pin=()
+    kc_load_batch
+    if ff_kd_state_read "$repo_root"; then claim_base="$KD_ST_DEFAULT_TIP"; claim_pin=(--base-commit "$KD_ST_DEFAULT_TIP"); fi
     for doc in "${claim_docs[@]}"; do
       assert_bundled_shebang_lf "${plugin_root}/scripts/update-version-claim.sh"
-      FF_DEV_TOOLKIT_ROOT="${plugin_root}" "${plugin_root}/scripts/update-version-claim.sh" --base "origin/${default_branch}" --document "$doc" \
+      FF_DEV_TOOLKIT_ROOT="${plugin_root}" "${plugin_root}/scripts/update-version-claim.sh" --base "$claim_base" --document "$doc" \
         || die_env "version claim を再生成できません: ${doc}" "origin/${default_branch} を取り込んでから再実行する"
       [[ -f "$repo_root/.version-claims/${doc}.claim" ]] || die_env "claim が生成されていません: .version-claims/${doc}.claim" "update-version-claim.sh の出力を確かめる"
       pathspecs+=("$repo_root/.version-claims/${doc}.claim")
@@ -422,7 +487,7 @@ kc_add() {
     index_before="$(ff_git_literal "$repo_root" ls-files --stage -- "${claim_paths[@]}" 2>/dev/null)" || index_before=""
     ff_git_literal "$repo_root" add -- "${claim_paths[@]}" || die_env "claim と文書を stage できません" "パスを確かめて再実行する"
     assert_bundled_shebang_lf "${plugin_root}/scripts/check-version-claims.sh"
-    if ! FF_DEV_TOOLKIT_ROOT="${plugin_root}" "${plugin_root}/scripts/check-version-claims.sh" --root "$repo_root"; then
+    if ! FF_DEV_TOOLKIT_ROOT="${plugin_root}" "${plugin_root}/scripts/check-version-claims.sh" --root "$repo_root" ${claim_pin[@]+"${claim_pin[@]}"}; then
       ff_git_literal "$repo_root" reset -q -- "${claim_paths[@]}" 2>/dev/null || true
       [[ -z "$index_before" ]] || printf '%s\n' "$index_before" | git -C "$repo_root" update-index --index-info
       die_stop "version claim の検証が赤です（保留・stage は変更していません）" "claim と文書を直してから finish.sh knowledge-commit add --claim を再実行する"
@@ -467,6 +532,8 @@ cmd_knowledge_commit() {
     probe) [[ $# -eq 0 ]] || usage; kc_probe ;;
     push) [[ $# -eq 0 ]] || usage; kc_push ;;
     pr) kc_pr "$@" ;;
+    target) [[ $# -eq 0 ]] || usage; kc_load_batch; kc_target target ;;
+    flush) kc_load_batch; kc_flush "$@" ;;
     *) echo "✗ 不明なサブコマンド: knowledge-commit $sub" >&2; usage ;;
   esac
 }

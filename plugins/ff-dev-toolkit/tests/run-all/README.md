@@ -138,8 +138,18 @@ case 29 は Issue #885 の再現です。bash はスクリプトを一括で読�
 ```
 tests/run-all/
 ├── README.md                        # このファイル
-├── verify.sh                        # ランナーの挙動検証（case 1〜34 のうち 24 ケース。Issue #1022 の
-│                                    #   縮小で欠番あり — 番号は履歴の追跡性のため振り直さない）
+├── verify.sh                        # ランナーの挙動検証の入口（環境分離・共有ヘルパ・case 52・cases の
+│                                    #   読み込み一覧。case 番号は欠番ありで、履歴の追跡性のため振り直さない）
+├── cases/                           # 検査本体（Issue `#2696` で機能別に分割。tests/lib/suite-cases.sh で読む）
+│   ├── accounting.sh                # case 1〜10: 集計・skip 判定と再混入ガード
+│   ├── registration.sh              # case 13・14・14b: 既定 suite 一覧の登録照合と必須名簿
+│   ├── reintroduction-guards.sh     # case 15・12・11・44・35: 再混入ガードと hook の stdin drain
+│   ├── fast-mode.sh                 # case 16〜29: 高速モードの除外と既定一覧
+│   ├── parallel.sh                  # case 30・32・34・36: 並列実行と一時領域の検査
+│   ├── startup-guards.sh            # case 37・38・39・41・42: 起動ガードと鮮度の分類
+│   ├── cross-repo-scans.sh          # case 43・45・46・47: 横断走査と変更ベースの部分ゲート
+│   ├── execution-contracts.sh       # case 48〜51・53: 境界の継承・起動順・再実行コマンド
+│   └── exit-code-guard.sh ほか 3 本  # 上の cases の中から読む（case 35・47・53）
 └── fixtures/
     ├── pass/verify.sh               # 常に成功（後続実行の目印を出力）
     ├── fail/verify.sh               # 常に失敗（stderr へ診断を出力）

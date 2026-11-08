@@ -1,0 +1,3 @@
+sp=/tmp/scratch
+bash /repo/plugins/ff-dev-toolkit/tests/run-all.sh > "$sp/run-all.log" 2>&1
+rc=$?; echo "EXIT=$rc"; exit $rc

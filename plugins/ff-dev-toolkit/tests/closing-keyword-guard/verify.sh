@@ -9,6 +9,7 @@
 # 空振り検出: 抽出先 scripts/lib/finish-precheck.sh を空にすると必須ファイル非空の確認で rc1 になる（2026-10-22 実測。入口に名前だけが残っても参照抽出を検査したことにしない）。
 # 空振り検出: mc_stop の本体を return 0 だけにすると（関数名は残し、MC_STOP_REASON も同じセグメントの ACK 通知も出さない）、未解決変数・env/command option・path gh・先行 cwd・代入と先行 cd・global flag・別セグメントの ACK・timeout wrapper・cwd/環境の遷移・wrapper 後続・GH_HOST・引用した pr の未解決変数・builtin と grouping の先行 cd・bash -c・bash -lc・bash -c の複文・bash -o の後続・squash の未知 flag の停止検査 61 件が赤になる（363 件成功、suite rc=1。2026-10-31 macOS 実測。説明文字列・別サブコマンドの引数・引用した pr の照会・bash -lc の echo・複文 echo・bash -o の説明文字列は緑のまま）。
 # 空振り検出: Issue `#2599` の例外の文言更新を 2 回目に送る検査 15 件（基準 439 件緑）。ac-judgement.md の新しい節をアンカーごと消すと 11 件、節の見出しだけを変えると 10 件、SKILL.md 手順 5 の「（例外は 5b）」と 5b の順序・リンクを元へ戻すと 2 件、順序の文を 5b から 5a へ移すと 1 件、弱める書き換えの禁止から経路の限定を外す・2 回目の範囲からスコープ変更の削除と追加を外す・送らずに止めた回の扱いを消す・report.md の「AC 文言の更新」の行を消すとそれぞれ 1 件が赤になり、report.md を空にすると必須ファイルの確認で中断する（2026-11-06 WSL 実測）。
+# 空振り検出: Refs 運用の判定（基準 467 件緑）。判定の節の見出しを変えてフェンスを抜き出せなくすると赤、印の正規表現をチェック済みも数える形・文中の語にも当たる形・字下げを拒む形へ変えるとそれぞれ赤、本文をパイプで grep -q へ渡す形は pipefail と大きな本文の検査で赤、gh の失敗を飲む形・別の Issue を読む形・Refs と Closes を取り違える形もそれぞれ赤、`fix(#N):` を抵触へ倒す検査器と全角括弧が続く `Refs #N（…）` を読めない抽出器も赤になる。bundle の子の扱い・複数 Refs の書き方・gh の無いホストの経路を消す変更も赤。等価な printf への置換と文言の言い換えは緑のまま（2026-11-08 macOS 実測。mutation-harness 29 件で期待 red 27 件を検出、SURVIVED 0）。
 #
 # closing keyword 抵触検査の回帰テスト。
 #
@@ -213,6 +214,13 @@ run_guard "$(printf 'title\tfix: Refs 運用の誤クローズを防ぐ (#374)\n
 assert_status "改題済みタイトル + 別 Issue 番号のコミットを通す（exit 0）" 0
 assert_stdout_contains "抵触なしでも検査行数を返す" "INSPECTED	2"
 assert_stdout_lacks "抵触なしのとき CONFLICT 行を出さない" "CONFLICT"
+
+# Refs 運用の既定の件名。keyword の直後が `(` なので番号と隣接しない（git-workflow の規約が案内する形）
+run_guard "$(printf 'title\tfix(#%s): Refs 運用の誤クローズを防ぐ\ncommit:abc1234\tfeat(#%s): 検査を追加する' 373 373)" \
+  --refs-issue 373 --repo owner/repo
+assert_status "<type>(#N): の形の件名を通す（exit 0）" 0
+assert_stdout_contains "<type>(#N): の形も検査行数に数える" "INSPECTED	2"
+assert_stdout_lacks "<type>(#N): の形に CONFLICT 行を出さない" "CONFLICT"
 
 # 語中一致（hotfix / prefix）を抵触にしない。ここが緩いと常時発火して無視される
 run_guard "$(printf 'title\thotfix: #373 の暫定対処')" --refs-issue 373
@@ -635,7 +643,25 @@ contains "$AC_REF" '## 根拠は AC の指す対象を測っているか' "ac-ju
 echo
 echo "-- git-workflow.md の契約 --"
 
-contains "$WORKFLOW" 'PR タイトルにもコミット件名・本文にも `#N` を書かない' "ステップ5 にタイトル規約がある"
+contains "$WORKFLOW" 'PR タイトルにもコミット件名・本文にも closing keyword と `#N` を隣接させない' "ステップ5 にタイトル規約がある"
+contains "$WORKFLOW" '件名は `fix(#N):` の形にするか `#N` を書かない' "Refs 運用の件名の形を名指している"
+if grep -qF 'コミット件名・本文にも `#N` を書かない' "$WORKFLOW"; then
+  bad "旧規定（#N を一切書かない）が残っている"
+else
+  ok "旧規定（#N を一切書かない）が残っていない"
+fi
+section_contains "$WORKFLOW" '### ステップ5: Pull Request作成' '**`Closes` と `Refs` は最初の `gh pr create` で選ぶ**' "ステップ5 が PR 作成前の判定へ誘導する"
+section_contains "$WORKFLOW" '### ステップ5: Pull Request作成' 'この例の Closes 行を書かない' "ステップ5 の例が Refs 運用の差を示す"
+contains "$WORKFLOW" 'Issue番号を含める（`Closes #123`。マージ後の項目が残る Issue は' "コミットの原則が Refs 運用の判定へ誘導する"
+contains "$WORKFLOW" '`- [ ] post-merge: <項目>` の形で書く' "印の書式を定義している"
+contains "$WORKFLOW" 'PR 本文の 1 行目を `Refs #N（open を維持する理由）` にし' "Refs の本文の書き出しを定義している"
+contains "$WORKFLOW" '`Refs` が複数なら 1 件ずつ行を分けて本文の先頭に並べる' "複数 Refs の書き方を定義している"
+contains "$WORKFLOW" 'その子と bundle 自身を `Refs` にする' "bundle の子に印があるときの扱いを定義している"
+contains "$WORKFLOW" 'その子と bundle を `Refs` にする。ステップ5' "bundle 節が Refs の例外を案内する"
+contains "$SKILL" '子と bundle が本文の `Closes` か `Refs`（印）に全部並ぶかを見る' "close-issue の bundle 検査が Refs の子を欠けと読まない"
+contains "$WORKFLOW" '印は起票時の見立てで、実測の代わりにならない' "印を実測の代わりにしない"
+contains "$WORKFLOW" '`gh` が無いホストでは、MCP で Issue の本文を読んで同じ行の形を探す' "gh の無いホストの経路がある"
+contains "$WORKFLOW" '本文を読めなければ判定は成立していないので、`Closes` で作らない' "読めない本文を Closes へ倒さない"
 contains "$WORKFLOW" "squash_merge_commit_title" "squash メッセージの供給源を明記している"
 contains "$WORKFLOW" "PR 本文しか見ない" "closingIssuesReferences の実際の走査範囲を正しく述べている"
 contains "$WORKFLOW" '--subject "fix: 誤クローズを防ぐ検査を追加する' "ステップ8 に Refs 版 merge テンプレートがある"
@@ -664,6 +690,99 @@ contains "$WORKFLOW" "$SURFACE_MARKER" "git-workflow.md の検査面がコミッ
 HEADLINE_MARKER='"commit:" + .oid[0:7]'
 contains "$FINISH" "$HEADLINE_MARKER" "finish.sh の検査面がコミット件名を含む"
 contains "$WORKFLOW" "$HEADLINE_MARKER" "git-workflow.md の検査面がコミット件名を含む"
+
+# ---- Refs 運用の判定（post-merge: の印） -------------------------------------
+# 手順書のフェンスを抜き出して stub gh で実行する。文面の針だけでは、コマンドが壊れても
+# 文字が残る限り緑になる。読めない本文は「印なし」ではなく判定不成立へ倒れることも見る。
+echo
+echo "-- Refs 運用の判定（git-workflow.md のフェンスを実行） --"
+
+JUDGE_HEADING='**Refs 運用の判定（`post-merge:` の印）**'
+JUDGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/closing-keyword-guard.XXXXXX")" \
+  || { echo "✗ closing-keyword-guard verify: 一時ディレクトリを作れません" >&2; exit 1; }
+JUDGE_SCRIPT="$JUDGE_DIR/judge.sh"
+awk -v heading="$JUDGE_HEADING" '
+  !seen && index($0, heading) == 1 { seen = 1; next }
+  seen && !inside && /^```bash$/ { inside = 1; next }
+  inside && /^```$/ { found = 1; exit }
+  inside { print }
+  END { exit found ? 0 : 1 }
+' "$WORKFLOW" > "$JUDGE_SCRIPT" && [[ -s "$JUDGE_SCRIPT" ]] \
+  && ok "判定のフェンスを抜き出せる" || bad "判定のフェンスが見つからない（見出し: ${JUDGE_HEADING}）"
+
+mkdir -p "$JUDGE_DIR/bin"
+cat > "$JUDGE_DIR/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+[[ "${STUB_GH_FAIL:-0}" == 1 ]] && { echo "stub gh: failed" >&2; exit 1; }
+# 別の Issue を読むと、緑のまま別物を判定する
+[[ "$*" == "issue view ${ISSUE_NUM} --json body --jq .body" ]] || { echo "stub gh: unexpected: $*" >&2; exit 9; }
+cat "$STUB_GH_BODY"
+STUB
+chmod +x "$JUDGE_DIR/bin/gh"
+
+JUDGE_OUT=""
+JUDGE_STATUS=0
+run_judge() { # <Issue 本文> [gh を失敗させるなら 1] [bash の -o へ渡す option]
+  printf '%s\n' "$1" > "$JUDGE_DIR/body.md"
+  JUDGE_OUT="$(PATH="$JUDGE_DIR/bin:$PATH" ISSUE_NUM=373 STUB_GH_BODY="$JUDGE_DIR/body.md" \
+    STUB_GH_FAIL="${2:-0}" bash ${3:+-o "$3"} "$JUDGE_SCRIPT" 2>/dev/null)" && JUDGE_STATUS=0 || JUDGE_STATUS=$?
+}
+assert_judge() { # <ラベル> <期待 rc> <期待 stdout>
+  if [[ "$JUDGE_STATUS" == "$2" && "$JUDGE_OUT" == "$3" ]]; then
+    ok "$1"
+  else
+    bad "$1（rc=${JUDGE_STATUS} / 期待 $2、stdout=${JUDGE_OUT} / 期待 $3）"
+  fi
+}
+
+run_judge $'## 受け入れ条件\n\n- [ ] 実装する\n- [ ] post-merge: 公開リリース後に確かめる'
+assert_judge "未チェックの印があれば Refs" 0 "Refs"
+run_judge $'- [x] 実装する\n  - [ ] post-merge: 字下げされた項目'
+assert_judge "字下げされた印も読む" 0 "Refs"
+run_judge $'- [ ] 実装する\n- [x] テストする'
+assert_judge "印の無い Issue は Closes" 0 "Closes"
+run_judge $'- [x] post-merge: 測り終えた項目'
+assert_judge "チェック済みの印は数えない" 0 "Closes"
+run_judge $'- [ ] **Given** `post-merge:` の印が付いた項目を持つ Issue'
+assert_judge "項目の文中で印に触れるだけの行は数えない" 0 "Closes"
+run_judge ''
+assert_judge "空の本文は Closes" 0 "Closes"
+run_judge $'- [ ] post-merge: 読めない回' 1
+assert_judge "本文を読めない回は判定不成立で止まる（Closes と出さない）" 2 ""
+# 呼び出し元が pipefail のとき、パイプ容量を超える本文で一致が不一致へ反転しないこと。
+# パイプで grep -q へ渡す形はここで Closes を返し、未完了の Issue を閉じる側へ倒れる。
+JUDGE_LARGE_FILLER="$(printf '%262144s' '' | tr ' ' 'x')"
+run_judge "- [ ] post-merge: 大きな本文の先頭の項目
+${JUDGE_LARGE_FILLER}" 0 pipefail
+assert_judge "pipefail と大きな本文でも印を読む" 0 "Refs"
+
+# 規約どおりの本文の 1 行目を、/close-issue の抽出器が Refs として読むこと。
+# 別 Issue の closing keyword を理由へ書くと Closes へ入る（規約の但し書きの根拠）。
+judge_refs_sets() { # <PR 本文>
+  (
+    # shellcheck source=../../scripts/lib/merge-message.sh
+    . "$PLUGIN_ROOT/scripts/lib/merge-message.sh"
+    ff_merge_issue_sets owner/repo "$1" "" "$(bash "$GUARD" --list-keywords 2>/dev/null)" || exit 1
+    printf 'REFS=%s CLOSES=%s\n' "$REFS_ONLY" "$CLOSES_UNION"
+  ) 2>/dev/null
+}
+# 番号は変数で持つ（公開ミラーへ同期される test の追加行に裸の番号参照を書かない）
+JUDGE_NUM=373
+JUDGE_OTHER_NUM=99
+JUDGE_SETS="$(judge_refs_sets "Refs #${JUDGE_NUM}（公開リリース後の確認が残るため open を維持する）")" || JUDGE_SETS="抽出失敗"
+if [[ "$JUDGE_SETS" == "REFS=owner/repo#${JUDGE_NUM} CLOSES=" ]]; then
+  ok "規約どおりの 1 行目は Refs だけに分類される"
+else
+  bad "規約どおりの 1 行目が Refs だけに分類されない（${JUDGE_SETS}）"
+fi
+JUDGE_SETS="$(judge_refs_sets "Refs #${JUDGE_NUM}（Closes #${JUDGE_OTHER_NUM} は別件）")" || JUDGE_SETS="抽出失敗"
+if [[ "$JUDGE_SETS" == "REFS=owner/repo#${JUDGE_NUM} CLOSES=owner/repo#${JUDGE_OTHER_NUM}" ]]; then
+  ok "理由の文の closing keyword は Closes 対象として読まれる"
+else
+  bad "理由の文の closing keyword の扱いが規約の但し書きと違う（${JUDGE_SETS}）"
+fi
+
+rm -rf "$JUDGE_DIR"
 
 echo
 MERGE_HOOK_CASES="$SCRIPT_DIR/merge-hook-cases.sh"

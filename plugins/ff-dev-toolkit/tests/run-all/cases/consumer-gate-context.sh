@@ -63,3 +63,4 @@ for _ec_context_mode in "${_ec_context_modes[@]:-}"; do
   EXITCODE_CONTEXT_CASES=$((EXITCODE_CONTEXT_CASES+1))
 done
 rm -rf "$_ec_context_tmp"
+# suite-cases-end: consumer-gate-context.sh

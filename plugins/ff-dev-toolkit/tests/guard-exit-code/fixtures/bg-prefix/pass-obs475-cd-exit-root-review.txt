@@ -1,0 +1,4 @@
+cd /repo || exit 2
+root=/repo/plugins/ff-dev-toolkit
+bash "$root/scripts/multi-review.sh" --route full --base origin/develop > /tmp/review.log 2>&1
+rc=$?; echo "EXIT=$rc"; exit $rc

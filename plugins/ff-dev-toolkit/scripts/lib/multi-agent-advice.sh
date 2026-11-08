@@ -74,6 +74,282 @@ recovery_command() {
   printf '%s --output-dir %s' "$command" "$(shell_quote "$candidate")"
 }
 
+# 先行・継続証跡の再実行案内。失敗した CLI の --cli を残したまま --exclude-cli を足すと
+# 「--cli and --exclude-cli both name」で拒否される。--route full / fast は --exclude-cli と
+# 併用できない。multi-review は --route を消費し、multi-agent の argv には --wrapper-route と
+# --invocation-display だけが残る。案内の argv は lineage_normalize_argv が 1 か所で整える
+# （route full / fast と表示文字列を外し、--mode を省いた実行には実効 mode を固定する）。
+# 相互排他の規則自体は変えない。
+# distributed で --cli が残ると、失敗 CLI はプラン構築の前にスキップされ、担当観点が
+# fallback へ移らず消える。--cli を付けた distributed は --cli を全部外し、その実行の観点を
+# --perspective で残してから --exclude-cli を足す。CLI 1 つ + 観点明示の実行だけは、
+# 代替 CLI の --cli へ置き換える（担当表に無い観点を消さない）。
+# pair の主は --exclude-cli で外せない（main reviewer was excluded）。主が落ちたときと、
+# 副が落ちて総合観点がまだプランに残るときは、除外を足さず別の主をこの実行だけ案内する。
+# --set-reviewers は保存して終わるので、案内コマンドには入れない。
+lineage_failed_cli_list() {
+  local entry cli seen=" " out=""
+  for entry in $FAILED_TASKS $SKIPPED_TASKS; do
+    cli="${entry%%/*}"
+    [[ -n "$cli" ]] || continue
+    case "$seen" in *" $cli "*) continue ;; esac
+    seen="${seen}${cli} "
+    out="${out}${out:+ }$cli"
+  done
+  printf '%s' "$out"
+}
+
+lineage_eligible_clis() {
+  local failed=" $(lineage_failed_cli_list) " candidate out=""
+  for candidate in $AVAILABLE_CLIS; do
+    case "$failed" in *" $candidate "*) ;; *) out="${out}${out:+ }$candidate" ;; esac
+  done
+  printf '%s' "$out"
+}
+
+lineage_argv_has_cli_filter() {
+  local i=0 n="${#INVOCATION_ARGV[@]}" arg
+  while [[ "$i" -lt "$n" ]]; do
+    arg="${INVOCATION_ARGV[$i]}"
+    case "$arg" in
+      --cli | --cli=*) return 0 ;;
+    esac
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# この実行が実際に組んだ観点。空フィルタの distributed へ広げないために、--cli を外す案内で残す。
+lineage_planned_perspectives() {
+  local entry plan="${FULL_EXECUTION_PLAN:-$EXECUTION_PLAN}" seen=" " out="" persp
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    persp="${entry#*:}"
+    [[ -n "$persp" && "$persp" != "$entry" ]] || continue
+    case "$seen" in *" $persp "*) continue ;; esac
+    seen="${seen}${persp} "
+    out="${out}${out:+ }$persp"
+  done <<< "$plan"
+  printf '%s' "$out"
+}
+
+# 案内コマンドの argv を 1 か所で正規化する。除外案内と主の差し替え案内の両方がここを通る。
+# 案内は新しい起動なので、元の実行が argv の外（環境変数・設定）から得た入力は届かない。
+# argv を書き換えるだけだと、その入力が 1 つずつ落ちる（同じ系統の取りこぼしが 4 件続いた）。
+# 証跡の照合と計画を決める入力は argv から外し、解決済みの値から lineage_pinned_inputs と
+# lineage_reviewer_env で固定し直す（通常の失敗案内が --staged / --base / --config を
+# 解決済みの値で出すのと同じ契約）。
+# - --base / --staged / --config は外す（解決済みの値で付け直す）。
+# - route full / fast（--route / --wrapper-route）は --exclude-cli と併用できないので外す。
+# - --invocation-display は常に外す。残すと、委譲のハンドオフが元のコマンドを
+#   「Re-run command」として出し、失敗した CLI へ戻る案内と循環する。
+# - <drop-all>=true は --cli を全部外し、それ以外は引数に名指しした CLI の --cli だけを外す。
+# - 値を取るオプション（parse_args が shift 2 するもの）は値と組で扱う。値を次の語として
+#   読むと、--description '--invocation-display' のような値をオプションと取り違えて外す。
+# 結果は LINEAGE_ARGV へ置く（呼び出し元が format_initial_invocation へ渡す）。
+lineage_normalize_argv() { # <drop-all:true|false> [cli-to-drop...]
+  local drop_all="$1" i=0 n arg nxt drop
+  shift
+  drop=" $* "
+  LINEAGE_ARGV=()
+  n="${#INVOCATION_ARGV[@]}"
+  while [[ "$i" -lt "$n" ]]; do
+    arg="${INVOCATION_ARGV[$i]}"
+    nxt=""
+    if [[ $((i + 1)) -lt "$n" ]]; then
+      nxt="${INVOCATION_ARGV[$((i + 1))]}"
+    fi
+    case "$arg" in
+      --cli)
+        if [[ "$drop_all" == true || "$drop" == *" $nxt "* ]]; then
+          i=$((i + 2))
+          continue
+        fi
+        LINEAGE_ARGV+=("$arg" "$nxt")
+        i=$((i + 2))
+        continue
+        ;;
+      --cli=*)
+        if [[ "$drop_all" == true || "$drop" == *" ${arg#--cli=} "* ]]; then
+          i=$((i + 1))
+          continue
+        fi
+        ;;
+      --route | --wrapper-route)
+        if [[ "$nxt" == "full" || "$nxt" == "fast" ]]; then
+          i=$((i + 2))
+          continue
+        fi
+        LINEAGE_ARGV+=("$arg" "$nxt")
+        i=$((i + 2))
+        continue
+        ;;
+      --route=full | --route=fast | --wrapper-route=full | --wrapper-route=fast)
+        i=$((i + 1))
+        continue
+        ;;
+      --invocation-display)
+        i=$((i + 2))
+        continue
+        ;;
+      --invocation-display=*)
+        i=$((i + 1))
+        continue
+        ;;
+      --base | --config)
+        i=$((i + 2))
+        continue
+        ;;
+      --base=* | --config=* | --staged)
+        i=$((i + 1))
+        continue
+        ;;
+      --task | --description | --github-input | --mode | --strategy | --exclude-cli | --perspective \
+        | --exclude-perspective | --require-prior-review | --continue-review | --output-dir \
+        | --set-reviewers | --timeout)
+        LINEAGE_ARGV+=("$arg" "$nxt")
+        i=$((i + 2))
+        continue
+        ;;
+    esac
+    LINEAGE_ARGV+=("$arg")
+    i=$((i + 1))
+  done
+}
+
+# --mode を省いた実行の実効 mode を案内へ固定する。--cli だけで distributed へ落ちた実行は、
+# --cli を外すと既定の pair へ戻り、主の除外で止まるか別の計画で走る。
+lineage_mode_suffix() {
+  [[ "$MODE_EXPLICIT" == true ]] && return 0
+  printf ' --mode %s' "$MODE"
+}
+
+# 証跡が照合する入力（base_ref の文字列と差分の取り方）と、計画を決める設定ファイルを、
+# 解決済みの値で固定する。base_ref は文字列で比べるので、証跡へ渡した BASE_BRANCH そのものを出す。
+lineage_pinned_inputs() {
+  if [[ "$STAGED_DIFF" == "true" ]]; then
+    printf ' --staged'
+  else
+    printf ' --base %s' "$(shell_quote "$BASE_BRANCH")"
+  fi
+  if config_is_explicit; then
+    printf ' --config %s' "$(shell_quote "$CONFIG_FILE")"
+  fi
+  lineage_mode_suffix
+}
+
+# pair の主・副は環境変数・設定ファイル・ユーザー設定から決まる。この実行の解決済みの値を
+# 環境変数の前置で固定する（起動時だけの環境変数が案内から落ちると別の主・副で計画される）。
+# 副が空なら空文字を明示する（「副なし」の意思。未設定だと設定ファイルの副へ戻る）。
+lineage_reviewer_env() { # [main-override]
+  local main="${1:-$REVIEW_MAIN}"
+  [[ "$MODE" == "pair" && "$TASK_TYPE" == "review" ]] || return 0
+  printf 'MULTI_AGENT_REVIEW_MAIN=%s MULTI_AGENT_REVIEW_SUB=%s ' \
+    "$(shell_quote "$main")" "$(shell_quote "$REVIEW_SUB")"
+}
+
+# 失敗した CLI を全部外した 1 本。1 本ずつ出すと、残ったコマンドに別の失敗 CLI が居残る。
+lineage_exclude_command() { # <failed-cli>...
+  local cli i=0 arg drop_all_cli=false replacement=""
+  local -a kept=()
+  # 残った --cli は失敗 CLI を fallback の前に落とす。distributed の明示フィルタだけ全部外す。
+  if [[ "$MODE" == "distributed" && "$TASK_TYPE" == "review" ]] && lineage_argv_has_cli_filter; then
+    drop_all_cli=true
+    # CLI 1 つ + 観点明示の実行は担当表を通らずに計画される（担当表に無い観点も載る）。
+    # --cli を全部外すと担当表の計画へ移り、その観点がどの CLI にも割り当たらず消える。
+    # その形だけは、失敗した CLI の --cli を代替 CLI の --cli へ置き換える。
+    if [[ -n "$CLI_FILTER" && "$CLI_FILTER" != *" "* && -n "$PERSPECTIVE_FILTER" ]]; then
+      replacement="$(AVAILABLE_CLIS="$(lineage_eligible_clis)" resolve_available_fallback "$CLI_FILTER")"
+    fi
+  fi
+  lineage_normalize_argv "$drop_all_cli" "$@"
+  kept=(${LINEAGE_ARGV[@]+"${LINEAGE_ARGV[@]}"})
+  local cmd extra="" p planned existing=" "
+  cmd="$(lineage_reviewer_env)$(format_initial_invocation "$0" ${kept[@]+"${kept[@]}"})"
+  cmd="${cmd}$(lineage_pinned_inputs)"
+  if [[ -n "$replacement" ]]; then
+    cmd="${cmd} --cli ${replacement}"
+  elif [[ "$drop_all_cli" == true ]]; then
+    planned="$(lineage_planned_perspectives)"
+    i=0
+    while [[ "$i" -lt "${#kept[@]}" ]]; do
+      arg="${kept[$i]}"
+      if [[ "$arg" == "--perspective" && $((i + 1)) -lt ${#kept[@]} ]]; then
+        existing="${existing}${kept[$((i + 1))]} "
+        i=$((i + 2))
+        continue
+      fi
+      if [[ "$arg" == --perspective=* ]]; then
+        existing="${existing}${arg#--perspective=} "
+      fi
+      i=$((i + 1))
+    done
+    for p in $planned; do
+      case "$existing" in *" $p "*) continue ;; esac
+      extra="${extra} --perspective ${p}"
+      existing="${existing}${p} "
+    done
+  fi
+  for cli in "$@"; do
+    cmd="${cmd} --exclude-cli ${cli}"
+  done
+  printf '%s%s' "$cmd" "$extra"
+}
+
+# pair で、失敗した CLI を --exclude-cli すると主の除外拒否か総合観点の欠落になる。
+pair_lineage_switches_main() { # <failed-cli>
+  local cli="$1"
+  [[ "$MODE" == "pair" && "$TASK_TYPE" == "review" ]] || return 1
+  if [[ -n "$REVIEW_MAIN" && "$cli" == "$REVIEW_MAIN" ]]; then
+    return 0
+  fi
+  [[ -n "$REVIEW_SUB" && "$cli" == "$REVIEW_SUB" && "$cli" != "$REVIEW_MAIN" ]] || return 1
+  perspective_excluded "$COMPREHENSIVE_PERSPECTIVE" && return 1
+  if [[ -n "$PERSPECTIVE_FILTER" ]] && ! list_contains "$PERSPECTIVE_FILTER" "$COMPREHENSIVE_PERSPECTIVE"; then
+    return 1
+  fi
+  return 0
+}
+
+# 空出力 = 導入済みの別主が無い。--exclude-cli へ落とさない（主の除外契約を守る）。
+lineage_main_switch_command() { # <failed-cli>
+  local cli="$1" replacement invocation eligible extra="" p clear_sub=false
+  eligible="$(lineage_eligible_clis)"
+  replacement="$(AVAILABLE_CLIS="$eligible" resolve_available_fallback "$cli")"
+  [[ -n "$replacement" ]] || return 0
+  lineage_normalize_argv false
+  invocation="$(format_initial_invocation "$0" ${LINEAGE_ARGV[@]+"${LINEAGE_ARGV[@]}"})"
+  invocation="${invocation}$(lineage_pinned_inputs)"
+  # 副が落ちている、または代替主が副と同じなら、副を空にしないと失敗 CLI か総合観点の欠落が残る。
+  if [[ -n "$REVIEW_SUB" && "$cli" == "$REVIEW_SUB" && "$cli" != "$REVIEW_MAIN" ]]; then
+    clear_sub=true
+  fi
+  if [[ -n "$REVIEW_SUB" && "$replacement" == "$REVIEW_SUB" ]]; then
+    clear_sub=true
+  fi
+  if [[ -n "$REVIEW_SUB" ]]; then
+    case " $(lineage_failed_cli_list) " in
+      *" $REVIEW_SUB "*) clear_sub=true ;;
+    esac
+  fi
+  # フィルタが空の実行へ総合観点だけを足すと、成功済みの観点が再実行から落ちる。
+  # 足すのはこの実行が実際に組んだ観点（観点ファイルの全一覧ではない）。主と副が同じ pair は
+  # 副の重複を省いて総合観点を組まないので、全一覧を足すと親の証跡に無い観点が混ざり拒否される。
+  if [[ "$clear_sub" == true && -z "$PERSPECTIVE_FILTER" ]]; then
+    for p in $(lineage_planned_perspectives); do
+      extra="${extra} --perspective ${p}"
+    done
+  fi
+  # 副を残す回も解決済みの副を固定する（起動時だけの環境変数の副が落ちると、設定の副が
+  # 代替主と重なるか、別の副で計画される）。
+  if [[ "$clear_sub" == true ]]; then
+    printf 'MULTI_AGENT_REVIEW_MAIN=%s MULTI_AGENT_REVIEW_SUB= %s%s' \
+      "$(shell_quote "$replacement")" "$invocation" "$extra"
+  else
+    printf '%s%s' "$(lineage_reviewer_env "$replacement")" "$invocation"
+  fi
+}
+
 print_failure_advice() {
   # スキップは FAILED_TASKS に載せない（実行していないものを「終了コード付きの失敗」
   # として記録すると、rc を読む全分岐が 4 つ目の意味を持つことになる）。案内は必要
@@ -86,7 +362,10 @@ print_failure_advice() {
   # shell_quote keeps a path with spaces runnable, and unlike printf %q it is
   # byte-transparent, so a non-ASCII --description survives a non-UTF-8 locale as
   # valid UTF-8 (see the shell_quote header for the measurement).
-  local self
+  local self evidence_lineage=false
+  if [[ -n "${REVIEW_EVIDENCE_PRIOR:-}" || -n "${REVIEW_EVIDENCE_PARENT:-}" ]]; then
+    evidence_lineage=true
+  fi
   self="bash $(shell_quote "${SCRIPT_DIR}/multi-agent.sh") --task ${TASK_TYPE}"
   # Carry the flags that decide WHAT gets looked at. Dropping --base would retry
   # against a different diff than the run that just failed, which makes the
@@ -109,8 +388,14 @@ print_failure_advice() {
   # .review-results/ の ignore 境界を保ち、別コマンド同士でも成果物を退避し合わない。
   local recovery_base host_self retry_self substitute_self
   recovery_base="${OUTPUT_DIR%/}/.recovery-$(date '+%Y%m%d-%H%M%S')-$$"
-  if [[ -n "$DESCRIPTION" ]]; then
+  # 自動取得の本文は argv に載せない。長い AC は引数上限を超え、再実行が明示 description になって取得の意味も消える。
+  if [[ "$DESCRIPTION_EXPLICIT" == true && -n "$DESCRIPTION" ]]; then
     self="${self} --description $(shell_quote "$DESCRIPTION")"
+  elif [[ "$REVIEW_AC_AUTO" == true ]]; then
+    self="${self} --review-ac-auto"
+    if [[ -n "${REVIEW_AC_GITHUB_INPUT:-}" ]]; then
+      self="${self} --github-input $(shell_quote "$REVIEW_AC_GITHUB_INPUT")"
+    fi
   fi
 
   # 全滅した prompt-too-long は、個別の再実行コマンドより**先に**出す（公開
@@ -156,12 +441,18 @@ print_failure_advice() {
       echo "      session cannot run \`claude auth login\`, but this host is a Claude Code session" >&2
       echo "      whose own account can run the lane." >&2
     fi
-    echo "      Re-run with" >&2
-    echo "      --delegate-to-host (never with --fresh), run each handoff prompt in a read-only" >&2
-    echo "      subagent, write its answer to the output-file the handoff names, then re-run" >&2
-    echo "      the same command with --resume added:" >&2
-    echo "       ${host_self} --cli ${DELEGATION_LANE}${dp_args} --delegate-to-host" >&2
-    echo "       ${host_self} --cli ${DELEGATION_LANE}${dp_args} --delegate-to-host --resume" >&2
+    if [[ "$evidence_lineage" == true ]]; then
+      echo "      Prior/continued review evidence cannot be combined with --resume." >&2
+      echo "      Complete the failed perspective on another CLI in the same output directory." >&2
+      echo "      The re-run command is printed below." >&2
+    else
+      echo "      Re-run with" >&2
+      echo "      --delegate-to-host (never with --fresh), run each handoff prompt in a read-only" >&2
+      echo "      subagent, write its answer to the output-file the handoff names, then re-run" >&2
+      echo "      the same command with --resume added:" >&2
+      echo "       ${host_self} --cli ${DELEGATION_LANE}${dp_args} --delegate-to-host" >&2
+      echo "       ${host_self} --cli ${DELEGATION_LANE}${dp_args} --delegate-to-host --resume" >&2
+    fi
   fi
 
   # grok CLI がホスト（GROK_AGENT が立つ）で grok-cli レーンが落ちた回は、同じ CLI の再実行より
@@ -175,11 +466,17 @@ print_failure_advice() {
     for gp in $grok_persps; do gp_args="${gp_args} --perspective ${gp}"; done
     echo "" >&2
     echo "   🤝 grok-cli — this host is a grok CLI session. Run the lane in the host instead:" >&2
-    echo "      re-run with --delegate-to-host=grok-cli (never with --fresh), run each handoff" >&2
-    echo "      prompt in a read-only subagent (spawn_subagent), write its answer to the" >&2
-    echo "      output-file the handoff names, then re-run the same command with --resume added:" >&2
-    echo "       ${host_self} --cli grok-cli${gp_args} --delegate-to-host=grok-cli" >&2
-    echo "       ${host_self} --cli grok-cli${gp_args} --delegate-to-host=grok-cli --resume" >&2
+    if [[ "$evidence_lineage" == true ]]; then
+      echo "      Prior/continued review evidence cannot be combined with --resume." >&2
+      echo "      Complete the failed perspective on another CLI in the same output directory." >&2
+      echo "      The re-run command is printed below." >&2
+    else
+      echo "      re-run with --delegate-to-host=grok-cli (never with --fresh), run each handoff" >&2
+      echo "      prompt in a read-only subagent (spawn_subagent), write its answer to the" >&2
+      echo "      output-file the handoff names, then re-run the same command with --resume added:" >&2
+      echo "       ${host_self} --cli grok-cli${gp_args} --delegate-to-host=grok-cli" >&2
+      echo "       ${host_self} --cli grok-cli${gp_args} --delegate-to-host=grok-cli --resume" >&2
+    fi
   fi
 
   echo "" >&2
@@ -189,6 +486,44 @@ print_failure_advice() {
   echo "   These changed-plan commands use a new output directory; keep the original" >&2
   echo "   results and review both reports. They do not complete the original round" >&2
   echo "   or combine separate runs into one accepted prior-evidence receipt." >&2
+
+  if [[ "$evidence_lineage" == true ]]; then
+    echo "" >&2
+    echo "   Prior/continued review evidence cannot be combined with --resume." >&2
+    echo "   Re-run in the same output directory so the failed perspective completes" >&2
+    echo "   on another CLI and the continue-review lineage is kept:" >&2
+    local seen_clis=" " lineage_cli lineage_entry switch_cmd
+    local -a exclude_clis=()
+    for lineage_entry in $FAILED_TASKS $SKIPPED_TASKS; do
+      lineage_cli="${lineage_entry%%/*}"
+      case " ${seen_clis} " in
+        *" ${lineage_cli} "*) continue ;;
+      esac
+      seen_clis="${seen_clis}${lineage_cli} "
+      if pair_lineage_switches_main "$lineage_cli"; then
+        if [[ "$lineage_cli" == "$REVIEW_MAIN" ]]; then
+          echo "       Pair mode cannot exclude the main reviewer. Pick another main for this run" >&2
+          echo "       (MULTI_AGENT_REVIEW_MAIN; --set-reviewers saves a main permanently):" >&2
+        else
+          echo "       Excluding the sub drops comprehensive-review instead of moving it." >&2
+          echo "       Give this run a main other than the failed sub, clear the sub, and put" >&2
+          echo "       comprehensive-review on that main" >&2
+          echo "       (MULTI_AGENT_REVIEW_MAIN and MULTI_AGENT_REVIEW_SUB=; --set-reviewers saves permanently):" >&2
+        fi
+        switch_cmd="$(lineage_main_switch_command "$lineage_cli")"
+        if [[ -n "$switch_cmd" ]]; then
+          echo "       ${switch_cmd}" >&2
+        else
+          echo "       No other installed CLI can take the main role. --exclude-cli cannot remove the main reviewer." >&2
+        fi
+      else
+        exclude_clis+=("$lineage_cli")
+      fi
+    done
+    if [[ "${#exclude_clis[@]}" -gt 0 ]]; then
+      echo "       $(lineage_exclude_command "${exclude_clis[@]}")" >&2
+    fi
+  fi
 
   local entry task rc cli persp fb fb_tier cause login_cmd skip_cause fallback_candidates candidate
   for entry in $FAILED_TASKS $SKIPPED_TASKS; do

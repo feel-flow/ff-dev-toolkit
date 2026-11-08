@@ -34,7 +34,7 @@
 ## Development Workflow
 
 - Issue 起票 → ブランチ → 実装 → セルフレビュー → PR → マージ
-- コミットは `<type>: #<issue> <subject>`
+- コミットは `<type>: #<issue> <subject>`（マージ後の項目が残る Issue は `<type>(#<issue>): <subject>` と `Refs #<issue>`）
 
 ## 実測の記録先
 

@@ -69,6 +69,8 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 `version` / `ace_entry_count` / Changelog は、着手時のローカル値から決めない。作業ツリーが clean な状態で default branch を解決し、明示 refspec で remote-tracking ref を更新する。fetch 失敗・ref 解決不能・diverge は stale 値へ fallback せず停止する。
 
+**まとめるモード**（手順 1 の `probe` が `protection=batch` を出した回）は、下のフェンスの代わりに `finish.sh knowledge-commit target` を実行する。書き込みの記録があるので target は移らず、`origin/<staging>` の先行だけを照合する（`KNOWLEDGE_TARGET_FRESH=ok`）。`origin/<default>` の前進は照合しない — 版・件数・採番は staging 側の知見だけで決まり、`.version-claims` の claim も起点を決めた時点の `origin/<default>` を基準に作って検証する。先行されて止まったら、表示されるやり直し手順（変更したパスを名指しした退避・戻し・discard・戻り先・target）を印字どおりに実行して手順 1 からやり直す。
+
 ```bash
 default_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD)" || {
   echo "origin/HEAD を解決できません（git remote set-head origin -a を実行してください）" >&2
@@ -172,6 +174,13 @@ MCP: 取得値: MCP の repo nameWithOwner と対象 branch の classic protecti
 
 **送信範囲ガード**（`finish.sh knowledge-commit push` と `pr` の両方が、ブランチ作成・push より前に行う）: fetch 後の `origin/<default-branch>..HEAD` が knowledge コミット 1 つだけでなければ rc 2（`KNOWLEDGE_PUSH=scope-mismatch` / `KNOWLEDGE_PR=scope-mismatch`）で止め、無関係な未 push コミットを一緒に送らない。コミットの中身は `commit` 側が読み戻す: 記録外のパスが入っていたら（commit 前フックが一時索引へ足した場合など）そのコミットを取り消して `KNOWLEDGE_COMMIT=scope-mismatch` の exit 1 で止まり、保留記録を残す。push へ進まず、フックの設定を直すか記録外のパスを退避（`git stash push --include-untracked -- <記録外のパス>`。未追跡のファイルも退避できる）してから `commit` を再実行する。
 
+**記録した Markdown の lint**（`finish.sh knowledge-commit commit` が commit の前に行う）: 直 push は全件ゲートを通らないので、全件ゲートで markdownlint を回すリポジトリ（markdownlint suite とルートの `.markdownlint.json` を持つ、このツールキットのソースリポジトリ）では、記録した `*.md` を全件ゲートと同じ設定・同じ実行ファイル（`scripts/lib/markdownlint-functions.sh`）で検査する。どちらも commit せず保留記録を残す:
+
+- 違反は `ファイル:行 規則` を名指して exit 1。名指されたファイル（台帳でも PLAYBOOK・カテゴリ本文・保留候補でも）を直し、そのファイルを記録した `add` をやり直してから `commit` を再実行する
+- 検査できない回（作業中の checkout に `plugins/ff-dev-toolkit/mcp/node_modules` が無い・node が古い等）は未検査として exit 2。stderr に出た復帰手段（`npm ci --prefix <リポジトリ>/plugins/ff-dev-toolkit/mcp`。プラグインのインストール先ではなく、作業中の checkout）を済ませ、`commit` だけを再実行する（内容は変えていないので `add` は要らない）。未検査を違反なしと読み替えて素の `git commit` へ逃がさない
+
+それ以外のリポジトリ（導入先・suite だけを同期で受け取る公開リポジトリ）では検査せず、振る舞いも出力も変わらない。
+
 **直 push の実測ガード**（`finish.sh knowledge-commit push` が行う）: コミット先ブランチを `git symbolic-ref -q --short HEAD` で実測し、detached HEAD なら refspec を `HEAD:<default-branch>` にする（merge-cleanup の退避などで detached のまま `git push origin <branch>` を打つと、ローカル branch ref が送られ「Everything up-to-date」で成功に見えたまま届かない）。push 出力はファイルへ落として `-> <default-branch>` を照合する（パイプで tee へ流すと終了コードが失われ、rejected 出力を成功と誤読する）。push 後は `gh run list --branch <default-branch> --limit 5 --json status,conclusion,workflowName,headSha` で今 push した SHA の run を見る（直 push は PR 画面に出ないため）。`in_progress` / `queued` は完了を待って再確認し、`failure` なら revert ではなく ACE コミットを前進で直して push し直す。一覧が空の CI 無しリポジトリはそのまま進んでよい。
 
 <!--866666a04b981ccc-->
@@ -209,6 +218,17 @@ MCP: 取得値: MCP でPLAN と一致する作成後 PR の head / base / title 
 
 > `knowledge:` 付き PLAYBOOK 単独コミットの `<default-branch>` 直 push は意図的フローであり、通常のコード変更に対する「統合ブランチへの直 push 禁止」ルールとは別物として扱う。ただし default branch が保護されているリポジトリではこの経路に到達できない — その場合は保護判定に従い「PR 経由」（必須）を使う。
 
+
+## まとめるモード（反映の時期）
+
+`<default-branch>` にコミットされた `docs/08-knowledge/knowledge-delivery.conf` が `mode=batch` なら、知見は知見専用ブランチ（`staging_branch`。既定 `knowledge/staging`）へ書く。base へは `finish.sh knowledge-commit flush` でまとめて反映する（ADR-083。選び方と導入先の書き方は docs-template の ace-cycle.md「反映の時期」）。本線の手順は変わらない。
+
+- 手順 1 の `probe` は `protection=batch (...)` を出す前に、書き込みの起点へ detached で移っている。起点は、staging に未反映があれば staging に最新の base を取り込んだもの、無ければ base の先端。本線の case は `*)` に落ちるが、detached なので何もしない
+- 新規性の照合・Helpful +1・採番・`version` / `ace_entry_count` / Changelog は、この起点のツリーで決める。未反映の知見はここに含まれる
+- 手順 5 の `push` は staging へ fast-forward で送り（`KNOWLEDGE_TARGET=<staging>`）、元の場所へ戻る。base は進まない。`push_rc=3` は返らず、知見ブランチ・PR は作らない（`pr` は止まる）。設定が batch なのに target の記録が無いまま `add` / `push` すると、どのブランチの上でも止まる
+- 候補が 0 件で手順 5 へ進まずに終わる回も、起点へ移ったままにしない。`/retrospective` が push を呼んで元の場所へ戻す（`KNOWLEDGE_PUSH=nothing`）
+- staging が先行されていたら `add` / `push` / `target` が止まる。表示されるやり直し手順を印字どおりに実行し、取り込んだ後のツリーで照合と採番を引き直す（`--force` で上書きしない）
+- 結果レポートには未反映の件数（`KNOWLEDGE_UNREFLECTED=`）を書く。最古が警告の閾値（`warn_after_days`）に達した警告が出たら、flush を促す
 
 ## GitHub file input
 

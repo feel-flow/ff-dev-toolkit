@@ -1,0 +1,3 @@
+npm test > /tmp/test.log 2>&1
+rm -f /tmp/lock
+exit $?

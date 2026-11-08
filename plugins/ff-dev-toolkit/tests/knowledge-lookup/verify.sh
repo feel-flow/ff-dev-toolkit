@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: store 解決の lib の不在・途中切れは K36 が検索前の rc=2 を要求する。入口から完了印の照合を外した隔離コピーでは K36 の「最終行が切れた回」が赤（rc=1。2026-11-08 macOS / Bash 3.2）。
 # 空振り検出: 未閉鎖フェンスの拒否、カテゴリ入口の非ディレクトリ拒否を別々に弱めた隔離コピーで、K35 相当の期待値が赤。前後対照各 5 件と、壊れた symlink を拒否する正常系を実測（2026-11-06 macOS / Bash 3.2）。
 # 空振り検出: 索引省略の空判定分岐・件数の照合・壊れた見出しの検出・重複設定の拒否を個別に弱めた隔離コピーでは、各変異に対応する K34 の期待値と不一致。無変異の前後対照は各 4 件成功（2026-11-06 macOS / Bash 3.2）。
 # 空振り検出: 物理identityキー・既定照合列・物理role・論理roleを各1件戻す4変異は構文0の後、別名/除外の針でrc=1。前後privacy51件、既存分を含む全体135件pass（2026-10-29実測）。
@@ -1098,6 +1099,39 @@ if [[ "${RC}" -eq 2 && "$(kv ACE_PLAYBOOK_STATE)" = unreadable && -z "$(kv ACE_I
 else
   bad "K35: resolver が壊れたカテゴリパスを許可した（rc=${RC}）"
 fi
+
+# K36: store 解決の lib が無い・途中で切れた回は検索を始めない（Issue `#2694`）。
+# 関数の境界で切れたファイルは構文として通るので、source の前に最終行の完了印を照合する。
+K36_ROOT="${TMP}/k36-plugin"
+K36_LIB="${K36_ROOT}/scripts/lib/knowledge-lookup-store.sh"
+mkdir -p "${K36_ROOT}/.claude-plugin"
+cp "${PLUGIN_ROOT}/.claude-plugin/plugin.json" "${K36_ROOT}/.claude-plugin/plugin.json"
+cp -R "${PLUGIN_ROOT}/scripts" "${K36_ROOT}/scripts"
+k36_run() {
+  set +e
+  OUT="$("${LOOKUP[@]:0:${#LOOKUP[@]}-1}" "${K36_ROOT}/scripts/knowledge-lookup.sh" --root "${ROOT_INDEX}" --offline hydration 2>&1)"
+  RC=$?
+  set -e
+}
+k36_expect_refused() { # <label>
+  k36_run
+  if [[ "${RC}" -eq 2 ]] && out_has 'store 解決の関数を読めません' && ! out_has 'ACE Playbook='; then
+    ok "K36: ${1}回は検索を始めず rc=2 で止まる"
+  else
+    bad "K36: ${1}回の停止が違う（rc=${RC}）"
+  fi
+}
+k36_run
+if [[ "${RC}" -eq 2 ]] && out_has 'ACE Playbook=unreadable'; then
+  ok "K36: 完全な lib の写しは K35 と同じ判定へ進む（対照）"
+else
+  bad "K36: 完全な lib の写しが対照どおりに動かない（rc=${RC}）"
+fi
+sed '$d' "${K36_LIB}" >"${K36_LIB}.cut"
+mv "${K36_LIB}.cut" "${K36_LIB}"
+k36_expect_refused '最終行が切れた'
+rm -f "${K36_LIB}"
+k36_expect_refused 'lib が無い'
 
 echo ""
 # Default metadata cannot grant an external read. Synthetic inputs only.

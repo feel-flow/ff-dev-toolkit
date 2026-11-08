@@ -17,6 +17,16 @@
 # 入口 multi-agent.sh の「All known CLI names」/「CLI Registry End」の 2 つだけ）
 TASK_TYPE="review"
 DESCRIPTION=""
+DESCRIPTION_EXPLICIT=false
+DESCRIPTION_FILE=""
+REVIEW_AC_AUTO=false
+# AC を取らずに続行した回（python3 不在など）。resume の入力記録を review-ac=unavailable にする。
+REVIEW_AC_UNAVAILABLE=false
+REVIEW_AC_GITHUB_INPUT=""
+REVIEW_AC_TMP=""
+REVIEW_AC_DIAGNOSTICS=""
+REVIEW_AC_BRANCH=""
+REVIEW_AC_REPOSITORY=""
 INCLUDE_DIFF=false
 CONFIG_FILE="${MULTI_AGENT_CONFIG:-}"
 CONFIG_SOURCE="MULTI_AGENT_CONFIG env"
@@ -519,7 +529,14 @@ parse_args() {
         case "${2:-}" in none|fast|full) WRAPPER_ROUTE="$2" ;; *) echo 'ERROR: invalid wrapper route' >&2; exit 2 ;; esac
         shift 2 ;;
       --task)        TASK_TYPE="$2"; shift 2 ;;
-      --description) DESCRIPTION="$2"; shift 2 ;;
+      --description) DESCRIPTION="$2"; DESCRIPTION_EXPLICIT=true; shift 2 ;;
+      --review-ac-auto) REVIEW_AC_AUTO=true; shift ;;
+      --github-input)
+        if [[ $# -lt 2 || -z "${2:-}" ]] || ! github_input_is_absolute "$2"; then
+          echo "ERROR: --github-input requires an absolute index path." >&2
+          exit 2
+        fi
+        REVIEW_AC_GITHUB_INPUT="$2"; shift 2 ;;
       --include-diff) INCLUDE_DIFF=true; shift ;;
       --config)      CONFIG_FILE="$2"; CONFIG_SOURCE="--config flag"; CONFIG_PROVENANCE="flag"; shift 2 ;;
       --mode)        MODE="$2"; MODE_EXPLICIT=true; MODE_SOURCE="--mode flag"; shift 2 ;;

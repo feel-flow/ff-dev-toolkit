@@ -613,7 +613,7 @@ parse_adapter_args() {
     # あり、「成功・成果物なし」へ反転する。値付きフラグの集合をここで一括して守り、
     # どれか1つだけ直して残りが同じ silent exit を持ち続ける形を作らない。
     case "$1" in
-      --changed-files|--base|--timeout|--task-type|--description|--staging-dir|--diff-file|--delegate-dir)
+      --changed-files|--base|--timeout|--task-type|--description|--description-file|--staging-dir|--diff-file|--delegate-dir)
         if [[ $# -lt 2 ]]; then
           echo "ERROR: ${1} requires a value." >&2
           return 2
@@ -623,7 +623,7 @@ parse_adapter_args() {
         # inline-output は黙って消える。未知の `--foo` まで一律拒否はしない（説明文等の
         # 実値であり得るため）。このパーサー自身が知るフラグだけを欠落の証拠にする。
         case "$2" in
-          --changed-files|--base|--timeout|--task-type|--description|--include-diff|--staged|--staging-dir|--inline-output|--diff-file|--delegate-dir)
+          --changed-files|--base|--timeout|--task-type|--description|--description-file|--include-diff|--staged|--staging-dir|--inline-output|--diff-file|--delegate-dir)
             echo "ERROR: ${1} requires a value; got option '${2}'." >&2
             return 2
             ;;
@@ -658,6 +658,15 @@ parse_adapter_args() {
         ;;
       --description)
         DESCRIPTION="$2"
+        shift 2
+        ;;
+      --description-file)
+        if [[ ! -f "$2" || ! -r "$2" ]]; then
+          echo "ERROR: --description-file is not a readable file: ${2}" >&2
+          return 2
+        fi
+        DESCRIPTION="$(cat "$2" && printf X)"
+        DESCRIPTION="${DESCRIPTION%X}"
         shift 2
         ;;
       --include-diff)
@@ -718,7 +727,7 @@ parse_adapter_args() {
   fi
 
   if [[ -z "$PERSPECTIVE_FILE" || -z "$OUTPUT_FILE" ]]; then
-    echo "Usage: $(basename "$0") <perspective-file> <output-file> [--changed-files <files>] [--base <branch> | --staged] [--diff-file <path>] [--timeout <seconds>] [--task-type <review|explore|implement>] [--description <text>] [--staging-dir <dir>] [--inline-output] [--delegate-dir <dir>]" >&2
+    echo "Usage: $(basename "$0") <perspective-file> <output-file> [--changed-files <files>] [--base <branch> | --staged] [--diff-file <path>] [--timeout <seconds>] [--task-type <review|explore|implement>] [--description <text>] [--description-file <path>] [--staging-dir <dir>] [--inline-output] [--delegate-dir <dir>]" >&2
     return 1
   fi
 }

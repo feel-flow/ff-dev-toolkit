@@ -3,15 +3,20 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 test -s "$HERE/security.test.py"
-if ! result="$(python3 "$HERE/security.test.py" 2>&1)"; then
+if ! result="$(python3 "$HERE/security.test.py" -v 2>&1)"; then
   printf '%s\n' "$result" >&2
   exit 1
 fi
 printf '%s\n' "$result"
 grep -Eq '^Ran [1-9][0-9]* tests? in ' <<<"$result"
-# A public standalone distribution has no media plugin: count that partial skip.
 if [ "$result" != "${result#*OK (skipped=1)}" ]; then
-  echo "  ○ skip: separate media plugin is absent from this distribution"
+  case "$result" in
+    *"skipped 'PID symlink fixture is POSIX'"*)
+      echo "  ○ skip: PID symlink fixture requires POSIX" ;;
+    *"skipped 'separate media plugin is not in this distribution'"*)
+      echo "  ○ skip: separate media plugin is absent from this distribution" ;;
+    *) echo "✗ security-runbooks: unidentified skipped test" >&2; exit 1 ;;
+  esac
 else
   grep -qxF 'OK' <<<"$result"
 fi

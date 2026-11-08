@@ -1,0 +1,19 @@
+# 停止を期待する fixture（fire-*.txt）ごとの期待値。列はタブ区切り: fixture / タグ / 静的走査（same = 素の exit_code_scan も同じタグ・同じ行を出す、zero = 名簿外のゲートなので素の exit_code_scan は 0 件）/ 検出した形として示す行（ゲートの起動行）
+fire-handover-grep-after-gate.txt	gate-exit-dropped	zero	bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --route full > /tmp/review.log 2>&1
+fire-handover-tail-after-gate.txt	gate-exit-dropped	zero	bash plugins/ff-dev-toolkit/scripts/multi-review.sh --route full > /tmp/review.log 2>&1
+fire-obs460-cd-exit-heredoc.txt	gate-exit-dropped	zero	bash "$S/cross-review.sh" > "$S/cross-review.log" 2>&1
+fire-obs468-assign-wsl.txt	gate-exit-dropped	zero	wsl.exe --exec bash "$M/plugins/ff-dev-toolkit/tests/run-all.sh" > /tmp/run-all.log 2>&1
+fire-obs468-cd-exit-review.txt	gate-exit-dropped	zero	bash plugins/ff-dev-toolkit/scripts/multi-review.sh --route full --base origin/develop > /tmp/review.log 2>&1
+fire-obs475-assign-run-all.txt	gate-exit-dropped	same	bash /repo/plugins/ff-dev-toolkit/tests/run-all.sh > "$sp/run-all.log" 2>&1
+fire-obs475-bare-cd.txt	gate-exit-dropped	same	bash plugins/ff-dev-toolkit/tests/run-all.sh > /tmp/run-all.log 2>&1
+fire-obs475-ff-root-assign.txt	gate-exit-dropped	zero	bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --route full --delegate-to-host --base origin/develop > /tmp/review.log 2>&1
+fire-obs484-assign-npm-run-all.txt	gate-exit-dropped	same	npm ci --no-audit --no-fund && bash plugins/ff-dev-toolkit/tests/run-all.sh > "$S/run-all.log" 2>&1
+fire-named-gate-overwritten.txt	gate-exit-dropped	same	bash plugins/ff-dev-toolkit/tests/run-all.sh > /tmp/run-all.log 2>&1
+fire-review-sed-after-test.txt	gate-exit-dropped	zero	npm test > /tmp/npm.log 2>&1
+fire-review-subst-assign.txt	gate-exit-dropped	zero	result=$(npm test)
+fire-review-build-after-test.txt	gate-exit-dropped	zero	npm test > /tmp/test.log 2>&1
+fire-review-rm-after-test.txt	gate-exit-dropped	zero	npm test > /tmp/test.log 2>&1
+fire-review-subst-prefix.txt	gate-exit-dropped	zero	result=prefix$(npm test)
+fire-review-subst-backtick-dq.txt	gate-exit-dropped	zero	result="`npm test`"
+fire-review-subst-multi-assign.txt	gate-exit-dropped	zero	out=$(bash scripts/check.sh 2>&1) rc=$?
+fire-review-subst-multi-assign-backtick.txt	gate-exit-dropped	zero	out=`scripts/check.sh` rc=$?

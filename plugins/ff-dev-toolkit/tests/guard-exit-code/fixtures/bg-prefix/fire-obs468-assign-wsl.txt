@@ -1,0 +1,3 @@
+M=/mnt/c/repo
+wsl.exe --exec bash "$M/plugins/ff-dev-toolkit/tests/run-all.sh" > /tmp/run-all.log 2>&1
+rc=$?; echo "EXIT=$rc"

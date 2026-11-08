@@ -317,7 +317,7 @@ docs/04-quality/TESTING.mdのテスト戦略に従って、以下の機能のユ
 3. **実装** → MASTER.mdの規約に従う
 4. **テスト実行** → 全テスト合格必須
 5. **Commit** → `git commit -m "feat: #123 説明"`
-6. **Push + PR作成** → `gh pr create --base develop`（`Closes #XXX` 付き。セルフレビューセクションは枠だけ）
+6. **Push + PR作成** → `gh pr create --base develop`（`Closes #XXX` 付き。Issue に未チェックの `post-merge:` 行があれば `Refs #XXX`。セルフレビューセクションは枠だけ）
 7. **セルフレビュー** → PR の head SHA を対象に後述のチェックリストを確認し、指摘は 1 fix commit へ束ねて push、結果を PR 本文へ追記
 8. **マージ後** → developに戻り、featureブランチを削除
 

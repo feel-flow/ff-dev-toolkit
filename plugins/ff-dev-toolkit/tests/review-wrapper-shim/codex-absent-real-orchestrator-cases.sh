@@ -45,6 +45,13 @@ chmod +x "$REAL_ORCH_TOOLKIT/scripts/multi-agent.sh"
 # 出ないので、構成ファイルも一緒に置く。
 mkdir -p "$REAL_ORCH_TOOLKIT/scripts/lib"
 cp "$PLUGIN_ROOT"/scripts/lib/multi-agent-*.sh "$REAL_ORCH_TOOLKIT/scripts/lib/"
+# review-ac の構成ファイルは開始時に github-input.sh と merge-message.sh を読む。
+# 無いと CLI 検出より前に rc=2 で止まり、dry-run のプランが出ない。
+# check-closing-keywords.sh は自動投入の実行時だけ使うので、ここには置かない。
+cp "$PLUGIN_ROOT/scripts/lib/github-input.sh" \
+  "$PLUGIN_ROOT/scripts/lib/merge-message.sh" \
+  "$PLUGIN_ROOT/scripts/lib/abs-path.sh" \
+  "$REAL_ORCH_TOOLKIT/scripts/lib/"
 # 明示的な観点除外の検証は実際の perspective ファイル集合を参照する。
 cp -R "$PLUGIN_ROOT/scripts/perspectives" "$REAL_ORCH_TOOLKIT/scripts/"
 # 主 reviewer の 3 つ目の出所（プロジェクト設定 <cwd の git root>/.claude/agent-config.yaml

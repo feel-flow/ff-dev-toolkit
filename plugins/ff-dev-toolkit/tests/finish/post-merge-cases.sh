@@ -26,6 +26,9 @@ _ff_pm_no_gh() { # gh を 1 回も呼んでいない
 }
 
 _ff_finish_post_merge_cases() {
+  # 変更ファイルの fixture（migrations/*.sql）は専用セキュリティゲートの分類に当たる。ここで測るのは
+  # マージ後工程の判定なので、記録の検査は off にして結果を混ぜない（記録の検査は security-record-cases.sh）
+  export MULTI_AGENT_SECURITY_REVIEW=off
   local pm="$TMP/post-merge" terms='本番適用:本番への適用:production' paths='migrations/**'
   mkdir -p "$pm"
   printf '%s\n' '# 背景' "$_ff_pm_hit_body" '- [x] done' >"$pm/hit.md"
@@ -428,5 +431,6 @@ BODY
 本番|./migrations
 SPECS
   PR_FILES_JSON=""
+  unset MULTI_AGENT_SECURITY_REVIEW
   write_pr_json "Closes #${PRN}" '[]'
 }

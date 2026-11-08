@@ -339,9 +339,9 @@ function tokenize(   ch, nx, j, d, q, t, r, k) {
     if (ch == "\\") {
       if (nx == "\n") { i += 2; continue }
       if (nx == "") { w = w ch; inw = 1; i++; continue }
-      # 述語 Q: 引用の外の \\ は、縮んだ \ が次の文字をエスケープするので値が変わる。末尾の \\ と、3 本続いて
-      # ふつうの文字が来る形（\\\a は元も縮んだ後も \a）は同じ値
-      if (nx == "\\" && substr(src, i + 2, 1) != "" && !(substr(src, i + 2, 1) == "\\" && substr(src, i + 3, 1) ~ /[A-Za-z0-9_.\/:@%+=,-]/)) q_hit("bare", i)
+      # 述語 Q: 引用の外の \\ は、縮んだ \ が次の文字をエスケープする。末尾では Bash 3.2 が
+      # 縮んだ \ を捨てるので、版に依存せず止める。3 本の後にふつうの文字が来る形は値が同じ。
+      if (nx == "\\" && !(substr(src, i + 2, 1) == "\\" && substr(src, i + 3, 1) ~ /[A-Za-z0-9_.\/:@%+=,-]/)) q_hit("bare", i)
       w = w nx; inw = 1; i += 2; continue
     }
     if (ch == "$") {

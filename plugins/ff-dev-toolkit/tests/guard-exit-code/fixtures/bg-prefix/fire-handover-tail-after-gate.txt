@@ -1,0 +1,4 @@
+cd /repo
+bash plugins/ff-dev-toolkit/scripts/multi-review.sh --route full > /tmp/review.log 2>&1
+tail -5 /tmp/review.log
+echo "rc=$?"

@@ -599,6 +599,7 @@ else
     # ルート設定で tracked Markdown 全体を lint し、DoD の「markdownlint エラーなし」を
     # 実行可能にする。依存は同梱 MCP の node_modules から借り、直後の selftest が
     # 新規違反を非 0・ファイル名付きで検出することを固定する（Issue #295）。
+    # 同じ設定で knowledge-commit が commit 前に止まることも selftest が固定する（Issue `#2671`）。
     "$SCRIPT_DIR/markdownlint/verify.sh"
     "$SCRIPT_DIR/markdownlint-selftest/verify.sh"
     # case 11（*.sh MBCS）の fail-closed 経路をシームで自動回帰（Issue #312）。
@@ -844,6 +845,10 @@ else
     # 見出し書式の変更・配置の曖昧さに対する既定を隔離 fixture で実測する。gh は stub に
     # 解決させ、ネットワークには出ない。
     "$SCRIPT_DIR/knowledge-lookup/verify.sh"
+    # 知見の反映モード（ADR-083。Issue `#2690`）。マージごと（既定）の出力が変わらないことと、まとめるモードの
+    # 書き込み先（staging への fast-forward・base への直接書き込みの拒否）・flush の送信範囲と衝突時の停止・
+    # lookup の未反映表示を、bare の origin と clone で実際に動かして測る。gh は stub でネットワークに出ない。
+    "$SCRIPT_DIR/knowledge-delivery/verify.sh"
     # Opt-in Claude result allowlist, interval union and missing-data behavior.
     "$SCRIPT_DIR/claude-measurement/verify.sh"
     # squash 件名の closing keyword が Refs 運用の Issue を閉じる経路のガード。
@@ -1119,6 +1124,9 @@ else
     # --resume 契約（Issue #586）。9観点中8成功・1失敗、HEAD/設定/観点定義/集合変更、
     # 破損キャッシュ、統合レポートのreused/executedを逐次stub CLIで実測する。
     "$SCRIPT_DIR/multi-agent-resume/verify.sh"
+    # Issue の AC / DoD を説明文の省略時だけ各観点へ渡し、明示 --description と
+    # 同じ HEAD の再開では取得し直さない。stub gh / CLI だけで完結する。
+    "$SCRIPT_DIR/review-ac-context/verify.sh"
     # 前回実行の観点ファイルが「今回の結果」として読まれないことの実挙動検査
     # （Issue #537 / #654）。プラン外 × orchestrator 自筆の結果を <cli>/previous/ へ
     # 退避し、利用者の .md・プラン外 CLI・非 .md・サブディレクトリには触れず名指しだけ
@@ -1367,6 +1375,9 @@ REQUIRED_SUITES=(
   run-all-startup-load
   # Consumer ready の証跡束縛を検証する唯一の suite。
   review-evidence
+  # 説明を省略したレビューが Issue の受け入れ条件を自動投入する契約。
+  # 一時領域不足で skip すると、その検出力が黙って消える。
+  review-ac-context
   # 緩めた本文差分述語（チェックボックス + ff-effort ブロックだけを許可）の behavioral
   # 検証を持つ唯一の suite。jq 不在で丸ごと skip されると、安全ゲートが本当に
   # マーカー外の編集を弾くかを誰も見なくなる（Issue #1136）。
@@ -1671,7 +1682,6 @@ MISS_PROBE_BASELINE=(
   issue-label-supply
   link-sub-issues
   long-task-commit-contract
-  markdownlint-selftest
   markdownlint
   mbcs-guard-failclosed
   mcp-dist-gate

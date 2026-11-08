@@ -352,19 +352,15 @@ ASDD_NONODE="$TEST_TMP/asdd-nonode"
 mkdir -p "$ASDD_NONODE" "$TEST_TMP/jq-only-bin"
 ff_asdd_fixture "$ASDD_NONODE" true
 ln -s "$(command -v jq)" "$TEST_TMP/jq-only-bin/jq"
-if PATH="$TEST_TMP/jq-only-bin:/usr/bin:/bin" command -v node >/dev/null 2>&1; then
-  echo "  ○ skip: /usr/bin か /bin に node があるため ASDD 検証不能（node 不在）の経路は未検査"
-else
-  json_c7="$(jq -n '{tool_name: "Bash", tool_input: {command: "grep -rn x --include=*.md ."}}')"
-  RC=0
-  OUT="$(cd "$ASDD_NONODE" && printf '%s' "$json_c7" | env SHELL=/bin/zsh PATH="$TEST_TMP/jq-only-bin:/usr/bin:/bin" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
-  DECISION="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)"
-  REASON="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null || true)"
-  case "$DECISION:$REASON" in
-    deny:*ASDD*) ok "C7: ASDD 設定を検証できない（config あり・node 不在）回は候補コマンドを判定不能の deny にする" ;;
-    *) bad "C7: ASDD 検証不能が素通しになった: exit=$RC out=[$OUT]" ;;
-  esac
-fi
+json_c7="$(jq -n '{tool_name: "Bash", tool_input: {command: "grep -rn x --include=*.md ."}}')"
+RC=0
+OUT="$(cd "$ASDD_NONODE" && printf '%s' "$json_c7" | env SHELL=/bin/zsh PATH="$TEST_TMP/jq-only-bin" "$BASH" "$TARGET" 2>/dev/null)" || RC=$?
+DECISION="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)"
+REASON="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null || true)"
+case "$DECISION:$REASON" in
+  deny:*'asdd_hook_enabled rc=1。'*) ok "C7: ASDD 設定を検証できない（config あり・node 不在）回は候補コマンドを判定不能の deny にする" ;;
+  *) bad "C7: ASDD 検証不能が素通しになった: exit=$RC out=[$OUT]" ;;
+esac
 
 run_hook 'grep -rn x docs --include=*.md' FF_HEREDOC_AWK=false
 assert_unavailable "C8: heredoc 除去の awk が失敗したら判定不能の deny にする"

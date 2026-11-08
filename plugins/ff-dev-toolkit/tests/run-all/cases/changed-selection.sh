@@ -33,9 +33,12 @@ echo "== case 47: 変更ベースの部分ゲート（FF_RUN_ALL_CHANGED）=="
 if ! command -v git >/dev/null 2>&1; then
   echo "  ○ skip: git が無いため変更ベースの部分ゲートの実測をスキップ（case 47 の検査は 1 件も実行していません）"
 else
-_chg_fx="$(mktemp -d "${TMPDIR:-/tmp}/ff-run-all-changed.XXXXXX" 2>/dev/null)" || _chg_fx=""
-if [ -z "$_chg_fx" ] || [ ! -d "$_chg_fx" ]; then
-  bad "case 47: 一時領域を作成できず、変更ベースの部分ゲートを実測できません"
+_chg_ready=0
+if _chg_fx="$(mktemp -d "${TMPDIR:-/tmp}/ff-run-all-changed.XXXXXX" 2>&1)" && [ -d "$_chg_fx" ]; then
+  _chg_ready=1
+fi
+if [ "$_chg_ready" -ne 1 ]; then
+  bad "case 47: 一時領域を作成できず、変更ベースの部分ゲートを実測できません（mktemp: ${_chg_fx}）"
 else
 _chg_repo="$_chg_fx/repo"
 _chg_plug="$_chg_repo/plugins/ff"
@@ -343,3 +346,4 @@ fi
 rm -rf "$_chg_fx"
 fi
 fi
+# suite-cases-end: changed-selection.sh

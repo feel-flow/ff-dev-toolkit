@@ -11,6 +11,8 @@
 # 空振り検出: 2026-10-26（Issue `#2334`）WSL で正常 74 件。共有判定が OS を問わずドライブ文字を受け付ける → 1 件赤、finish.sh を独自の `/` 判定へ戻す → 1 件赤、link-sub-issues.sh の判定を外す → 3 件赤。
 
 set -euo pipefail
+# precheck の専用セキュリティゲートの記録（Issue `#2684`）は導入先の設定で分類が変わる。開発者の環境の値を隔離する
+unset MULTI_AGENT_SECURITY_GLOB MULTI_AGENT_SECURITY_GLOB_EXTRA MULTI_AGENT_SECURITY_REVIEW MULTI_AGENT_CONFIG
 SELF="$(CDPATH='' cd -P -- "$(dirname -- "$0")" && pwd -P)" || exit 1
 if [ "${1:-}" != --worker ]; then
   PLUGIN="${1:-$(CDPATH='' cd -P -- "$SELF/../.." && pwd -P)}"
@@ -43,7 +45,7 @@ PLUGIN="$2"; CASES="$3"; TMP="$4"; EVIDENCE="${5:-}"
 PASS=0; FAIL=0; READY=0
 ok() { printf '  ✓ %s\n' "$1"; PASS=$((PASS + 1)); }
 bad() { printf '  ✗ %s\n' "$1" >&2; FAIL=$((FAIL + 1)); }
-for file in scripts/finish.sh scripts/lib/finish-precheck.sh scripts/lib/finish-precheck-post-merge.sh scripts/lib/abs-path.sh scripts/lib/github-input.sh scripts/lib/merge-message.sh scripts/lib/shell-quote.sh scripts/link-sub-issues.sh scripts/merge-cleanup.sh tests/lib/git-fixture.sh; do
+for file in scripts/finish.sh scripts/lib/finish-precheck.sh scripts/lib/finish-precheck-post-merge.sh scripts/lib/finish-precheck-security-record.sh scripts/lib/abs-path.sh scripts/lib/github-input.sh scripts/lib/merge-message.sh scripts/lib/shell-quote.sh scripts/link-sub-issues.sh scripts/merge-cleanup.sh tests/lib/git-fixture.sh; do
   [ -s "$PLUGIN/$file" ] && [ -r "$PLUGIN/$file" ] || { bad "source missing/unreadable/empty: $file"; exit 1; }
 done
 if ! jq -e 'type == "array" and length > 0 and (map(.name) | unique | length) == length and

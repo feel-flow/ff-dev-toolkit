@@ -509,9 +509,12 @@ grok-hooks-sync/verify.sh
 guard-checkout-restore/verify.sh
 guard-review-in-flight/lane-private-cases.sh
 guard-review-in-flight/verify.sh
+knowledge-delivery/verify.sh
 markdownlint-selftest/verify.sh
 mbcs-guard-failclosed/verify.sh
 merge-cleanup/agent-branches.sh
+merge-cleanup/cases/fixtures.sh
+merge-cleanup/cases/uncommitted-guard.sh
 merge-cleanup/detached-caller.sh
 merge-cleanup/long-paths.sh
 merge-cleanup/verify.sh
@@ -533,6 +536,7 @@ mutation-harness/verify.sh
 precommit-exec-bit/verify.sh
 precommit-selftest-pairs/verify.sh
 release-required-selftest/verify.sh
+review-ac-context/verify.sh
 review-capture-fail-loud/verify.sh
 review-diff-scope/verify.sh
 review-wrapper-shim/base-ref-diff-guard-cases.sh

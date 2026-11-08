@@ -631,3 +631,4 @@ if [ "$EXITCODE_SELFTEST_OK" -eq 1 ]; then
     esac
   fi
 fi
+# suite-cases-end: exit-code-guard.sh

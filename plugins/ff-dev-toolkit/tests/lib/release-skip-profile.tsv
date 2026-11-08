@@ -1,0 +1,161 @@
+# Literal reason discriminator, then Windows / Darwin / Linux (tab-separated).
+# allow: structural exception; stop or stop:<recovery>: block publication.
+# Optional fifth column pins source paths, separated by |. A leading ^ also matches only at the start.
+検査 B/C は免除（件数ゲートが担保	allow	allow	allow
+estimation カテゴリファイルは未作成	allow	allow	allow
+enum 照合は対象外（grok-cli は受け付ける値の集合を公表していない）	allow	allow	allow
+に対応する compare リンク行が無いためスキップ（公開タグ前の開発周期では正常	allow	allow	allow
+FF_MEDIA_RENDER=1 が未設定のため実レンダリングを行いません	allow	allow	allow
+Windows の Git Bash でだけ成立する検査のため未実行	stop	allow	allow	plugins/ff-dev-toolkit/tests/ace-curate-commit/verify.sh|plugins/ff-dev-toolkit/tests/guard-review-in-flight/verify.sh|plugins/ff-dev-toolkit/tests/guard-shell-save/verify.sh|plugins/ff-dev-toolkit/tests/knowledge-lookup/windows-acl.sh|plugins/ff-dev-toolkit/tests/merge-cleanup/windows-junctions.sh|plugins/ff-dev-toolkit/tests/multi-agent-stale-outputs/windows-boundary-cases.sh
+起動回数の上限は Windows と Linux でだけ固定する検査のため未実行	stop	allow	stop	plugins/ff-dev-toolkit/tests/knowledge-lookup/verify.sh
+大文字小文字を区別するファイルシステムでは case-alias 分岐を作れないため未実行	allow	allow	allow	plugins/ff-dev-toolkit/tests/multi-agent-stale-outputs/admin-identity-cases.sh
+# This fixture invokes /bin/bash directly. The other Bash 4 checks use the invocation PATH.
+^壁時計が戻る回の再現（/bin/bash 	stop	allow	stop	plugins/ff-dev-toolkit/tests/retrospective-stop-hook/verify.sh
+系には BASHPID が無い）は、bash 4 以上でだけ成立する検査のため未実行	stop	stop:brew install bash の後、この呼び出しの PATH で Bash 4 以上を選ぶ	stop	plugins/ff-dev-toolkit/tests/skill-drift-check/verify.sh
+W6 は bash 4 以上でだけ成立する検査のため未実行	stop	stop:brew install bash の後、この呼び出しの PATH で Bash 4 以上を選ぶ	stop	plugins/ff-dev-toolkit/tests/knowledge-lookup/windows-acl.sh
+W7 は bash 4 以上でだけ成立する検査のため未実行	stop	stop:brew install bash の後、この呼び出しの PATH で Bash 4 以上を選ぶ	stop	plugins/ff-dev-toolkit/tests/knowledge-lookup/windows-acl.sh
+W16 は bash 4 以上でだけ成立する検査のため未実行	stop	stop:brew install bash の後、この呼び出しの PATH で Bash 4 以上を選ぶ	stop	plugins/ff-dev-toolkit/tests/knowledge-lookup/windows-acl.sh
+# Linux can run the bubblewrap test. Darwin can run the sandbox-exec fixture.
+^bwrap が無いため sandbox 上の経路判定は未検査	allow	allow	stop:bubblewrap を入れて再実行する	plugins/ff-dev-toolkit/tests/decision-tree/verify.sh
+^Darwin でだけ成立する検査のため未実行	allow	stop	allow	plugins/ff-dev-toolkit/tests/guard-exit-code/consumer-resource-cases.sh
+node_modules が無いため型検査を行いません	stop:npm ci --prefix plugins/ff-media-toolkit --no-audit --no-fund	stop:npm ci --prefix plugins/ff-media-toolkit --no-audit --no-fund	stop:npm ci --prefix plugins/ff-media-toolkit --no-audit --no-fund
+MSYS では成立しない検査のため未実行	stop:WSL のホームディレクトリに clone し、必要な依存を導入して再実行する	stop:WSL のホームディレクトリに clone し、必要な依存を導入して再実行する	stop:WSL のホームディレクトリに clone し、必要な依存を導入して再実行する
+pwsh / powershell が無いため PP1	stop:PowerShell 7 を導入し、pwsh を PATH に追加する	stop:brew install powershell の後、pwsh を PATH に追加する	stop:PowerShell 7 を導入し、pwsh を PATH に追加する
+rg / timeout が PATH に無いため RP1	stop:rg と timeout を導入し PATH を確認する	stop:rg と timeout を導入し PATH を確認する	stop:rg と timeout を導入し PATH を確認する
+zsh が無いため	stop:zsh を PATH に追加する	stop:zsh を PATH に追加する	stop:zsh を PATH に追加する
+rsync の同期検査:	stop:rsync を導入し PATH を確認する	stop:rsync を導入し PATH を確認する	stop:rsync を導入し PATH を確認する
+node 20 以上が見つからないため	stop:Node.js 20 以上を PATH に追加する	stop:Node.js 20 以上を PATH に追加する	stop:Node.js 20 以上を PATH に追加する
+sandbox 用 fixture をリポジトリの親に作れない	stop	stop	stop
+MCP matcher:	stop:python3 と matcher の前提を確認する	stop:python3 と matcher の前提を確認する	stop:python3 と matcher の前提を確認する
+bwrap を起動できない	stop	stop	stop:非 root ユーザーで user namespace と bubblewrap の動作を確認する
+Git Bash では最小 PATH へ置いた bash.exe	allow	stop	stop
+bash.exe 等が msys-2.0.dll を見つけられず	allow	stop	stop
+このファイルシステムでは名前を作れません（Windows の Git Bash）	allow	stop	stop
+Windows で作成できない colon/star 名のケース	allow	stop	stop
+実機の MSYS / Cygwin では	allow	stop	stop
+Windows の Node は PATHEXT で本物の gh.exe を起動するため未実行	allow	stop	stop
+killpg の無い Windows の Python	allow	stop	stop
+stubbed drive mutation controls run only on POSIX hosts	allow	stop	stop
+MSYS drive-letter acceptance needs pwd -W	allow	stop	stop
+needs a POSIX file system (real host is	allow	stop	stop
+ドライブ文字の再現は POSIX のファイルシステムが要る	allow	stop	stop
+checkout より新しい公開タグ	stop	stop	stop
+一時領域が使えないため	stop	stop	stop
+bump 幅の照合を飛ばしました	stop	stop	stop
+疑似検査A（外部CLI不在を模す）	stop	stop	stop
+疑似検査B（外部CLI不在を模す）	stop	stop	stop
+node が無いため P5 は未検査	stop	stop	stop
+ため書き込み境界の表を再測していない	stop	stop	stop
+13i: 巡回カウンタのライブラリが無い	stop	stop	stop
+jq 不在のため hook の正例は未検証	stop	stop	stop
+perl が無いため P1〜P4 は未検査	stop	stop	stop
+git が無いため (9)(10) は未検査	stop	stop	stop
+python3 が無いため DP1 は未検査	stop	stop	stop
+yq 不在のため設定ファイル経由の検査はスキップ	stop	stop	stop
+K8 root 実行では読めないファイルを作れない	stop	stop	stop
+root では読めないファイルを作れない	stop	stop	stop
+git が無いため確定判定の経路を実行していません	stop	stop	stop
+jq 不在のため issue化必須 の検査は未検証	stop	stop	stop
+jq 不在のため追加語族の hook 検査は未検証	stop	stop	stop
+のunreadable fixtureを作れません	stop	stop	stop
+jq 不在のため 2 本目のスクリプトの検査は未検証	stop	stop	stop
+jq 不在のため elif 経路のスクリプト検査は未検証	stop	stop	stop
+yq 不在のためプロジェクト設定の優先順位検査はスキップ	stop	stop	stop
+は locale -a に無い（C の実関数検証は実行）	stop	stop	stop
+P2i はファイル名に二重引用符を使えない環境では実測しない	stop	stop	stop
+tsx ランナーを起動できないため H 節を実行していません	stop	stop	stop
+tsx ランナーを起動できないため I 節を実行していません	stop	stop	stop
+tsx ランナーを起動できないため J 節を実行していません	stop	stop	stop
+tsx ランナーを起動できないため M 節を実行していません	stop	stop	stop
+自リポ側 PLAYBOOK が無いため件数上限の記載は未検査	stop	stop	stop
+jq 不在のため elif 経路の inline 検査は未検証	stop	stop	stop
+jq 不在のため inline command の検査は未検証	stop	stop	stop
+perl が無いため変異注入を実行できません（部分 skip）	stop	stop	stop
+root 実行のため読み取り不可の記録は作れず G8 は未検査	stop	stop	stop
+権限を落としても読めるため（root 実行など）C4 は未検査	stop	stop	stop
+jq 不在のため YAGNI つき inline の検査は未検証	stop	stop	stop
+jq 不在のため settings.json 破損の検査は未検証	stop	stop	stop
+jq 不在のため壊れた package.json の検査は未検証	stop	stop	stop
+が PATH に無いため none 宣言の前提を再確認していない	stop	stop	stop
+ため -C による staging への絞り込みを再測していない	stop	stop	stop
+codex-cli: codex が PATH に無いため設定キー	stop	stop	stop
+iconv が無いため valid UTF-8 の直接検査をスキップ	stop	stop	stop
+出力先を書き込み不可にできない環境のため (e) を実行していません	stop	stop	stop
+2 つ目の git fixture を作れません（(d4) は未検査）	stop	stop	stop
+yq が無いため config 由来の mode 検査を実行できません	stop	stop	stop
+このfilesystem/権限ではstoreの読取拒否を再現できません	stop	stop	stop
+の未読 probe は chmod 000 でも読める環境のため未実施	stop	stop	stop
+jq 不在のため settings.local.json の検査は未検証	stop	stop	stop
+symlink を作れない環境のため symlink 経由ケースは未測定	stop	stop	stop
+このfilesystem/権限ではreportの読取拒否を再現できません	stop	stop	stop
+一時ディレクトリを作成できないため base 鮮度ガードの実測をスキップ	stop	stop	stop
+chmod 000 でも読める環境のためtemplate権限の診断は未実測	stop	stop	stop
+root では memory/ を読めなくできないため 13i をスキップ	stop	stop	stop
+このユーザーでは 555 のディレクトリにも書けるため書込可検査をスキップ	stop	stop	stop
+自リポ側 PLAYBOOK が無いため両者の一致は未検査（配布物のみ確認）	stop	stop	stop
+途中で止まる書き込みを作れない環境のため (f) を実行していません（実測	stop	stop	stop
+mode 000 でも読める環境（root 等）のため走査失敗ケースは未測定	stop	stop	stop
+node が無いため features.hooks=false 経路は未検査	stop	stop	stop
+帰属検査: 一時ディレクトリを作成できない環境のためスキップ（mktemp:	stop	stop	stop
+権限を外してもファイルを読める実行者（root 等）なので M10 は未実行	stop	stop	stop
+perl が無いため CRLF の jq を再現できません（この検査は未実行）	stop	stop	stop
+perl が無いため CRLF の jq を再現できません（L10b は未実行）	stop	stop	stop
+このユーザーでは 555 のディレクトリにも書けるため rm 失敗検査をスキップ	stop	stop	stop
+yq 不在のためプロジェクト設定の cross_review 不正値検査はスキップ	stop	stop	stop
+書き込み権限を外せない実行者（root など）のため 50-H3 を実測できません	stop	stop	stop
+perl が無いため CRLF の jq を再現できません（この 1 検査は未実行）	stop	stop	stop
+perl が無いため CRLF の jq を再現できません（この 2 検査は未実行）	stop	stop	stop
+perl が無いため CRLF の jq を再現できません（この 3 検査は未実行）	stop	stop	stop
+symlink 検査用の git fixture を作れません（(h9) は未検査）	stop	stop	stop
+chmod 000 でも読める実行環境（root）のため、読み取り不能の検査をスキップ	stop	stop	stop
+gitignore 無しの git fixture を作れません（(h6) は未検査）	stop	stop	stop
+このユーザーでは 555 のディレクトリにも書けるため mkdir 失敗検査をスキップ	stop	stop	stop
+翻訳 fixture は SSOT 専用のため J38 / J39 を実行していません	stop	stop	stop
+POST 失敗分岐の字面が変わり python 置換が当たらなかった（変異 2 は未計測）	stop	stop	stop
+chmod 000 でも読める環境（root 等）のため、読めない記録の退避を検査できない	stop	stop	stop
+読み取り不可のディレクトリを作れない（root 実行等）ため中間ディレクトリの経路は未検査	stop	stop	stop
+chmod 000 でも読める実行環境（root）のため、検出器の読み取り不能検査をスキップ	stop	stop	stop
+node が無いため features.hooks=false / true の経路は未検査	stop	stop	stop
+E5 root では読み取り権限を落とせないため未検査（読めない tracked shell）	stop	stop	stop
+chmod 000 でも読める実行環境（root）のため、読めないテンプレートの検査をスキップ	stop	stop	stop
+codex-cli: perl が無く実行時間を上限できないため設定キーの認識を確認していない	stop	stop	stop
+git が無いため横断検査の hits 経路をスキップ（この検査は 1 件も実行していません）	stop	stop	stop
+git が無いため base 鮮度ガードの実測をスキップ（この検査は 1 件も実行していません）	stop	stop	stop
+grok-cli: grok が PATH に無いため前提（enum 非公表）を再確認していない	stop	stop	stop
+perl が無いため CRLF の jq を再現できません（(n6) の CRLF 検査は未実行）	stop	stop	stop
+plugin root が git 管理外のため /dev/null 宛て再混入の静的検査をスキップ	stop	stop	stop
+yq 不在のため config 由来の strategy 検査はスキップ（flag 経路は実行済み）	stop	stop	stop
+実 yq が無いため config 閾値の実物照合をスキップ（契約自体は stub yq で検査済み）	stop	stop	stop
+構成ファイルが読めない場合（mode 000 でも読める実行者。root か MSYS で走っている）	stop	stop	stop
+git が無いため既定一覧の記録の置き場を実測できません（50-J の検査は 1 件も実行していません）	stop	stop	stop
+asdd-runtime: no-CLI multiReview check not measured —	stop	stop	stop
+mawk / gawk / original-awk のいずれも無いため A1b（awk 実装差）は未検査	stop	stop	stop
+npm が PATH に無いため lockfile 整合検査（A0）のみスキップ（A / B は実行する）	stop	stop	stop
+chmod 000 のファイルが読めたため読み取り失敗の経路を実測していません（root 実行と思われます）	stop	stop	stop
+git が無いため MCP 依存ガードの実測をスキップ（case 41 の検査は 1 件も実行していません）	stop	stop	stop
+separate media plugin is absent from this distribution	stop	stop	stop
+PID symlink fixture requires POSIX	allow	stop	stop
+実行ユーザーが権限bitを超えて読めるためunreadable resource fixtureを作れません	stop	stop	stop
+git が無いため変更ベースの部分ゲートの実測をスキップ（case 47 の検査は 1 件も実行していません）	stop	stop	stop
+chmod a-r でも読める実行環境（root）のため、読み取り不能 → error_scan の検査をスキップ	stop	stop	stop
+G13 skip: chmod 000 でも読める環境（root 実行等）のため、読み取り失敗を再現できず検証対象外	stop	stop	stop
+codex-cli: codex が PATH に無いため実 enum と照合していない（宣言の腐りは検出できていない）	stop	stop	stop
+POSIX形式psを取得できず、別worktree/repoのlive並走は未検証（注入対照とunknownの検査は実施）	stop	stop	stop
+codex-cli: codex が PATH に無いため exec の argv が -C を受け付けるか確認していない	stop	stop	stop
+git が無いため dirty tree 起動ガードの実測をスキップ（case 39 の検査は 1 件も実行していません）	stop	stop	stop
+git が無いため横断検査の hits / fail-closed 経路をスキップ（この検査は 1 件も実行していません）	stop	stop	stop
+chmod 000 のディレクトリを検索できてしまう実行者（root 等）のため、親ディレクトリ検索不可のケースを実施しない	stop	stop	stop
+asdd-runtime: missing-main check not measured — claude found in	stop	stop	stop
+codex-cli: perl が無く実行時間を上限できないため exec の argv が -C を受け付けるか確認していない	stop	stop	stop
+jq が無いため probe --json の構造検査だけをスキップ（setup / utf8-locale の検査は実施済み）	stop	stop	stop
+G17 skip: chmod 500 でも書ける環境（root 実行等）のため、書き込み不可 TMPDIR を再現できず検証対象外	stop	stop	stop
+14j: ps -o lstart= が使えないため env 隔離の入れ子を検査できません（記録側はこの環境で環境変数の判定だけに倒れる）	stop	stop	stop
+asdd-runtime: minimal agent-config parity not measured — yq not on PATH	stop	stop	stop
+実 yq が無いため代表照合（17R）と YAML リスト分岐（L1/L2）をスキップ（config 契約自体は stub yq で検査済み）	stop	stop	stop
+この機の %TEMP% は境界の ACL 検査を通るため、T1 の read-unverifiable の経路は未再現（全体を読んで検査し、止まらなかった）	stop	stop	stop
+W17 は PowerShell 7 を入れた Windows でだけ成立する検査のため未実行（Microsoft.PowerShell.Security の 7 版が無い）	stop	stop	stop
+リポジトリ側の docs/08-knowledge/PLAYBOOK.md が無いため H22 だけ実行していません（配布先 checkout。合成 fixture の H1〜H21 は実行済み）	stop	stop	stop
+リポジトリ側の docs/08-knowledge/PLAYBOOK.md が無いため H23 real だけ実行していません（配布先 checkout。合成 fixture の 5 件は実行済み）	stop	stop	stop
+ln -s が symlink を作らない環境（Windows の Git Bash で MSYS=winsymlinks:nativestrict でない等）のため P-leaf / P-parent は未検査	stop	stop	stop
+repository docs/06-reference/DECISIONS.md が無い checkout のため ADR 相互照合のみ対象外（配布先 checkout。SKILL 側の針と実体 pin は上で実行済み）	stop	stop	stop
+リポジトリ直下の scripts/ が無い公開 checkout のため changelog 断片検査（F 系）をスキップ（除外集合の真実源 scripts/check-release-required.sh / scripts/release-dev-toolkit.sh は SSOT 限定。この節の検査は 1 件も実行していません）	stop	stop	stop

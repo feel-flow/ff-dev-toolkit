@@ -255,7 +255,8 @@ function strip_prefix(s,   w, guard) {
 }
 # ゲート起動を含むか。対象は「赤なら止めるべき検証の入口」で、名前で拾う。ここを
 # 「あらゆるコマンド」へ広げると、診断で終わる普通のスクリプトが全部赤になる。
-function is_gate_launch(s,   w, rest, i, prefix, after) {
+function is_gate_launch(s,   w, raw) {
+  raw = s
   s = strip_prefix(s)
   # 背景実行の 1 回だけ、名簿外の起動も終了コードの主体にする。静的走査はこの変数を
   # export しないので、診断で終わる普通のスクリプトは赤にならない。echo / printf は
@@ -263,10 +264,44 @@ function is_gate_launch(s,   w, rest, i, prefix, after) {
   if (ENVIRON["ff_exit_code_any_launch"] == "1") {
     w = s
     sub(/[[:space:]].*$/, "", w)
+    # 代入だけの区間（`SP=<dir>` / `FF_DEV_TOOLKIT_ROOT="<path>"`。後ろにコマンドが続く
+    # `NAME=v cmd` は strip_prefix が代入を剥がし済み）と、シェルの状態を変えるだけの組み込み
+    # （cd / pushd / popd / export）は、ゲートの前置きであって終了コードの主体ではない。
+    # `exit` / `return` も起動ではない（`cd <dir> || exit 2` の右辺を起動に数えると、その行が
+    # 持ち越しを始めて次の行で dropped になる）。
+    # ここを起動に数えると、1 行目が `SP=…` / `cd <dir>` / `cd <dir> || exit 2` で末尾が
+    # `rc=$?; …; exit $rc` の正しい背景起動を、前置きの行を名指しした dropped / swallowed で
+    # 止めていた（Issue `#2672`、観測台帳 OBS-460 / 468 / 475 / 484）。名簿のゲート判定
+    # （下の is_named_gate）も代入を起動と見ないので、静的走査の判定と揃う。
+    # basename を剥がす前に見る（剥がすと `SP=/mnt/c/x` の `=` が消える）。
+    # ただしコマンド置換の代入（`result=$(npm test)` / `` x=`cmd` ``）の rc は置換したコマンドの
+    # rc なので起動のまま数える。区間は置換の中身・二重引用符の中身を `_` へ伏せた版なので、
+    # 生の論理行に `$(` かバッククォートがあり（line_subst。analyze が設定）、値に `_` が 3 つ以上
+    # 続く（最短の `$(a)` が 4 つ、二重引用符の中のバッククォート置換も 3 つ以上になる）か、値に
+    # 伏せられていないバッククォートがあるときを置換とみなす。値の前後に字が付く形
+    # （`result=prefix$(npm test)`）や二重引用符の中のバッククォート（`result="`npm test`"`）も
+    # 当たる。同じ行の置換と無関係な引用値（`X="abc"`）を起動に数える過大近似は止める側へ倒す。
+    # 見るのは strip_prefix で剥がす前の区間（raw）全体 — 代入を並べた 1 文（`out=$(cmd) rc=$?`）は
+    # strip_prefix が先頭の `out=…` を前置きとして剥がし、残る `rc=$?` の値には置換が無いが、
+    # `$?` は置換したコマンドの rc になる（Issue `#2683`。残った値だけを見ると、検査の失敗を
+    # `echo "EXIT=$rc"` で終える本文を素通しにしていた）。区間全体を見るので、置換を含む代入の後ろに
+    # 置換と無関係な代入を並べた 1 文（`OUT="$(mktemp)" RC=0`）も起動に数える — 代入 1 つの
+    # `OUT="$(mktemp)"` を起動に数えるのと同じ過大近似で、止める側へ倒す。
+    if (w ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
+      if (index(raw, "`") || (line_subst && raw ~ /___/)) return 1
+      return 0
+    }
+    if (w ~ /^(cd|pushd|popd|export|exit|return)$/) return 0
     sub(/^.*\//, "", w)
     if (w == "" || w == "echo" || w == "printf") return 0
     return 1
   }
+  return is_named_gate(s)
+}
+# 名簿のゲート（既定の run-all.sh と導入先の宣言）の起動か。背景実行かどうかに関わらない判定
+# （静的走査と前景の hook はこれだけを起動に数える）。
+function is_named_gate(s,   w, rest, i, prefix, after) {
+  s = strip_prefix(s)
   # 宣言は ENVIRON から読む。awk -v へ渡すと backslash が再解釈され、literal でなくなる。
   # prefix は文字列比較だけに使い、正規表現や shell として実行しない。
   rest = s
@@ -347,6 +382,21 @@ function seg_has_gate(s,   k, arr, i) {
   if (s !~ /[|]/) return 0
   k = split(s, arr, "[|]")
   for (i = 1; i <= k; i++) if (is_gate_launch(arr[i])) return 1
+  return 0
+}
+# 背景実行で起動に数える区間のうち、ファイルを用意するだけの準備の区間か。heredoc で
+# スクリプトを書く `cat` / `tee`（`cat > <script> <<'EOF'`）と、mkdir / chmod / touch / cp /
+# mv / ln / rm を準備とみなす。準備の行の rc は、次の行の別の起動へ引き継がせてよい
+# （track_gate）。判定は**引き継がれる側**で行う — 引き継ぐ側で選ぶと、`npm test` ⏎
+# `sed -n 1,20p log` ⏎ `rc=$?; exit $rc` のように検査の rc を後続のコマンドが黙って奪う形まで
+# 通してしまう（Issue `#2672` のレビューで、別モデル 2 本が独立に指摘した偽の緑）。
+function is_prep_launch(s,   w) {
+  s = strip_prefix(s)
+  w = s
+  sub(/[[:space:]].*$/, "", w)
+  sub(/^.*\//, "", w)
+  if (w ~ /^(mkdir|chmod|touch|cp|mv|ln|rm)$/) return 1
+  if (w ~ /^(cat|tee)$/ && index(s, "<<")) return 1
   return 0
 }
 # パイプの**手前の段**にゲート起動があるか（`bash tests/run-all.sh 2>&1 | tail -20` の形）。
@@ -560,6 +610,14 @@ function track_gate(line, start, m, swallowed,   segs, seps, n, n0, i, gi, last,
       # 制御構文が読む形（`if [ $? -ne 0 ]` / `case $? in`）は消費。echo / printf が読む形は
       # 診断だけなので落ちる（`; echo "EXIT=$?"` を握り潰しと見る規則と同じ）。
       g_state = 0
+    } else if (ENVIRON["ff_exit_code_any_launch"] == "1" && g_prep && gi > 0) {
+      # 背景実行では名簿外のコマンドも起動に数えるので、`cat > <script> <<EOF` や `mkdir -p x`
+      # のような準備の行も持ち越しを始める。持ち越している行が準備の行（g_prep。is_prep_launch）
+      # で次の行が別の起動なら、プロセスの終了コードを運ぶ主体はその起動へ移っただけで、準備の
+      # 行の rc を落としたことにはしない（Issue `#2672`。OBS-460 は heredoc でスクリプトを書く行を
+      # 名指しして止めた）。準備でない起動（検査・名簿のゲート）の rc は、後続の行が何であれ
+      # 従来どおり dropped にする。
+      g_state = 0
     } else {
       print g_start ":gate-exit-dropped:" g_line
       g_state = 0
@@ -576,6 +634,10 @@ function track_gate(line, start, m, swallowed,   segs, seps, n, n0, i, gi, last,
   }
   # 握り潰し（同一行）は analyze が報告済みなので、ここでは rc が次の行へどう渡るかだけを決める。
   g_state = 0; g_line = line; g_start = start
+  # 準備の行（次の行の起動へ rc を引き継がせてよい行）は、行の中の起動がすべて準備のときだけ。
+  # `mkdir -p out && npm test > log` や `npm ci && bash run-all.sh > log` は準備ではない
+  g_prep = 1
+  for (i = gi; i <= n0; i++) if (seg_has_gate(segs[i]) && !is_prep_launch(segs[i])) g_prep = 0
   if (swallowed) return
   n = n0
   while (n > gi && strip_prefix(segs[n]) == "") n--
@@ -635,6 +697,10 @@ function pipe_and_chain(m,   segs, seps, n, i, d, hit) {
 }
 function analyze(line, start,   m, k, arr, i, hit, swallowed) {
   if (index(line, "PIPESTATUS") && mask(line, 1) ~ /\$\{?PIPESTATUS/) print start ":pipestatus:" line
+  # 背景実行の起動判定がコマンド置換の代入を見分けるため（is_gate_launch）。伏せた版では `$(` と
+  # 二重引用符の中のバッククォートが消えるので生の行で見る（単一引用符の中も数える過大近似 =
+  # 止める側へ倒す）
+  line_subst = (index(line, "$(") > 0 || index(line, "`") > 0)
   m = strip_subst(mask(line))
   sub(/[[:space:]]*(;|&&|[|][|])[[:space:]]*$/, "", m)
   k = split(m, arr, SEP)

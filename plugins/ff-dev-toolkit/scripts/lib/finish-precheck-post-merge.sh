@@ -40,24 +40,16 @@ ff_precheck_post_merge_config() {
   pm_armed=1
 }
 
-# PR の変更ファイル。API の一覧が空か上限に届いた回と file 入力（全 page が揃っている保証が無い）は
-# git の差分で読み直し、読めなければ rc 2（切れた側の一致を「パスなし」へ倒さない）。
-# base が古くても差分は増える側にしか振れない。git の出力が導入先の設定で変わらないよう固定する:
-# -z はパスの引用を避ける（core.quotePath=false でも `"` や `\` を含むパスは引用され、glob に一致しない）。
-# ルートで diff.relative=false にして読む（true だと cwd の外の変更が一覧から消える）。
+# PR の変更ファイルの読み方は ff_precheck_pr_files（finish-precheck.sh。専用セキュリティゲートの記録の
+# 検査と共有）が持つ。ここは読めない回を rc 2 の停止にする（切れた側の一致を「パスなし」へ倒さない）。
 ff_precheck_post_merge_files() { # <PR JSON> <base> <head OID>
-  # gh pr view --json files が返す上限。これ未満なら一覧は全件（changedFiles=659 の PR で 100 件。2026-11-05 実測）
-  local count api_limit=100
-  # 件数は -j で読む（jq.exe は -r の行末が CRLF になり、数値比較が壊れる。ACE-2025-1）
-  count="$(printf '%s' "$1" | jq -ej '.files | if type == "array" then length else error("files") end')" \
-    || die_env "PR の変更ファイル（files）を読めません。一致なしとは読まない" "gh pr view の files を確かめて finish.sh precheck を再実行する"
-  if [[ -z "$github_input" && "$count" -gt 0 && "$count" -lt "$api_limit" ]]; then
-    printf '%s' "$1" | jq -r '.files[] | if (.path | type) == "string" then .path else error("path") end' \
-      || die_env "PR の変更ファイル（files）を読めません。一致なしとは読まない" "gh pr view の files を確かめて finish.sh precheck を再実行する"
-    return 0
-  fi
-  [[ -n "$3" ]] && git -C "$repo_root" -c diff.relative=false diff -z --name-only --no-renames "origin/${2}...${3}" 2>/dev/null | LC_ALL=C tr '\0' '\n' \
-    || die_env "PR の変更ファイルを git で読み直せません（origin/${2}...${3:-（先端不明）}）。API の一覧は切れている可能性があり、一致なしとは読まない" "$(ff_shell_argv git fetch origin "$2" "$3") で取り込むか、PR のブランチの checkout で finish.sh precheck を再実行する"
+  local rc=0
+  ff_precheck_pr_files "$1" "$2" "$3" || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) die_env "PR の変更ファイル（files）を読めません。一致なしとは読まない" "gh pr view の files を確かめて finish.sh precheck を再実行する" ;;
+    *) die_env "PR の変更ファイルを git で読み直せません（origin/${2}...${3:-（先端不明）}）。API の一覧は切れている可能性があり、一致なしとは読まない" "$(ff_shell_argv git fetch origin "$2" "$3") で取り込むか、PR のブランチの checkout で finish.sh precheck を再実行する" ;;
+  esac
 }
 
 ff_precheck_post_merge_matches() { # <パス> <要素>

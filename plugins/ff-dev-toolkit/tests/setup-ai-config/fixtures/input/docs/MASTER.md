@@ -39,7 +39,7 @@
 ## Git ワークフロー
 
 - Issue 起票 → ブランチ → 実装 → セルフレビュー → PR → マージ
-- コミットは `<type>: #<issue> <subject>`
+- コミットは `<type>: #<issue> <subject>`（マージ後の項目が残る Issue は `<type>(#<issue>): <subject>` と `Refs #<issue>`）
 - PR に Issue リンク（例: `Closes #123`）を含める
 
 ## ドキュメント索引

@@ -16,6 +16,9 @@
 #     「checkout〜fetch step の間に入った push」で ref が先行する経路は、workflow 側が
 #     actions/checkout の置いた remote-tracking ref を live の先端で上書きしないことで塞いで
 #     ある — 本スクリプトの判定は変えていないので、先行した ref を渡されれば従来どおり exit 2
+#   - `--base-commit <sha>`: 基準を渡された commit に固定し、fetch しない（HEAD の祖先であることは確かめる）。
+#     知見のまとめるモード（ADR-083）で、書き込みの起点を決めた時点の origin/<default> を基準にするための
+#     入口。起点を決めた後に base が進んでも、知見の claim はその時点の base に対して作って検証する
 set -euo pipefail
 
 # ff-dev-toolkit-script-root-guard:start
@@ -185,15 +188,17 @@ ff_assert_script_plugin_root "${BASH_SOURCE[0]}" || exit 2
 
 root=""
 snapshot_head=""
+base_commit_pin=""
 path_list=""
 cleanup() { [[ -z "$path_list" ]] || rm -f "$path_list"; }
 trap cleanup EXIT
 trap 'exit 130' HUP INT TERM
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --root) shift; [[ $# -gt 0 ]] || { echo "Usage: $0 [--root <repository>]" >&2; exit 2; }; root="$1" ;;
+    --root) shift; [[ $# -gt 0 ]] || { echo "Usage: $0 [--root <repository>] [--base-commit <sha>]" >&2; exit 2; }; root="$1" ;;
     --snapshot-head) shift; [[ $# -gt 0 && "$1" =~ ^[0-9a-f]{40}$ ]] || exit 2; snapshot_head="$1" ;;
-    *) echo "Usage: $0 [--root <repository>]" >&2; exit 2 ;;
+    --base-commit) shift; [[ $# -gt 0 && "$1" =~ ^[0-9a-f]{40}$ ]] || { echo "Usage: $0 [--root <repository>] [--base-commit <40桁の sha>]" >&2; exit 2; }; base_commit_pin="$1" ;;
+    *) echo "Usage: $0 [--root <repository>] [--base-commit <sha>]" >&2; exit 2 ;;
   esac
   shift
 done
@@ -225,6 +230,12 @@ resolve_fresh_base() {
   if [[ -n "${snapshot_head:-}" ]]; then
     [[ "$(git -C "$root" rev-parse HEAD)" == "$snapshot_head" ]] || { echo "✗ 固定した release HEAD と checkout が一致しません" >&2; return 2; }
     default_base="$snapshot_head"
+    return 0
+  fi
+  if [[ -n "${base_commit_pin:-}" ]]; then
+    git -C "$root" cat-file -e "${base_commit_pin}^{commit}" 2>/dev/null || { echo "✗ --base-commit の commit を解決できません: ${base_commit_pin}" >&2; return 2; }
+    git -C "$root" merge-base --is-ancestor "$base_commit_pin" HEAD || { echo "FF_STALE_BASE=--base-commit" >&2; echo "✗ --base-commit（${base_commit_pin:0:12}）が HEAD の祖先ではありません" >&2; return 2; }
+    default_base="$base_commit_pin"
     return 0
   fi
   default_ref="$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" || { echo "✗ origin/HEAD を解決できません" >&2; return 2; }

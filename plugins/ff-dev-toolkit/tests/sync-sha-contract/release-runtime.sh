@@ -343,7 +343,7 @@ if [[ -f "$RELEASE_RT_STATE/runall.media-render-skip" ]]; then echo "    ○ ski
 # OS 限定の検査が Linux / macOS で出す skip（guard-review-in-flight の (w1)〜(w5) と同じ文言。Issue `#2033`）
 if [[ -f "$RELEASE_RT_STATE/runall.os-limited-skip" ]]; then echo "  ○ skip: (w1)〜(w5) はドライブ付きのパスを扱う、Windows の Git Bash でだけ成立する検査のため未実行"; fi
 # bash 版限定の検査が macOS 標準の bash 3.2 で出す skip（retrospective-stop-hook / skill-drift-check と同じ文言。Issue `#2077`）
-if [[ -f "$RELEASE_RT_STATE/runall.bash4-limited-skip" ]]; then echo "  ○ skip: サブシェル数の検査（bash 3 系には BASHPID が無い）は、bash 4 以上でだけ成立する検査のため未実行"; fi
+if [[ -f "$RELEASE_RT_STATE/runall.bash4-limited-skip" ]]; then echo "  ○ skip: 壁時計が戻る回の再現（/bin/bash 3 系は時間切れを rc 1 で返す）は、bash 4 以上でだけ成立する検査のため未実行"; fi
 # bwrap の無いホストで decision-tree が出す skip（同じ文言。Issue `#2457`）
 if [[ -f "$RELEASE_RT_STATE/runall.bwrap-skip" ]]; then echo "  ○ skip: bwrap が無いため sandbox 上の経路判定は未検査（J0 の静的固定は実施済み）"; fi
 echo "suites: total=3 run=3 passed=3 failed=0 skipped=0 not-run=0"
@@ -429,6 +429,9 @@ cp "$REPO_ROOT/scripts/lib/release-in-flight-functions.sh" "$REPO_ROOT/scripts/l
   "$REPO_ROOT/scripts/lib/release-hook-functions.sh" "$SSOT/scripts/lib/"
 # Local stage regressions predate GitHub coordination. Restore the actual
 # coordinator below for the two-clone handoff and fixed-HEAD cases.
+mkdir -p "$SSOT/plugins/ff-dev-toolkit/tests/lib"
+cp "$REPO_ROOT/plugins/ff-dev-toolkit/tests/lib/release-skip-profile.sh" \
+  "$REPO_ROOT/plugins/ff-dev-toolkit/tests/lib/release-skip-profile.tsv" "$SSOT/plugins/ff-dev-toolkit/tests/lib/"
 printf '%s\n' 'issue_begin() { :; }' 'issue_require_execution_arguments() { :; }' >>"$SSOT/scripts/lib/release-issue-functions.sh"
 cp "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/commit-identity-functions.sh" "$SSOT/plugins/ff-dev-toolkit/scripts/lib/"
 cp "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/github-input.sh" "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/abs-path.sh" "$SSOT/plugins/ff-dev-toolkit/scripts/lib/"
@@ -727,7 +730,7 @@ fi
 rm -f "$STATE/public-layout.red"
 : >"$STATE/runall.unknown-skip"
 run_orch
-if [[ "$RC" -eq 1 ]] && has "NG: [gate] 許容表に無い部分 skip がある" \
+if [[ "$RC" -eq 1 ]] && has "NG: [gate] OS 別プロファイルで部分 skip を許可できない" \
   && ! has "npm ci --prefix plugins/ff-media-toolkit" \
   && [[ "$(git -C "$PUB_ORIGIN" log -1 --format=%s main)" != *"$(git -C "$SSOT" rev-parse --short HEAD)"* ]]; then
   ok "許容表に無い部分 skip はゲートで止まり、同期しない（当たらないヒントは停止文へ足さない）"
@@ -740,9 +743,9 @@ rm -f "$STATE/runall.unknown-skip"
 : >"$STATE/runall.media-typecheck-skip"
 run_orch
 # ヒントは stop の「次の一手:」行（既定の案内の後ろ）に付く。別の echo や理由側（$1）に紛れた形を緑にしない
-_next_step="$(printf '%s\n' "$OUT" | grep -F '次の一手: 環境 skip（' || true)"
-if [[ "$RC" -eq 1 ]] && has "NG: [gate] 許容表に無い部分 skip がある" \
-  && [[ "$_next_step" == *' / npm ci --prefix plugins/ff-media-toolkit --no-audit --no-fund'* ]]; then
+_next_step="$(printf '%s\n' "$OUT" | grep -F '次の一手: ' || true)"
+if [[ "$RC" -eq 1 ]] && has "NG: [gate] OS 別プロファイルで部分 skip を許可できない" \
+  && [[ "$_next_step" == *'npm ci --prefix plugins/ff-media-toolkit --no-audit --no-fund'* ]]; then
   ok "ff-media の typecheck skip はゲートで止まり、次の一手が型検査用 npm ci を名指しする"
 else
   bad "typecheck の環境 skip で止まらない・次の一手が npm ci を名指ししない (rc=$RC)"; dump
@@ -764,8 +767,8 @@ rm -f "$STATE/runall.media-typecheck-skip"
 : >"$STATE/runall.bwrap-skip"
 printf '%s\n' Linux >"$STATE/uname.os"
 run_orch
-_next_step="$(printf '%s\n' "$OUT" | grep -F '次の一手: 環境 skip（' || true)"
-if [[ "$RC" -eq 1 ]] && has "NG: [gate] 許容表に無い部分 skip がある" && [[ "$_next_step" == *'bubblewrap を入れて'* ]]; then
+_next_step="$(printf '%s\n' "$OUT" | grep -F '次の一手: ' || true)"
+if [[ "$RC" -eq 1 ]] && has "NG: [gate] OS 別プロファイルで部分 skip を許可できない" && [[ "$_next_step" == *'bubblewrap を入れて'* ]]; then
   ok "Linux の gate は bwrap 不在の skip で止まり、次の一手が bubblewrap の導入を名指しする"
 else
   bad "Linux の gate が bwrap 不在の skip で止まらない・次の一手が bubblewrap を名指ししない (rc=$RC)"; dump

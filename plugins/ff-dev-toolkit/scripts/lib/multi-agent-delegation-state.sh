@@ -213,6 +213,12 @@ guard_and_select_delegation_generation() {
     pending="$(delegation_pending_entries "$DELEGATION_PREVIOUS_GENERATION")" || return 1
     if [[ "$RESUME" == true && "$head" == "$DELEGATION_PREVIOUS_HEAD" && -n "$pending" \
       && "$RESUME_IDENTITY" != "$DELEGATION_PREVIOUS_IDENTITY" ]]; then
+      # Adopt the saved generation and its resume cache when only the base moved forward
+      # and the fixed diff is unchanged. The cache key is the original identity.
+      if resume_base_advance_compatible "$DELEGATION_PREVIOUS_MANIFEST" "$RESUME_INPUT_MANIFEST"; then
+        RESUME_IDENTITY="$DELEGATION_PREVIOUS_IDENTITY"
+        return 0
+      fi
       echo 'ERROR: --resume input differs from the initial host delegation at the same HEAD.' >&2
       print_resume_manifest_changes "$DELEGATION_PREVIOUS_MANIFEST" "$RESUME_INPUT_MANIFEST"
       echo '       To adopt these responses, restore the changed input components and the original config-selection environment.' >&2
@@ -220,6 +226,7 @@ guard_and_select_delegation_generation() {
       printf '       %s\n' "$DELEGATION_PREVIOUS_INVOCATION" >&2
       echo '       For intentional input changes, keep these responses and start a new round without --resume.' >&2
       echo '       No response, handoff, report or cache was changed.' >&2
+      print_resume_base_reject_guidance "$DELEGATION_PREVIOUS_MANIFEST" "$RESUME_INPUT_MANIFEST"
       return 1
     fi
     if [[ "$head" == "$DELEGATION_PREVIOUS_HEAD" && "$RESUME_IDENTITY" == "$DELEGATION_PREVIOUS_IDENTITY" ]]; then

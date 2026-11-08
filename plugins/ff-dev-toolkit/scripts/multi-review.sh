@@ -327,5 +327,34 @@ case "$ROUTE" in
   *) echo "ERROR: --route must be fast|full|none (got: ${ROUTE})" >&2; exit 2 ;;
 esac
 
+# Omitted AC is injected by multi-agent. An explicit --description, including an empty
+# string, wins and does not fetch. Help, list, archive and dry-run do not fetch either.
+review_ac_auto=true
+review_ac_skip_value=false
+for review_ac_arg in ${ARGS[@]+"${ARGS[@]}"}; do
+  if [[ "$review_ac_skip_value" == true ]]; then
+    review_ac_skip_value=false
+    continue
+  fi
+  case "$review_ac_arg" in
+    --description|--description=*)
+      review_ac_auto=false
+      [[ "$review_ac_arg" == --description ]] && review_ac_skip_value=true
+      ;;
+    --dry-run|--help|-h|--list-perspectives|--print-reviewers|--archive-only|--archive-only=*|--set-reviewers)
+      review_ac_auto=false
+      [[ "$review_ac_arg" == --set-reviewers ]] && review_ac_skip_value=true
+      ;;
+    --base|--output-dir|--config|--timeout|--cli|--perspective|--exclude-cli|--exclude-perspective|--mode|--strategy|--require-prior-review|--continue-review|--github-input)
+      review_ac_skip_value=true
+      ;;
+  esac
+done
+unset review_ac_arg review_ac_skip_value
+if [[ "$review_ac_auto" == true ]]; then
+  ARGS+=(--review-ac-auto)
+fi
+unset review_ac_auto
+
 exec bash "$SCRIPT_DIR/multi-agent.sh" --task review ${ARGS[@]+"${ARGS[@]}"} \
   --wrapper-route "${ROUTE:-none}" --invocation-display "$REVIEW_INVOCATION"

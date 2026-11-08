@@ -152,6 +152,27 @@ Closes 対象の Issue 本文に未チェックの `- [ ]` が残る回は `PREC
 
 設定の検査は PR を読む前に行う。片方だけの設定、空の要素、前後の空白、制御文字、`/` か `./` で始まるパスは rc 2。Closes 対象がある回は、`FF_POST_MERGE_PATHS` の各要素が追跡中のファイルかこの PR の変更ファイルに 1 つは当たることも確かめ、当たらない要素を名指しして rc 2 にする（誤字や改名で毎回 `no-path` になり、判定が黙って消えるのを防ぐ）。両方とも未設定の導入先は、取得も出力も従来と同じ。
 
+<a id="security-record-gate"></a>
+
+**専用セキュリティゲートの記録**: セキュリティに関わる変更の PR は、本文に専用セキュリティゲートの結果を 1 行残す（規定は [self-review.md](../../../docs-template/05-operations/deployment/self-review.md#レビュー担当の選択と利用制限時の継続) の専用セキュリティゲート項）。散文の規定だけでは記録が落ちるので、precheck が全ホスト共通で確かめる。PR の変更ファイル（読み方は上のマージ後工程の判定と同じで、100 件に届いた回は git の差分で読み直す）を `review-route.sh --files-from -` で分類し、プロジェクト設定 `review.security_*` も同じ解決で効かせる。
+
+| `SECURITY_RECORD_GATE` | 条件 | 止めるか |
+| --- | --- | --- |
+| `not-required` | 該当なし（`SECURITY_SENSITIVE=no`） | 止めない |
+| `off` | `security_review=off`（分類できない回も含む） | 止めない |
+| `recorded` | 該当（判定不能を含む）で、本文に記録行がある。一致した行を `SECURITY_RECORD=` に出す | 止めない |
+| `missing` | 該当（判定不能を含む）で、本文に記録行が無い | `PRECHECK=blocked`（rc 1） |
+
+記録行として認めるのは、本文の可視行（フェンスと HTML コメントの外）のうち次をすべて満たす行。
+
+- `専用セキュリティゲート` が行頭（字下げ・リスト記号・番号・強調の後）にある。地の文の言及やインラインコードの記入例と、引用（`>`）の中の行は数えない
+- その後に `:` か `：` が続く（強調の `**` は挟んでよい）
+- 値の頭（最初の括弧 `（` / `(` の前）が「実施」「未確認」「未対応」で終わる。括弧の中（根拠の path・理由）の語は数えない
+
+「対象外」「未実施」「実施しない」「を実施する」「実施予定」と、`REVIEW_SECURITY_REPORT_LINE` を貼っただけの「… を実行する（…）」は結果の無い行なので数えない。変更ファイルを読めない・変更が 0 件・設定を読めない・ルータが判定行を返さない回は該当なしへ倒さず `SECURITY_SENSITIVE=unknown` と `SECURITY_UNKNOWN_REASON=` を出して記録を求める（`off` の回も理由は出す）。根拠の path は `SECURITY_EVIDENCE=` に出す。先に別の停止理由があれば、記録の欠落は「／さらに」で併記する。
+
+止まったら、主担当の専用セキュリティゲートを実行して結果の行を本文に書く。実行できない回と、glob の誤検知と判断した回は「専用セキュリティゲート: 未確認（<理由>）」を書く（逃げ道の ack は持たない。理由が PR に残ることが記録の目的）。API の一覧が切れていて git の差分も読めなかった回は、案内の `git fetch origin <base> <head>` で取り込めば分類できる。導入先として専用ゲート自体を使わない場合は `review.security_review: "off"` を設定する。設定ファイルを読むには yq が要るので、yq の無い環境では環境変数 `MULTI_AGENT_SECURITY_REVIEW=off` を使う（yq が無いまま設定ファイルに書くと、読めない設定として全 PR が `unknown` で止まる）。
+
 `FF_MERGE_DELETE_SEPARATE` が未設定または `0` のときは上の削除判定のまま。`1` のときは worktree の一覧を見ず、`DELETE_BRANCH_MODE=separate-consumer` と `DELETE_BRANCH_NOTE` を出し、`MERGE_COMMAND` は `gh pr merge` だけにする（`--delete-branch` も削除の尾もフック回避の代入も付けない）。それ以外の値（空文字を含む）は PR を読む前に rc 2。
 
 <!--fc99bbf7dcc3f9a7-->

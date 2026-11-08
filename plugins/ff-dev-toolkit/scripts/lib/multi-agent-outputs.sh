@@ -719,6 +719,14 @@ compute_resume_input_manifest() {
     printf 'base-ref=%s\nbase-oid=%s\nhead=%s\n' "$BASE_BRANCH_IDENTITY" "$base_oid" "$head_oid"
     printf 'staged=%s\ninclude-diff=%s\n' "$STAGED_DIFF" "$INCLUDE_DIFF"
     hash_text_value description "$DESCRIPTION" || return 1
+    if [[ "$REVIEW_AC_AUTO" == true && "$DESCRIPTION_EXPLICIT" != true && "$REVIEW_AC_UNAVAILABLE" == true ]]; then
+      # AC を取らずに続行した回。auto と書くと、再開が無い snapshot を要求して止まる。
+      printf '%s\n' 'review-ac=unavailable'
+    elif [[ "$REVIEW_AC_AUTO" == true && "$DESCRIPTION_EXPLICIT" != true ]]; then
+      printf '%s\n' 'review-ac=auto'
+    else
+      printf '%s\n' 'review-ac=off'
+    fi
     printf '%s\n' "$plan_sorted" | sed 's/^/plan=/'
     hash_resume_config || return 1
     hash_file_or_missing orchestrator "${SCRIPT_DIR}/multi-agent.sh" || return 1
@@ -786,6 +794,51 @@ print_resume_manifest_changes() { # <prior manifest> <current manifest>; bounded
   done
   if [[ "$count" -gt 8 ]]; then changed="${changed}, ..."; fi
   [[ "$count" -eq 0 ]] || printf '       Resume input components changed (%s): %s\n' "$count" "$changed" >&2
+  return 0
+}
+
+resume_manifest_without_base() {
+  LC_ALL=C awk 'index($0, "base-oid=") != 1 && index($0, "base-ref=") != 1'
+}
+
+resume_manifest_value() { # <manifest> <key>
+  printf '%s\n' "$1" | LC_ALL=C awk -v key="$2" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }'
+}
+
+# Same fixed-diff and an ancestor base OID. base-ref spelling is not an identity of its own,
+# so --base <recorded OID> is not a second rejection. Staged diffs and missing objects are not commits.
+resume_base_advance_compatible() { # <prior manifest> <current manifest>
+  local prior="$1" current="$2" prior_rest current_rest prior_oid current_oid
+  prior_rest="$(printf '%s\n' "$prior" | resume_manifest_without_base)" || return 1
+  current_rest="$(printf '%s\n' "$current" | resume_manifest_without_base)" || return 1
+  [[ "$prior_rest" == "$current_rest" ]] || return 1
+  prior_oid="$(resume_manifest_value "$prior" base-oid)"
+  current_oid="$(resume_manifest_value "$current" base-oid)"
+  [[ "$prior_oid" =~ ^[0-9a-f]{40}$ || "$prior_oid" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ "$current_oid" =~ ^[0-9a-f]{40}$ || "$current_oid" =~ ^[0-9a-f]{64}$ ]] || return 1
+  git -C "$REPO_ROOT" merge-base --is-ancestor "$prior_oid" "$current_oid"
+}
+
+print_resume_base_reject_guidance() { # <prior manifest> <current manifest>
+  local prior="$1" current="$2" prior_rest current_rest prior_oid current_oid prior_ref
+  prior_rest="$(printf '%s\n' "$prior" | resume_manifest_without_base)" || return 0
+  current_rest="$(printf '%s\n' "$current" | resume_manifest_without_base)" || return 0
+  prior_oid="$(resume_manifest_value "$prior" base-oid)"
+  current_oid="$(resume_manifest_value "$current" base-oid)"
+  # base 以外が変わっただけなら、綴りや OID の手順では再開できない。
+  if [[ "$prior_oid" == "$current_oid" && "$prior_rest" != "$current_rest" ]]; then
+    return 0
+  fi
+  prior_ref="$(resume_manifest_value "$prior" base-ref)"
+  echo "       Recorded base OID: ${prior_oid}" >&2
+  echo "       Recorded base ref: ${prior_ref}" >&2
+  # 綴りを保てという行は、固定差分が同じ拒否だけ。差分が変わった再開は OID を渡しても通らない。
+  if [[ "$prior_rest" == "$current_rest" ]]; then
+    echo "       Keep the original --base spelling." >&2
+  fi
+  echo "       Do not rewrite refs/remotes/origin/develop." >&2
+  echo "       Passing --base <recorded OID> is not a second base-ref rejection when the diff hash is unchanged." >&2
+  echo "       If the diff hash changed, or the recorded OID is not an ancestor of the current base, start a new round without --resume." >&2
   return 0
 }
 

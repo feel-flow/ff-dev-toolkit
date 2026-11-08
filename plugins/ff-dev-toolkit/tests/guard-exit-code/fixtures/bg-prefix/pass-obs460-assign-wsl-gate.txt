@@ -1,0 +1,3 @@
+S=/mnt/c/scratch
+wsl.exe --exec bash /mnt/c/repo/plugins/ff-dev-toolkit/tests/run-all.sh > "$S/run-all.log" 2>&1
+rc=$?; echo "EXIT=$rc"; exit $rc

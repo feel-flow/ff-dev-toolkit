@@ -841,7 +841,7 @@ if [ "$ON_WINDOWS" -eq 1 ]; then
     bad "T: %TEMP%（${TEMP:-未設定}）の下に一時ディレクトリを作れない"
   fi
 else
-  # 理由文はリリースの部分 skip 許容表（scripts/release-dev-toolkit.sh の ALLOWED_SKIP_PATTERNS）の OS 限定の文言に合わせる。
+  # 理由文はリリースの部分 skip プロファイル（release-skip-profile.tsv）の OS 限定の文言に合わせる。
   # 表に無い理由行は、Windows 以外で回すリリースの gate 段を止める（OBS-434）
   echo "  ○ skip: Windows の Git Bash でだけ成立する検査のため未実行（T 節: %TEMP% の祖先の ACL の経路。作業ディレクトリの外は E 節が見る）"
 fi

@@ -91,6 +91,38 @@ def tasks_csv(value):
     return set(values)
 
 
+def is_ancestor_commit(old, new):
+    """False when either object is missing. A commit is an ancestor of itself."""
+    if not old or not new:
+        return False
+    result = subprocess.run(['git', 'merge-base', '--is-ancestor', old, new],
+                            capture_output=True)
+    return result.returncode == 0
+
+
+def diff_at(base_oid, head_oid):
+    data = subprocess.check_output(
+        ['git', 'diff', '--binary', base_oid + '...' + head_oid])
+    return hashlib.sha256(data).hexdigest()
+
+
+def base_advance_ok(older, newer_base):
+    """Accept a base move only when the recorded diff at the recorded HEAD is unchanged.
+
+    The comparison head is the recorded one. A later fix commit must not look like a
+    diff change, and a move that is not an ancestor (rebase, missing object) is rejected.
+    """
+    if older['base'] == newer_base:
+        return True
+    if not is_ancestor_commit(older['base'], newer_base):
+        return False
+    try:
+        actual = diff_at(newer_base, older['head'])
+    except subprocess.CalledProcessError:
+        return False
+    return actual == older['diff']
+
+
 def inspect(record, seen=None):
     """Validate archived lineage; never infer successful tasks from Markdown prose."""
     seen = set() if seen is None else set(seen)
@@ -131,14 +163,21 @@ def inspect(record, seen=None):
     prior = record.get('prior')
     if prior:
         inspect(prior, seen)
-        if prior['subject'] != record['subject'] or prior['finished_ns'] > record['started_ns']:
+        if prior['finished_ns'] > record['started_ns']:
+            raise ValueError('prior review order/subject mismatch')
+        for key in ('root', 'branch', 'base_ref', 'head', 'remotes', 'diff'):
+            if prior['subject'][key] != record['subject'][key]:
+                raise ValueError('prior review order/subject mismatch')
+        if not base_advance_ok(prior['subject'], record['subject']['base']):
             raise ValueError('prior review order/subject mismatch')
     parent = record.get('parent')
     if parent:
         previous = inspect(parent, seen)
-        for key in ('root', 'branch', 'base_ref', 'base', 'remotes'):
+        for key in ('root', 'branch', 'base_ref', 'remotes'):
             if parent['subject'][key] != record['subject'][key]:
                 raise ValueError('partial review lineage changed ' + key)
+        if not base_advance_ok(parent['subject'], record['subject']['base']):
+            raise ValueError('partial review lineage changed base')
         ancestor(parent['subject']['head'], record['subject']['head'])
         if parent['finished_ns'] > record['started_ns'] or not complete <= previous:
             raise ValueError('partial review has no matching full-review coverage')
@@ -151,16 +190,41 @@ def inspect(record, seen=None):
 
 def verify(record, args, historical=False):
     coverage = inspect(record)
-    current = subject(record['subject']['base_ref'], args.output)
+    try:
+        current = subject(record['subject']['base_ref'], args.output)
+    except subprocess.CalledProcessError:
+        # An unrelated root has no merge base, so the three-dot diff cannot be read.
+        # That is a rejected base move, not an uncaught git failure.
+        if historical:
+            raise ValueError('previous review subject changed base')
+        raise ValueError('review evidence does not match current HEAD/base/repository')
+    accepted_advance = False
     if historical:
-        for key in ('root', 'branch', 'base_ref', 'base', 'remotes'):
+        for key in ('root', 'branch', 'base_ref', 'remotes'):
             if current[key] != record['subject'][key]:
                 raise ValueError('previous review subject changed ' + key)
+        if not base_advance_ok(record['subject'], current['base']):
+            raise ValueError('previous review subject changed base')
+        if current['base'] != record['subject']['base']:
+            accepted_advance = True
         ancestor(record['subject']['head'], current['head'])
-    elif current != record['subject']:
-        raise ValueError('review evidence does not match current HEAD/base/repository')
-    if args.base and git('rev-parse', args.base + '^{commit}') != record['subject']['base']:
-        raise ValueError('review evidence base mismatch')
+    else:
+        for key in ('root', 'branch', 'base_ref', 'head', 'remotes', 'diff'):
+            if current[key] != record['subject'][key]:
+                raise ValueError('review evidence does not match current HEAD/base/repository')
+        if not base_advance_ok(record['subject'], current['base']):
+            raise ValueError('review evidence does not match current HEAD/base/repository')
+        if current['base'] != record['subject']['base']:
+            accepted_advance = True
+    if args.base:
+        resolved = git('rev-parse', '--verify', args.base + '^{commit}')
+        if resolved != record['subject']['base']:
+            if not base_advance_ok(record['subject'], resolved):
+                raise ValueError('review evidence base mismatch')
+            accepted_advance = True
+    if accepted_advance:
+        # Diagnostic only. stdout stays the perspective CSV, and the receipt is not rewritten.
+        print('base advanced, diff unchanged', file=sys.stderr)
     if not tasks_csv(args.required) <= coverage:
         raise ValueError('missing required review perspectives')
     if args.prior_required:

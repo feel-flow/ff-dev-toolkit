@@ -540,7 +540,9 @@ run_single_task() {
 
   local extra_args=()
   extra_args+=(--task-type "$TASK_TYPE")
-  if [[ -n "$DESCRIPTION" ]]; then
+  if [[ -n "$DESCRIPTION_FILE" ]]; then
+    extra_args+=(--description-file "$DESCRIPTION_FILE")
+  elif [[ -n "$DESCRIPTION" ]]; then
     extra_args+=(--description "$DESCRIPTION")
   fi
   # 固定した diff を全タスクへ配る。渡さなかった場合はアダプタが自分で git から取る

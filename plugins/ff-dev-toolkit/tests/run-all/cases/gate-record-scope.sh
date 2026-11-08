@@ -160,3 +160,4 @@ SH
   fi
   rm -rf "$_gs_dir"
 fi
+# suite-cases-end: gate-record-scope.sh

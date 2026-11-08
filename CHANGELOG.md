@@ -20,6 +20,39 @@
 
 ## [Unreleased]
 
+## [0.179.0] - 2026-11-08
+
+### 追加
+
+- レビュー時に説明文を明示しなかった場合、PR が参照する Issue の受け入れ条件と完了条件を各観点へ自動で渡します。gh とホスト取得ファイルに対応し、取得不足は理由を表示して続行します。明示した説明文が優先され、空文字の指定も自動取得をしません。再開時は最初の入力を保持し、長い本文は引数ではなく説明ファイルで渡します。python3 が無い、またはスナップショットを読めないときは、同じ HEAD の再利用を除き理由を出して AC なしで継続します。AC なしで継続した回は再開の入力記録へ review-ac=unavailable と残し、同じ HEAD の再開も AC なしで揃えるので、python3 の無いホストでも委譲の結果を --resume で取り込めます。AC を取得した回の再利用中に読めないときは、元の入力を失わないよう拒否します。
+- `/close-issue` のマージ前検査（`finish.sh precheck`）が、専用セキュリティゲートの記録を確かめるようになった。PR の変更ファイルを `review-route.sh` と同じ判定（プロジェクト設定 `review.security_*` を含む）で分類し、セキュリティに関わる変更（判定できない回・変更 0 件を含む）なのに PR 本文に記録行が無ければ `PRECHECK=blocked` で止める。記録行として認めるのは、行頭の「専用セキュリティゲート」の後にコロンが続き、値の頭（最初の括弧の前）が「実施」「未確認」「未対応」で終わる行（例: 「専用セキュリティゲート: /security-review 実施（指摘 0 件）」「専用セキュリティゲート: 未確認（理由）」）。「対象外」「未実施」「を実施する」、報告行を貼っただけの「… を実行する（…）」、地の文やインラインコードの中の記入例、フェンスと HTML コメントの中の行は数えない。変更ファイルの一覧が API の上限（100 件）に届いた回は git の差分で読み直し、読み直せない回は `git fetch` での取り込みを案内する。出力に `SECURITY_SENSITIVE=` / `SECURITY_EVIDENCE=` / `SECURITY_UNKNOWN_REASON=` / `SECURITY_RECORD_GATE=not-required|off|recorded|missing` / `SECURITY_RECORD=` を足した。止まったら主担当の専用セキュリティゲートの結果を本文に書くか、実行できない回・誤検知と判断した回は「専用セキュリティゲート: 未確認（理由）」を書く。専用ゲートを使わない導入先は `.claude/agent-config.yaml` に `review.security_review: "off"` を設定する（読むには yq が要る。無い環境では環境変数 `MULTI_AGENT_SECURITY_REVIEW=off`）。
+- 知見（ACE Playbook と観測台帳）の反映を「マージごと」（既定・挙動は従来どおり）と「まとめて」から選べるようにした。`docs/08-knowledge/knowledge-delivery.conf` に `mode=batch` をコミットすると、`/ace-curate` と `/retrospective` は知見専用ブランチ（既定 `knowledge/staging`）へ書き、base は進めない。照合・`Count`・OBS の採番は未反映の知見を含むツリーで行うので、並行セッションでも二重計上や番号の衝突は起きない
+- `finish.sh knowledge-commit target` を追加した（書き込み先を決めて起点へ移る。`probe` もまとめるモードでは先に同じ処理を行う）。`finish.sh knowledge-commit flush` は未反映の知見を merge commit 1 つで base へ反映する（`--pr` は使い捨てのブランチから PR、`--dry-run` は件数と変更するパスの確認）。merge commit は `git merge-tree --write-tree` と `git commit-tree` で作業ツリーに触れずに作るので、検査より前に checkout も hook の実行も起きない（git 2.38 以上が要る）。どちらも LLM の API キーや CI 専用の認証情報には依存しない
+- 知見専用ブランチに載せてよいのは知見の置き場（`docs/08-knowledge/` と、その version claim）の変更だけにした。それ以外の変更（置き場の中のシンボリックリンクと、反映の設定ファイル自身を含む）があると `target` / `push` / `flush` は checkout も merge もせずに止まる。検査は合わせたツリーそのものに対して行う。起点へ移った後は、push の成功時と追記 0 件の push で元のブランチ（detached から始めた回は元のコミット）へ戻る
+- まとめるモードでは、未反映の件数と最古の経過日数を `target` / `probe` / `push` の出力に出し、最古が `warn_after_days`（既定 7 日）に達したら警告する。base への知見の直接 push と知見 PR は止める。`.version-claims` の claim は起点を決めた時点の base を基準に作って検証する（`check-version-claims.sh --base-commit`）
+- `/knowledge-lookup` は、まとめるモードのとき未反映の知見も「未反映」（TSV の status は `unreflected`）として返す。staging 側で変わり、まだ base に無いエントリだけを返し（共通の祖先が複数でも、base の先端に同じ本文があれば数えない）、staging か base の追跡 ref が古い・`--offline` のときは、RECORD 行にその旨を書く
+- docs-template の ace-cycle.md に、反映の時期の選び方・切り替え方・導入先で外れる点の書き方を追加した
+
+### 変更
+
+- レビュー証跡の検証と継続は、記録した base のコミットが現在の base の祖先で、記録した HEAD に対する差分ハッシュが同じとき、証跡を取り直さずに受け入れます。受け入れ理由は標準エラーへ base advanced, diff unchanged とだけ出し、標準出力の観点一覧と既存の receipt と report は書き換えません。祖先でない移動、オブジェクトの欠落、差分ハッシュが変わる前進は拒否します。レビュー完了時の同一 subject 検査は従来どおりです。
+- 先行証跡または継続証跡があるレビューが失敗したとき、再実行案内は --resume を付けたコマンドを出さず、同じ出力先で失敗した観点が別の CLI で終わるコマンドを出します。cross-model と distributed は失敗した CLI を --exclude-cli に指定した元のコマンドです。その CLI を名指ししている --cli と、--exclude-cli と併用できない --route full / fast は案内から外します。pair で主が失敗したときと、副が失敗して総合観点が残るときは、主を --exclude-cli で外さず、MULTI_AGENT_REVIEW_MAIN で別の主をこの実行だけ案内します。副の総合観点は MULTI_AGENT_REVIEW_SUB を空にし、--perspective comprehensive-review でその主へ移します。--set-reviewers は保存して終わるので案内コマンドには入れません。案内に出す MULTI_AGENT_REVIEW_MAIN と MULTI_AGENT_REVIEW_SUB は公開面の契約へ移します。--cli と --exclude-cli の同時指定そのものは拒否したままです。pair の主を --exclude-cli で外す拒否も残します。先行・継続証跡が無い通常の失敗は、これまでどおり --resume を案内します。自動取得した受け入れ条件の本文は失敗案内の --description へ展開せず、再実行は取得をやり直します。明示した説明文だけを案内に残します。キーワード一覧が空または形式外のときも理由を出して AC なしで継続します。取得失敗の診断には取得先の先頭 1 行を添えます。差分ハッシュが変わる resume の拒否でも記録した base の識別子と remote-tracking ref を書き換えない手順を出し、綴りを保てという行は差分が同じ拒否だけにします。失敗した CLI は代替主の候補から外し、フィルタ無しの pair は総合観点だけに縮めません。distributed で --cli を付けた実行は、残った --cli が失敗 CLI の担当観点をプランから落とすため、案内は --cli を全部外し、その実行の観点を --perspective で残してから --exclude-cli を足します。CLI 1 つと観点を明示した distributed は、--cli を外すと担当表に無い観点が消えるため、失敗した CLI の --cli を代替 CLI の --cli へ置き換えます。--mode を省いて --cli だけで distributed になった実行は、案内へ --mode distributed を固定します。案内は新しい起動なので、元の実行が起動時だけの環境変数から得た入力も解決済みの値で固定します。base（MULTI_AGENT_BASE_BRANCH を含む）は --base または --staged、明示した設定ファイル（MULTI_AGENT_CONFIG を含む）は --config、pair の主と副（MULTI_AGENT_REVIEW_MAIN / MULTI_AGENT_REVIEW_SUB を含む）は環境変数の前置で出します。照合も計画の担当も変えない入力（timeout・モデル等）は固定しません。主を差し替える案内に足す観点は、その実行が実際に組んだ観点です（主と副が同じ pair は総合観点を足しません）。値を取るオプションの値は、オプション名に見えても値として残します。--route full / fast は --wrapper-route からも外し、--invocation-display は除外の案内でも主の差し替え案内でも常に外します（残すと委譲のハンドオフが元のコマンドを再実行させ、失敗した CLI へ戻ります）。自動取得の失敗案内は取得元の index も残します。診断行の不正な文字ではレビューを止めません。
+- ホスト委譲の --resume は、記録した base のコミットが現在の base の祖先で固定差分のハッシュが同じとき、base のコミット識別子だけが進んだ状態でも同じ世代の委譲結果を採用します。記録した --base の綴りをコミット識別子へ変えた再開も、同じ条件なら base-ref の不一致としては拒否しません。差分ハッシュが変わる、祖先でない、オブジェクトが無い場合は拒否し、記録した base の識別子と、refs/remotes/origin/develop を書き換えない手順を出します。
+- PR を作る前に Issue の `- [ ] post-merge:` 行を読み、マージ後の項目が残る Issue は最初から `Refs #N` と `fix(#N):` の形の件名で作るようにした。`/create-issue` と `/refine-issue` がその行を残し、Git Workflow の Refs 運用の件名規定は「`#N` を書かない」から「closing keyword と `#N` を隣接させない」へ改めた（[公開 Issue](https://github.com/feel-flow/ff-dev-toolkit/issues/158)）。
+- `knowledge-lookup.sh` の store 解決処理を `scripts/lib/knowledge-lookup-store.sh` へ分け、大きかった検査 suite（`run-all`・`merge-cleanup`・`review-evidence`）を機能別のファイルへ分けました。CLI の引数・出力・終了コードは変わりません。
+
+### 修正
+
+- リリースゲートの部分スキップを Windows・macOS・Linux 別の共通表で扱い、PR の検査で未分類の理由を検出する。macOS ではゲートの PATH で Bash 4 以上を選ぶ。一時領域の拒否テストは、ホストの固定ディレクトリへの書き込み権限を必要としない。
+- Claude Code のリテラル書き込みガードは、Bash の版によって値が変わるコマンド末尾の二重バックスラッシュを停止する。
+- 知見の記録口 `plugins/ff-dev-toolkit/scripts/knowledge-commit.sh` の `commit` が、全件ゲートで markdownlint を回すリポジトリ（markdownlint suite とルートの設定を持つ本ツールキットのソースリポジトリ）では、記録した Markdown を全件ゲートと同じ設定・同じ実行ファイルで commit の前に検査するようにした。違反はファイル・行・規則を名指して exit 1、markdownlint を実行できない回は未検査として復帰手段を名指して exit 2 で止まり、どちらも commit せず保留記録を残す。PR を経ずに統合ブランチへ直接送る知見の記録が、書式違反のまま次の全件ゲートを赤にすることがなくなる。設定と実行ファイルの置き場は新しい `plugins/ff-dev-toolkit/scripts/lib/markdownlint-functions.sh` が定義し、全件ゲートの markdownlint suite も同じ定義を使う。導入先と、suite だけを受け取る公開リポジトリでは検査せず、振る舞いも出力も変わらない。
+- 終了コード誤読ガード（`guard-exit-code.sh`）が、背景実行のゲート起動で 1 行目が変数の代入（`SP=/tmp/x` / `FF_DEV_TOOLKIT_ROOT="/path"`）や `cd /path`・`cd /path || exit 2`、heredoc でスクリプトを書く行になっている本文を、末尾で `rc=$?; …; exit $rc` まで終了コードを伝播していても、その前置きの行を名指して止めていた誤検知を直した。背景実行では代入だけの行と `cd` / `pushd` / `popd` / `export` / `exit` / `return` を起動に数えず、heredoc でスクリプトを書く `cat` / `tee` と `mkdir` / `chmod` / `touch` / `cp` / `mv` / `ln` / `rm` の準備の行の終了コードだけを次の行の起動に引き継がせる。`exit $rc` を欠いた本文は従来どおり止め、検出した形としてゲートの起動行を示す。検査や全件ゲート（`run-all.sh` と導入先の宣言）など準備でないコマンドの終了コードを後続の行が上書きする形と、コマンド置換の代入（`result=$(npm test)`）の終了コードを落とす形も従来どおり止める。
+- 終了コードの誤読を止める PreToolUse ガードが、`run_in_background` の呼び出しで `out=$(bash scripts/check.sh) rc=$?` のように代入を並べた 1 文を「準備の代入」とみなして起動から外し、続く `echo "EXIT=$rc"` で終える本文を素通しにしていた。検査が失敗してもプロセスは終了コード 0 で終わり、背景の完了通知が緑と断定していた。判定の正本 `plugins/ff-dev-toolkit/tests/lib/exit-code-guard.sh` で、代入のコマンド置換を、前置きとして剥がす前の区間全体で探すようにした。この 1 文の rc を `exit $rc` まで伝播させる本文は従来どおり止めない。
+
+### ドキュメント
+
+- レビュー収束の手順は、2 巡目を 1 巡目と同じ --base と出力先のクロスモデル 1 本とし、fix の範囲を --description に書きます。別の --base は系列ガードが別の branch、base、scope として止める旨を、手順と打ち切りメッセージへ追記しました。打ち切りの既存文言（unfiltered full review と --fresh）は残しています。
+
 ## [0.178.1] - 2026-11-07
 
 ### 修正

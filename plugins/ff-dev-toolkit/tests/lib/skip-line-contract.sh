@@ -20,7 +20,11 @@
 # ff_skip_line_scan_tree reports an empty file set as a violation.
 
 ff_skip_line_scan_files() {
-  local rc=0
+  local rc=0 reasons=0
+  if [[ "${1:-}" == --reasons ]]; then
+    reasons=1
+    shift
+  fi
   if [[ "$#" -eq 0 ]]; then
     return 0
   fi
@@ -28,7 +32,7 @@ ff_skip_line_scan_files() {
     printf '%s\n' 'awk:0: missing'
     return 1
   fi
-  LC_ALL=C awk -f - "$@" <<'AWK' || rc=$?
+  LC_ALL=C awk -v reasons="$reasons" -f - "$@" <<'AWK' || rc=$?
 function reset_quotes() {
   delete qmode
   delete qparen
@@ -42,13 +46,14 @@ function reset_file() {
   delete lines
   delete skip_line
   delete redir_line
+  delete partial_helpers
   nlines = 0
   htag = ""
   hstrip = 0
   hbody = 0
   reset_quotes()
 }
-function finish_file(    i) {
+function finish_file(    i, declaration, helper) {
   if (file == "") return
   # A real heredoc is closed. One still open at EOF is a false "<<", so the
   # lines after it must stay visible to the emitter scan.
@@ -58,6 +63,21 @@ function finish_file(    i) {
     hstrip = 0
     hbody = 0
   }
+  emitters = "echo|printf|ok|console\\.log|print"
+  for (i = 1; reasons && i <= nlines; i++) {
+    if (skip_line[i] || index(lines[i], "  ○ skip: $1") == 0) continue
+    declaration = strip_comment(lines[i])
+    if (match(declaration, /^[ \t]*[A-Za-z_][A-Za-z_0-9]*\(\)[ \t]*\{/)) {
+      declaration = substr(declaration, RSTART, RLENGTH)
+      sub(/^[ \t]+/, "", declaration)
+      sub(/\(.*/, "", declaration)
+      if (!(declaration in partial_helpers)) {
+        partial_helpers[declaration] = 1
+        emitters = emitters "|" declaration
+      }
+    }
+  }
+  if (reasons && file ~ /\/asdd-runtime\/runtime\.test\.mjs$/) emitters = emitters "|skipWith"
   for (i = 1; i <= nlines; i++) {
     if (skip_line[i]) continue
     scan_emitters(lines[i], i)
@@ -462,10 +482,30 @@ function report(lineno, code) {
   printf "%s:%d: %s\n", file, lineno, code
   violations++
 }
+function emit_reason(lineno, reason) {
+  sub(/^[ \t]+/, "", reason)
+  sub(/\\n$/, "", reason)
+  printf "%s:%d\t%s\n", file, lineno, reason
+}
+function is_reason_relay(payload, lineno,    helper) {
+  # The helper calls and Node skip producers are scanned in their own right.
+  if (payload == "  ○ skip: $1") {
+    for (helper in partial_helpers) {
+      if (lines[lineno] ~ ("^[ \t]*" helper "\\(\\)")) return 1
+    }
+  }
+  if (file ~ /\/asdd-runtime\/runtime\.test\.mjs$/ && payload == "  ○ skip: ${reason}") return 1
+  return file ~ /\/asdd-runtime\/verify\.sh$/ && payload == "  ○ skip: %s\\n"
+}
 function classify_payload(payload, sp, lineno, is_exit_block) {
   if (sp == "" && payload == "") return
-  if (is_canonical_partial(sp)) return
+  if (is_canonical_partial(sp)) {
+    if (reasons && !is_reason_relay(payload, lineno)) emit_reason(lineno, substr(payload, length("  ○ skip:") + 1))
+    return
+  }
   if (is_suite_marker(sp)) {
+    # The media wrapper indents these whole-suite markers into partial skips.
+    if (reasons && file ~ /\/ff-media-toolkit\/tests\//) emit_reason(lineno, substr(payload, length("○ skip:") + 1))
     if (!is_exit_block) report(lineno, "column0-partial")
     return
   }
@@ -483,18 +523,30 @@ function command_redirected(segment,    bare) {
 function scan_emitters(orig, lineno,    work, pos, m, kw, arg, sp, segment, rel, exits, lead, span, kw_at, seg_at, rel2, qch, probe, rest) {
   work = strip_comment(orig)
   pos = 1
-  while (match(substr(work, pos), /(^|[;&|{(]|\)|(^|[^A-Za-z0-9_])(then|else|do))[ \t]*(echo|printf|ok|console\.log|print)[ \t]*(\(|[ \t])/)) {
+  while (match(substr(work, pos), "(^|[;&|{(]|\\)|(^|[^A-Za-z0-9_])(then|else|do))[ \t]*((command|builtin)[ \t]+)*(" emitters ")[ \t(]")) {
     lead = RSTART
     span = RLENGTH
     m = substr(work, pos + lead - 1, span)
-    if (match(m, /(echo|printf|ok|console\.log|print)/)) kw = substr(m, RSTART, RLENGTH)
+    if (match(m, "(" emitters ")[ \t(]$")) {
+      kw = substr(m, RSTART, RLENGTH - 1)
+      kw_at = RSTART
+    }
     else { pos += lead + span; continue }
-    kw_at = index(m, kw)
     if (kw_at < 1) { pos += lead + span; continue }
     seg_at = (pos + lead - 1) + (kw_at - 1)
     rel = seg_at + length(kw)
     if (kw == "print" && substr(work, rel, 1) == "f") { pos = rel; continue }
     arg = ""
+    if (kw in partial_helpers || kw == "skipWith") {
+      if (reasons && substr(work, rel, 2) != "()") {
+        while (substr(work, rel, 1) ~ /[ \t(]/) rel++
+        if (kw == "skipWith" && substr(work, rel, 2) == "t,") rel += 2
+        arg = read_quoted(work, rel)
+        emit_reason(lineno, arg)
+      }
+      pos = rel + length(arg) + 1
+      continue
+    }
     if (kw == "print" || kw == "console.log") {
       # opening paren is next non-space, then optional f prefix
       while (substr(work, rel, 1) ~ /[ \t(]/) rel++
@@ -636,7 +688,7 @@ AWK
 # violation too (an empty scan is not a pass). Unreadable files keep the
 # unreadable diagnostic and are not also reported as empty.
 ff_skip_line_scan_tree() {
-  local root="${1:-}" f rc=0 list readable=0
+  local root="${1:-}" mode="${2:-}" f rc=0 list readable=0
   if [[ -z "$root" || ! -d "$root" || ! -r "$root" ]]; then
     printf '%s\n' "${root:-}:0: missing"
     return 1
@@ -671,6 +723,7 @@ ff_skip_line_scan_tree() {
     return 1
   fi
   if [[ "$#" -gt 0 ]]; then
+    if [[ "$mode" == --reasons ]]; then set -- "$mode" "$@"; fi
     ff_skip_line_scan_files "$@" || rc=1
   fi
   return "$rc"

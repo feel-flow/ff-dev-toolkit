@@ -6,7 +6,7 @@
 # `  ○ skip:` だけで、同じ suite の他のケースは実行したまま残る。
 # 理由文はリリースゲートの許容表には載せない。ゲートを回すホスト（Linux / macOS）では
 # この行は出ない。出たら検査が Linux で飛ばされているので、リリースは止まる。
-# 次の一手はリリーススクリプトの SKIP_HINTS にある。
+# 次の一手はrelease-skip-profile.tsv にある。
 #
 # 判定は scripts/lib/wsl-notice.sh の ff_host_is_msys に委譲する。OSTYPE は引数で受ける
 # （bash は起動時に OSTYPE を上書きする）。公開 checkout が verify.sh だけを持つ場合、
@@ -28,7 +28,7 @@ ff_skip_msys_case() {
   declare -F ff_host_is_msys >/dev/null 2>&1 || return 1
   ff_host_is_msys "$ostype" || return 1
   [ -n "$detail" ] || return 1
-  printf '  ○ skip: %s（%s）\n' "$MSYS_CASE_REASON" "$detail"
+  printf '  ○ skip: MSYS では成立しない検査のため未実行（%s）\n' "$detail"
   return 0
 }
 

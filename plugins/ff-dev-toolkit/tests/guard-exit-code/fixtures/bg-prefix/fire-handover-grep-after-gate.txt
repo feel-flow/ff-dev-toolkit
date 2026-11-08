@@ -1,0 +1,4 @@
+FF_DEV_TOOLKIT_ROOT="/repo/plugins/ff-dev-toolkit"
+bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --route full > /tmp/review.log 2>&1
+grep -q PASS /tmp/review.log
+echo "rc=$?"

@@ -13,6 +13,8 @@
 #   finish.sh knowledge-commit probe
 #   finish.sh knowledge-commit push
 #   finish.sh knowledge-commit pr --branch <名> --title <件名> [--body <本文>]
+#   finish.sh knowledge-commit target
+#   finish.sh knowledge-commit flush [--type <type>] [--pr | --branch knowledge/flush-<名>] [--dry-run]
 #
 # precheck（/close-issue 手順 2 と手順 7 の機械部分。マージ直前にもう一度実行する）:
 #   1. PR を読む（gh）。対象 Issue を Closes 群（closingIssuesReferences ∪ 本文の closing
@@ -24,6 +26,9 @@
 #      `--merge-method merge`（merge commit 方式。develop の履歴を残す main への release など）では
 #      各コミットがそのまま base へ載るため、コミット由来の抵触（conflict-commit）は 2b で解消できず
 #      止める。--subject / --body は merge commit の件名・本文として同じく検査する
+#   2c. PR の変更ファイルがセキュリティに関わる（または判定できない）回は、PR 本文に専用セキュリティ
+#      ゲートの記録行（実施 / 未確認 / 未対応）があることを確かめ、無ければ止める（Issue `#2684`。
+#      `security_review=off` と該当なしは求めない）
 #   3. Closes 群の各 Issue について hook の実測記録（scripts/effort-report.sh --issue-metrics）を
 #      読み、書き戻し用の値（wall-clock / 読み込みバイト / レビュー巡回数 / ゲート分 / 変更クラス）を出す
 #   4. checks の有無で分岐する: statusCheckRollup が非空なら `gh pr checks --watch --fail-fast`
@@ -88,6 +93,14 @@
 #   POST_MERGE_HIT=owner/repo#N<TAB>body|report<TAB>行（語に一致した行。ack しても消えない。繰り返し）
 #   POST_MERGE_HIT_COUNT=<件数>（パスが一致して判定した回）
 #   POST_MERGE_GATE=no-closes|no-path|clear|acked|blocked
+#   以下は専用セキュリティゲートの記録（PR の変更ファイルを review-route.sh --files-from で分類する。
+#   API の一覧が上限 100 件に届いた回は git の差分で読み直す）:
+#   SECURITY_SENSITIVE=yes|no|unknown  SECURITY_EVIDENCE=<path>（yes の根拠。繰り返し）
+#   SECURITY_UNKNOWN_REASON=<理由>（分類できなかった回。該当なしへ倒さず記録を求める）
+#   SECURITY_RECORD_GATE=not-required|off|recorded|missing  SECURITY_RECORD=<一致した本文の行>（recorded のとき）
+#     記録として認めるのは PR 本文の可視行（フェンスと HTML コメントの外）で、行頭の `専用セキュリティゲート` の後に
+#     `:` / `：` が続き、値の頭（最初の括弧の前）が「実施」「未確認」「未対応」で終わる行（判定は
+#     scripts/lib/finish-precheck-security-record.sh）。「対象外」「未実施」「… を実行する（…）」は数えない
 #   PR_COMMITS_SOURCE=git|api|unavailable  PR_COMMITS=<短縮 hash> <件名>（繰り返し。`git log --format='%h %s'
 #     origin/<base>..<head>` と同じ行・同じ順。/close-issue 完了報告の「主要コミット」欄へ貼る。自分で書かない）
 #   KEYWORD_GATE=none|ok|conflict-title|conflict-commit  KEYWORD_INSPECTED=<行数>
@@ -119,7 +132,8 @@
 #      渡す squash メッセージの抵触 / Refs 群があるのに --subject と --body が無い / merge commit 方式で
 #      コミットが Refs 運用の Issue を閉じる / 返信の無いレビュースレッドがある / Closes 対象の本文に
 #      未チェックの受け入れ条件が残り、その Issue が --ack-unchecked されていない / 設定したパスを含む PR の
-#      Closes 対象の本文か完了報告に設定した語の行があり、その Issue が --ack-post-merge されていない）。理由と次の一手を stderr へ
+#      Closes 対象の本文か完了報告に設定した語の行があり、その Issue が --ack-post-merge されていない /
+#      セキュリティに関わる変更（判定不能を含む）なのに PR 本文に専用セキュリティゲートの記録行が無い）。理由と次の一手を stderr へ
 #   2  判定不能・検査不成立（`--merge-method` の不正値・空値・重複（PR を読む前）/ PR 不在 / gh 不通（checks の取得を含む）/
 #      jq 不在 / 鮮度照合の検査不成立、および
 #      FRESH_STATUS=2 で RERUN_FULL_GATE が no でない回）。判定できなかった項目を名指しし、
@@ -152,6 +166,11 @@
 #   明示 pathspec に限る（オプションの値を path と取り違えない）。add は default branch（または detached
 #   HEAD）上なら副作用の前に origin/<default> を fetch して祖先確認を行い、ローカルが遅れていれば
 #   復帰手段（git rebase --autostash origin/<default>）つきで止まる（fetch できなければ判定不能で止まる）。
+#   反映のモード（ADR-083）: base にコミットした docs/08-knowledge/knowledge-delivery.conf が
+#   `mode=batch` のとき、知見は知見専用ブランチ（既定 knowledge/staging）へ書く。target（probe も先に
+#   同じ処理）は起点へ detached で移って記録を残し、push は `HEAD:<staging>` へ送って元のブランチへ
+#   戻る。マージごとの push / pr はこの設定のとき止まる。flush は staging を merge commit で base へ
+#   取り込む（--pr は knowledge/flush-<日時> から PR）。本体は lib/finish-knowledge-batch-functions.sh。
 #
 # 終了コード（cleanup / knowledge-commit）:
 #   委譲先の終了コードをそのまま返す。cleanup の委譲前の前提崩れ（PR 不在 / gh 不通 / 委譲先の
@@ -345,6 +364,8 @@ Usage: finish.sh precheck <PR番号> [--subject <件名> --body <本文>] [--gat
        finish.sh knowledge-commit commit [--type <t>] [--force]
        finish.sh knowledge-commit status | discard | probe | push
        finish.sh knowledge-commit pr --branch <名> --title <件名> [--body <本文>]
+       finish.sh knowledge-commit target
+       finish.sh knowledge-commit flush [--type <t>] [--pr | --branch knowledge/flush-<名>] [--dry-run]
 File input: precheck / cleanup / knowledge-commit accept --github-input <absolute index.json>
 USAGE
   exit 2
@@ -606,7 +627,14 @@ case "$cmd" in
     # shellcheck source=lib/finish-precheck-post-merge.sh
     . "$post_merge_lib" || die_env "precheck 構成ファイルを読み込めません" "ff-dev-toolkit を再導入してから skill を呼び直す"
     [[ "$_finish_precheck_post_merge_loaded" == "1" ]] || die_env "precheck 構成ファイルの読み込みが完了していません" "ff-dev-toolkit を再導入してから skill を呼び直す"
-    unset _finish_precheck_loading _finish_precheck_loaded _finish_precheck_post_merge_loaded
+    security_record_lib="$plugin_root/scripts/lib/finish-precheck-security-record.sh"
+    need_bundled lib/finish-precheck-security-record.sh
+    assert_bundled_shebang_lf "$security_record_lib"
+    _finish_precheck_security_record_loaded=0
+    # shellcheck source=lib/finish-precheck-security-record.sh
+    . "$security_record_lib" || die_env "precheck 構成ファイルを読み込めません" "ff-dev-toolkit を再導入してから skill を呼び直す"
+    [[ "$_finish_precheck_security_record_loaded" == "1" ]] || die_env "precheck 構成ファイルの読み込みが完了していません" "ff-dev-toolkit を再導入してから skill を呼び直す"
+    unset _finish_precheck_loading _finish_precheck_loaded _finish_precheck_post_merge_loaded _finish_precheck_security_record_loaded
     cmd_precheck "$@" ;;
   cleanup) cmd_cleanup "$@" ;;
   knowledge-commit)

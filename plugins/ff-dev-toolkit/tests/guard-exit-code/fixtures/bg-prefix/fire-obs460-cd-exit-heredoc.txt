@@ -1,0 +1,9 @@
+R=/repo
+S=/tmp/scratch
+cd "$R" || exit 2
+cat > "$S/cross-review.sh" <<'EOF'
+#!/usr/bin/env bash
+bash plugins/ff-dev-toolkit/scripts/multi-review.sh --route full --base origin/develop
+EOF
+bash "$S/cross-review.sh" > "$S/cross-review.log" 2>&1
+rc=$?; echo "EXIT=$rc"

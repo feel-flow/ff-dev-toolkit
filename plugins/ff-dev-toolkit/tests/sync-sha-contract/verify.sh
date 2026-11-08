@@ -70,7 +70,7 @@
 # 振る舞い（段の順序・dry-run が書き込まない・再実行で続きから・止まるべき状態・粒度判定・同期提案
 # hook の in-flight 抑止）は release-runtime.sh が一時 Git リポジトリで固定する。
 # 変異検出（(7) と release-runtime。2026-09-23 実測）:
-# 変異検出: スクリプトの ALLOWED_SKIP_PATTERNS 照合（許容表に無い部分 skip で止める行）を削除すると (7) と release-runtime が赤。
+# 変異検出: スクリプトの OS 別プロファイル照合（許容表に無い部分 skip で止める行）を削除すると (7) と release-runtime が赤。
 # 変異検出: スクリプトの main で stage_gate と stage_sync の行を入れ替えると (7) の順序が赤。
 # 変異検出: スクリプトの limited_gate 呼び出し行を削除すると (7) が赤。
 # 変異検出: スクリプトの dry-run 分岐（prepare 段の DRY_RUN 判定）を外すと release-runtime（dry-run は書き込まない）が赤。
@@ -102,17 +102,8 @@
 # 変異検出: dry-run の同期差分を公開側 clone の作業ツリーとの rsync 比較へ戻すと release-runtime（origin/main 基準・内容差分だけ）が赤。
 #
 # 変異検出（ff-media-toolkit の既定 skip。Issue `#1904`。2026-09-25 実測）:
-# 変異検出: 許容表から render-smoke の opt-in 行を消すと (7) の針と release-runtime（render-smoke の skip で止まる）が赤。
-# 変異検出: 許容表へ typecheck の環境 skip 行を足すと (7) の禁止針が赤（release-runtime は typecheck skip で止まらなくなり赤）。
-# 変異検出: SKIP_HINTS の照合ループを消すと (7) の針と release-runtime（停止文が ff-media.sh setup を名指ししない）が赤。
-# 変異検出: 照合の case を外して全ヒントを無条件に足すと release-runtime（codex の未知 skip の停止文に setup が混じる）が赤。
-# 変異検出: 許容表へ語尾を変えた typecheck 行（`…行いません（`）を足すとブロック内照合の針が赤（2026-09-25 実測）。
-# 変異検出: SKIP_HINTS へ `|` の無い要素を足すと要素形の針が赤。
-# 変異検出: 許容表から OS 限定（Windows の Git Bash でだけ成立する検査）の行を消すと (7) の針と release-runtime（OS 限定の skip で止まる）が赤。
-# 変異検出: 許容表から bash 版限定（bash 4 以上でだけ成立する検査）の行を消すと (7) の針と release-runtime（bash 版限定の skip で止まる）が赤（2026-10-07 実測）。
+# 変異検出: OS 別の許可欄の取り違え、表の空・欠落・不正行は skip-line-contract が赤にする。
 # 空振り検出: footer 分類器の成功状態照合を削除すると footer-reuse-runtime の empty / identical ケースが赤（2026-09-26 実測 exit 1）。内容証明なしの exit 0 は採用しない。
-# 空振り検出: Bash版限定の実census/containsを隔離実行し、3emitterと表prefix一致はrc0。knowledge不在/空/文言変更/読取不可・全emitter空/不在・余分なemitter、表行欠落/prefix変更/空/不在の11陰性対照は各rc1（2026-10-30実測）。
-# 空振り検出: MSYS 部分 skip の理由文を許容表へ足すと「環境 skip が許容表の要素」が赤（2026-10-19 実測。実ブロックは不一致でなく、理由文を足したブロックは不一致で赤）。
 # 空振り検出: 呼び出し 4 ファイルから ff_skip_msys_case を消すと呼び出し針が赤（0 件を緑へ倒さない。2026-10-19 実測、4 ファイルとも赤。不在ファイルも赤）。
 # 空振り検出: ヘルパの字下げした skip 行を消すと形の針が赤（2026-10-19 実測。理由文が残っていても字下げ行が無いと赤）。
 # 空振り検出: FF_SYNC_SHA_SKILL へ存在しないパスを与えると (対象解決) が赤になる。明示指定の不在を skip へ倒さないため、実測は exit 1（○ skip ではない）。
@@ -434,131 +425,28 @@ release_contains '検査した tree と HEAD の tree が一致しない' \
 # 満たされてしまい、コード側を元の `GATE_RC=$?` へ戻しても緑のまま通る（実測）。
 release_contains 'bash "$RUN_ALL" >"$gate_out" 2>&1 || gate_rc=$?' \
   "gate 段が run-all の終了コードを落ちない形（|| gate_rc=\$?）で捕捉する"
-release_contains 'ALLOWED_SKIP_PATTERNS=(' \
-  "gate 段が続行してよい部分 skip の正本を配列として持つ"
-release_contains 'done <<<"$(awk '"'"'/^[[:space:]]+○ skip(:|$)/'"'"' "$gate_out")"' \
-  "gate 段が run-all 出力の部分 skip 理由行を走査する（終了コードだけを見て許容表を空文にしない）"
-release_contains '許容表に無い部分 skip がある' \
-  "許容表に無い部分 skip で中断することが判定コードにある"
-contains '**環境 skip は許容しない**' \
-  "外部 CLI 不在などの環境 skip を続行させないことが明記されている"
-contains '`total=0` を要求しない理由（手順 8 との非対称は意図）' \
-  "0b が total=0 を要求しない理由と、手順 8 へ波及させない旨が明記されている"
-# 許容表の各要素。1 行消しても配列の形は保たれるため、要素単位でも固定する（消えた要素の
-# skip はその場で中断側へ倒れるので安全側だが、「なぜ止まるのか」が手順書から消える）。
-release_contains "'検査 B/C は免除（件数ゲートが担保'" \
-  "許容表に設計上の免除（plugin-description-enumeration）がある"
-release_contains "'estimation カテゴリファイルは未作成'" \
-  "許容表にデータ未到来（effort-contract）がある"
-release_contains "'enum 照合は対象外（grok-cli は受け付ける値の集合を公表していない）'" \
-  "許容表に上流仕様による照合不能（adapter-sandbox-contract）がある"
-release_contains "'に対応する compare リンク行が無いためスキップ（公開タグ前の開発周期では正常'" \
-  "許容表に同期サイクル内で解消するもの（changelog-public-tags）がある"
-# ff-media-toolkit の既定 skip 2 件（Issue `#1904` / ADR-069）。ラッパーが子 runner の出力を写すため、子の suite 単位 skip が
-# 親では部分 skip になる。opt-in の render-smoke は構造的 skip として表に載せ、setup 前の typecheck は環境 skip として
-# 表に載せず、停止文の次の一手だけを名指しする（SKIP_HINTS）。表へ typecheck を足す退行と、ヒント表ごと消す退行の両方を止める。
-release_contains "'FF_MEDIA_RENDER=1 が未設定のため実レンダリングを行いません'" \
-  "許容表に明示 opt-in の実レンダリング（ff-media-toolkit render-smoke）がある"
-# OS 限定の検査（Windows の Git Bash でしか入力を作れないもの）は Linux / macOS で必ず skip になる。
-# 表から消えると主作業機のリリースが gate 段で止まる（Issue `#2033`）
-release_contains "'Windows の Git Bash でだけ成立する検査のため未実行'" \
-  "許容表に OS 限定（Windows の Git Bash でだけ成立する検査）がある"
-# bash 版限定の検査（bash 4 以上でしか成立しないもの）は macOS の /bin/bash 3.2 で必ず skip になる。
-# 表から消えると macOS からのリリースが gate 段で止まる（Issue `#2077`）
-release_contains "'bash 4 以上でだけ成立する検査のため未実行'" \
-  "許容表に bash 版限定（bash 4 以上でだけ成立する検査）がある"
-# knowledge-lookup の K32 は、macOS では ACL 検査の起動回数がパスの深さで変わるので上限を固定できず必ず skip になる。
-# 表から消えると macOS からのリリースが gate 段で止まる（Issue `#2477`）
-release_contains "'起動回数の上限は Windows と Linux でだけ固定する検査のため未実行'" \
-  "許容表に OS 限定（起動回数の上限を Windows と Linux でだけ固定する検査）がある"
-# 配列ブロック（`NAME=(` 〜 行頭 `)`）の中だけを見る。ファイル全体の grep だと、SKIP_HINTS の要素（同じ理由文 + `|`）や
-# 語尾を変えた要素（`…行いません（`）で禁止針が外れる
-release_block() { awk -v n="$1" '$0 ~ ("^" n "=\\($") {f=1; next} f && /^\)$/ {exit} f' "$RELEASE_SCRIPT"; }
-_allowed_block="$(release_block ALLOWED_SKIP_PATTERNS)"
-if [[ -z "$_allowed_block" ]]; then
-  bad "許容表のブロックを切り出せない（配列の形が変わった）"
-elif [[ "$_allowed_block" == *'node_modules が無いため型検査を行いません'* ]]; then
-  bad "setup 前の typecheck（環境 skip）が許容表の要素になっている"
-else
-  ok "setup 前の typecheck（環境 skip）を許容表の要素にしていない（ブロック内照合）"
-fi
-if [[ "$_allowed_block" == *'MSYS では成立しない検査のため未実行'* ]]; then
-  bad "MSYS で成立しない検査（環境 skip）が許容表の要素になっている"
-elif [[ -n "$_allowed_block" ]]; then
-  ok "MSYS で成立しない検査（環境 skip）を許容表の要素にしていない"
-fi
-release_contains 'SKIP_HINTS=(' \
-  "許容表に無い skip の理由行ごとに次の一手を名指しするヒント表がある"
-release_contains "'node_modules が無いため型検査を行いません|npm ci --prefix plugins/ff-media-toolkit --no-audit --no-fund" \
-  "ヒント表が ff-media の typecheck skip に型検査用 npm ci だけを名指しする"
-release_contains "'MSYS では成立しない検査のため未実行|WSL のホームディレクトリ配下へ clone し、npm ci --prefix plugins/ff-dev-toolkit/mcp の後に同じ suite の verify.sh を bash で回す（/mnt/c 配下では回さない）'" \
-  "ヒント表が MSYS で成立しない検査の skip に WSL での再実行を名指しする"
-# ヒント表の要素は `<理由>|<案内>` の形（`|` の無い要素は照合側が飛ばすので、黙って効かない要素を表に残さない）
-_hint_elems="$(release_block SKIP_HINTS | grep -E "^[[:space:]]*'" || true)"
-_hint_bad="$(printf '%s\n' "$_hint_elems" | grep -vF '|' | grep -c . || true)"
-if [[ -z "$_hint_elems" ]]; then
-  bad "ヒント表の要素を切り出せない（空か配列の形が変わった）"
-elif [[ "$_hint_bad" -ne 0 ]]; then
-  bad "ヒント表に \`|\` の無い要素がある（照合されない）: ${_hint_bad} 件"
-else
-  ok "ヒント表の全要素が <理由>|<案内> の形である"
-fi
-release_contains 'for _pat in ${SKIP_HINTS[@]+"${SKIP_HINTS[@]}"}; do' \
-  "gate 段が未知の skip 行をヒント表と照合する（bash 3.2 の set -u で空表を unbound にしない展開形）"
-release_contains '[[ "$_pat" == *"|"* ]] || continue' \
-  "gate 段が \`|\` の無いヒント要素を照合せず飛ばす"
-# 表・ヒントの理由文は ff-media-toolkit の suite が実際に出す文言の部分文字列でなければ効かない（文言が変わると gate は
-# 再び毎回止まる）。実体のソースに同じ部分文字列があることを固定する（実体が無い木では赤 — この suite は SSOT 専用）
+release_contains 'release_skip_check "$gate_out"' \
+  "gate 段が通常経路で OS 別プロファイルを照合する"
+release_contains 'release_skip_check "$recheck_out"' \
+  "鮮度だけの再検査でも同じ OS 別プロファイルを照合する"
+release_contains 'OS 別プロファイルで部分 skip を許可できない' \
+  "分類できない部分 skip がある場合は同期前に停止する"
+contains 'bash plugins/ff-dev-toolkit/tests/lib/release-skip-profile.sh --table' \
+  "手順 0b は実行時判定と同じ表を表示する"
 for _pair in \
   "render-smoke|FF_MEDIA_RENDER=1 が未設定のため実レンダリングを行いません" \
   "typecheck|node_modules が無いため型検査を行いません"; do
   _src="$REPO_ROOT/plugins/ff-media-toolkit/tests/${_pair%%|*}/verify.sh"
-  if [[ -f "$_src" ]] && grep -qF -- "${_pair#*|}" "$_src"; then
-    ok "ff-media-toolkit/tests/${_pair%%|*} の実出力に表の理由文がある"
+  if grep -qF -- "${_pair#*|}" "$_src"; then
+    ok "ff-media-toolkit/tests/${_pair%%|*} が表の理由文を出す"
   else
-    bad "ff-media-toolkit/tests/${_pair%%|*} の実出力に表の理由文が無い（suite 不在または文言変更）: ${_pair#*|}"
+    bad "ff-media-toolkit/tests/${_pair%%|*} の実出力に表の理由文が無い"
   fi
 done
-contains '| `ff-media-toolkit/tests/render-smoke`: FF_MEDIA_RENDER=1 が未設定 | 明示 opt-in |' \
-  "手順 0b の許容表に render-smoke の opt-in skip の行がある"
-# OS 限定の理由文（Issue `#2033`）。表に載せた文言を出す suite の集合を完全一致で固定する — 出す側の文言が
-# 変わると gate は Linux / macOS で毎回止まり、別の suite が文言を使い回すと表を編集しないまま許容が広がる。
-# どちらもこの針の更新（= レビュー）を経る。grep が失敗して空になった回も一致しないので赤になる
-_os_emitters="$(grep -rlF -- 'Windows の Git Bash でだけ成立する検査のため未実行' "$REPO_ROOT"/plugins/*/tests 2>/dev/null \
-  | grep -v '/tests/sync-sha-contract/' | sed "s|^$REPO_ROOT/||" | sort)" || true
-_os_emitters_want="$(printf '%s\n' plugins/ff-dev-toolkit/tests/ace-curate-commit/verify.sh plugins/ff-dev-toolkit/tests/guard-review-in-flight/verify.sh plugins/ff-dev-toolkit/tests/guard-shell-save/verify.sh plugins/ff-dev-toolkit/tests/knowledge-lookup/windows-acl.sh plugins/ff-dev-toolkit/tests/merge-cleanup/windows-junctions.sh plugins/ff-dev-toolkit/tests/multi-agent-stale-outputs/windows-boundary-cases.sh)"
-if [[ "$_os_emitters" == "$_os_emitters_want" ]]; then
-  ok "OS 限定の理由文を出す suite が guard-review-in-flight・guard-shell-save・ace-curate-commit・knowledge-lookup・merge-cleanup・multi-agent-stale-outputs だけである（表の文言が実出力にある）"
-else
-  bad "OS 限定の理由文を出す suite の集合が想定と違う（文言の変更か使い回し。許容表と SKILL.md の表を見直す）: [${_os_emitters}]"
-fi
-contains '| `guard-review-in-flight`: Windows の Git Bash でだけ成立する検査のため未実行 | OS 限定 |' \
-  "手順 0b の許容表に OS 限定（guard-review-in-flight の (w1)〜(w5)）の行がある"
-contains '| `ace-curate-commit`: Windows の Git Bash でだけ成立する検査のため未実行 | OS 限定 |' \
-  "手順 0b の許容表に OS 限定（ace-curate-commit の 6b の別名ケース）の行がある"
-contains '| `knowledge-lookup`: Windows の Git Bash でだけ成立する検査のため未実行 | OS 限定 |' \
-  "手順 0b の許容表に OS 限定（knowledge-lookup の W8〜W9）の行がある"
-contains '| `merge-cleanup`: Windows の Git Bash でだけ成立する検査のため未実行 | OS 限定 |' \
-  "手順 0b の許容表に OS 限定（merge-cleanup の windows-junctions.sh）の行がある"
-contains '| `guard-shell-save`: Windows の Git Bash でだけ成立する検査のため未実行 | OS 限定 |' \
-  "手順 0b の許容表に OS 限定（guard-shell-save の T 節）の行がある"
-contains '| `multi-agent-stale-outputs`: 実 ACL helper の回は Windows の Git Bash でだけ成立する検査のため未実行 | OS 限定 |' \
-  "手順 0b の許容表に OS 限定（multi-agent-stale-outputs の実 ACL helper の回）の行がある"
-contains '| `knowledge-lookup`: K32（起動回数の上限は Windows と Linux でだけ固定する検査のため未実行） | OS 限定 |' \
-  "手順 0b の許容表に OS 限定（knowledge-lookup の K32）の行がある"
-# 大文字と小文字を区別するファイルシステムでは case-alias 分岐を作れない。Linux の gate では毎回出る構造的 skip。
-# 表から消えると Linux からのリリースが gate 段で止まる。
-release_contains "'大文字小文字を区別するファイルシステムでは case-alias 分岐を作れないため未実行'" \
-  "許容表にファイルシステム限定（case-alias 分岐を作れない検査）がある"
-contains '| `multi-agent-stale-outputs`: 大文字小文字を区別するファイルシステムでは case-alias 分岐を作れないため未実行 | ファイルシステム限定 |' \
-  "手順 0b の許容表にファイルシステム限定（multi-agent-stale-outputs の case-alias）の行がある"
-_case_emitters="$(grep -rlF -- '大文字小文字を区別するファイルシステムでは case-alias 分岐を作れないため未実行' "$REPO_ROOT"/plugins/*/tests 2>/dev/null \
-  | grep -v '/tests/sync-sha-contract/' | sed "s|^$REPO_ROOT/||" | sort)" || true
-if [[ "$_case_emitters" == plugins/ff-dev-toolkit/tests/multi-agent-stale-outputs/admin-identity-cases.sh ]]; then
-  ok "case-alias の理由文を出すファイルが admin-identity-cases.sh だけである"
-else
-  bad "case-alias の理由文を出すファイルの集合が想定と違う（文言の変更か使い回し。許容表と SKILL.md の表を見直す）: [${_case_emitters}]"
-fi
+contains '**環境 skip は許容しない**' \
+  "環境 skip を許可しないことが明記されている"
+contains '`total=0` を要求しない理由（手順 8 との非対称は意図）' \
+  "手順 8 は skip 0 件の要求を維持する"
 release_contains 'ff_release_temp_preflight && ff_release_python_preflight && ff_release_media_preflight' \
   "環境確認は一時領域を先に作り、作れない回は Python と ff-media の確認へ進まない"
 _temp_pin='一時領域を作れない、または結果がディレクトリでない回は prepare と suite の前に止まる'
@@ -569,94 +457,6 @@ if grep -qF -- "$_temp_pin" "$REPO_ROOT/docs/04-quality/TESTING.md"; then
 else
   bad "TESTING.md に一時領域の停止条件が無い"
 fi
-# K32 の理由文（Issue `#2477`）も、出す suite の集合を完全一致で固定する。文言を変えると macOS の gate 段で初めて止まるため
-_k32_emitters="$(grep -rlF -- '起動回数の上限は Windows と Linux でだけ固定する検査のため未実行' "$REPO_ROOT"/plugins/*/tests 2>/dev/null \
-  | grep -v '/tests/sync-sha-contract/' | sed "s|^$REPO_ROOT/||" | sort)" || true
-if [[ "$_k32_emitters" == plugins/ff-dev-toolkit/tests/knowledge-lookup/verify.sh ]]; then
-  ok "K32 の理由文を出す suite が knowledge-lookup だけである（表の文言が実出力にある）"
-else
-  bad "K32 の理由文を出す suite の集合が想定と違う（文言の変更か使い回し。許容表と SKILL.md の表を見直す）: [${_k32_emitters}]"
-fi
-# bash 版限定の理由文（Issue `#2077`）。OS 限定と同じく、文言を出す suite の集合を完全一致で固定する
-_bash4_emitters="$(grep -rlF -- 'bash 4 以上でだけ成立する検査のため未実行' "$REPO_ROOT"/plugins/*/tests 2>/dev/null \
-  | grep -v '/tests/sync-sha-contract/' | sed "s|^$REPO_ROOT/||" | sort)" || true
-_bash4_emitters_want="$(printf '%s\n' plugins/ff-dev-toolkit/tests/knowledge-lookup/windows-acl.sh plugins/ff-dev-toolkit/tests/retrospective-stop-hook/verify.sh plugins/ff-dev-toolkit/tests/skill-drift-check/verify.sh)"
-if [[ "$_bash4_emitters" == "$_bash4_emitters_want" ]]; then
-  ok "bash 版限定の理由文を出す suite が knowledge-lookup・retrospective-stop-hook・skill-drift-check だけである（表の文言が実出力にある）"
-else
-  bad "bash 版限定の理由文を出す suite の集合が想定と違う（文言の変更か使い回し。許容表と SKILL.md の表を見直す）: [${_bash4_emitters}]"
-fi
-contains '| `retrospective-stop-hook` / `skill-drift-check` / `knowledge-lookup`: bash 4 以上でだけ成立する検査のため未実行 | bash 版限定 |' \
-  "手順 0b の許容表に bash 版限定（retrospective-stop-hook / skill-drift-check / knowledge-lookup）の行がある"
-# bwrap 不在の理由文（Issue `#2457`）は Darwin の gate だけが許可する条件付きの OS 限定。Linux では入れれば
-# 実行できる環境 skip なので、部分一致の許容表へ入れると Linux の未導入まで黙って通る。表に無いこと・
-# Darwin 条件・呼び出し・出す suite の集合を固定する
-if [[ "$_allowed_block" == *'bwrap が無いため'* ]]; then
-  bad "bwrap 不在の skip（Linux では環境 skip）が許容表の要素になっている"
-elif [[ -n "$_allowed_block" ]]; then
-  ok "bwrap 不在の skip を許容表の要素にしていない（Darwin 限定の判定関数で扱う）"
-fi
-release_contains "RELEASE_BWRAP_SKIP_REASON='bwrap が無いため sandbox 上の経路判定は未検査'" \
-  "bwrap 不在の理由文が判定関数の定数にある"
-release_contains '[[ "$(uname -s)" == Darwin && "$1" == *"○ skip: ${RELEASE_BWRAP_SKIP_REASON}"* ]]' \
-  "bwrap 不在の skip は gate ホストが Darwin の回だけ許可する"
-release_contains 'if ff_release_os_skip_allowed "$_line"; then _matched=1; fi' \
-  "gate 段が未知の skip の照合で OS 限定の条件付き許可を使う"
-release_contains "'bwrap が無いため sandbox 上の経路判定は未検査|bubblewrap を入れて" \
-  "ヒント表が Linux の bwrap 不在 skip に bubblewrap の導入を名指しする"
-_bwrap_emitters="$(grep -rlF -- 'bwrap が無いため sandbox 上の経路判定は未検査' "$REPO_ROOT"/plugins/*/tests 2>/dev/null \
-  | grep -v '/tests/sync-sha-contract/' | sed "s|^$REPO_ROOT/||" | sort)" || true
-if [[ "$_bwrap_emitters" == plugins/ff-dev-toolkit/tests/decision-tree/verify.sh ]]; then
-  ok "bwrap 不在の理由文を出す suite が decision-tree だけである（判定関数の文言が実出力にある）"
-else
-  bad "bwrap 不在の理由文を出す suite の集合が想定と違う（文言の変更か使い回し。判定関数と SKILL.md の表を見直す）: [${_bwrap_emitters}]"
-fi
-contains '| `decision-tree`: bwrap が無いため sandbox 上の経路判定は未検査 | 条件付きの OS 限定 |' \
-  "手順 0b の許容表に条件付きの OS 限定（decision-tree の bwrap 不在）の行がある"
-# Darwin 専用の検査（Issue `#2517`）は bwrap と逆向きの条件付き OS 限定: Linux の gate では実行できないので許し、
-# Darwin の gate では実行されるはずなので同じ行を退行として止める。表に無いこと・定数・出す suite の集合と、
-# 判定関数の実挙動（uname を差し替えた 4 通り）を固定する
-if [[ "$_allowed_block" == *'Darwin でだけ成立する'* ]]; then
-  bad "Darwin 専用の skip が許容表の要素になっている（Darwin の gate で回らなくなっても通る）"
-elif [[ -n "$_allowed_block" ]]; then
-  ok "Darwin 専用の skip を許容表の要素にしていない（Darwin 以外だけを許す判定関数で扱う）"
-fi
-release_contains "RELEASE_DARWIN_SKIP_REASON='Darwin でだけ成立する検査のため未実行'" \
-  "Darwin 専用の理由文が判定関数の定数にある"
-_os_verdicts=""
-for _os_case in Linux:darwin Darwin:darwin Linux:bwrap Darwin:bwrap; do
-  case "${_os_case#*:}" in
-    darwin) _os_line='  ○ skip: Darwin でだけ成立する検査のため未実行（native ACL fixture）' ;;
-    *) _os_line='  ○ skip: bwrap が無いため sandbox 上の経路判定は未検査（J0 の静的固定は実施済み）' ;;
-  esac
-  if OS_CASE_HOST="${_os_case%%:*}" bash -c 'uname() { printf "%s\n" "$OS_CASE_HOST"; }; . "$1" && ff_release_os_skip_allowed "$2"' _ \
-      "$(dirname "$RELEASE_SCRIPT")/lib/release-environment-functions.sh" "$_os_line"; then
-    _os_verdicts="${_os_verdicts}${_os_case}=allow "
-  else
-    _os_verdicts="${_os_verdicts}${_os_case}=stop "
-  fi
-done
-if [[ "$_os_verdicts" == 'Linux:darwin=allow Darwin:darwin=stop Linux:bwrap=stop Darwin:bwrap=allow ' ]]; then
-  ok "OS 限定の条件付き許可が、Darwin 専用の skip は Darwin 以外だけ・bwrap 不在は Darwin だけを通す（実挙動 4 通り）"
-else
-  bad "OS 限定の条件付き許可の実挙動が想定と違う: [${_os_verdicts}]"
-fi
-# 判定関数は「○ skip: 」の直後に理由文が続く形だけを許すので、出し手もその形で探す（語順を変えた行を拾わない）
-_darwin_emitters="$(grep -rlF -- '○ skip: Darwin でだけ成立する検査のため未実行' "$REPO_ROOT"/plugins/*/tests 2>/dev/null \
-  | grep -v '/tests/sync-sha-contract/' | sed "s|^$REPO_ROOT/||" | sort)" || true
-# ff-agent-press の cli-guards も同じ理由文を出していたが、プラグインごと別の非公開リポジトリへ移した
-_darwin_emitters_want="plugins/ff-dev-toolkit/tests/guard-exit-code/consumer-resource-cases.sh"
-if [[ "$_darwin_emitters" == "$_darwin_emitters_want" ]]; then
-  ok "Darwin 専用の理由文を出す suite が guard-exit-code だけである（判定関数の文言が実出力にある）"
-else
-  bad "Darwin 専用の理由文を出す suite の集合が想定と違う（文言の変更か使い回し。判定関数と SKILL.md の表を見直す）: [${_darwin_emitters}]"
-fi
-contains '| `guard-exit-code`: Darwin でだけ成立する検査のため未実行 | 条件付きの OS 限定 |' \
-  "手順 0b の許容表に条件付きの OS 限定（guard-exit-code の Darwin 専用 sandbox-exec 検査）の行がある"
-contains '`ff-media-toolkit/tests/typecheck` の `node_modules` 不在' \
-  "手順 0b が ff-media の setup 前の typecheck を環境 skip（許容しない）として名指ししている"
-contains '`MSYS では成立しない検査のため未実行` は環境 skip で、許容表には載せない' \
-  "手順 0b が MSYS で成立しない検査を環境 skip（許容しない）として名指ししている"
 _msys_reason='MSYS では成立しない検査のため未実行'
 _msys_helper="$REPO_ROOT/plugins/ff-dev-toolkit/tests/lib/msys-case.sh"
 if [[ -f "$_msys_helper" ]] && grep -qF -- "$_msys_reason" "$_msys_helper" && grep -qF -- '  ○ skip:' "$_msys_helper"; then
@@ -841,7 +641,7 @@ if [[ "$_src_sha_cls" -ne 0 ]]; then
 elif [[ -n "$_src_sha_skip" ]]; then
   # インデント付きの ○ skip は run-all が checks-skipped へ別勘定する印。suite 全体の
   # skip とは別で、何を測っていないかが summary に名前で残る（Issue #1427）。
-  echo "  ○ skip: ${_src_sha_skip}"
+  echo "  ○ skip: rsync の同期検査: ${_src_sha_skip}"
 else
   ok "同期元 SHA の記録と手順 4 の実行が、別プロセス・HEAD 移動・記録不在を区別する"
 fi
@@ -1047,7 +847,7 @@ assert_order "$R_FOOTER" "$R_REPORT" "順序(7): 健全性判定と footer 検�
 # gate 段の中の順序: 週次 CI の状態確認 → run-all → 部分 skip の許容判定 → 緑の記録。
 RG_HEALTH="$(release_exact_line_of '  weekly_health')"
 RG_RUNALL="$(release_line_of 'bash "$RUN_ALL" >"$gate_out" 2>&1 || gate_rc=$?')"
-RG_SKIP="$(release_line_of '許容表に無い部分 skip がある')"
+RG_SKIP="$(release_line_of 'release_skip_check "$gate_out"')"
 RG_RECORD="$(release_line_of 'state_set GATE_OK "$head:$gate_mode"')"
 assert_order "$RG_HEALTH" "$RG_RUNALL" "順序(7): 週次 CI の状態確認が run-all より前" "順序(7): 状態確認が run-all より後ろ — 中断点が不可逆操作へ近づく退行"
 assert_order "$RG_RUNALL" "$RG_SKIP" "順序(7): 部分 skip の許容判定が run-all より後" "順序(7): 許容判定が run-all より前 — 判定材料が無い"

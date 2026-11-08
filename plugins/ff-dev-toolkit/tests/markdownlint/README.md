@@ -12,6 +12,15 @@ bash plugins/ff-dev-toolkit/tests/markdownlint/verify.sh
 `○ skip` を返すが、`run-all.sh` の `REQUIRED_SUITES` が全体を非 0 にするため、
 「markdownlint エラーなし」を未検証のまま通過させない。
 
+## 設定と実行ファイルの共有
+
+設定（`.markdownlint.json`）と実行ファイル（`mcp/node_modules/.bin/markdownlint-cli2`）の置き場は
+`scripts/lib/markdownlint-functions.sh` が 1 か所で定義し、この suite と
+`scripts/knowledge-commit.sh` の commit 前検査が同じ定義を使う。`knowledge:` の直 push は全件ゲートを
+通らないため、記録した Markdown を commit の前に同じ規則で検査し、違反（exit 1）と未検査（exit 2）を
+分けて止める。規則を足し引きするときは `.markdownlint.json` だけを変える。両方の振る舞いは
+`markdownlint-selftest` が固定する。
+
 ## baseline 方針
 
 設定で無効にしたルールは、既存の日本語文書、配布テンプレート、意図的な違反 fixture、

@@ -1,0 +1,3 @@
+S=/tmp/scratch
+npm ci --no-audit --no-fund && bash plugins/ff-dev-toolkit/tests/run-all.sh > "$S/run-all.log" 2>&1
+rc=$?; echo "EXIT=$rc"; tail -20 "$S/run-all.log"

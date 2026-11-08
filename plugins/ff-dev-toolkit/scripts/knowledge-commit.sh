@@ -24,6 +24,11 @@
 #           フックが一時索引へ足した場合など）`KNOWLEDGE_COMMIT=scope-mismatch` を出し、そのコミットを
 #           取り消して（HEAD を commit 前へ戻す）保留記録を残し、exit 1 で止まる。push はしない — push と保護ブランチの扱いは呼び出し側の手順が持つ。
 #           保留記録が無ければ何もせず `KNOWLEDGE_COMMIT=none` を出して 0 で終わる。
+#           全件ゲートで markdownlint を回すリポジトリ（suite とルートの設定を持つ、このプラグインのソース
+#           リポジトリ）では、記録した *.md を同じ設定・同じ実行ファイル（lib/markdownlint-functions.sh）で
+#           commit の前に検査する。違反は `ファイル:行 規則` を名指して exit 1、検査できない回（依存の不在など）は
+#           未検査として復帰手段を名指して exit 2。どちらも commit せず保留記録を残す。それ以外のリポジトリ
+#           （導入先・公開リポジトリ）では検査しない。
 #   status  保留記録を表示する（`KNOWLEDGE_PENDING=<件数>`・記録したブランチと基点・各エントリ）。
 #   discard 保留記録を捨てる（stage 済みの変更は残すので、要らなければ `git restore --staged` で外す）。
 #   freshness add の先頭と同じ default branch の鮮度検査だけを行う（`KNOWLEDGE_FRESHNESS=ok`。add の前に
@@ -72,9 +77,9 @@
 # 終了コード:
 #   0  成功（保留記録が無い commit を含む）
 #   1  止めるべき状態（合成 identity・commit の失敗・保留記録の破損・default branch が origin より遅れて
-#      いる add）。保留記録は残す
+#      いる add・記録した Markdown の markdownlint 違反）。保留記録は残す
 #   2  使い方の誤り・環境不備（git 管理外・パスがリポジトリ外 / 不在・lib 不在・origin/<default> を
-#      fetch / 解決できない add）
+#      fetch / 解決できない add・記録した Markdown を markdownlint で検査できない commit）
 #   4  commit-msg hook が組み立てた件名を拒否した（add は stage も保留記録も作らない。commit は保留記録を残す）
 #
 # 実装上の制約: macOS 標準の bash 3.2 で動くこと（連想配列・readarray を使わない）。
@@ -303,6 +308,16 @@ literal_lib="$self_dir/lib/git-literal-pathspec.sh"
 assert_bundled_shebang_lf "$literal_lib"
 # shellcheck source=lib/git-literal-pathspec.sh
 . "$literal_lib"
+mdl_lib="$self_dir/lib/markdownlint-functions.sh"
+[[ -f "$mdl_lib" && ! -L "$mdl_lib" ]] || die_env "markdownlint の判定 lib が無いか symlink です: $mdl_lib"
+assert_bundled_shebang_lf "$mdl_lib"
+# shellcheck source=lib/markdownlint-functions.sh
+. "$mdl_lib"
+kd_lib="$self_dir/lib/knowledge-delivery-functions.sh"
+[[ -f "$kd_lib" && ! -L "$kd_lib" ]] || die_env "反映先の判定 lib が無いか symlink です: $kd_lib"
+assert_bundled_shebang_lf "$kd_lib"
+# shellcheck source=lib/knowledge-delivery-functions.sh
+. "$kd_lib"
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || die_env "git リポジトリの中で実行してください（cwd: ${PWD}）"
 # git が返した綴りのまま控える。渡されたパスがリポジトリ内かは、同じく git の出力どうしで比べる（add）
@@ -341,8 +356,46 @@ pending_stale_reason() {
 # （merge-cleanup が退避した detached HEAD を含む）の add だけを対象に、fetch と祖先確認を行う。origin
 # remote の無いリポジトリ（ローカル専用・検査用の一時 repo）は直 push の経路が無いので確かめない。
 # fetch できない回は遅れを判定できないので、黙って進まず名指しで止める。
+# 反映のモード（ADR-083）が batch のときは、target の記録（detached の起点）がある回以外は、どの
+# ブランチの上でも add しない（base へ直接書くセッションと staging へ書くセッションが混ざると、直列化点が
+# 2 つに割れる）。設定は origin/<default> の追跡 ref から読む（default 上の回は直前に fetch 済み。それ以外の
+# ブランチは fetch しないので、古い追跡 ref では見落としうる — PR を作る pr と push が fetch 後にもう一度止める）。
+assert_not_batch_mode() { # <default branch>
+  local rc=0
+  ff_kd_load "$repo_root" "$1" || rc=$?
+  [[ "$rc" -eq 0 ]] || die_env "反映の設定（${KD_CONF_REL}）を読めないか不正です（上の knowledge-delivery: 行）— origin/$1 の設定を直してから add し直す"
+  [[ "$KD_MODE" != batch ]] || die_stop "反映の設定がまとめるモード（${KD_SOURCE}）なので $(current_branch) の上では add しない — 追記を退避し、finish.sh knowledge-commit target で書き込み先（${KD_STAGING}）の起点へ移ってから書き直す（照合・Count・採番は起点のツリーで引き直す）"
+}
+# git の出力の 1 行目を、remote URL の資格情報部（`https://user:token@host/`）だけ伏せて返す
+redact_first_line() { printf '%s' "${1%%$'\n'*}" | sed -E 's#(://)[^/[:space:]]*@#\1***@#g'; }
+# まとめるモードの書き込み中（target の記録がある）の鮮度: origin/<staging> が先行していないか
+assert_batch_target_fresh() {
+  local staging="$KD_ST_STAGING" out rc=0 tip
+  [[ "$(current_branch)" == "(detached)" ]] \
+    || die_env "まとめるモードの書き込みは target が移した detached HEAD で行う（今は $(current_branch)）— knowledge-commit.sh discard で記録を消し、元のブランチへ戻ってから target をやり直す"
+  git -C "$repo_root" merge-base --is-ancestor "$KD_ST_START" HEAD 2>/dev/null \
+    || die_env "HEAD が書き込み先の起点（${KD_ST_START:0:12}）から外れている — knowledge-commit.sh discard で記録を消し、元のブランチへ戻ってから target をやり直す"
+  out="$(git -C "$repo_root" ls-remote --exit-code origin "refs/heads/${staging}" 2>&1)" || rc=$?
+  case "$rc" in
+    0)
+      out="$(git -C "$repo_root" fetch -q origin "+refs/heads/${staging}:refs/remotes/origin/${staging}" 2>&1)" \
+        || die_env "origin/${staging} を取得できず、先行していないか判定できない（$(redact_first_line "$out")）— 通信・認証を直してから add し直す"
+      tip="$(git -C "$repo_root" rev-parse --verify --quiet "refs/remotes/origin/${staging}^{commit}")" \
+        || die_env "origin/${staging} を解決できない — git fetch origin ${staging} を確かめてから add し直す"
+      git -C "$repo_root" merge-base --is-ancestor "$tip" HEAD \
+        || die_stop "origin/${staging} が先行している（別のセッションが知見を書いた）— $(ff_kd_redo_hint "$repo_root" "$KD_ST_START" "$(if [[ -n "$KD_ST_RESTORE" ]]; then printf 'git switch %s' "$KD_ST_RESTORE"; else printf 'git switch --detach %s' "$KD_ST_ORIGIN"; fi)")" ;;
+    2) ;;
+    *) die_env "origin の ${staging} の有無を確かめられない（$(redact_first_line "$out")）— 通信・認証を直してから add し直す" ;;
+  esac
+}
 assert_default_branch_fresh() {
-  local default_ref default branch fetch_err behind
+  local default_ref default branch fetch_err behind st_rc=0
+  ff_kd_state_read "$repo_root" || st_rc=$?
+  case "$st_rc" in
+    0) assert_batch_target_fresh; return 0 ;;
+    1) ;;
+    *) die_env "書き込み先の記録（$(ff_kd_state_path "$repo_root")）を読めない — knowledge-commit.sh discard で記録を消し、元のブランチへ戻ってから target をやり直す" ;;
+  esac
   git -C "$repo_root" remote get-url origin >/dev/null 2>&1 || return 0
   # origin/HEAD の無い clone（git init + remote add 等）でも PR ブランチの add を止めないよう、remote の
   # HEAD を問い合わせて default branch を補う。どちらでも解決できない回だけ名指しで止める
@@ -355,13 +408,14 @@ assert_default_branch_fresh() {
       || die_env "origin/HEAD を解決できず（remote の HEAD も問い合わせられない）、default branch が遅れていないか確かめられない — git remote set-head origin --auto を実行してから add し直す"
   fi
   branch="$(current_branch)"
-  [[ "$branch" == "$default" || "$branch" == "(detached)" ]] || return 0
+  [[ "$branch" == "$default" || "$branch" == "(detached)" ]] || { assert_not_batch_mode "$default"; return 0; }
   fetch_err="$(git -C "$repo_root" fetch -q origin "+refs/heads/${default}:refs/remotes/origin/${default}" 2>&1)" \
     || die_env "origin/${default} を取得できず、ローカルが遅れていないか判定できない（${fetch_err%%$'\n'*}）— 通信・認証を直してから add し直す（遅れを確かめないまま stage しない）"
   if ! git -C "$repo_root" merge-base --is-ancestor "refs/remotes/origin/${default}" HEAD; then
     behind="$(git -C "$repo_root" rev-list --count "HEAD..refs/remotes/origin/${default}" 2>/dev/null)" || behind="?"
     die_stop "ローカルの ${branch} が origin/${default} より ${behind} コミット遅れている — このまま add → commit → push すると push が non-fast-forward で拒否される。git rebase --autostash origin/${default} で取り込んでから add し直す（書いた知見の編集は autostash が退避して戻す。衝突したら解消してから）"
   fi
+  assert_not_batch_mode "$default"
 }
 
 # commitlint の header-max-length 既定。複数エントリの件名だけを、超えたとき短縮する。
@@ -763,12 +817,22 @@ case "$cmd" in
     [[ $# -eq 0 ]] || usage
     if [[ ! -s "$pending" ]]; then
       echo "KNOWLEDGE_PENDING=0"
-      exit 0
+    else
+      echo "KNOWLEDGE_PENDING=$(entry_count)"
+      echo "KNOWLEDGE_PENDING_BRANCH=$(meta_field 2)"
+      echo "KNOWLEDGE_PENDING_BASE=$(meta_field 3)"
+      awk -F '\t' '$1=="E" { print "  " $2 " " $3 " " $4 }' "$pending"
     fi
-    echo "KNOWLEDGE_PENDING=$(entry_count)"
-    echo "KNOWLEDGE_PENDING_BRANCH=$(meta_field 2)"
-    echo "KNOWLEDGE_PENDING_BASE=$(meta_field 3)"
-    awk -F '\t' '$1=="E" { print "  " $2 " " $3 " " $4 }' "$pending"
+    # まとめるモードの書き込み中（target の記録がある）回だけ、書き込み先を足す（記録が無ければ出力は従来どおり）
+    st_rc=0; ff_kd_state_read "$repo_root" || st_rc=$?
+    case "$st_rc" in
+      0) echo "KNOWLEDGE_DELIVERY=batch"
+         echo "KNOWLEDGE_TARGET=${KD_ST_STAGING}"
+         echo "KNOWLEDGE_START=${KD_ST_START}"
+         echo "KNOWLEDGE_RESTORE=${KD_ST_RESTORE:-${KD_ST_ORIGIN}}" ;;
+      1) ;;
+      *) die_env "書き込み先の記録（$(ff_kd_state_path "$repo_root")）を読めない — discard で消してから target をやり直す" ;;
+    esac
     ;;
 
   discard)
@@ -781,6 +845,17 @@ case "$cmd" in
     fi
     rm -f "$pending" || die_stop "保留記録を消せません: $pending"
     echo "KNOWLEDGE_DISCARDED=$n"
+    # まとめるモードの書き込み先の記録も消す（HEAD は動かさない。元のブランチへ戻るのは呼び出し側）
+    st_rc=0; ff_kd_state_read "$repo_root" || st_rc=$?
+    if [[ "$st_rc" -ne 1 ]]; then
+      ff_kd_state_clear "$repo_root" || die_stop "書き込み先の記録を消せません: $(ff_kd_state_path "$repo_root")"
+      echo "KNOWLEDGE_TARGET_CLEARED=1"
+      if [[ -n "${KD_ST_RESTORE:-}" ]]; then
+        echo "元のブランチへ戻る: git switch ${KD_ST_RESTORE}（stage 済みの追記があれば先に退避する）"
+      elif [[ -n "${KD_ST_ORIGIN:-}" ]]; then
+        echo "元の HEAD へ戻る: git switch --detach ${KD_ST_ORIGIN}（stage 済みの追記があれば先に退避する）"
+      fi
+    fi
     ;;
 
   commit)
@@ -823,6 +898,17 @@ case "$cmd" in
       [[ -f "$repo_root/$p" && "$(git -C "$repo_root" hash-object -- "$p")" == "$h" ]] \
         || die_stop "add の後に ${p} の内容が変わった — 別の編集を commit へ混ぜないため止める。git diff で確かめ、含めるなら同じ add をやり直す（保留記録は残してある）"
     done < <(awk -F '\t' '$1=="P"' "$pending")
+    # knowledge の直 push は全件ゲートを通らない（ADR-063）。記録した Markdown を、全件ゲートの
+    # markdownlint suite と同じ設定・同じ実行ファイルで commit の前に検査し、書式違反を統合ブランチへ
+    # 送らない（Issue `#2671`）。全件ゲートで markdownlint を回さないリポジトリ（導入先・公開リポジトリ）は
+    # 対象外で、振る舞いも出力も従来どおり
+    lint_rc=0
+    ff_markdownlint_check_paths "$repo_root" "${commit_paths[@]}" || lint_rc=$?
+    case "$lint_rc" in
+      0) ;;
+      1) die_stop "記録した Markdown に markdownlint の違反がある — 直してから同じ add をやり直し、commit を再実行する（保留記録は残してある）" ;;
+      *) die_env "記録した Markdown を markdownlint で検査できない（未検査）— 違反なしとは扱わず commit しない。上の復帰手段を済ませてから commit を再実行する（保留記録は残してある）" ;;
+    esac
     if [[ -z "$type" ]]; then
       type="$(awk -F '\t' '$1=="T" { t = $2 } END { print t }' "$pending")"
       type="${type:-knowledge}"

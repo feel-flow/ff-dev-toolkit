@@ -270,6 +270,21 @@ const skipWith = (t, reason) => {
   if (process.env.FF_ASDD_SKIP_MARKER) fs.appendFileSync(process.env.FF_ASDD_SKIP_MARKER, `${reason}\n`); else console.log(`  ○ skip: ${reason}`);
   t.skip(reason);
 };
+test('skip notes reach the runner through a reporter-independent channel', t => {
+  const root = temporary(t);
+  const marker = path.join(root, 'skips');
+  const previous = process.env.FF_ASDD_SKIP_MARKER;
+  process.env.FF_ASDD_SKIP_MARKER = marker;
+  const fakeTest = { skip: reason => assert.equal(reason, 'probe reason') };
+  const emitProbe = skipWith;
+  try {
+    emitProbe(fakeTest, 'probe reason');
+    assert.equal(fs.readFileSync(marker, 'utf8'), 'probe reason\n');
+  } finally {
+    if (previous === undefined) delete process.env.FF_ASDD_SKIP_MARKER;
+    else process.env.FF_ASDD_SKIP_MARKER = previous;
+  }
+});
 test('multiReview check passes without a project agent-config and reports the CLI probe failure', t => {
   const root = temporary(t); apply(root, withMultiReview());
   assert.equal(fs.existsSync(path.join(root, '.claude/agent-config.yaml')), false);

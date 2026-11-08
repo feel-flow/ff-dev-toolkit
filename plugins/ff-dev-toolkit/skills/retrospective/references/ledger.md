@@ -6,6 +6,8 @@
 
 本線「記録の前に base の先行を照合する」が指す照合フェンス。記録手順 0 より前に通す。
 
+**先に反映のモードを確かめる**（ADR-083）: フェンスの前に `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit target` を実行する。非 0 なら台帳へ書かず、観測を報告に残す。出力が `KNOWLEDGE_DELIVERY=per-merge` なら下のフェンスを通す。`KNOWLEDGE_DELIVERY=batch` なら target が書き込みの起点（最新の base + 未反映の知見）へ移り、`origin/<staging>` の先行も照合済みなので、下のフェンスは通さない。同じセッションで `/ace-curate` が移った後なら、target は移らずに照合だけを行う。batch で先行されて止まったときは、下の「取り込んでから記録を作り直す」の 1. を、表示されるやり直し手順（変更したパスを名指しした退避・戻し・discard・戻り先・target）の印字どおりの実行と読み替える。2.〜4. はそのまま当てはめ、OBS ID は staging を取り込んだ後のツリーの最大連番 +1 で採番する。
+
 ```bash
 default_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD)" || {
   echo "origin/HEAD を解決できません（git remote set-head origin -a を実行してください）" >&2
@@ -87,6 +89,7 @@ MCP raw を使う回は add / commit / probe / push / pr の各 `knowledge-commi
 
 - 観測を書く回は、同じブランチで照合フェンスを通し、OBS を `add` してから共通の `commit` で ACE と畳む。既存知見ブランチの保留を先に commit して別コミットに分けない。
 - **観測 0 件・off モード・ask 拒否でも、保留を同じブランチで commit し、同じ送信分岐を使う**。保留も観測も無ければ送信しない。
+- **まとめるモードの書き込み中**（target の記録がある。`knowledge-commit status` が `KNOWLEDGE_DELIVERY=batch` を出す）は detached のまま `knowledge-commit push` を使う。push は staging へ送って元の場所へ戻り、base は進めない。`pr` は使わない。**保留も観測も無い回も push を呼ぶ**（何も送らずに元の場所へ戻り、記録を消す。`KNOWLEDGE_PUSH=nothing`）。呼ばないと起点の detached HEAD と記録が残る。
 - **default / detached は `knowledge-commit push`**。保護による rc 3 は `/ace-curate` 手順 5 の PR 経路へ進む。detached からは commit を保った知見ブランチを作って `pr` を呼ぶ。他の非 0 は停止して原因を解決する。
 - **既存知見ブランチは push を試さず `knowledge-commit pr`**。`knowledge_branch="$(git branch --show-current)"` の成功と `chore/ace-from-*` / `chore/retro-from-*` への一致を確認し、その実測名を `--branch "${knowledge_branch}"` に渡す。title は共通 commit の件名を `git log -1 --format=%s` で実測する（`commit` が返した `KNOWLEDGE_SUBJECT` でもよい）。placeholder を渡さず、body は同一セッションの知見記録であることを示す。既に PR があれば重複作成せず、その到達状態を確認する。
 - **既存知見ブランチからの pr は local default と他 worktree を変更しない**。helper の default 復帰は default から知見ブランチを作った回だけ。送信範囲ガード・PR のレビューとマージは省略せず、実際の経路と到達状態を報告する。
@@ -95,6 +98,7 @@ MCP raw を使う回は add / commit / probe / push / pr の各 `knowledge-commi
 
 - 台帳の書き込みは `knowledge:` prefix の単独コミット（`/ace-curate` の Playbook 直コミットと同格の定型書き込み。承認は不要だが、記録した内容は振り返り結果で必ず報告する）。commit は書き込み口（`finish.sh knowledge-commit commit`）が、記録したパスへ固定した `git commit -- <path>…` で行う（`git add` + pathspec 無しの `git commit` にしない — 索引に載った無関係な変更が単独コミットへ紛れ込んで直 push されるのを、この形だけが防ぐ）。素の `git commit` を自分で打たない — 合成 identity の停止もこの書き込み口の中にあり、素の commit にはどのホストでも掛からない。唯一の例外は下の hook 拒否後の手コミットで、それも記録したパスへ固定した `git commit -m "<件名>" -- <パス>` の形に限る
 - 書き込み口は件名を組み立てた直後、stage・保留記録・commit より前にリポジトリの prepare-commit-msg → commit-msg hook へ件名をドライランで通す。元の件名が通れば変更せず、拒否された既定 `knowledge` は `chore` → `docs` も同じ hook で検証する。Issue が必要ならブランチの `ace-from-pr-N` → PR の closing Issue 先頭、次にブランチ自身の `#N` を解決し、選んだ Issue/type は保留へ保存して合流 commit が引き継ぐ（claim が無い OBS 単独経路も同じ。version claim・ID・要約の数字は PR の根拠にしない）。`add` / `commit` が rc 4（`KNOWLEDGE_COMMIT=hook-rejected`）で止まったら、解決元が無いか候補を hook が拒否している — `add` の拒否は保留を作らない（`--claim` 経由では文書と claim の stage は残る）ので `discard` は要らない。解決に失敗した場合だけ、表示された規約を確認して `--type` で再実行するか、`git config user.name` / `user.email` が合成 identity でないことを確かめてから `git commit -m "<規約どおりの件名>" -- docs/08-knowledge/OBSERVATIONS.md` で手でコミットする（扱いの正本は `/ace-curate` の references/curate.md「コミットメッセージ規約」）
+- `commit` が記録した Markdown の markdownlint 違反（exit 1）で止まった回は、名指されたファイル（台帳とは限らない。合流した ACE の記録も同じ commit で検査される）を直し、そのファイルを記録した `add` をやり直してから `commit` を再実行する。未検査（exit 2）で止まった回は、stderr の復帰手段を済ませて `commit` だけを再実行する（規則は `/ace-curate` の [コミット（手順 5）の規則](../../ace-curate/references/curate.md#コミット手順-5の規則)の「記録した Markdown の lint」）
 - push が non-fast-forward で拒否されたら、上の復帰手順へ戻る — `git pull --ff-only` で取り込み、記録手順 0 から記録内容を作り直す。OBS ID の採番し直しだけで push を再試行しない（照合から push までの間に同じ主張が別セッションで記録されていれば、同一性判定を引き直さない限り重複エントリが残る）
 - **ローカルに未 push のコミットがある回は、それらも同じ push で統合ブランチへ送られる**。台帳のコミットを単独に保つのは commit の pathspec だけで、push の粒度はブランチである。デフォルト統合ブランチ上に意図しないローカルコミットが無いことを記録の前に確かめる
 - 導入先から SSOT や配布元へ観測を Issue で受け渡す経路（`[observation]` 接頭辞の受け渡し便）は**廃止**した。観測は作業中リポジトリの台帳で閉じ、他リポジトリへ渡すのは閾値到達後の起票だけにする。旧版が残した `[observation]` Issue は、SSOT で実行するときだけ [legacy-intake.md](legacy-intake.md) に従って取り込む

@@ -153,6 +153,7 @@ Bash 専用の14実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 | `docs/06-reference/DECISIONS.md` | 同上 | コア文書 |
 | `docs/08-knowledge/PLAYBOOK.md` | `init-docs` / `ace-setup` が生成する | ACE のナレッジ台帳の入口 |
 | `docs/08-knowledge/playbook/` | `ace-setup` が生成する | カテゴリ別台帳の置き場 |
+| `docs/08-knowledge/knowledge-delivery.conf` | **利用者が任意で置く**（無ければマージごと = 既定。default branch にコミットした値だけを読む） | 知見の反映モード（`mode=per-merge` / `batch`・`staging_branch`・`warn_after_days`）。`batch` では `knowledge-commit` が知見を `staging_branch`（既定 `knowledge/staging`）へ書き、`flush` が base へ反映する（使い捨てブランチは `knowledge/flush-*`） |
 
 **内部（配置はされるが、パスを固定しない）**:
 
@@ -561,6 +562,8 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `MULTI_AGENT_MODEL_COPILOT_CLI`
 - `MULTI_AGENT_MODEL_GROK_CLI`
 - `MULTI_AGENT_REVIEW_CONFIDENCE_THRESHOLD`
+- `MULTI_AGENT_REVIEW_MAIN`
+- `MULTI_AGENT_REVIEW_SUB`
 - `MULTI_AGENT_SECURITY_GLOB`
 - `MULTI_AGENT_SECURITY_GLOB_EXTRA`
 - `MULTI_AGENT_SECURITY_REVIEW`
@@ -577,6 +580,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `ACE_GARDEN_WALL_PATHS`
 - `CODEX_DEFAULT_REVIEWERS`
 - `CODEX_REASONING_EFFORT`
+- `MULTI_AGENT_AC_FIXTURE`
 - `MULTI_AGENT_BAD`
 - `MULTI_AGENT_EXAMPLE_PROFILE`
 - `MULTI_AGENT_MODEL_EXAMPLE_CLI`
@@ -584,8 +588,6 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `MULTI_AGENT_MODEL_GEMINI_CLI`
 - `MULTI_AGENT_MODEL_OTHER_CLI`
 - `MULTI_AGENT_PARTS`
-- `MULTI_AGENT_REVIEW_MAIN`
-- `MULTI_AGENT_REVIEW_SUB`
 - `RETROSPECTIVE_DELIVERED`
 - `RETROSPECTIVE_DONE`
 - `RETROSPECTIVE_OFF`

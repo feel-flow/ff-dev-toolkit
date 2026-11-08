@@ -66,6 +66,7 @@
 # 空振り検出: 検索パスの無い rg（Issue `#2136`）は rg-stdin.sh が持つ。判定ヘルパの不在・awk 失敗・完了印なし・関数不在は rg の起動語を含む呼び出しを判定不能の deny にすることを要求し、常に 0 件を返すヘルパでは RF 系がすべて素通しになって赤になる（2026-11-02 実測）。rg-stdin.sh の失敗はこの suite の失敗として数える。
 # 空振り検出: 背景の名簿外分岐を if (0) にする、または待ちタグの print を別名にする（名前だけ残して中身が変わる）と、該当の deny は素通しになり赤（2026-10-30 実測: 変異 13/14/15 は各 1 件が pass へ落ち、変異検出がそれを赤として数える。正常は 259/0）。
 # 空振り検出: pipe-and-chain（Issue `#2593`）は、検出器の print を外す・pipefail の宣言を無視する・`||` まで対象にする・head で終わる左辺まで止める・前置フィルタ 3 箇所から `|` の後ろの `&&` を外す・書き換え案を一般形へ戻す・head の段がある行へ pipefail を勧める 7 変異が各 rc=1。無変異対照は rc=0（2026-11-04 WSL 実測）
+# 空振り検出: 背景実行のゲート起動の前置き行（代入・cd・heredoc でスクリプトを書く行。Issue `#2672`）は bg-prefix.sh が持つ。fixture のディレクトリが無い・pass が 11 件未満・expect.tsv と fire-*.txt の数が合わない・OBS 4 件と Count 4 の 2 本が欠けると赤。検出器を Issue `#2672` の修正前の版へ戻したツリーでは 62 件、代入を並べた 1 文の退行（Issue `#2683`）の修正前の版では 9 件失敗する（2026-11-07 Windows Git Bash 実測）。bg-prefix.sh の失敗はこの suite の失敗として数える。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -735,14 +736,14 @@ assert_pass "前置フィルタの綴りを含まないコマンドは、スタ�
 
 echo "guard-exit-code: ゲート名簿の綴りが検出器と hook で一致する"
 HOOK_GATE="$(sed -n "s/^GATE_NAME='\(.*\)'\$/\1/p" "$TARGET")"
-DET_GATES="$(awk '/^function is_gate_launch/,/^}/' "$DETECTOR" | sed 's/#.*$//' | grep -oE '[A-Za-z0-9_-]+\.sh' | sort -u | tr '\n' ' ')"
+DET_GATES="$(awk '/^function is_named_gate/,/^}/' "$DETECTOR" | sed 's/#.*$//' | grep -oE '[A-Za-z0-9_-]+\.sh' | sort -u | tr '\n' ' ')"
 if [ -n "$HOOK_GATE" ]; then
   ok "hook が名簿の綴りを 1 箇所（GATE_NAME）に持つ: $HOOK_GATE"
 else
   bad "hook から GATE_NAME を読み取れません（前置フィルタの綴りが散っている可能性）"
 fi
 if [ "$DET_GATES" = "$HOOK_GATE " ]; then
-  ok "検出器 is_gate_launch の名簿と hook の GATE_NAME が一致する（検出器へゲートを足したらここが赤くなる）"
+  ok "検出器 is_named_gate の名簿と hook の GATE_NAME が一致する（検出器へゲートを足したらここが赤くなる）"
 else
   bad "名簿が食い違う: 検出器=[$DET_GATES] hook=[$HOOK_GATE]。検出器へゲートを足したら hook の GATE_NAME も直すこと"
 fi
@@ -1291,7 +1292,8 @@ cp "$DETECTOR" "$MUT_DIR/tests/lib/exit-code-guard.sh"
 # 変異 13: 背景実行で名簿外を主体にする分岐を消す
 cp "$TARGET" "$MUT"
 sed 's/if (ENVIRON\["ff_exit_code_any_launch"\] == "1") {/if (0) {/' "$DETECTOR" > "$MUT_DIR/tests/lib/exit-code-guard.sh"
-if grep -q 'ENVIRON\["ff_exit_code_any_launch"\] == "1"' "$MUT_DIR/tests/lib/exit-code-guard.sh"; then
+# 照合は分岐の if 行そのものに限る（持ち越しの引き継ぎ条件にも同じ比較式があるため。Issue `#2672`）
+if grep -q 'if (ENVIRON\["ff_exit_code_any_launch"\] == "1") {' "$MUT_DIR/tests/lib/exit-code-guard.sh"; then
   bad "変異 13 が当たっていない（背景の名簿外分岐が sed に一致しない）"
 else
   run_hook_bg_on "$MUT" 'npm test > log 2>&1; echo "rc=$?"'
@@ -1361,6 +1363,13 @@ if bash "$SCRIPT_DIR/rg-stdin.sh"; then
   ok "rg-stdin.sh（検索パスの無い rg の deny / allow 行列・判定不能・変異検出）が緑"
 else
   bad "rg-stdin.sh が失敗しました（上の ✗ 行）"
+fi
+
+echo "guard-exit-code: 背景実行のゲート起動の前置き行（fixture・一致・変異は bg-prefix.sh）"
+if bash "$SCRIPT_DIR/bg-prefix.sh"; then
+  ok "bg-prefix.sh（代入・cd で始まる背景起動の OBS fixture・hook と exit_code_scan の一致・変異検出）が緑"
+else
+  bad "bg-prefix.sh が失敗しました（上の ✗ 行）"
 fi
 
 echo

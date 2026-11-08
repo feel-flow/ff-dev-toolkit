@@ -238,10 +238,14 @@ execute_tasks() {
   validate_planned_result_dirs || return 2
   load_delegation_state || return 2
   guard_outstanding_delegations || return 2
+  # Hash the acquired description before the resume identity is fixed. Commit the
+  # snapshot only after that guard, so a rejected resume does not rewrite it.
+  prepare_review_ac || return 2
   prepare_resume_input || return 2
   guard_and_select_delegation_generation || return 2
   # Keep the existing unresolved-Critical guard before report/result cleanup.
   capture_and_guard_unresolved_critical_state || return 2
+  commit_review_ac || return 2
   clear_previous_integrated_report || return 2
   collect_delegated_responses || return 2
   # A task without prompt diff must not inherit the previous review's fixed diff.

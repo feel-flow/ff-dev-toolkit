@@ -1,0 +1,3 @@
+mkdir -p /tmp/scratch
+bash plugins/ff-dev-toolkit/scripts/multi-review.sh --route full > /tmp/scratch/review.log 2>&1
+rc=$?; echo "EXIT=$rc"; exit $rc

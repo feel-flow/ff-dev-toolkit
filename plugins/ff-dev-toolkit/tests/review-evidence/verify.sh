@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: cases_host_delegation.py（cases.py が継承する mixin。Issue `#2695`）の不在・空、継承行の脱落、mixin の 6 テストの定義の脱落は起動前に拒否する（各 rc=1）。不在はこの検査を外しても import 失敗で赤、分割前後のテスト名 61 件の集合は一致（2026-11-08 macOS 実測）。
 # 空振り検出: 私有fixtureの旧パス化（evidence/run-all/shim）・GROK_HOME不在・shell入力空の6変異は全て赤。先取りした旧名のsentinelは正常対照2testで不変（2026-10-29 macOS実測）。shell入力不在も読取失敗で赤、cases入力の不在/空とprivacy test名の脱落は起動前に拒否する。
 # 空振り検出: retained-cacheの正常対照2testは通過。保存木の退避除外を外すと旧report参照がFileNotFound、保存木検査を空にするとunsafe6組と下限が7failure、入力case集合を空にすると下限1failure（全変異syntax0、2026-10-28実測）。UUID reportの保持と未知名・親/leafリンク・directory/FIFO・hardlinkの移動前拒否を実producer/archiverで測る。
 # 空振り検出: 壁時計の巻き戻り（time.time_ns を固定して再現）は begin の開始時刻を読んだ prior/parent の終了以上へ
@@ -28,7 +29,24 @@ PLUGIN_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$PLUGIN_ROOT/tests/lib/git-fixture.sh"
 command -v python3 >/dev/null || { echo 'ERROR: python3 required' >&2; exit 1; }
 CASES="$PLUGIN_ROOT/tests/review-evidence/cases.py"
+CASES_MIXIN="$PLUGIN_ROOT/tests/review-evidence/cases_host_delegation.py"
 [ -r "$CASES" ] && [ -s "$CASES" ] || { echo 'ERROR: evidence cases missing/unreadable/empty' >&2; exit 1; }
+[ -r "$CASES_MIXIN" ] && [ -s "$CASES_MIXIN" ] || { echo 'ERROR: evidence host delegation cases missing/unreadable/empty' >&2; exit 1; }
+grep -F 'class Evidence(HostDelegationCases, unittest.TestCase):' "$CASES" >/dev/null || {
+  echo 'ERROR: Evidence no longer inherits the host delegation cases' >&2
+  exit 1
+}
+for _mixin_case in test_continued_host_delegation_adopts_all_from_the_advertised_command \
+  test_continued_host_delegation_preserves_fresh_boundary_prior \
+  test_prior_only_host_delegation_uses_the_same_safe_batch_advice \
+  test_continued_host_delegation_does_not_waive_missing_boundary_prior \
+  test_continued_host_delegation_missing_response_is_not_complete \
+  test_ordinary_host_delegation_report_keeps_resume_and_partial_adoption; do
+  grep -F "    def ${_mixin_case}(self):" "$CASES_MIXIN" >/dev/null || {
+    echo "ERROR: host delegation case missing: $_mixin_case" >&2
+    exit 1
+  }
+done
 for _privacy_case in test_installed_fixture_ignores_precreated_shared_siblings test_shell_fixtures_ignore_precreated_shared_paths; do
   grep -F "    def ${_privacy_case}(self):" "$CASES" >/dev/null || {
     echo "ERROR: privacy regression case missing: $_privacy_case" >&2

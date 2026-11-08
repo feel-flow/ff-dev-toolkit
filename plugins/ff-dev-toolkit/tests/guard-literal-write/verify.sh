@@ -331,19 +331,15 @@ ASDD_NONODE="$TEST_TMP/asdd-nonode"
 mkdir -p "$ASDD_NONODE" "$TEST_TMP/jq-only-bin"
 ff_asdd_fixture "$ASDD_NONODE" true
 ln -s "$(command -v jq)" "$TEST_TMP/jq-only-bin/jq"
-if PATH="$TEST_TMP/jq-only-bin:/usr/bin:/bin" command -v node >/dev/null 2>&1; then
-  echo "  ○ skip: /usr/bin か /bin に node があるため ASDD 検証不能（node 不在）の経路は未検査"
-else
-  json_c8="$(jq -n --arg c "${FIRE_CASES[0]}" '{tool_name: "Bash", tool_input: {command: $c}}')"
-  RC=0
-  OUT="$(cd "$ASDD_NONODE" && printf '%s' "$json_c8" | env PATH="$TEST_TMP/jq-only-bin:/usr/bin:/bin" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
-  DECISION="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)"
-  REASON="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null || true)"
-  case "$DECISION:$REASON" in
-    deny:*ASDD*) ok "C8: ASDD 設定を検証できない（config あり・node 不在）回は候補コマンドを判定不能の deny にする" ;;
-    *) bad "C8: ASDD 検証不能が素通しになった: exit=$RC out=[$OUT]" ;;
-  esac
-fi
+json_c8="$(jq -n --arg c "${FIRE_CASES[0]}" '{tool_name: "Bash", tool_input: {command: $c}}')"
+RC=0
+OUT="$(cd "$ASDD_NONODE" && printf '%s' "$json_c8" | env PATH="$TEST_TMP/jq-only-bin" "$BASH" "$TARGET" 2>/dev/null)" || RC=$?
+DECISION="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)"
+REASON="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null || true)"
+case "$DECISION:$REASON" in
+  deny:*'asdd_hook_enabled rc=1。'*) ok "C8: ASDD 設定を検証できない（config あり・node 不在）回は候補コマンドを判定不能の deny にする" ;;
+  *) bad "C8: ASDD 検証不能が素通しになった: exit=$RC out=[$OUT]" ;;
+esac
 mkdir -p "$TEST_TMP/jq-fail-n"
 REAL_JQ="$(command -v jq)"
 {
@@ -700,6 +696,11 @@ CASE
 lw_fire 'QF7: && の後ろのコマンド・パイプの送り側' <<'CASE'
 cd /tmp && grep -c 'a\\b' f.txt | tee n.txt
 CASE
+# Bash 3.2 は縮んだ末尾の単独 \ を捨て、Bash 5 は残す。
+# どの Bash へ渡るかで値が変わる形は、Claude Code では版に依存せず止める。
+lw_fire 'QF8: 引用の外の末尾の \\' <<'CASE'
+printf '%s' end\\
+CASE
 lw_pass 'QN1: 二重引用符の中で \\ の次がふつうの文字（"D:\\data" は縮んでも bash が同じ D:\data を作る。Issue の例）' <<'CASE'
 printf '%s\n' "D:\\data\\name\\project"
 CASE
@@ -711,9 +712,6 @@ printf '%s\n' 'a\b' "c\d" e\ f
 CASE
 lw_pass 'QN4: ANSI-C 引用（$ + 単一引用符）の中で \\ の次がエスケープ文字でない（\q は縮んでも \q）' <<'CASE'
 printf '%s' $'a\\qb'
-CASE
-lw_pass 'QN5: 引用の外の末尾の \\（縮んでも末尾の \ のまま）' <<'CASE'
-printf '%s' end\\
 CASE
 lw_pass 'QN6: ヒアドキュメントの本文（Q はコマンド行だけを読む。データ行きの本文は既知の限界）' <<'CASE'
 cat > f.sh <<'EOF'
@@ -948,7 +946,6 @@ qp_check 'QP2: 述語 Q が止めない二重バックスラッシュの形は�
 printf '%s' "D:\\data\\name"
 printf '%s' "foo\\.bar"
 printf '%s' $'a\\qb'
-printf '%s' end\\
 printf '%s' a\\\b
 printf '%s' $'a\\xg'
 CASE

@@ -157,12 +157,8 @@ PASS=$((PASS+4))
 mkdir -p "$tmp/asdd-nonode" "$tmp/jq-only-bin"
 ff_asdd_fixture "$tmp/asdd-nonode" true
 ln -s "$(command -v jq)" "$tmp/jq-only-bin/jq" 2>/dev/null || cp "$(command -v jq)" "$tmp/jq-only-bin/jq"
-if PATH="$tmp/jq-only-bin:/usr/bin:/bin" command -v node >/dev/null 2>&1; then
-  echo "  ○ skip: /usr/bin か /bin に node があるため ASDD 検証不能（node 不在）の経路は未検査"
-else
-  OUT="$(cd "$tmp/asdd-nonode" && payload "wsl -- bash -c 'echo \$x'" | env OSTYPE=msys PATH="$tmp/jq-only-bin:/usr/bin:/bin" /bin/bash "$TARGET" 2>/dev/null)" || true
-  case "$OUT" in *'"deny"'*ASDD*) PASS=$((PASS+1)) ;; *) fail "ASDD 検証不能で候補を止めない（${OUT}）" ;; esac
-fi
+OUT="$(cd "$tmp/asdd-nonode" && payload "wsl -- bash -c 'echo \$x'" | env OSTYPE=msys PATH="$tmp/jq-only-bin" "$BASH" "$TARGET" 2>/dev/null)" || true
+case "$OUT" in *'"deny"'*ASDD*) PASS=$((PASS+1)) ;; *) fail "ASDD 検証不能で候補を止めない（${OUT}）" ;; esac
 
 # 登録: Bash matcher の集約入口に載っている。削除した写しは照合が落ちる
 registered() { jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[] | select(.command | contains("guard-wsl-shell.sh"))' "$1" >/dev/null; }

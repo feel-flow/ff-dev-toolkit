@@ -416,6 +416,9 @@ capture_and_guard_unresolved_critical_state() {
       echo "ERROR: the previous Critical state belongs to another branch/base/scope." >&2
       echo "       Run an unfiltered full review to start a new review series." >&2
       echo "       Full review = no --perspective / --exclude-perspective / --mode cross-model (--cli is allowed)." >&2
+      echo "       To narrow inside the same series, repeat round 1 with the same --base and output directory:" >&2
+      echo "       --mode cross-model --cli <other> --perspective <perspective>, and put the fix range in --description." >&2
+      echo "       A different --base is another branch/base/scope and stops here." >&2
       echo "       Example: bash scripts/codex-review.sh --base ${BASE_BRANCH}" >&2
       if [[ "$DELEGATE_TO_HOST" == true ]]; then
         print_archive_recovery critical

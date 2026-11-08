@@ -56,7 +56,7 @@ fi
 echo 'fixture-media@1.0.0'
 STUB
   # Each restricted PATH removes only the prerequisite under test.
-  for c in bash git jq awk cat sed rm mkdir mktemp dirname basename date hostname tr grep sort head tail wc cp mv; do
+  for c in bash git jq awk cat sed rm rmdir mkdir mktemp dirname basename date hostname tr grep sort head tail wc cp mv; do
     resolved="$(command -v "$c")"
     [[ -n "$resolved" ]] || { bad "release prerequisite fixture: missing $c"; continue; }
     ln -s "$resolved" "$TMP/no-python-bin/$c"
@@ -118,7 +118,7 @@ release_environment_missing_host_case() {
 release_environment_failure_cases() {
   local mode before_head before_materialize before_runall before_public before_origin before_suites
   local environment_lib="$SSOT/scripts/lib/release-environment-functions.sh"
-  local sentinel="" temp_keep="" temp_link="" temp_target="" deleted_out="" deleted_rc=0
+  local sentinel="" temp_parent="" temp_keep="" temp_link="" temp_target="" deleted_out="" deleted_rc=0
   echo '-- release: prerequisites stop before prepare and suites --'
   before_head="$(git -C "$SSOT" rev-parse HEAD)"
   before_origin="$(git -C "$SSOT_ORIGIN" rev-parse develop)"
@@ -138,7 +138,7 @@ release_environment_failure_cases() {
       ok "${mode} environment helper stops before prepare or any suite"
     else bad "${mode} environment helper did not fail closed before side effects"; dump; fi
   done
-  for mode in missing-python python.unknown python.old python.empty missing-npm missing-media-tsc media.broken media.empty temp-fail temp-empty temp-file temp-symlink temp-outside; do
+  for mode in missing-python python.unknown python.old python.empty missing-npm missing-media-tsc media.broken media.empty temp-fail temp-empty temp-file temp-symlink temp-outside temp-nonempty; do
     case "$mode" in
       missing-python) PATH="$TMP/no-python-bin" run_orch --dry-run ;;
       missing-npm) PATH="$TMP/no-npm-bin" run_orch --dry-run ;;
@@ -181,44 +181,34 @@ STUB
         PATH="$TMP/temp-symlink-bin:$TMP/no-python-bin" run_orch --dry-run
         ;;
       temp-outside)
-        if bash -c 'stop() { printf "%s\n" "$*" >&2; exit 1; }; . "$1"; ff_release_temp_dir_allowed /tmp/ff-x && ff_release_temp_dir_allowed /var/tmp/ff-x && ff_release_temp_dir_allowed "${TMPDIR:-/tmp}/ff-x" && ! ff_release_temp_dir_allowed /opt/ff-outside && ! ff_release_temp_dir_allowed /workspace/wt/ff-outside' _ "$REPO_ROOT/scripts/lib/release-environment-functions.sh"; then
-          ok 'temp path predicate allows only temporary roots'
+        temp_parent="$STATE/temp-selected"
+        sentinel="$STATE/ff-release-temp.outsid"
+        if mkdir -- "$temp_parent" "$sentinel" && printf keep >"$sentinel/keep"; then
+          sentinel="$(CDPATH='' cd -P -- "$sentinel" && pwd -P)" || {
+            bad 'temp-outside: cannot resolve the private sibling fixture'
+            return 1
+          }
+          write_stub "$TMP/temp-outside-bin/mktemp" <<'STUB'
+#!/usr/bin/env bash
+state="$(CDPATH='' cd -P -- "$RELEASE_RT_STATE" && pwd -P)" || exit 1
+printf '%s\n' "$state/ff-release-temp.outsid"
+STUB
+          TMPDIR="$temp_parent" PATH="$TMP/temp-outside-bin:$TMP/no-python-bin" run_orch --dry-run
         else
-          bad 'temp path predicate allows a path outside the temporary roots, or rejects one inside'
-        fi
-        sentinel=""
-        for base in /dev/shm /workspace /opt /home; do
-          [[ -d "$base" && -w "$base" ]] || continue
-          case "$base" in
-            /tmp|/tmp/*|/var/tmp|/var/tmp/*|"${TMPDIR:-/tmp}"|"${TMPDIR:-/tmp}"/*) continue ;;
-          esac
-          sentinel="${base}/ff-temp-outside-$$"
-          rm -rf -- "$sentinel"
-          mkdir -p -- "$sentinel" && break
-          sentinel=""
-        done
-        if [[ -z "$sentinel" ]]; then
-          bad "temp-outside: no writable directory outside the temporary roots"
+          bad 'temp-outside: cannot create the private sibling fixture'
           OUT=""
           RC=0
-        else
-          case "$sentinel" in
-            /tmp/*|/var/tmp/*|"${TMPDIR:-/tmp}"/*)
-              bad "temp-outside sentinel is inside a temporary root: $sentinel"
-              rm -rf -- "$sentinel"
-              sentinel=""
-              ;;
-            *)
-              printf keep >"$sentinel/keep"
-              write_stub "$TMP/temp-outside-bin/mktemp" <<STUB
-#!/usr/bin/env bash
-printf '%s\n' '$sentinel'
-exit 0
-STUB
-              PATH="$TMP/temp-outside-bin:$TMP/no-python-bin" run_orch --dry-run
-              ;;
-          esac
         fi
+        ;;
+      temp-nonempty)
+        sentinel="$temp_parent/ff-release-temp.intern"
+        mkdir -- "$sentinel"
+        printf keep >"$sentinel/keep"
+        write_stub "$TMP/temp-nonempty-bin/mktemp" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "${2%/*}/ff-release-temp.intern"
+STUB
+        TMPDIR="$temp_parent" PATH="$TMP/temp-nonempty-bin:$TMP/no-python-bin" run_orch --dry-run
         ;;
       missing-media-tsc)
         mv "$RELEASE_RT_MEDIA/node_modules/typescript/bin/tsc" "$STATE/tsc.saved"
@@ -249,25 +239,29 @@ STUB
       temp-symlink)
         if has '一時領域を作れない' && [[ -L "$temp_link" && -f "$temp_target/keep" ]] && ! has 'RELEASE_STAGE=prepare '; then ok 'temp-symlink: stops without deleting a symlink'; else bad 'temp-symlink: missing diagnostic or the symlink was deleted'; dump; fi ;;
       temp-outside)
-        if [[ -n "$sentinel" ]] && has '一時領域が /tmp' && has "$sentinel" && [[ -f "$sentinel/keep" ]] && ! has 'RELEASE_STAGE=prepare '; then ok 'temp-outside: stops without deleting a path outside the temporary roots'; else bad 'temp-outside: missing diagnostic or the outside path was deleted'; dump; fi
+        if [[ -n "$sentinel" ]] && has '一時領域が mktemp に指定した親の直下に無い' && has "$sentinel" && [[ -f "$sentinel/keep" ]] && ! has 'RELEASE_STAGE=prepare '; then ok 'temp-outside: stops without deleting a path outside the temporary roots'; else bad 'temp-outside: missing diagnostic or the outside path was deleted'; dump; fi
         [[ -z "$sentinel" ]] || rm -rf -- "$sentinel"
+        ;;
+      temp-nonempty)
+        if has '検査した空の一時領域を削除できない' && [[ -f "$sentinel/keep" ]]; then
+          ok 'temp-nonempty: preserves existing contents under the selected parent'
+        else bad 'temp-nonempty: missing diagnostic or existing contents were deleted'; dump; fi
         ;;
       missing-media-tsc|media.*)
         if has 'npm ci --prefix' && has 'ff-media-toolkit' && ! has 'ff-media.sh setup'; then ok "${mode}: recovery names typecheck-only dependency installation"; else bad "${mode}: recovery requests the wrong setup scope"; dump; fi ;;
     esac
   done
-  temp_keep="$STATE/temp-deleted-sentinel"
-  rm -rf -- "$temp_keep"
+  temp_keep="$(CDPATH= cd -P -- "$temp_parent" && pwd -P)"
   write_stub "$TMP/temp-ok-bin/mktemp" <<STUB
 #!/usr/bin/env bash
-mkdir -p -- '$temp_keep/inner'
-printf '%s\n' '$temp_keep/inner'
+mkdir -- '$temp_keep/ff-release-temp.inside'
+printf '%s\n' '$temp_keep/ff-release-temp.inside'
 exit 0
 STUB
-  if deleted_out="$(PATH="$TMP/temp-ok-bin:$PATH" bash -c 'stop() { printf "%s\n" "$*" >&2; exit 1; }; . "$1"; ff_release_temp_preflight' \
+  if deleted_out="$(TMPDIR="$temp_keep" PATH="$TMP/temp-ok-bin:$PATH" bash -c 'stop() { printf "%s\n" "$*" >&2; exit 1; }; . "$1"; ff_release_temp_preflight' \
       temp-deleted "$environment_lib" 2>&1)"; then deleted_rc=0; else deleted_rc=$?; fi
-  if [[ "$deleted_rc" -eq 0 && "$deleted_out" == *RELEASE_TEMP=ok* && ! -e "$temp_keep/inner" ]]; then
-    ok 'temp-deleted: a directory under the temporary roots is removed after the check'
+  if [[ "$deleted_rc" -eq 0 && "$deleted_out" == *RELEASE_TEMP=ok* && ! -e "$temp_keep/ff-release-temp.inside" ]]; then
+    ok 'temp-deleted: a directory under the selected temporary parent is removed after the check'
   else
     bad "temp-deleted: the created directory was not removed (rc=$deleted_rc)"
     printf '%s\n' "$deleted_out" >&2

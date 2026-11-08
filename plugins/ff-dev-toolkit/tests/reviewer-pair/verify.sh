@@ -1520,6 +1520,180 @@ fi
 run "$TMP/cr-restore.log" -- --set-reviewers main=claude-code,sub=codex-cli
 
 echo ""
+echo "-- 先行・継続の失敗案内は主を除外しない --"
+# ここまでの検査は dry-run なので、feature/x は develop と同じコミットのままで足りる。
+# 実行する evidence は空差分を「nothing to review」で止めるので、先に差分を積む。
+printf '%s\n' base change > "$REPO/app.txt"
+git -C "$REPO" add app.txt
+git -C "$REPO" commit -qm "change"
+# dry-run 用の exit 99 stub は実行しない。ここだけ stdin を読んで落ちる stub に替える。
+# 案内の形と「主は --exclude-cli で外せない」契約だけを見る。系譜の完走は
+# multi-agent-host-delegation が verify する。
+PAIR_FAIL_CLAUDE="$STUB/claude"
+PAIR_FAIL_CODEX="$STUB/codex"
+cp "$PAIR_FAIL_CLAUDE" "$TMP/pair-claude-saved"
+cp "$PAIR_FAIL_CODEX" "$TMP/pair-codex-saved"
+cat > "$PAIR_FAIL_CLAUDE" << 'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 1
+SH
+cat > "$PAIR_FAIL_CODEX" << 'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "- Critical: 0"
+echo "- Important: 0"
+echo "- verdict: none"
+SH
+chmod +x "$PAIR_FAIL_CLAUDE" "$PAIR_FAIL_CODEX"
+reset_config
+mkdir -p "$CFG/ff-dev-toolkit"
+printf '%s\n' 'main=claude-code' 'sub=codex-cli' > "$CFG/ff-dev-toolkit/reviewers"
+cp "$CFG/ff-dev-toolkit/reviewers" "$TMP/pair-reviewers-before"
+# continue の親が無いと案内の前に止まる。親を先に成功させてから主を落とす。
+cat > "$PAIR_FAIL_CLAUDE" << 'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "- Critical: 0"
+echo "- Important: 0"
+echo "- verdict: none"
+SH
+chmod +x "$PAIR_FAIL_CLAUDE"
+run "$TMP/pair-main-parent.log" -- --mode pair --perspective code-review \
+  --evidence --output-dir "$TMP/pair-main-parent" --sequential
+cat > "$PAIR_FAIL_CLAUDE" << 'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 1
+SH
+chmod +x "$PAIR_FAIL_CLAUDE"
+run "$TMP/pair-main-advice.log" -- --mode pair --perspective code-review \
+  --evidence --continue-review "$TMP/pair-main-parent/review-evidence.json" \
+  --output-dir "$TMP/pair-main-advice" --sequential
+if [ "$RUN_RC" -ne 0 ] \
+  && grep -qF -- 'MULTI_AGENT_REVIEW_MAIN=codex-cli' "$TMP/pair-main-advice.log" \
+  && grep -qF -- '--set-reviewers' "$TMP/pair-main-advice.log" \
+  && ! grep -qF -- '--exclude-cli claude-code' "$TMP/pair-main-advice.log" \
+  && cmp -s "$CFG/ff-dev-toolkit/reviewers" "$TMP/pair-reviewers-before"; then
+  ok "pair の主が落ちた案内は別の主を示し、--exclude-cli も設定の保存もしない"
+else
+  bad "pair の主が落ちた案内が --exclude-cli か設定の保存になっている（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/pair-main-advice.log" >&2
+fi
+run "$TMP/pair-main-excl.log" -- --mode pair --perspective code-review --exclude-cli claude-code --dry-run
+if [ "$RUN_RC" -ne 0 ] \
+  && grep -qF -- "main reviewer 'claude-code' was excluded by --exclude-cli." "$TMP/pair-main-excl.log"; then
+  ok "pair の主は --exclude-cli で外せない契約のまま"
+else
+  bad "pair の主を --exclude-cli で外せている（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/pair-main-excl.log" >&2
+fi
+cat > "$PAIR_FAIL_CLAUDE" << 'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "- Critical: 0"
+echo "- Important: 0"
+echo "- verdict: none"
+SH
+cat > "$PAIR_FAIL_CODEX" << 'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "- Critical: 0"
+echo "- Important: 0"
+echo "- verdict: none"
+SH
+chmod +x "$PAIR_FAIL_CLAUDE" "$PAIR_FAIL_CODEX"
+run "$TMP/pair-sub-parent.log" -- --mode pair --perspective comprehensive-review \
+  --evidence --output-dir "$TMP/pair-sub-parent" --sequential
+cat > "$PAIR_FAIL_CODEX" << 'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 1
+SH
+chmod +x "$PAIR_FAIL_CODEX"
+run "$TMP/pair-sub-advice.log" -- --mode pair --perspective comprehensive-review \
+  --evidence --continue-review "$TMP/pair-sub-parent/review-evidence.json" \
+  --output-dir "$TMP/pair-sub-advice" --sequential
+if [ "$RUN_RC" -ne 0 ] \
+  && grep -qF -- 'MULTI_AGENT_REVIEW_MAIN=claude-code' "$TMP/pair-sub-advice.log" \
+  && grep -qF -- 'MULTI_AGENT_REVIEW_SUB=' "$TMP/pair-sub-advice.log" \
+  && grep -qF -- '--perspective comprehensive-review' "$TMP/pair-sub-advice.log" \
+  && ! grep -qF -- '--exclude-cli codex-cli' "$TMP/pair-sub-advice.log"; then
+  ok "pair の副が落ちた案内は総合観点を別の主へ移し、副を --exclude-cli しない"
+else
+  bad "pair の副が落ちた案内が --exclude-cli のまま（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/pair-sub-advice.log" >&2
+fi
+cat > "$PAIR_FAIL_CLAUDE" << 'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "- Critical: 0"
+echo "- Important: 0"
+echo "- verdict: none"
+SH
+cat > "$PAIR_FAIL_CODEX" << 'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "- Critical: 0"
+echo "- Important: 0"
+echo "- verdict: none"
+SH
+chmod +x "$PAIR_FAIL_CLAUDE" "$PAIR_FAIL_CODEX"
+run "$TMP/pair-open-parent.log" -- --mode pair --evidence \
+  --output-dir "$TMP/pair-open-parent" --sequential
+cat > "$PAIR_FAIL_CODEX" << 'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 1
+SH
+chmod +x "$PAIR_FAIL_CODEX"
+run "$TMP/pair-open-advice.log" -- --mode pair --evidence \
+  --continue-review "$TMP/pair-open-parent/review-evidence.json" \
+  --output-dir "$TMP/pair-open-advice" --sequential
+OPEN_LINE=""
+while IFS= read -r line; do
+  case "$line" in
+    *'MULTI_AGENT_REVIEW_SUB='*'multi-agent.sh'*) OPEN_LINE="$line"; break ;;
+  esac
+done < "$TMP/pair-open-advice.log"
+case "$OPEN_LINE" in
+  *'MULTI_AGENT_REVIEW_MAIN=claude-code'*'--perspective code-review'*'--perspective comprehensive-review'*)
+    OPEN_PERSPECTIVES=yes ;;
+  *) OPEN_PERSPECTIVES=no ;;
+esac
+if [ "$RUN_RC" -ne 0 ] && [ "$OPEN_PERSPECTIVES" = yes ] \
+  && ! grep -qF -- '--exclude-cli codex-cli' "$TMP/pair-open-advice.log"; then
+  ok "フィルタ無しで副が落ちた案内は全観点を別の主へ残す"
+else
+  bad "フィルタ無しの副失敗が総合観点だけに縮んだ（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/pair-open-advice.log" >&2
+fi
+cat > "$PAIR_FAIL_CLAUDE" << 'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 1
+SH
+chmod +x "$PAIR_FAIL_CLAUDE"
+# 総合観点だけの親は主が計画に載らない。両方の失敗はフィルタ無しの親を続ける。
+run "$TMP/pair-both-advice.log" -- --mode pair --evidence \
+  --continue-review "$TMP/pair-open-parent/review-evidence.json" \
+  --output-dir "$TMP/pair-both-advice" --sequential
+if [ "$RUN_RC" -ne 0 ] \
+  && grep -qF -- 'MULTI_AGENT_REVIEW_MAIN=grok-cli' "$TMP/pair-both-advice.log" \
+  && ! grep -qF -- 'MULTI_AGENT_REVIEW_MAIN=codex-cli' "$TMP/pair-both-advice.log" \
+  && ! grep -qF -- 'MULTI_AGENT_REVIEW_MAIN=claude-code' "$TMP/pair-both-advice.log" \
+  && ! grep -qF -- '--exclude-cli' "$TMP/pair-both-advice.log"; then
+  ok "主と副が両方落ちた案内は失敗した CLI を代替主にしない"
+else
+  bad "両方失敗の案内が失敗した CLI を代替主にしている（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/pair-both-advice.log" >&2
+fi
+cp "$TMP/pair-claude-saved" "$PAIR_FAIL_CLAUDE"
+cp "$TMP/pair-codex-saved" "$PAIR_FAIL_CODEX"
+chmod +x "$PAIR_FAIL_CLAUDE" "$PAIR_FAIL_CODEX"
+reset_config
+
+echo ""
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ reviewer-pair verify: $FAIL 件失敗" >&2
   exit 1

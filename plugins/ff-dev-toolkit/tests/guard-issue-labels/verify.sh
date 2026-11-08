@@ -731,7 +731,7 @@ esac
 while IFS= read -r line; do
   case "$line" in
     OK\ *) ok "MCP matcher: ${line#OK }" ;;
-    SKIP\ *) echo "  ○ skip: ${line#SKIP }" ;;
+    SKIP\ *) echo "  ○ skip: MCP matcher: ${line#SKIP }" ;;
     *) bad "MCP matcher: ${line#NG }" ;;
   esac
 done <<EOF

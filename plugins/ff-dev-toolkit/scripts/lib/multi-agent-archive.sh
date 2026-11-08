@@ -81,7 +81,7 @@ archive_known_entry() { # <path>
       [[ "$first" =~ ^[0-9a-f]{32}$ ]] || return 1
       if [[ "$tail" == "$first" ]]; then [[ -d "$item" ]]; return $?; fi
       [[ "$tail" == "$first/report.md" && -f "$item" ]]; return $? ;;
-    integrated-report.md|.fixed-diff|review-evidence.json|.evidence-start.*.json|.evidence-results.*|.report-building.*|.ff-output.*) return 0 ;;
+    integrated-report.md|.fixed-diff|review-evidence.json|.review-ac.json|.review-ac-context.txt|.evidence-start.*.json|.evidence-results.*|.report-building.*|.ff-output.*) return 0 ;;
     .delegation-state|.delegation-state/metadata|.delegation-state/manifest|.delegation-state/invocation|.delegation-state/unadopted) return 0 ;;
     .review-in-flight)
       archive_error 'in-flight marker remains; verify the run has ended and remove its stale marker explicitly'; return 1 ;;

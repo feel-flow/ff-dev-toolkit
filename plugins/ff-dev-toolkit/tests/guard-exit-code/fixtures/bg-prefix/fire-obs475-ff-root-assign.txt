@@ -1,0 +1,3 @@
+FF_DEV_TOOLKIT_ROOT="/repo/plugins/ff-dev-toolkit"
+bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --route full --delegate-to-host --base origin/develop > /tmp/review.log 2>&1
+rc=$?; echo "EXIT=$rc"

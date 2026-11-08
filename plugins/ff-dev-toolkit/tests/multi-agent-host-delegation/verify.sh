@@ -1270,6 +1270,881 @@ if [ "$RUN_RC" -eq 0 ] && grep -qF STATE_ONLY_ADOPTED "$STATE_ONLY_OUT/claude-co
   ok "state-only再開後の応答は次1回で採用し、副CLIの結果を保つ"
 else bad "state-only再開後の応答が次1回で採用されない（rc=${RUN_RC}）"; fi
 
+echo "-- base advance adopts the same delegation when the diff hash is unchanged --"
+BASE_ADV_OLD="$(git -C "$REPO" rev-parse develop)"
+BASE_ADV_HEAD="$(git -C "$REPO" rev-parse HEAD)"
+BASE_ADV_BRANCH="$(git -C "$REPO" branch --show-current)"
+BASE_ADV_REMOTE="$(git -C "$REPO" rev-parse refs/remotes/origin/develop 2>/dev/null || true)"
+BASE_ADV_OUT="$TMP/base-advance-results"
+BASE_ADV_ARGS=(--task review --mode cross-model --perspective code-review --base develop
+  --cli claude-code --cli codex-cli --delegate-to-host --description "base-advance original"
+  --output-dir "$BASE_ADV_OUT" --sequential)
+run_ma base-adv-initial "${BASE_ADV_ARGS[@]}"
+if [ "$RUN_RC" -eq 3 ] && [ -n "${RESPONSE_FILE:-}" ]; then
+  ok "base 前進の初期委譲は応答待ちで止まる"
+  printf '%s\n' '- Critical: 0' '- Important: 0' '- verdict: none' '- BASE_ADV_ADOPTED' > "$RESPONSE_FILE"
+else
+  bad "base 前進の初期委譲が応答待ちにならない（rc=${RUN_RC}）"
+fi
+BASE_ADV_CODEX="$(codex_launch_count)"
+run_ma base-adv-adopt "${BASE_ADV_ARGS[@]}" --resume
+if [ "$RUN_RC" -eq 0 ] && [ "$(codex_launch_count)" = "$BASE_ADV_CODEX" ] \
+   && ! grep -qF 'ERROR: --resume input differs' "$RUN_ERR" \
+   && grep -qF BASE_ADV_ADOPTED "$BASE_ADV_OUT/claude-code/code-review.md"; then
+  ok "未回収の resume は委譲応答を採用し、完了済みの副 CLI を再起動しない"
+else
+  bad "未回収の resume が委譲応答を採用しない（rc=${RUN_RC} codex=$(codex_launch_count)/${BASE_ADV_CODEX}）"
+fi
+
+echo "-- recorded OID spelling adopts a still-pending delegation --"
+BASE_SPELL_OUT="$TMP/base-spelling-results"
+BASE_SPELL_ARGS=(--task review --mode cross-model --perspective code-review --base develop
+  --cli claude-code --cli codex-cli --delegate-to-host --description "base-spelling original"
+  --output-dir "$BASE_SPELL_OUT" --sequential)
+run_ma base-spell-initial "${BASE_SPELL_ARGS[@]}"
+if [ "$RUN_RC" -eq 3 ] && [ -n "${RESPONSE_FILE:-}" ]; then
+  printf '%s\n' '- Critical: 0' '- Important: 0' '- verdict: none' '- BASE_SPELL_ADOPTED' > "$RESPONSE_FILE"
+fi
+BASE_SPELL_CODEX="$(codex_launch_count)"
+run_ma base-spell-resume --task review --mode cross-model --perspective code-review --base "$BASE_ADV_OLD" \
+  --cli claude-code --cli codex-cli --delegate-to-host --description "base-spelling original" \
+  --output-dir "$BASE_SPELL_OUT" --sequential --resume
+if [ "$RUN_RC" -eq 0 ] && [ "$(codex_launch_count)" = "$BASE_SPELL_CODEX" ] \
+   && ! grep -qF 'ERROR: --resume input differs' "$RUN_ERR" \
+   && grep -qF BASE_SPELL_ADOPTED "$BASE_SPELL_OUT/claude-code/code-review.md"; then
+  ok "記録した OID を --base に渡しても未回収の委譲結果を採用する"
+else
+  bad "記録した OID の --base が base-ref の二重拒否になった（rc=${RUN_RC}）"
+fi
+
+echo "-- ancestor base adopts a still-pending delegation when the diff hash is unchanged --"
+BASE_ANC_OUT="$TMP/base-ancestor-results"
+BASE_ANC_ARGS=(--task review --mode cross-model --perspective code-review --base develop
+  --cli claude-code --cli codex-cli --delegate-to-host --description "base-ancestor original"
+  --output-dir "$BASE_ANC_OUT" --sequential)
+run_ma base-anc-initial "${BASE_ANC_ARGS[@]}"
+if [ "$RUN_RC" -eq 3 ] && [ -n "${RESPONSE_FILE:-}" ]; then
+  printf '%s\n' '- Critical: 0' '- Important: 0' '- verdict: none' '- BASE_ANC_ADOPTED' > "$RESPONSE_FILE"
+fi
+BASE_ANC_CODEX="$(codex_launch_count)"
+git -C "$REPO" switch -q develop
+printf 'side\n' > "$REPO/side-base.txt"
+git -C "$REPO" add side-base.txt
+git -C "$REPO" commit -qm "side base"
+git -C "$REPO" switch -q "$BASE_ADV_BRANCH"
+run_ma base-anc-resume "${BASE_ANC_ARGS[@]}" --resume
+if [ "$RUN_RC" -eq 0 ] && [ "$(git -C "$REPO" rev-parse HEAD)" = "$BASE_ADV_HEAD" ] \
+   && [ "$(codex_launch_count)" = "$BASE_ANC_CODEX" ] \
+   && ! grep -qF 'ERROR: --resume input differs' "$RUN_ERR" \
+   && grep -qF BASE_ANC_ADOPTED "$BASE_ANC_OUT/claude-code/code-review.md"; then
+  ok "祖先 base で diff hash が同じ resume は同じ世代を採用し、副 CLI を再起動しない"
+else
+  bad "祖先 base の resume が同じ世代を採用しない（rc=${RUN_RC} codex=$(codex_launch_count)/${BASE_ANC_CODEX}）"
+fi
+git -C "$REPO" branch -f develop "$BASE_ADV_OLD"
+
+echo "-- non-ancestor base with the same fixed diff names the recorded OID --"
+BASE_REJ_OUT="$TMP/base-reject-results"
+BASE_REJ_ARGS=(--task review --mode cross-model --perspective code-review --base develop
+  --cli claude-code --cli codex-cli --delegate-to-host --description "base-reject original"
+  --output-dir "$BASE_REJ_OUT" --sequential)
+run_ma base-rej-initial "${BASE_REJ_ARGS[@]}"
+BASE_REJ_TREE="$(git -C "$REPO" rev-parse "${BASE_ADV_OLD}^{tree}")"
+BASE_REJ_ROOT="$(git -C "$REPO" commit-tree "$BASE_REJ_TREE" -m 'not an ancestor')"
+BASE_REJ_MANIFEST="$BASE_REJ_OUT/.delegation-state/manifest"
+BASE_REJ_META="$BASE_REJ_OUT/.delegation-state/metadata"
+awk -v new="$BASE_REJ_ROOT" '
+  index($0, "base-oid=") == 1 { print "base-oid=" new; next }
+  { print }
+' "$BASE_REJ_MANIFEST" > "$BASE_REJ_MANIFEST.new"
+mv "$BASE_REJ_MANIFEST.new" "$BASE_REJ_MANIFEST"
+BASE_REJ_ID="$(git hash-object --no-filters "$BASE_REJ_MANIFEST")"
+awk -v id="$BASE_REJ_ID" 'index($0, "identity=") == 1 { print "identity=" id; next } { print }' \
+  "$BASE_REJ_META" > "$BASE_REJ_META.new"
+mv "$BASE_REJ_META.new" "$BASE_REJ_META"
+run_ma base-rej-resume "${BASE_REJ_ARGS[@]}" --resume
+if [ "$RUN_RC" -ne 0 ] && grep -qF 'ERROR: --resume input differs' "$RUN_ERR" \
+   && grep -qF "Recorded base OID: ${BASE_REJ_ROOT}" "$RUN_ERR" \
+   && grep -qF 'Keep the original --base spelling.' "$RUN_ERR" \
+   && grep -qF 'Do not rewrite refs/remotes/origin/develop.' "$RUN_ERR" \
+   && grep -qF 'Passing --base <recorded OID> is not a second base-ref rejection when the diff hash is unchanged.' "$RUN_ERR" \
+   && grep -qF 'If the diff hash changed, or the recorded OID is not an ancestor' "$RUN_ERR"; then
+  ok "祖先でない base は記録 OID と二重拒否しない手順を出して拒否する"
+else
+  bad "祖先でない base の拒否案内が足りない（rc=${RUN_RC}）"
+fi
+BASE_REJ_NOW="$(git -C "$REPO" rev-parse develop)"
+BASE_REJ_REMOTE="$(git -C "$REPO" rev-parse refs/remotes/origin/develop 2>/dev/null || true)"
+if [ "$BASE_REJ_NOW" = "$BASE_ADV_OLD" ] && [ "$BASE_REJ_REMOTE" = "$BASE_ADV_REMOTE" ]; then
+  ok "resume の拒否は develop と refs/remotes/origin/develop を書き換えない"
+else
+  bad "resume の拒否が develop または remote-tracking ref を変えた"
+fi
+
+echo "-- changed diff still rejects a base move --"
+BASE_DIFF_OUT="$TMP/base-diff-results"
+BASE_DIFF_ARGS=(--task review --mode cross-model --perspective code-review --base develop
+  --cli claude-code --cli codex-cli --delegate-to-host --description "base-diff original"
+  --output-dir "$BASE_DIFF_OUT" --sequential)
+run_ma base-diff-initial "${BASE_DIFF_ARGS[@]}"
+if [ "$RUN_RC" -eq 3 ] && [ -n "${RESPONSE_FILE:-}" ]; then
+  printf '%s\n' '- Critical: 0' '- Important: 0' '- verdict: none' > "$RESPONSE_FILE"
+fi
+BASE_DIFF_ROOT="$(git -C "$REPO" commit-tree "$BASE_REJ_TREE" -m 'different history')"
+git -C "$REPO" branch -f develop "$BASE_DIFF_ROOT"
+run_ma base-diff-reject "${BASE_DIFF_ARGS[@]}" --resume
+if [ "$RUN_RC" -ne 0 ] && grep -qF 'ERROR: --resume input differs' "$RUN_ERR" \
+   && grep -qF "Recorded base OID: ${BASE_ADV_OLD}" "$RUN_ERR" \
+   && grep -qF 'Do not rewrite refs/remotes/origin/develop.' "$RUN_ERR" \
+   && ! grep -qF 'Keep the original --base spelling.' "$RUN_ERR"; then
+  ok "diff が変わる base 移動は resume を拒否する"
+else
+  bad "diff が変わる base 移動を resume が採用した（rc=${RUN_RC}）"
+fi
+git -C "$REPO" branch -f develop "$BASE_ADV_OLD"
+git -C "$REPO" switch -q "$BASE_ADV_BRANCH"
+
+echo "-- ancestor base whose diff hash changed rejects resume --"
+printf 'extra\n' > "$REPO/shrink-extra.txt"
+git -C "$REPO" add shrink-extra.txt
+git -C "$REPO" commit -qm "shrink the remaining diff"
+BASE_SHRINK_OUT="$TMP/base-shrink-results"
+BASE_SHRINK_ARGS=(--task review --mode cross-model --perspective code-review --base develop
+  --cli claude-code --cli codex-cli --delegate-to-host --description "base-shrink original"
+  --output-dir "$BASE_SHRINK_OUT" --sequential)
+run_ma base-shrink-initial "${BASE_SHRINK_ARGS[@]}"
+if [ "$RUN_RC" -eq 3 ] && [ -n "${RESPONSE_FILE:-}" ]; then
+  printf '%s\n' '- Critical: 0' '- Important: 0' '- verdict: none' '- BASE_SHRINK_PENDING' > "$RESPONSE_FILE"
+fi
+git -C "$REPO" branch -f develop "$BASE_ADV_HEAD"
+run_ma base-shrink-resume "${BASE_SHRINK_ARGS[@]}" --resume
+if [ "$RUN_RC" -ne 0 ] && grep -qF 'ERROR: --resume input differs' "$RUN_ERR" \
+   && grep -qF "Recorded base OID: ${BASE_ADV_OLD}" "$RUN_ERR" \
+   && grep -qF 'Do not rewrite refs/remotes/origin/develop.' "$RUN_ERR" \
+   && ! grep -qF 'Keep the original --base spelling.' "$RUN_ERR"; then
+  ok "祖先で diff hash が変わる base 前進は resume を採用しない"
+else
+  bad "祖先で diff hash が変わる resume を採用した（rc=${RUN_RC}）"
+fi
+git -C "$REPO" reset -q --hard "$BASE_ADV_HEAD"
+git -C "$REPO" branch -f develop "$BASE_ADV_OLD"
+git -C "$REPO" switch -q "$BASE_ADV_BRANCH"
+
+echo "-- prior or continued evidence tells the operator to exclude the failed CLI --"
+# Earlier cases leave the default .review-results inside the fixture repo. Evidence
+# refuses a dirty worktree, so park that output outside the repo and restore it after.
+EV_PARK="$TMP/ev-park"
+mkdir -p "$EV_PARK"
+if [ -e "$REPO/.review-results" ]; then
+  mv "$REPO/.review-results" "$EV_PARK/review-results"
+fi
+EV_STATUS="$(git -C "$REPO" status --porcelain --untracked-files=all)"
+if [ -z "$EV_STATUS" ]; then
+  ok "継続証跡の前に fixture の作業ツリーは clean"
+else
+  bad "継続証跡の前に fixture の作業ツリーが汚れている"
+  printf '%s\n' "$EV_STATUS" >&2
+fi
+EV_PARENT="$TMP/parent-ev-2502"
+EV_CONT="$TMP/continue-ev-2502"
+EV_CODEX_GOOD="$TMP/codex-good"
+cp "$STUB/codex" "$EV_CODEX_GOOD"
+run_ma ev-parent --task review --mode cross-model --perspective code-review --base develop \
+  --cli claude-code --cli codex-cli --evidence --sequential --timeout 30 \
+  --output-dir "$EV_PARENT"
+if [ "$RUN_RC" -eq 0 ] && [ -f "$EV_PARENT/review-evidence.json" ]; then
+  ok "継続の親になる evidence を両方の CLI で作れる"
+else
+  bad "継続の親 evidence を作れない（rc=${RUN_RC}）"
+  tail -n 30 "$RUN_ERR" >&2 || true
+fi
+cat > "$STUB/codex" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'codex\n' >> "${FF_TEST_CODEX_COUNT:?}"
+exit 1
+SH
+chmod +x "$STUB/codex"
+run_ma ev-fail --task review --mode cross-model --perspective code-review --base develop \
+  --cli claude-code --cli codex-cli --evidence --continue-review "$EV_PARENT/review-evidence.json" \
+  --sequential --timeout 30 --output-dir "$EV_CONT"
+grep -vF 'cannot be combined with --resume' "$RUN_ERR" >"$TMP/ev-resume-left.txt" || true
+if [ "$RUN_RC" -ne 0 ] && grep -qF -- '--exclude-cli codex-cli' "$RUN_ERR" \
+   && grep -qF -- "$EV_CONT" "$RUN_ERR" \
+   && ! grep -qF -- '--resume' "$TMP/ev-resume-left.txt"; then
+  ok "先行・継続の失敗案内は同じ出力先の --exclude-cli で、--resume の再実行を出さない"
+else
+  bad "先行・継続の失敗案内が --exclude-cli ではない、または --resume を勧めている（rc=${RUN_RC}）"
+fi
+cp "$EV_CODEX_GOOD" "$STUB/codex"
+chmod +x "$STUB/codex"
+EV_ADVICE_LINE=""
+while IFS= read -r EV_ADVICE_CANDIDATE; do
+  case "$EV_ADVICE_CANDIDATE" in
+    *"--exclude-cli codex-cli"*) EV_ADVICE_LINE="$EV_ADVICE_CANDIDATE"; break ;;
+  esac
+done < "$RUN_ERR"
+EV_ADVICE_LINE="${EV_ADVICE_LINE#"${EV_ADVICE_LINE%%[![:space:]]*}"}"
+case "$EV_ADVICE_LINE" in
+  *" --cli codex-cli"* | *" --cli=codex-cli"* | *" --route full"* | *" --route fast"* | *" --route=full"* | *" --route=fast"*)
+    bad "案内コマンドが失敗 CLI の --cli または --route full/fast を残している"
+    ;;
+  *"--exclude-cli codex-cli"*)
+    ok "案内コマンドは失敗 CLI の --cli を外した --exclude-cli である"
+    ;;
+  *)
+    bad "exclude-cli の案内コマンドを取り出せない"
+    ;;
+esac
+EV_RERUN_RC=0
+run_isolated PATH="$STUB_PATH" HOME="$TMP/home" \
+  FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" \
+  bash -c "$EV_ADVICE_LINE" > "$TMP/ev-rerun.out" 2> "$TMP/ev-rerun.err" || EV_RERUN_RC=$?
+RUN_RC="$EV_RERUN_RC"
+RUN_ERR="$TMP/ev-rerun.err"
+EV_VERIFY_RC=0
+python3 -B "$PLUGIN_ROOT/scripts/review-evidence.py" verify \
+  --file "$EV_CONT/review-evidence.json" --output "$EV_CONT" \
+  --base develop --required code-review >/dev/null 2>"$TMP/ev-verify.err" || EV_VERIFY_RC=$?
+if [ "$RUN_RC" -eq 0 ] && [ "$EV_VERIFY_RC" -eq 0 ] \
+   && python3 -B -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r.get("parent")' \
+        "$EV_CONT/review-evidence.json"; then
+  ok "失敗した CLI を外した再実行は同じ出力先で継続の系譜を verify できる"
+else
+  bad "exclude-cli の再実行が継続の系譜を完了しない（rc=${RUN_RC} verify=${EV_VERIFY_RC}）"
+  tail -n 20 "$RUN_ERR" >&2 || true
+  tail -n 20 "$TMP/ev-verify.err" >&2 || true
+fi
+
+echo "-- distributed --cli keeps failed perspectives on the rerun --"
+EV_DIST_PARENT="$TMP/dist-parent-2502"
+EV_DIST_CONT="$TMP/dist-cont-2502"
+run_ma ev-dist-parent --task review --mode distributed --base develop \
+  --cli claude-code --cli codex-cli --evidence --sequential --timeout 30 \
+  --output-dir "$EV_DIST_PARENT"
+if [ "$RUN_RC" -eq 0 ] && [ -f "$EV_DIST_PARENT/review-evidence.json" ]; then
+  ok "distributed の親 evidence を両方の CLI で作れる"
+else
+  bad "distributed の親 evidence を作れない（rc=${RUN_RC}）"
+  tail -n 30 "$RUN_ERR" >&2 || true
+fi
+cat > "$STUB/codex" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'codex\n' >> "${FF_TEST_CODEX_COUNT:?}"
+exit 1
+SH
+chmod +x "$STUB/codex"
+run_ma ev-dist-fail --task review --mode distributed --base develop \
+  --cli claude-code --cli codex-cli --evidence \
+  --continue-review "$EV_DIST_PARENT/review-evidence.json" \
+  --sequential --timeout 30 --output-dir "$EV_DIST_CONT"
+EV_DIST_LINE=""
+while IFS= read -r EV_ADVICE_CANDIDATE; do
+  case "$EV_ADVICE_CANDIDATE" in
+    *"--exclude-cli codex-cli"*) EV_DIST_LINE="$EV_ADVICE_CANDIDATE"; break ;;
+  esac
+done < "$RUN_ERR"
+EV_DIST_LINE="${EV_DIST_LINE#"${EV_DIST_LINE%%[![:space:]]*}"}"
+EV_DIST_CLI_LEFT=false
+case "$EV_DIST_LINE" in
+  *" --cli "* | *" --cli="*) EV_DIST_CLI_LEFT=true ;;
+esac
+case "$EV_DIST_LINE" in
+  *"--exclude-cli codex-cli"*--perspective\ code-review*--perspective\ test-analysis*--perspective\ acceptance-criteria*)
+    if [ "$RUN_RC" -ne 0 ] && [ "$EV_DIST_CLI_LEFT" = false ]; then
+      ok "distributed の失敗案内は --cli を外し失敗観点を --perspective で残す"
+    else
+      bad "distributed の失敗案内が観点を残していない（rc=${RUN_RC}）"
+      printf '  line: %s\n' "$EV_DIST_LINE" >&2
+    fi
+    ;;
+  *)
+    bad "distributed の失敗案内が観点を残していない（rc=${RUN_RC}）"
+    printf '  line: %s\n' "$EV_DIST_LINE" >&2
+    ;;
+esac
+cp "$EV_CODEX_GOOD" "$STUB/codex"
+chmod +x "$STUB/codex"
+EV_RERUN_RC=0
+run_isolated PATH="$STUB_PATH" HOME="$TMP/home" \
+  FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" \
+  bash -c "$EV_DIST_LINE" > "$TMP/ev-dist-rerun.out" 2> "$TMP/ev-dist-rerun.err" || EV_RERUN_RC=$?
+RUN_RC="$EV_RERUN_RC"
+RUN_ERR="$TMP/ev-dist-rerun.err"
+EV_VERIFY_RC=0
+python3 -B "$PLUGIN_ROOT/scripts/review-evidence.py" verify \
+  --file "$EV_DIST_CONT/review-evidence.json" --output "$EV_DIST_CONT" \
+  --base develop --required code-review,test-analysis,acceptance-criteria \
+  >/dev/null 2>"$TMP/ev-dist-verify.err" || EV_VERIFY_RC=$?
+if [ "$RUN_RC" -eq 0 ] && [ "$EV_VERIFY_RC" -eq 0 ] \
+   && python3 -B -c 'import json,sys; r=json.load(open(sys.argv[1])); \
+assert r["results"].get("claude-code:code-review")=="complete"; \
+assert r["results"].get("claude-code:test-analysis")=="complete"; \
+assert r["results"].get("claude-code:acceptance-criteria")=="complete"; \
+assert "codex-cli:code-review" not in r["results"]; assert r.get("parent")' \
+        "$EV_DIST_CONT/review-evidence.json"; then
+  ok "distributed の再実行は失敗観点を別 CLI で完走し継続の系譜を verify できる"
+else
+  bad "distributed の再実行が失敗観点を別 CLI で完走しない（rc=${RUN_RC} verify=${EV_VERIFY_RC}）"
+  tail -n 40 "$RUN_ERR" >&2 || true
+  tail -n 20 "$TMP/ev-dist-verify.err" >&2 || true
+fi
+
+# 失敗した CLI の案内を 1 本取り出す（先頭の空白を落とす）。
+lineage_advice_line() { # <needle>
+  LINEAGE_LINE=""
+  local candidate
+  while IFS= read -r candidate; do
+    case "$candidate" in
+      *"$1"*) LINEAGE_LINE="$candidate"; break ;;
+    esac
+  done < "$RUN_ERR"
+  LINEAGE_LINE="${LINEAGE_LINE#"${LINEAGE_LINE%%[![:space:]]*}"}"
+}
+
+echo "-- implicit distributed (--cli without --mode) keeps its mode on the rerun --"
+EV_IMPL_PARENT="$TMP/impl-parent-2646"
+EV_IMPL_CONT="$TMP/impl-cont-2646"
+cp "$EV_CODEX_GOOD" "$STUB/codex"
+chmod +x "$STUB/codex"
+run_ma ev-impl-parent --task review --base develop \
+  --cli claude-code --cli codex-cli --evidence --sequential --timeout 30 \
+  --output-dir "$EV_IMPL_PARENT"
+if [ "$RUN_RC" -eq 0 ] && [ -f "$EV_IMPL_PARENT/review-evidence.json" ]; then
+  ok "--mode を省いた --cli の親 evidence を作れる"
+else
+  bad "--mode を省いた --cli の親 evidence を作れない（rc=${RUN_RC}）"
+  tail -n 30 "$RUN_ERR" >&2 || true
+fi
+cat > "$STUB/codex" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'codex\n' >> "${FF_TEST_CODEX_COUNT:?}"
+exit 1
+SH
+chmod +x "$STUB/codex"
+run_ma ev-impl-fail --task review --base develop \
+  --cli claude-code --cli codex-cli --evidence \
+  --continue-review "$EV_IMPL_PARENT/review-evidence.json" \
+  --sequential --timeout 30 --output-dir "$EV_IMPL_CONT"
+lineage_advice_line "--exclude-cli codex-cli"
+case "$LINEAGE_LINE" in
+  *" --mode distributed"*"--exclude-cli codex-cli"*)
+    ok "--cli だけで distributed になった実行の案内は --mode distributed を固定する"
+    ;;
+  *)
+    bad "--cli だけで distributed になった実行の案内が実効 mode を固定していない（pair へ戻る）"
+    printf '  line: %s\n' "$LINEAGE_LINE" >&2
+    ;;
+esac
+cp "$EV_CODEX_GOOD" "$STUB/codex"
+chmod +x "$STUB/codex"
+EV_RERUN_RC=0
+run_isolated PATH="$STUB_PATH" HOME="$TMP/home" \
+  FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" \
+  bash -c "$LINEAGE_LINE" > "$TMP/ev-impl-rerun.out" 2> "$TMP/ev-impl-rerun.err" || EV_RERUN_RC=$?
+EV_VERIFY_RC=0
+python3 -B "$PLUGIN_ROOT/scripts/review-evidence.py" verify \
+  --file "$EV_IMPL_CONT/review-evidence.json" --output "$EV_IMPL_CONT" \
+  --base develop --required code-review,test-analysis,acceptance-criteria \
+  >/dev/null 2>"$TMP/ev-impl-verify.err" || EV_VERIFY_RC=$?
+if [ "$EV_RERUN_RC" -eq 0 ] && [ "$EV_VERIFY_RC" -eq 0 ]; then
+  ok "--mode を省いた実行の案内コマンドは distributed のまま失敗観点を完走する"
+else
+  bad "--mode を省いた実行の案内コマンドが完走しない（rc=${EV_RERUN_RC} verify=${EV_VERIFY_RC}）"
+  tail -n 30 "$TMP/ev-impl-rerun.err" >&2 || true
+  tail -n 20 "$TMP/ev-impl-verify.err" >&2 || true
+fi
+
+echo "-- single --cli with explicit perspectives swaps the CLI instead of dropping it --"
+EV_ONE_PARENT="$TMP/one-parent-2646"
+EV_ONE_CONT="$TMP/one-cont-2646"
+run_ma ev-one-parent --task review --mode distributed --base develop \
+  --cli codex-cli --perspective comprehensive-review --evidence --sequential --timeout 30 \
+  --output-dir "$EV_ONE_PARENT"
+if [ "$RUN_RC" -eq 0 ] && [ -f "$EV_ONE_PARENT/review-evidence.json" ]; then
+  ok "単一 --cli + 観点明示の親 evidence を作れる"
+else
+  bad "単一 --cli + 観点明示の親 evidence を作れない（rc=${RUN_RC}）"
+  tail -n 30 "$RUN_ERR" >&2 || true
+fi
+cat > "$STUB/codex" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'codex\n' >> "${FF_TEST_CODEX_COUNT:?}"
+exit 1
+SH
+chmod +x "$STUB/codex"
+run_ma ev-one-fail --task review --mode distributed --base develop \
+  --cli codex-cli --perspective comprehensive-review --evidence \
+  --continue-review "$EV_ONE_PARENT/review-evidence.json" \
+  --sequential --timeout 30 --output-dir "$EV_ONE_CONT"
+lineage_advice_line "--exclude-cli codex-cli"
+case "$LINEAGE_LINE" in
+  *" --cli codex-cli"* | *" --cli=codex-cli"*)
+    bad "単一 --cli の案内が失敗した CLI の --cli を残している"
+    printf '  line: %s\n' "$LINEAGE_LINE" >&2
+    ;;
+  *"--perspective comprehensive-review"*" --cli claude-code"*"--exclude-cli codex-cli"*)
+    ok "単一 --cli + 観点明示の案内は失敗した CLI の --cli を代替 CLI へ置き換える"
+    ;;
+  *)
+    bad "単一 --cli + 観点明示の案内が代替 CLI へ置き換えていない（観点が担当表で消える）"
+    printf '  line: %s\n' "$LINEAGE_LINE" >&2
+    ;;
+esac
+cp "$EV_CODEX_GOOD" "$STUB/codex"
+chmod +x "$STUB/codex"
+EV_RERUN_RC=0
+run_isolated PATH="$STUB_PATH" HOME="$TMP/home" \
+  FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" \
+  bash -c "$LINEAGE_LINE" > "$TMP/ev-one-rerun.out" 2> "$TMP/ev-one-rerun.err" || EV_RERUN_RC=$?
+EV_VERIFY_RC=0
+python3 -B "$PLUGIN_ROOT/scripts/review-evidence.py" verify \
+  --file "$EV_ONE_CONT/review-evidence.json" --output "$EV_ONE_CONT" \
+  --base develop --required comprehensive-review \
+  >/dev/null 2>"$TMP/ev-one-verify.err" || EV_VERIFY_RC=$?
+if [ "$EV_RERUN_RC" -eq 0 ] && [ "$EV_VERIFY_RC" -eq 0 ] \
+   && python3 -B -c 'import json,sys; r=json.load(open(sys.argv[1])); \
+assert r["results"].get("claude-code:comprehensive-review")=="complete"; assert r.get("parent")' \
+        "$EV_ONE_CONT/review-evidence.json"; then
+  ok "単一 --cli の案内コマンドは担当表に無い観点も代替 CLI で完走する"
+else
+  bad "単一 --cli の案内コマンドが観点を完走しない（rc=${EV_RERUN_RC} verify=${EV_VERIFY_RC}）"
+  tail -n 30 "$TMP/ev-one-rerun.err" >&2 || true
+  tail -n 20 "$TMP/ev-one-verify.err" >&2 || true
+fi
+
+echo "-- multi-review --route fast drops route from the failure advice --"
+EV_ROUTE_PARENT="$TMP/route-parent-2502"
+EV_ROUTE_CONT="$TMP/route-cont-2502"
+MA_ENTRY="$PLUGIN_ROOT/scripts/multi-review.sh"
+run_ma ev-route-parent --route fast --base develop --description route-evidence \
+  --evidence --sequential --timeout 30 --output-dir "$EV_ROUTE_PARENT"
+if [ "$RUN_RC" -eq 0 ] && [ -f "$EV_ROUTE_PARENT/review-evidence.json" ]; then
+  ok "route fast の親 evidence を作れる"
+else
+  bad "route fast の親 evidence を作れない（rc=${RUN_RC}）"
+  tail -n 30 "$RUN_ERR" >&2 || true
+fi
+cat > "$STUB/codex" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'codex\n' >> "${FF_TEST_CODEX_COUNT:?}"
+exit 1
+SH
+chmod +x "$STUB/codex"
+run_ma ev-route-fail --route fast --base develop --description route-evidence \
+  --evidence --continue-review "$EV_ROUTE_PARENT/review-evidence.json" \
+  --sequential --timeout 30 --output-dir "$EV_ROUTE_CONT"
+unset MA_ENTRY
+EV_ROUTE_LINE=""
+while IFS= read -r EV_ADVICE_CANDIDATE; do
+  case "$EV_ADVICE_CANDIDATE" in
+    *"--exclude-cli codex-cli"*) EV_ROUTE_LINE="$EV_ADVICE_CANDIDATE"; break ;;
+  esac
+done < "$RUN_ERR"
+EV_ROUTE_LINE="${EV_ROUTE_LINE#"${EV_ROUTE_LINE%%[![:space:]]*}"}"
+case "$EV_ROUTE_LINE" in
+  *" --route full"* | *" --route fast"* | *" --route=full"* | *" --route=fast"* \
+    | *"--wrapper-route fast"* | *"--wrapper-route full"* | *" --wrapper-route=fast"* \
+    | *" --wrapper-route=full"* | *" --cli codex-cli"* | *" --cli=codex-cli"*)
+    bad "route fast の案内が --route / --wrapper-route / 失敗 CLI の --cli を残している"
+    printf '  line: %s\n' "$EV_ROUTE_LINE" >&2
+    ;;
+  *"--exclude-cli codex-cli"*)
+    ok "route fast の案内は --wrapper-route と失敗 CLI の --cli を外した --exclude-cli である"
+    ;;
+  *)
+    bad "route fast の exclude-cli 案内を取り出せない（rc=${RUN_RC}）"
+    tail -n 40 "$RUN_ERR" >&2 || true
+    ;;
+esac
+cp "$EV_CODEX_GOOD" "$STUB/codex"
+chmod +x "$STUB/codex"
+EV_RERUN_RC=0
+run_isolated PATH="$STUB_PATH" HOME="$TMP/home" \
+  FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" \
+  bash -c "$EV_ROUTE_LINE" > "$TMP/ev-route-rerun.out" 2> "$TMP/ev-route-rerun.err" || EV_RERUN_RC=$?
+RUN_RC="$EV_RERUN_RC"
+RUN_ERR="$TMP/ev-route-rerun.err"
+EV_VERIFY_RC=0
+python3 -B "$PLUGIN_ROOT/scripts/review-evidence.py" verify \
+  --file "$EV_ROUTE_CONT/review-evidence.json" --output "$EV_ROUTE_CONT" \
+  --base develop --required comprehensive-review \
+  >/dev/null 2>"$TMP/ev-route-verify.err" || EV_VERIFY_RC=$?
+if [ "$RUN_RC" -eq 0 ] && [ "$EV_VERIFY_RC" -eq 0 ] \
+   && python3 -B -c 'import json,sys; r=json.load(open(sys.argv[1])); \
+assert r["results"].get("claude-code:comprehensive-review")=="complete"; \
+assert "codex-cli:comprehensive-review" not in r["results"]; assert r.get("parent")' \
+        "$EV_ROUTE_CONT/review-evidence.json"; then
+  ok "route fast の再実行は総合観点を別 CLI で完走し継続の系譜を verify できる"
+else
+  bad "route fast の再実行が継続の系譜を完了しない（rc=${RUN_RC} verify=${EV_VERIFY_RC}）"
+  tail -n 40 "$RUN_ERR" >&2 || true
+  tail -n 20 "$TMP/ev-route-verify.err" >&2 || true
+fi
+# pair の主は --exclude-cli で外せない。落ちた主は別の主へ差し替え、落ちた副の総合観点は
+# 副任せにせずその主へ移す。打ち直すと別 CLI で完走し、継続の系譜が verify できる。
+PAIR_XDG="$TMP/pair-xdg"
+mkdir -p "$PAIR_XDG/ff-dev-toolkit"
+PAIR_REVIEWERS="$PAIR_XDG/ff-dev-toolkit/reviewers"
+printf '%s\n' 'main=claude-code' 'sub=codex-cli' > "$PAIR_REVIEWERS"
+EV_CLAUDE_GOOD="$TMP/claude-good"
+cp "$STUB/claude" "$EV_CLAUDE_GOOD"
+run_ma_pair() {
+  local label="$1"; shift
+  OUT_N=$((OUT_N + 1))
+  RUN_OUT="$TMP/out.${OUT_N}.${label}"
+  RUN_ERR="$TMP/err.${OUT_N}.${label}"
+  RUN_RC=0
+  run_isolated PATH="$STUB_PATH" HOME="$TMP/home" XDG_CONFIG_HOME="$PAIR_XDG" \
+    FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash "$MULTI_AGENT" "$@" > "$RUN_OUT" 2> "$RUN_ERR" || RUN_RC=$?
+}
+pair_advice_line() { # <needle>
+  PAIR_ADVICE_LINE=""
+  local candidate
+  while IFS= read -r candidate; do
+    case "$candidate" in
+      *"MULTI_AGENT_REVIEW_MAIN="*"bash "*) PAIR_ADVICE_LINE="$candidate"; break ;;
+    esac
+  done < "$RUN_ERR"
+  PAIR_ADVICE_LINE="${PAIR_ADVICE_LINE#"${PAIR_ADVICE_LINE%%[![:space:]]*}"}"
+}
+echo "-- pair main failure switches the main instead of excluding it --"
+EV_PAIR_PARENT="$TMP/pair-parent-main"
+EV_PAIR_CONT="$TMP/pair-cont-main"
+run_ma_pair pair-main-parent --task review --mode pair --perspective code-review --base develop \
+  --evidence --sequential --timeout 30 --output-dir "$EV_PAIR_PARENT"
+if [ "$RUN_RC" -eq 0 ] && [ -f "$EV_PAIR_PARENT/review-evidence.json" ]; then
+  ok "pair の主だけの親 evidence を作れる"
+else
+  bad "pair の主だけの親 evidence を作れない（rc=${RUN_RC}）"
+  tail -n 30 "$RUN_ERR" >&2 || true
+fi
+cat > "$STUB/claude" << 'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 1
+SH
+chmod +x "$STUB/claude"
+cp "$PAIR_REVIEWERS" "$TMP/pair-reviewers-before"
+# multi-review 経由の実行と同じく --wrapper-route full と表示文字列を付ける。案内がこれを引き継ぐと、
+# 委譲のハンドオフが元のコマンドを「Re-run command」として出し、失敗した主へ戻る案内と循環する。
+run_ma_pair pair-main-fail --task review --mode pair --perspective code-review --base develop \
+  --evidence --continue-review "$EV_PAIR_PARENT/review-evidence.json" \
+  --wrapper-route full --invocation-display 'bash multi-review.sh --route full --base develop' \
+  --sequential --timeout 30 --output-dir "$EV_PAIR_CONT"
+grep -vF 'cannot be combined with --resume' "$RUN_ERR" > "$TMP/pair-main-resume-left.txt" || true
+if [ "$RUN_RC" -ne 0 ] && grep -qF -- 'MULTI_AGENT_REVIEW_MAIN=codex-cli' "$RUN_ERR" \
+   && grep -qF -- '--set-reviewers' "$RUN_ERR" \
+   && grep -qF -- "$EV_PAIR_CONT" "$RUN_ERR" \
+   && ! grep -qF -- '--exclude-cli claude-code' "$RUN_ERR" \
+   && ! grep -qF -- '--resume' "$TMP/pair-main-resume-left.txt"; then
+  ok "pair の主の失敗案内は別の主で、--exclude-cli と --resume を出さない"
+else
+  bad "pair の主の失敗案内が別の主ではない（rc=${RUN_RC}）"
+  tail -n 40 "$RUN_ERR" >&2 || true
+fi
+if cmp -s "$PAIR_REVIEWERS" "$TMP/pair-reviewers-before"; then
+  ok "主の差し替え案内は reviewers 設定を保存しない"
+else
+  bad "主の差し替え案内が reviewers 設定を書き換えた"
+fi
+pair_advice_line
+# 代替主が副と同じときは MULTI_AGENT_REVIEW_SUB= が bash の前に入る。
+if [[ "$PAIR_ADVICE_LINE" == "MULTI_AGENT_REVIEW_MAIN=codex-cli "*"bash "*"--output-dir ${EV_PAIR_CONT}"* ]] \
+   || [[ "$PAIR_ADVICE_LINE" == "MULTI_AGENT_REVIEW_MAIN=codex-cli "*"bash "*"--output-dir \"${EV_PAIR_CONT}\""* ]]; then
+  ok "主の失敗案内コマンドは MULTI_AGENT_REVIEW_MAIN と同じ出力先である"
+else
+  bad "主の失敗案内コマンドを取り出せない"
+  printf '  line: %s\n' "$PAIR_ADVICE_LINE" >&2
+fi
+case "$PAIR_ADVICE_LINE" in
+  *"--invocation-display"* | *"--wrapper-route full"* | *"--wrapper-route=full"*)
+    bad "主の差し替え案内が元の表示文字列か --wrapper-route full を引き継いでいる"
+    printf '  line: %s\n' "$PAIR_ADVICE_LINE" >&2
+    ;;
+  "")
+    bad "主の差し替え案内を取り出せない（表示文字列の除去を確かめられない）"
+    ;;
+  *)
+    ok "主の差し替え案内は元の表示文字列と --wrapper-route full を引き継がない"
+    ;;
+esac
+cp "$EV_CLAUDE_GOOD" "$STUB/claude"
+chmod +x "$STUB/claude"
+EV_RERUN_RC=0
+run_isolated PATH="$STUB_PATH" HOME="$TMP/home" XDG_CONFIG_HOME="$PAIR_XDG" \
+  FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" \
+  bash -c "$PAIR_ADVICE_LINE" > "$TMP/pair-main-rerun.out" 2> "$TMP/pair-main-rerun.err" || EV_RERUN_RC=$?
+RUN_RC="$EV_RERUN_RC"
+RUN_ERR="$TMP/pair-main-rerun.err"
+EV_VERIFY_RC=0
+python3 -B "$PLUGIN_ROOT/scripts/review-evidence.py" verify \
+  --file "$EV_PAIR_CONT/review-evidence.json" --output "$EV_PAIR_CONT" \
+  --base develop --required code-review >/dev/null 2>"$TMP/pair-main-verify.err" || EV_VERIFY_RC=$?
+if [ "$RUN_RC" -eq 0 ] && [ "$EV_VERIFY_RC" -eq 0 ] \
+   && python3 -B -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["results"].get("codex-cli:code-review")=="complete"; assert r.get("parent")' \
+        "$EV_PAIR_CONT/review-evidence.json"; then
+  ok "別の主での再実行は code-review をその CLI で完走し継続の系譜を verify できる"
+else
+  bad "別の主での再実行が継続の系譜を完了しない（rc=${RUN_RC} verify=${EV_VERIFY_RC}）"
+  tail -n 30 "$RUN_ERR" >&2 || true
+  tail -n 20 "$TMP/pair-main-verify.err" >&2 || true
+fi
+
+echo "-- pair sub failure moves comprehensive-review onto another main --"
+EV_PAIR_SUB_PARENT="$TMP/pair-parent-sub"
+EV_PAIR_SUB_CONT="$TMP/pair-cont-sub"
+run_ma_pair pair-sub-parent --task review --mode pair --perspective comprehensive-review --base develop \
+  --evidence --sequential --timeout 30 --output-dir "$EV_PAIR_SUB_PARENT"
+if [ "$RUN_RC" -eq 0 ] && [ -f "$EV_PAIR_SUB_PARENT/review-evidence.json" ]; then
+  ok "pair の総合観点の親 evidence を作れる"
+else
+  bad "pair の総合観点の親 evidence を作れない（rc=${RUN_RC}）"
+  tail -n 30 "$RUN_ERR" >&2 || true
+fi
+cat > "$STUB/codex" << 'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 1
+SH
+chmod +x "$STUB/codex"
+run_ma_pair pair-sub-fail --task review --mode pair --perspective comprehensive-review --base develop \
+  --evidence --continue-review "$EV_PAIR_SUB_PARENT/review-evidence.json" \
+  --sequential --timeout 30 --output-dir "$EV_PAIR_SUB_CONT"
+grep -vF 'cannot be combined with --resume' "$RUN_ERR" > "$TMP/pair-sub-resume-left.txt" || true
+if [ "$RUN_RC" -ne 0 ] && grep -qF -- 'MULTI_AGENT_REVIEW_MAIN=claude-code' "$RUN_ERR" \
+   && grep -qF -- 'MULTI_AGENT_REVIEW_SUB=' "$RUN_ERR" \
+   && grep -qF -- '--perspective comprehensive-review' "$RUN_ERR" \
+   && grep -qF -- '--set-reviewers' "$RUN_ERR" \
+   && ! grep -qF -- '--exclude-cli codex-cli' "$RUN_ERR" \
+   && ! grep -qF -- '--resume' "$TMP/pair-sub-resume-left.txt"; then
+  ok "pair の副の失敗案内は総合観点を別の主へ移し、--exclude-cli を出さない"
+else
+  bad "pair の副の失敗案内が総合観点を別の主へ移していない（rc=${RUN_RC}）"
+  tail -n 40 "$RUN_ERR" >&2 || true
+fi
+pair_advice_line
+case "$PAIR_ADVICE_LINE" in
+  *"MULTI_AGENT_REVIEW_SUB="*)
+    ok "副の失敗案内コマンドは副を空にして主を差し替える"
+    ;;
+  *)
+    bad "副の失敗案内コマンドを取り出せない"
+    printf '  line: %s\n' "$PAIR_ADVICE_LINE" >&2
+    ;;
+esac
+cp "$EV_CODEX_GOOD" "$STUB/codex"
+chmod +x "$STUB/codex"
+EV_RERUN_RC=0
+run_isolated PATH="$STUB_PATH" HOME="$TMP/home" XDG_CONFIG_HOME="$PAIR_XDG" \
+  FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" \
+  bash -c "$PAIR_ADVICE_LINE" > "$TMP/pair-sub-rerun.out" 2> "$TMP/pair-sub-rerun.err" || EV_RERUN_RC=$?
+RUN_RC="$EV_RERUN_RC"
+RUN_ERR="$TMP/pair-sub-rerun.err"
+EV_VERIFY_RC=0
+python3 -B "$PLUGIN_ROOT/scripts/review-evidence.py" verify \
+  --file "$EV_PAIR_SUB_CONT/review-evidence.json" --output "$EV_PAIR_SUB_CONT" \
+  --base develop --required comprehensive-review >/dev/null 2>"$TMP/pair-sub-verify.err" || EV_VERIFY_RC=$?
+if [ "$RUN_RC" -eq 0 ] && [ "$EV_VERIFY_RC" -eq 0 ] \
+   && python3 -B -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["results"].get("claude-code:comprehensive-review")=="complete"; assert "codex-cli:comprehensive-review" not in r["results"]; assert r.get("parent")' \
+        "$EV_PAIR_SUB_CONT/review-evidence.json"; then
+  ok "別の主での再実行は総合観点をその CLI で完走し継続の系譜を verify できる"
+else
+  bad "別の主での総合観点の再実行が継続の系譜を完了しない（rc=${RUN_RC} verify=${EV_VERIFY_RC}）"
+  tail -n 30 "$RUN_ERR" >&2 || true
+  tail -n 20 "$TMP/pair-sub-verify.err" >&2 || true
+fi
+cp "$EV_CLAUDE_GOOD" "$STUB/claude"
+chmod +x "$STUB/claude"
+
+echo "-- evidence が無い pair の失敗は主の差し替え案内にしない --"
+run_ma_pair pair-plain-fail --task review --mode pair --perspective code-review --base develop \
+  --sequential --timeout 30 --output-dir "$TMP/pair-plain-fail"
+cat > "$STUB/claude" << 'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 1
+SH
+chmod +x "$STUB/claude"
+run_ma_pair pair-plain-fail --task review --mode pair --perspective code-review --base develop \
+  --sequential --timeout 30 --output-dir "$TMP/pair-plain-fail"
+if [ "$RUN_RC" -ne 0 ] && ! grep -qF -- 'MULTI_AGENT_REVIEW_MAIN=' "$RUN_ERR" \
+   && ! grep -qF -- 'cannot be combined with --resume' "$RUN_ERR"; then
+  ok "証跡が無い失敗案内は主の差し替えも --resume 拒否も出さない"
+else
+  bad "証跡が無い失敗案内が pair の差し替え案内になっている（rc=${RUN_RC}）"
+  tail -n 30 "$RUN_ERR" >&2 || true
+fi
+cp "$EV_CLAUDE_GOOD" "$STUB/claude"
+chmod +x "$STUB/claude"
+
+# 系譜の案内は新しい起動なので、元の実行が起動時だけの環境変数から得た入力は届かない。
+# 証跡の照合（base_ref の文字列）と計画（設定ファイル・pair の主と副）を決める入力を
+# 環境変数だけで与え、印刷された案内を環境変数なしで打ち直して受け付けられることを表で固定する。
+# timeout・モデルなど照合も計画の担当も変えない入力は拒否を起こさないので表に載せない。
+# 同じ表で、観点集合を実際の計画から取ること（主と副が同じ pair）と、値を取るオプションの値を
+# オプションと取り違えないこと（argv の正規化）も固定する。
+echo "-- lineage advice pins inputs that came only from the environment --"
+git -C "$REPO" branch -f release develop
+LINEAGE_ENV_CONFIG="$TMP/lineage-env-config.yaml"
+cp "$PLUGIN_ROOT/scripts/agent-config.yaml" "$LINEAGE_ENV_CONFIG"
+EV_CODEX_FAIL="$TMP/codex-fail"
+cat > "$EV_CODEX_FAIL" << 'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'codex\n' >> "${FF_TEST_CODEX_COUNT:?}"
+exit 1
+SH
+chmod +x "$EV_CODEX_FAIL"
+# pair で代替主と副が別になるには 3 つ目の CLI が要る。copilot の adapter は read-only の前に
+# `copilot help permissions` で deny の優先を確かめるので、その問い合わせに応える stub を使う。
+# （grok は組み込みの sandbox が TMPDIR へ書き込みを許すため、TMPDIR 配下の fixture を拒否する）
+LINEAGE_COPILOT_GOOD="$TMP/lineage-copilot-good"
+cat > "$LINEAGE_COPILOT_GOOD" << 'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = help ] && [ "${2:-}" = permissions ]; then
+  echo "--deny-tool <tool>  --disallow-temp-dir"
+  echo "Denial rules always take precedence over allow rules."
+  exit 0
+fi
+cat >/dev/null
+echo "- Critical: 0"
+echo "- Important: 0"
+echo "- verdict: none"
+SH
+chmod +x "$LINEAGE_COPILOT_GOOD"
+# yq は run-all の前提（multi-agent-plan と同じ扱い）。無い環境は skip にせず赤にする。
+LINEAGE_YQ_BIN="$TMP/lineage-yq-bin"
+mkdir -p "$LINEAGE_YQ_BIN"
+LINEAGE_YQ_READY=false
+if LINEAGE_YQ="$(command -v yq)" && [ -x "$LINEAGE_YQ" ] && ln -s "$LINEAGE_YQ" "$LINEAGE_YQ_BIN/yq"; then
+  LINEAGE_YQ_READY=true
+fi
+LINEAGE_ENV_N=0
+# <label> <advice-needle> <pin-needle|!absent> <verify-base> <required> <rerun-needle|-> <env...> -- <args...>
+# 親を codex 成功で作り、codex 失敗で継続し、案内に pin-needle があること、案内を環境変数なしで
+# 打ち直すと完走し継続の証跡が verify できること（rerun-needle があれば打ち直しの出力に載ること）を見る。
+lineage_env_case() {
+  local label="$1" needle="$2" pin="$3" vbase="$4" required="$5" rerun_needle="$6"
+  local -a envs=() args=()
+  shift 6
+  while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do envs+=("$1"); shift; done
+  [ "$#" -gt 0 ] && shift
+  args=("$@")
+  LINEAGE_ENV_N=$((LINEAGE_ENV_N + 1))
+  local parent="$TMP/lineage-env-${LINEAGE_ENV_N}-parent" cont="$TMP/lineage-env-${LINEAGE_ENV_N}-cont"
+  local err="$TMP/lineage-env-${LINEAGE_ENV_N}.err" rerun_out="$TMP/lineage-env-${LINEAGE_ENV_N}-rerun.out"
+  local rerun_err="$TMP/lineage-env-${LINEAGE_ENV_N}-rerun.err" verify_err="$TMP/lineage-env-${LINEAGE_ENV_N}-verify.err"
+  local rc=0 rerun_rc=0 verify_rc=0 line="" candidate
+  cp "$EV_CLAUDE_GOOD" "$STUB/claude"
+  cp "$EV_CODEX_GOOD" "$STUB/codex"
+  cp "$LINEAGE_COPILOT_GOOD" "$STUB/copilot"
+  chmod +x "$STUB/claude" "$STUB/codex" "$STUB/copilot"
+  run_isolated PATH="$STUB_PATH" HOME="$TMP/home" XDG_CONFIG_HOME="$PAIR_XDG" \
+    FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" ${envs[@]+"${envs[@]}"} bash "$MULTI_AGENT" "${args[@]}" \
+    --evidence --sequential --timeout 30 --output-dir "$parent" > /dev/null 2> "$err" || rc=$?
+  if [ "$rc" -ne 0 ] || [ ! -f "$parent/review-evidence.json" ]; then
+    bad "${label}: 親 evidence を作れない（rc=${rc}）"
+    tail -n 30 "$err" >&2 || true
+    return 0
+  fi
+  cp "$EV_CODEX_FAIL" "$STUB/codex"
+  rc=0
+  run_isolated PATH="$STUB_PATH" HOME="$TMP/home" XDG_CONFIG_HOME="$PAIR_XDG" \
+    FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" ${envs[@]+"${envs[@]}"} bash "$MULTI_AGENT" "${args[@]}" \
+    --evidence --continue-review "$parent/review-evidence.json" \
+    --sequential --timeout 30 --output-dir "$cont" > /dev/null 2> "$err" || rc=$?
+  while IFS= read -r candidate; do
+    case "$candidate" in *"$needle"*"bash "* | *"bash "*"$needle"*) line="$candidate"; break ;; esac
+  done < "$err"
+  line="${line#"${line%%[![:space:]]*}"}"
+  # pin-needle が ! で始まるときは、案内に含まれてはならない語として読む。
+  local pin_ok=false
+  case "$pin" in
+    '!'*) case "$line" in *"${pin#!}"*) ;; *) pin_ok=true ;; esac ;;
+    *) case "$line" in *"$pin"*) pin_ok=true ;; esac ;;
+  esac
+  if [ -n "$line" ] && [ "$pin_ok" = true ]; then
+    ok "${label}: 案内は元の実行の入力を保つ"
+  else
+    # 打ち直しの判定も続ける（入力の欠落が実際に拒否・別計画になることを同じ回で示す）
+    bad "${label}: 案内が元の実行の入力を保っていない（rc=${rc}）"
+    printf '  line: %s\n' "$line" >&2
+  fi
+  if [ -z "$line" ]; then
+    bad "${label}: 失敗案内の行が見つからない（rc=${rc}）"
+    tail -n 30 "$err" >&2 || true
+    return 0
+  fi
+  run_isolated PATH="$STUB_PATH" HOME="$TMP/home" XDG_CONFIG_HOME="$PAIR_XDG" \
+    FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" \
+    bash -c "$line" > "$rerun_out" 2> "$rerun_err" || rerun_rc=$?
+  python3 -B "$PLUGIN_ROOT/scripts/review-evidence.py" verify \
+    --file "$cont/review-evidence.json" --output "$cont" \
+    --base "$vbase" --required "$required" >/dev/null 2>"$verify_err" || verify_rc=$?
+  local needle_seen=true
+  if [ "$rerun_needle" != "-" ]; then
+    needle_seen=false
+    if grep -F -- "$rerun_needle" "$rerun_out" "$rerun_err" > /dev/null; then needle_seen=true; fi
+  fi
+  if [ "$rerun_rc" -eq 0 ] && [ "$verify_rc" -eq 0 ] && [ "$needle_seen" = true ]; then
+    ok "${label}: 案内をそのまま（環境変数なしで）打ち直すと完走し継続の証跡を verify できる"
+  else
+    bad "${label}: 案内をそのまま（環境変数なしで）打ち直すと受け付けられない（rc=${rerun_rc} verify=${verify_rc}）"
+    printf '  line: %s\n' "$line" >&2
+    tail -n 30 "$rerun_err" >&2 || true
+    tail -n 20 "$verify_err" >&2 || true
+  fi
+}
+lineage_env_case "MULTI_AGENT_BASE_BRANCH" "--exclude-cli codex-cli" "--base release" \
+  release code-review,test-analysis,acceptance-criteria - \
+  MULTI_AGENT_BASE_BRANCH=release -- \
+  --task review --mode distributed --cli claude-code --cli codex-cli
+LINEAGE_SAVED_PATH="$STUB_PATH"
+if [ "$LINEAGE_YQ_READY" = true ]; then
+  STUB_PATH="$LINEAGE_YQ_BIN:$LINEAGE_SAVED_PATH"
+  lineage_env_case "MULTI_AGENT_CONFIG" "--exclude-cli codex-cli" "--config ${LINEAGE_ENV_CONFIG}" \
+    develop code-review,test-analysis,acceptance-criteria "$LINEAGE_ENV_CONFIG" \
+    MULTI_AGENT_CONFIG="$LINEAGE_ENV_CONFIG" -- \
+    --task review --mode distributed --base develop --cli claude-code --cli codex-cli
+else
+  bad "MULTI_AGENT_CONFIG: 明示した設定ファイルの読み取りに必要な yq が無い"
+fi
+STUB_PATH="$LINEAGE_SAVED_PATH"
+# 主・副とも環境変数だけで与え、落ちた主を差し替える。副を固定しないと、打ち直しは
+# ユーザー設定の副（codex-cli。失敗のまま）へ戻り、総合観点が完走しない。
+lineage_env_case "MULTI_AGENT_REVIEW_MAIN / _SUB" "MULTI_AGENT_REVIEW_MAIN=claude-code" \
+  "MULTI_AGENT_REVIEW_SUB=copilot-cli" \
+  develop code-review,comprehensive-review - \
+  MULTI_AGENT_REVIEW_MAIN=codex-cli MULTI_AGENT_REVIEW_SUB=copilot-cli -- \
+  --task review --mode pair --base develop --perspective code-review --perspective comprehensive-review
+# 主と副が同じ pair は副の重複を省き、総合観点を組まない。落ちた主を差し替える案内が
+# 観点ファイルの全一覧を足すと、親の証跡に無い総合観点が混ざり継続が拒否される。
+lineage_env_case "MULTI_AGENT_REVIEW_MAIN = _SUB" "MULTI_AGENT_REVIEW_MAIN=claude-code" \
+  "!--perspective comprehensive-review" \
+  develop code-review - \
+  MULTI_AGENT_REVIEW_MAIN=codex-cli MULTI_AGENT_REVIEW_SUB=codex-cli -- \
+  --task review --mode pair --base develop
+# 値を取るオプションの値がオプション名に見えても、値として残す（次の語と一緒に外さない）。
+lineage_env_case "--description の値がオプション名" "--exclude-cli codex-cli" \
+  "--description --invocation-display --mode cross-model" \
+  develop code-review - -- \
+  --task review --description --invocation-display --mode cross-model --perspective code-review \
+  --base develop --cli claude-code --cli codex-cli
+cp "$EV_CLAUDE_GOOD" "$STUB/claude"
+cp "$EV_CODEX_GOOD" "$STUB/codex"
+cp "$EV_CODEX_GOOD" "$STUB/copilot"
+chmod +x "$STUB/claude" "$STUB/codex" "$STUB/copilot"
+
+if [ -e "$EV_PARK/review-results" ]; then
+  rm -rf "$REPO/.review-results"
+  mv "$EV_PARK/review-results" "$REPO/.review-results"
+fi
+
 # archive-only-cases:start
 ARCHIVE_CASES_FILE="$SCRIPT_DIR/archive-only-cases.sh"
 [[ -f "$ARCHIVE_CASES_FILE" && -r "$ARCHIVE_CASES_FILE" && -s "$ARCHIVE_CASES_FILE" ]] || { echo '✗ archive-only cases missing/unreadable/empty' >&2; exit 1; }

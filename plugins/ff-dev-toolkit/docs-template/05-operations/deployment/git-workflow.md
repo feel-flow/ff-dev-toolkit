@@ -347,7 +347,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 - 変更内容を簡潔に記載
 - 参照したドキュメントの場所を明記
-- Issue番号を含める（`Closes #123`）
+- Issue番号を含める（`Closes #123`。マージ後の項目が残る Issue は、ステップ5「PR タイトルと Issue 参照の規約」の判定どおり `fix(#123):` の形の件名と `Refs #123` にする）
 - AIツールの記載を含める
 
 ### ステップ4: テスト・検証（Test）
@@ -462,6 +462,8 @@ post-merge 検証（本ファイルの「PR タイトルと Issue 参照の規�
 
 テスト（ステップ4）を通した commit を push し、その場で通常 PR として作る（Draft にしない — 本テンプレートのソースリポジトリの ADR-053 / ADR-054）。セルフレビュー（ステップ6）は PR 作成の**後**に、PR の head SHA を対象として 1 回行う — レビュー対象の固定点と記録の置き場が PR に揃い、`/close-issue`（ステップ8。PR 作成後・マージ直前）と段の並びが一致する（並びの判断は同 ADR-054）。
 
+**`Closes` と `Refs` は最初の `gh pr create` で選ぶ**。対象 Issue ごとに下の「PR タイトルと Issue 参照の規約」の判定を実行し、`Refs` と出たら本文の 1 行目を `Refs #N（open を維持する理由）` にして、件名を `fix(#N):` の形にする。`Closes` と出たら下の例のとおりに作る。`/close-issue` で見つけてから切り替えると、改題と `--subject` / `--body` の明示と precheck のやり直しが要るうえ、一度 `Closes` を書いた PR は切り替えても閉じることがある。
+
 **契約針の差し替え・文言更新が中心の PR（検査の針を足した・変えた PR）は、変異表を回してから PR を作る**。変異ハーネスを `gh pr create` より**前**に回し、結果表を PR 本文ファイルへ組み込んでから `--body-file` で作る（変異表の書式・判定・終了コードはスクリプトのヘッダ。作法の正本は [TESTING.md「変異注入の適用確認」](../../04-quality/TESTING.md#変異注入の適用確認) と [「変異注入の結果の読み方と書き戻し先」](../../04-quality/TESTING.md#変異注入の結果の読み方と書き戻し先)）。1 件ごとに作業ツリーの写しを作り直し、適用を内容ハッシュで確かめてから suite を回すので、当たらなかった変異は `NOT-APPLIED` として赤で止まる。レビュアーはこの表の外の回避形だけを指摘し、レビューが報告した「緑のまま通る回避形」は同じ表へ 1 行足して再実行する（修正の検証と本文の証拠表が同時に揃う）:
 
 ```bash
@@ -513,6 +515,7 @@ gh pr create \
 Closes #${ISSUE_NUM}
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+# Refs 運用の Issue は、本文の 1 行目を Refs #N（open を維持する理由）にし、この例の Closes 行を書かない。
 # 人間レビュアーの指定（--reviewer / gh pr edit --add-reviewer）はここでは行わない。
 # 単純な指摘をセルフレビュー（ステップ6）で潰してから、ステップ7 の fix push 後に依頼する。
 # PR ラベルも Issue 同様、存在しない名前を直書きすると失敗する。
@@ -530,7 +533,7 @@ Closes #${ISSUE_NUM}
 
 #### PR タイトルと Issue 参照の規約【重要】
 
-**post-merge 検証（staging 実機確認・外部 ops など）が受け入れ条件に残る Issue では、PR タイトルにもコミット件名・本文にも `#N` を書かない**。本文の参照も `Closes #N` ではなく `Refs #N` にする。
+**post-merge 検証（staging 実機確認・外部 ops など）が受け入れ条件に残る Issue では、PR タイトルにもコミット件名・本文にも closing keyword と `#N` を隣接させない**。件名は `fix(#N):` の形にするか `#N` を書かない。本文の参照も `Closes #N` ではなく `Refs #N` にする。
 
 理由: GitHub の closing keyword は PR 本文だけでなく **squash commit のメッセージ**も走査する。`fix: #123 …` という Conventional Commits の自然な件名がそのまま `fix #123` として解釈され、本文を `Refs #123` にしても Issue が閉じる。squash メッセージの供給源はリポジトリ設定で決まり（`squash_merge_commit_title` / `squash_merge_commit_message`）、既定では **PR タイトルまたは単一コミットの件名**が件名に、**全コミットのメッセージ**が本文に入る。
 
@@ -539,9 +542,32 @@ Closes #${ISSUE_NUM}
 | Issue の性質                             | 本文の参照   | タイトル・コミットメッセージ       | マージ後の Issue |
 | ---------------------------------------- | ------------ | ---------------------------------- | ---------------- |
 | マージ前に全 AC を検証できる             | `Closes #N`  | `#N` を書いてよい                  | 自動クローズ     |
-| post-merge 検証が AC に残る（Refs 運用） | `Refs #N`    | **`#N` を書かない**（`(#PR番号)` は可） | open のまま維持  |
+| post-merge 検証が AC に残る（Refs 運用） | `Refs #N`    | **closing keyword と `#N` を隣接させない**（`fix(#N):` と `(#PR番号)` は可） | open のまま維持  |
 
-`(#PR番号)` の形（GitHub が squash 時に末尾へ付ける PR 番号）が安全なのは、PR 番号と Issue 番号が同じ名前空間を共有していて、末尾の PR 番号がその PR 自身を指すためである。抵触するのは `fix: #N …` のように **closing keyword と Issue 参照が隣接**する形だけで、検出語は `close` / `closes` / `closed` / `fix` / `fixes` / `fixed` / `resolve` / `resolves` / `resolved` の 9 語（`fix:` のようにコロンが挟まる形も一致する）。`chore: 検査を追加する。fixes は 9 語ある（#123 参照）` のように keyword と番号が同居しているだけの件名は抵触ではない。
+`(#PR番号)` の形（GitHub が squash 時に末尾へ付ける PR 番号）が安全なのは、PR 番号と Issue 番号が同じ名前空間を共有していて、末尾の PR 番号がその PR 自身を指すためである。抵触するのは `fix: #N …` のように **closing keyword と Issue 参照が隣接**する形だけで、検出語は `close` / `closes` / `closed` / `fix` / `fixes` / `fixed` / `resolve` / `resolves` / `resolved` の 9 語（`fix:` のようにコロンが挟まる形も一致する）。`chore: 検査を追加する。fixes は 9 語ある（#123 参照）` のように keyword と番号が同居しているだけの件名は抵触ではない。`fix(#123): …` も抵触ではない。keyword の直後が `(` で番号と隣接しないので、既定ブランチへ squash しても Issue は open のまま残る（実測済み）。
+
+**Refs 運用の判定（`post-merge:` の印）**: `/create-issue` と `/refine-issue` は、マージ後にしか達成できないまま DoD に残す項目を `- [ ] post-merge: <項目>` の形で書く。コミット件名を決める前（遅くともステップ5 の `gh pr create` の前）に、対象 Issue ごとに次の判定を実行する（bundle の子も 1 件ずつ判定する）:
+
+```bash
+# Issue の本文を読めない回を「印なし」と読まない（Closes で閉じる側へ倒れるため）
+if ! target_issue_text="$(gh issue view "${ISSUE_NUM}" --json body --jq .body)"; then
+  echo "❌ Issue 本文を取得できません（判定は成立していない）" >&2
+  exit 2
+fi
+# grep -q へパイプで渡さない（pipefail の呼び出し元では、大きな本文で一致が不一致へ反転する）
+if grep -Eq '^[[:space:]]*- \[ \] post-merge:' <<<"${target_issue_text}"; then
+  echo "Refs"
+else
+  echo "Closes"
+fi
+```
+
+- `Refs`: PR 本文の 1 行目を `Refs #N（open を維持する理由）` にし、`Closes #N` は本文のどこにも書かない。`Refs` が複数なら 1 件ずつ行を分けて本文の先頭に並べる（`Refs #A #B` の 2 件目は `/close-issue` に読まれない）。理由の文に closing keyword と別の Issue 番号を並べない（`/close-issue` がその Issue を Closes 対象として読む）。PR の件名とブランチ上のコミット件名は `fix(#N):` の形にする
+- `Closes`: 印の無い Issue は従来どおりで、ステップ5 の例のまま `Closes #N` で作る。チェック済みの `- [x] post-merge:` は測り終えた項目なので数えない
+- bundle: 子に `Refs` が出たら、その子と bundle 自身を `Refs` にする。ほかの子は `Closes` のままでよい。bundle は `Refs` の子を閉じるときに閉じる
+- 印は起票時の見立てで、実測の代わりにならない。マージ前に測れる項目に印が付いていたら、測ってチェックしてから判定する（本ファイルの「外部サービスでの実確認は全件ゲートの前に行う」）。逆に、印の無い Issue でもマージ後の項目が残ると分かっているなら `Refs` で作り、Issue に印を足す
+- 判定は行の形だけを見る。`- [ ]` 以外の箇条書き（`* [ ]` など）は印と見なさない。Issue 本文のコードフェンスの中の例には反応するが、`Refs` 側へ倒れるだけで誤クローズにはならない
+- `gh` が無いホストでは、MCP で Issue の本文を読んで同じ行の形を探す。本文を読めなければ判定は成立していないので、`Closes` で作らない
 
 この規約はステップ8 の `/close-issue` が機械的に検査する（PR タイトル + ブランチ上の全コミットの件名と本文が対象）。手作業で確認する場合は同じ検査を直接呼べる:
 
@@ -567,7 +593,7 @@ rm -f "${SURFACE}"
 
 `${FF_DEV_TOOLKIT_ROOT}` は、ステップ6と同じ [plugin root固定契約](./multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) で host の読み込み済み実体から解決する。配置先の推測や `${CLAUDE_PLUGIN_ROOT}` の手動コピーでは作らない。プラグイン未導入の環境ではこの手動確認は行えないため、ステップ8 のマージ直後 read-back を必ず実施すること。
 
-コミット件名・本文はマージ時に書き換えられないため、そこに `#N` が残ってしまった場合はステップ8 で `--subject` と `--body` を**両方明示**して squash メッセージを差し替える。両方明示した squash メッセージはその 2 つだけで決まり、コミットメッセージは畳み込まれない。
+コミット件名・本文はマージ時に書き換えられないため、そこに closing keyword と隣接した `#N` が残ってしまった場合はステップ8 で `--subject` と `--body` を**両方明示**して squash メッセージを差し替える。両方明示した squash メッセージはその 2 つだけで決まり、コミットメッセージは畳み込まれない。
 
 ### ステップ6: セルフレビュー（PR作成後）【重要】
 
@@ -1422,6 +1448,8 @@ GitHub Discussions への記録に加え、ACE Playbook への構造化記録を
 
 **chore PR 経路**: 大人数チーム、または知見内容自体をレビューに残したい場合は任意エスカレーション、**`<default-branch>` に直 push を止める保護がある場合は必須経路**。`<default-branch>` から `chore/ace-from-pr-<PR番号>` ブランチを切り、PLAYBOOK.md 追記を小さい chore PR として PR レビュー → squash merge する（保護判定は `/ace-curate` 手順1、commitlint type 置換の詳細は手順5）。
 
+**まとめて反映する（任意）**: base の前進の多くが知見の反映になるリポジトリは、`docs/08-knowledge/knowledge-delivery.conf` の `mode=batch` で、知見を知見専用ブランチへ書き、`finish.sh knowledge-commit flush` でまとめて反映する形へ切り替えられる。この設定のあいだは上の直 push と chore PR 経路を使わない（書き込み口が base への知見の直接 push と知見 PR を止める）。選び方・流れ・導入先で外れる点の書き方は ace-cycle.md の「反映の時期（マージごと / まとめて）」。
+
 > **ACE-012 との関係（混同しないこと）**: ACE-012 は _うっかり_ feature 作業を `<default-branch>` に直接 push してしまう事故（ブランチ切り替わりの見落とし）を防ぐルール。一方、本セクションの「`<default-branch>` 直マージ」は `knowledge:`（または commitlint type 許容リストにより置換された type）プレフィックス付きの **knowledge 単独コミット**（PLAYBOOK・観測台帳の追記だけを含む。両方を書いた回は上の書き込み口が 1 コミットに畳む）に限定した _意図的・承認済み_ のフローであり、両者は別物。ACE-012 は引き続き有効（deprecated にしない）。
 
 ### チェーン末尾: セッション振り返り（/retrospective）
@@ -1487,7 +1515,7 @@ tracking Issue / Epic 配下に多数の sub-issue がぶら下がっていて 1
 
 - **スコープ外の発見は起票の前に判定する**（`out-of-scope-issue` §1.2〜§3.1）: YAGNI → 同 PR インライン → 既存 bundle へコメント追記 → bundle 単位で新規。親無し・ラベル無しの単独 Issue を作らない
 - **起票**: `create-issue --bundle`（+ カテゴリ Epic があれば `--parent <n>`）。子の追加は `--parent <bundle>` で sub-issue にする（紐付けは `scripts/link-sub-issues.sh`）
-- **着手**: bundle 番号を指定する。子を全件 `--comments` で読み、1 ブランチで実装し、PR 本文に `Closes #子… Closes #bundle` を列挙する。マージで子と bundle が同時に閉じる
+- **着手**: bundle 番号を指定する。子を全件 `--comments` で読み、1 ブランチで実装し、PR 本文に `Closes #子… Closes #bundle` を列挙する。マージで子と bundle が同時に閉じる（`post-merge:` の印がある子を含む回は、その子と bundle を `Refs` にする。ステップ5「PR タイトルと Issue 参照の規約」）
 - **完了**: `/close-issue` は bundle + 子の全件で AC を照合し、`Closes` の欠けを検査する。`/merge-cleanup` と `/ace-curate` へ渡す番号は PR 1 本だけ
 - **上の「Epic の一括対応」との違い**: あちらは多数の sub-issue を **PR は 1 子 1 本のまま**並列に消化する手順。bundle は子を **1 本の PR に束ねる**。並列化が要るほど大きいなら Epic の一括対応、レビューを 1 回で済ませたいなら bundle
 

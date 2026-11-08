@@ -1,0 +1,3 @@
+bash plugins/ff-dev-toolkit/tests/run-all.sh > /tmp/run-all.log 2>&1
+npm test > /tmp/npm.log 2>&1
+rc=$?; echo "EXIT=$rc"; exit $rc

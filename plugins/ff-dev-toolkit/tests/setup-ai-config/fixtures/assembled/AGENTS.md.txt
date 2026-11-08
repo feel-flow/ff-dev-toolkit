@@ -23,7 +23,7 @@ Codex CLI / 汎用 AI エージェント共通の開発ガイド（[agents.md](h
 
 ## Commit & PR Guidelines
 - Issue 起票 → ブランチ → 実装 → テスト → push → PR → セルフレビュー（PR の head SHA を対象に 1 回）→ fix commit → マージ
-- コミットは `<type>: #<issue> <subject>`
+- コミットは `<type>: #<issue> <subject>`（マージ後の項目が残る Issue は `<type>(#<issue>): <subject>` と `Refs #<issue>`）
 
 ## 実測の記録先
 実体数・版の一覧・時刻表・スコープ差の注記のような**時間で腐る記述**は、このファイルなどの正本へ書き足さず、`docs/08-knowledge/` の日付付き証跡文書（`YYYY-MM-DD-<slug>-evidence.md`）へ置く。

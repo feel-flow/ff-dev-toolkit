@@ -15,6 +15,54 @@ domainは通常curateの標準収集対象です。PRからの自動収集でも
 
 承認された `/ace-refine` の後、次の `/ace-curate` は新規PR候補が0件でも保留を新規性ゲートへ掛け直す。追記・既存ACEのHelpful +1・棄却が確定した候補だけを外し、ACE変更と同じcommitへ含める。再び容量不足なら保持する。`/knowledge-lookup` は保留を専用のpending状態で本文検索し、不在なら従来出力を保つ。実行コマンドと書式の正本はプラグインの `skills/ace-curate/references/pending.md`。
 
+## 反映の時期（マージごと / まとめて）
+
+知見（ACE Playbook と観測台帳）は、既定では PR のマージごとに `<default-branch>` へ反映する。開発 PR が多いリポジトリでは base の前進の多くが知見の反映になり、長いゲートが base の前進で捨てられ、並行セッションの知見が `version`・Changelog・OBS 番号を取り合う。そういうリポジトリは反映を「まとめて」へ切り替えられる。
+
+### 選び方
+
+| 状況 | 選ぶ形 |
+| --- | --- |
+| 開発 PR が少ない・全件ゲートが短い・知見をすぐ base で読ませたい | マージごと（既定） |
+| 知見の反映で base が頻繁に進み、長いゲートが捨てられる／並行セッションの知見が衝突して採り直しになる | まとめて |
+
+まとめる頻度の目安は、全件ゲートが長く並行セッションが多いなら 1 日 1 回、知見の量が少ないなら週 1 回、release 前に base を固める運用なら release ごと。自動の反映（cron・workflow）は使わない。無人の遅延処理は止まっても表に出ない。そのかわり、未反映の件数と経過日数が毎回表示され、最古が閾値に達すると警告が出る。
+
+### 切り替え方
+
+`docs/08-knowledge/knowledge-delivery.conf` を `<default-branch>` にコミットする（無ければマージごと）。環境変数では切り替えない。セッションごとにモードが違うと、base へ直接書くセッションと知見専用ブランチへ書くセッションが混ざってしまう。
+
+```text
+mode=batch
+staging_branch=knowledge/staging
+warn_after_days=7
+```
+
+- `staging_branch` は直接 push できるブランチにする（保護しない）。`<default-branch>` と同じ名前、`chore/ace-from-*`、`knowledge/flush-*` などは使えない（理由は止まったときの `knowledge-delivery:` 行に出る）
+- まとめるモードは `git merge-tree --write-tree` を使うので、git 2.38 以上が要る
+- staging に載せてよいのは、知見の置き場（`docs/08-knowledge/` と、その version claim の `.version-claims/docs/08-knowledge/`）の変更だけ。それ以外の変更（置き場の中のシンボリックリンクを含む）があると、target・push・flush は checkout も merge もせずに止まる。base 側で台帳や Playbook を置き場の外へ移すと、未反映の知見が移動先へ運ばれるので、同じく止まる（移す前に flush する）。保護しないブランチから、レビューを経ないコードが base や書き手の手元へ入るのを防ぐためで、まとめるモードの Playbook と台帳は `docs/08-knowledge/` に置く
+- マージごとへ戻すときは、先に反映（flush）してから `mode=per-merge` にする。`staging_branch` を既定のままにしていればファイルを消してもよいが、既定以外にしていた場合はファイルを消さずに残す（消すと、残った未反映を target も flush も見なくなる）
+
+### まとめるモードの流れ
+
+- `/ace-curate` と `/retrospective` の手順は変わらない。`finish.sh knowledge-commit probe`（または `target`）が書き込みの起点（最新の base + 未反映の知見）へ detached で移る。照合・`Count`・OBS の採番・`version` の更新はこのツリーで行い、push は `staging_branch` へ送って元の場所へ戻る。base は進まない。追記が 0 件で終わる回も push を呼ぶ（何も送らずに元の場所へ戻る）
+- 並行セッションの衝突は staging 上で今と同じ形（先行されたら止まり、取り込んで作り直す）で処理する
+- `/knowledge-lookup` は未反映の知見も「未反映」のグループで返す。手元の追跡 ref（staging と base）が古い・remote を確かめていないときは、RECORD 行にその旨を書く
+- 反映は `finish.sh knowledge-commit flush` で行う。staging を取り込む merge commit を作業ツリーに触れずに作り、base へ送る（hook も起動しない）。直接 push できない・方針で直接 push しない base は `flush --pr` を使う。使い捨てのブランチ `knowledge/flush-<日時>` から PR が作られるので、**「Create a merge commit」でマージする**（squash / rebase すると祖先関係が切れて、反映済みの知見も未反映として数え続ける）。`--dry-run` で反映する件数を先に見られる
+- `/ace-refine` は flush の直後（未反映 0 件）に行う。base 側で知見ファイルを直接変えると、次の書き込みか flush が衝突で止まる。止まったら、staging に base を取り込んで衝突を解き（`version` / `ace_entry_count` / Changelog は merged tree から再生成）、staging へ push してからやり直す（force push はしない）
+
+### 導入先で外れる点の書き方
+
+導入先の運用が上の既定から外れるときは、この節の直後に「導入先での運用」として次の項目を書く（書かない項目は既定どおり）。
+
+| 項目 | 書く内容の例 |
+| --- | --- |
+| モードと理由 | 「まとめて。develop へのマージが 1 日 40 本を超え、全件ゲートが 24 分かかるため」 |
+| 反映の頻度と担当 | 「毎日、その日の最後のマージの後に最初にセッションを閉じる人が flush する」 |
+| 反映の経路 | 「develop へは直接 push しない方針なので、flush は常に `--pr`。flush PR だけは merge commit でマージする（通常の PR は squash）」 |
+| ゲートとの関係 | 「staging の push では CI を走らせない。flush PR の CI で知見ファイルの検査を通す」 |
+| staging の名前 | 既定（`knowledge/staging`）以外を使うときだけ |
+
 ## 概要
 
 ACE (Agentic Context Engineering) サイクルは、マージ後・cleanup 後に AIツールと協力して知見を抽出・評価・記録する運用手順です。
@@ -31,6 +79,8 @@ ACE 知見コミットのマージ方針は **git-workflow.md ステップ10 §�
 - **既定（推奨）**: 直 push を止める保護の無い `<default-branch>` にのみ適用（force push の禁止だけの classic 保護は `classic=protected-no-pr` で、rulesets にも `pull_request` type が無ければ直 push。判定は git-workflow.md の保護判定）。`<default-branch>` に直接 commit + push（PLAYBOOK.md は append-only ＋ PRスコープ式 ID で衝突しない）。
 - **chore PR 経路**: 大人数チーム / 知見レビューを残したい場合は任意エスカレーション、**`<default-branch>` に直 push を止める保護（classic の PR 必須・必須チェック・push 制限・署名必須・読み取り専用、または rulesets の `pull_request` type）がある場合は必須経路**。`chore/ace-from-pr-<PR番号>` の小 PR（commit type は commitlint の許容リストにより `chore` 等へ置換されうる）。
 - ここでの `<default-branch>` 直 push は `knowledge:`（または置換後の type）付き knowledge 単独コミット（PLAYBOOK・観測台帳の追記だけ。`/ace-curate` と `/retrospective` の両方が書いた回は共通の書き込み口 `scripts/knowledge-commit.sh` が 1 コミットに畳む）に限った意図的フローであり、ACE-012（うっかり `<default-branch>` 直 push の事故防止）とは別物。保護判定は `/ace-curate` 手順1、commit type 置換の詳細は手順5。
+
+**まとめて反映（任意）**: 知見を知見専用ブランチへ書き、`finish.sh knowledge-commit flush` で base へまとめて反映する。上の「反映の時期（マージごと / まとめて）」を参照。
 
 **autonomous（任意）**: subagent と専用 worktree で ACE キャプチャを非同期化するパターン。導入は ace-autonomous.md（`/ace-setup` の配置対象外・`${FF_DEV_TOOLKIT_ROOT}/docs-template/05-operations/deployment/ace-autonomous.md` からコピー）と ff-dev-toolkit プラグイン同梱の `docs-template/scripts/ace/` テンプレートを参照（Issue [#367](https://github.com/feel-flow/ai-spec-driven-development/issues/367)）。
 
@@ -413,6 +463,12 @@ ACE_REUSE_STALE_DAYS=120 npm run ace:reuse-report
 ---
 
 ## Changelog
+
+### [1.10.0] - 2026-11-07
+
+#### 追加
+
+- 反映の時期（マージごと / まとめて）の選び方・切り替え方・まとめるモードの流れ・導入先で外れる点の書き方を追加した
 
 ### [1.9.0] - 2026-11-06
 

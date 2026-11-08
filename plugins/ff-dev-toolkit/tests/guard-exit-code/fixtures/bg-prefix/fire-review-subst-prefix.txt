@@ -1,0 +1,2 @@
+result=prefix$(npm test)
+rc=$?; echo "EXIT=$rc"

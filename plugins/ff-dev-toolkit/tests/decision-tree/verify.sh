@@ -788,7 +788,7 @@ if ! command -v bwrap >/dev/null 2>&1; then
 # 親は兄弟 worktree と共有されるので、実行ごとに一意の名前で作り、cleanup はその実体だけを消す
 elif ! DT2417_FIX_MOUNT="$(mktemp -d "$(dirname "$REPO_ROOT")/ff-dt-2417-fixture.XXXXXX")"; then
   DT2417_FIX_MOUNT=""
-  echo "  ○ skip: リポジトリの親（$(dirname "$REPO_ROOT")）に sandbox 用 fixture を作れないため sandbox 上の経路判定は未検査"
+  echo "  ○ skip: sandbox 用 fixture をリポジトリの親に作れない（$(dirname "$REPO_ROOT")）ため sandbox 上の経路判定は未検査"
 else
   DT2417_BWRAP=(bwrap --dev-bind / / --tmpfs /tmp --remount-ro /tmp --tmpfs /var/tmp --remount-ro /var/tmp)
   if [ -d /usr/tmp ]; then

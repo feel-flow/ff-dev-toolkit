@@ -201,7 +201,7 @@ Codex CLI / 汎用 AI エージェント共通の開発ガイド（[agents.md](h
 
 ## Commit & PR Guidelines
 - Issue 起票 → ブランチ → 実装 → テスト → push → PR → セルフレビュー（PR の head SHA を対象に 1 回）→ fix commit → マージ
-- コミットは `<type>: #<issue> <subject>`
+- コミットは `<type>: #<issue> <subject>`（マージ後の項目が残る Issue は `<type>(#<issue>): <subject>` と `Refs #<issue>`）
 
 <!-- setup-ai-config:common-block -->
 

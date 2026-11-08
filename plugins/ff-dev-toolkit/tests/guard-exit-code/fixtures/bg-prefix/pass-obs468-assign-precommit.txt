@@ -1,0 +1,3 @@
+S=/tmp/scratch
+wsl.exe --exec bash /mnt/c/scratch/pre-commit-check.sh > "$S/pre-commit.log" 2>&1
+rc=$?; echo "EXIT=$rc"; exit $rc

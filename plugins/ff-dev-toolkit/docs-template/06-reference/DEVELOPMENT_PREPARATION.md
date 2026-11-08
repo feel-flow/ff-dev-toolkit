@@ -632,6 +632,8 @@ MASTER.mdは全ドキュメントの**中央ハブ**として機能:
 Closes #<issue>
 ```
 
+マージ後の項目が残る Issue は、件名を `<type>(#<issue>): <subject>` の形にし、本文を `Refs #<issue>` にする（詳細は Git Workflow の「PR タイトルと Issue 参照の規約」）。
+
 #### Type一覧
 
 | Type       | 用途             | 例                                    |

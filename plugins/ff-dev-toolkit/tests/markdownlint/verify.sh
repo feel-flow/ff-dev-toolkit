@@ -8,15 +8,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 REPO_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd -P)"
-CONFIG="$REPO_ROOT/.markdownlint.json"
-MARKDOWNLINT="$PLUGIN_ROOT/mcp/node_modules/.bin/markdownlint-cli2"
+# 設定と実行ファイルの置き場は knowledge-commit の commit 前検査と共有する（Issue `#2671`）
+# shellcheck source=../../scripts/lib/markdownlint-functions.sh
+. "$PLUGIN_ROOT/scripts/lib/markdownlint-functions.sh"
+ff_markdownlint_locate "$REPO_ROOT"
+CONFIG="$ff_mdl_config"
+MARKDOWNLINT="$ff_mdl_bin"
 
 [[ -f "$CONFIG" ]] || {
   echo "✗ markdownlint 設定が見つかりません: $CONFIG" >&2
   exit 1
 }
-if [[ ! -d "$PLUGIN_ROOT/mcp/node_modules" ]]; then
-  echo "○ skip: $PLUGIN_ROOT/mcp/node_modules が無いため repository Markdown lint をスキップ（cd plugins/ff-dev-toolkit/mcp && npm ci で有効化）"
+if [[ ! -d "$ff_mdl_modules" ]]; then
+  echo "○ skip: $ff_mdl_modules が無いため repository Markdown lint をスキップ（cd plugins/ff-dev-toolkit/mcp && npm ci で有効化）"
   exit 0
 fi
 [[ -x "$MARKDOWNLINT" ]] || {

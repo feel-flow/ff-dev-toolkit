@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 部分 skip の書式と、捕捉した子の skip 行の中継。
 # 空振り検出: 走査対象のディレクトリが無いとき (対象不在) と、読める対象ファイルが 0 件のとき (空振り) が赤になる。列 0 の部分 skip・識別子付きの丸印・成功行に紛れた見送り・中継の無い捕捉・列 0 を親へ写す中継を許す変異は赤になる。
+# 空振り検出: OS 別プロファイルが無い・空・不正な行、静的照合の対象が空、理由の固定句が無い場合は赤。Linux と macOS の欄を交換する変異は対照が赤になる。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -37,7 +38,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' HUP INT TERM
 
-# テンプレートの @C@ を丸印へ置換する。この verify.sh 自体には丸印を書かない。
+# 合成入力ではテンプレートの @C@ を丸印へ置換する。
 emit() {
   mkdir -p "$(dirname "$1")"
   sed "s/@C@/${circle}/g" >"$1"
@@ -75,7 +76,7 @@ if [[ -r "$unread" ]]; then
   chmod 000 "$unread" || true
 fi
 if [[ -r "$unread" ]]; then
-  echo "  ${circle} skip: root では読めないファイルを作れない"
+  echo "  ○ skip: root では読めないファイルを作れない"
 else
   expect_hit "$WORK/unread" ":0: unreadable" "読めないファイルは赤"
 fi
@@ -393,7 +394,111 @@ console.log("  @C@ E5: x")
 EOF
 expect_hit "$WORK/mjs-bad" "noncanonical" "mjs の非正準 console.log は赤"
 
-expect_clean "$REPO_ROOT" "実ツリーに書式違反の skip 行は無い"
+profile="$SCRIPT_DIR/../lib/release-skip-profile.sh"
+if ff_skip_line_scan_tree "$REPO_ROOT" --reasons >"$WORK/reasons" &&
+  bash "$profile" --lint "$WORK/reasons"; then
+  ok "実ツリーの部分 skip の書式が正しく、理由を正本で分類できる"
+else
+  cat "$WORK/reasons"
+  bad "部分 skip の静的照合が不成立"
+fi
+
+emit "$WORK/profile-source/plugins/p/tests/unknown.sh" <<'EOF'
+notify_skip() { echo "  @C@ skip: $1"; }
+notify_skip "novel unclassified reason"
+echo "  @C@ skip: $DYNAMIC_REASON"
+command echo "  @C@ skip: novel command reason"
+builtin printf '%s\n' "  @C@ skip: novel builtin reason"
+EOF
+result=""
+if ff_skip_line_scan_tree "$WORK/profile-source" --reasons >"$WORK/reasons" &&
+  result="$(bash "$profile" --lint "$WORK/reasons")"; then
+  bad "未知または動的な理由が静的照合をすり抜けた"
+elif [[ "$result" == *'unknown.sh:2: 未分類の部分 skip: novel unclassified reason'* &&
+        "$result" == *'unknown.sh:3: 未分類の部分 skip: $DYNAMIC_REASON'* &&
+        "$result" == *'unknown.sh:4: 未分類の部分 skip: novel command reason'* &&
+        "$result" == *'unknown.sh:5: 未分類の部分 skip: novel builtin reason'* ]]; then
+  ok "新規の固定理由と識別句のない動的理由を、発生元付きで停止する"
+else
+  bad "未知の理由の停止診断が不正: $result"
+fi
+
+mkdir -p "$WORK/bin" "$WORK/profile"
+emit "$WORK/bin/uname" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$OS_CASE_HOST"
+EOF
+chmod +x "$WORK/bin/uname"
+emit "$WORK/gate-output" <<'EOF'
+  @C@ skip: bwrap が無いため sandbox 上の経路判定は未検査
+EOF
+
+profile_case() {
+  local checker="$1" os="$2" expected="$3" hint="$4" result rc=0
+  result="$(PATH="$WORK/bin:$PATH" OS_CASE_HOST="$os" bash "$checker" --check "$WORK/gate-output")" || rc=$?
+  [[ "$rc" -eq "$expected" && "$result" == *"$hint"* ]]
+}
+if profile_case "$profile" Darwin 0 "" && profile_case "$profile" MSYS_NT-10.0 0 "" &&
+  profile_case "$profile" Linux 1 'bubblewrap を入れて' &&
+  profile_case "$profile" FreeBSD 2 '対応していない OS'; then
+  ok "同じ理由を Windows / macOS で許可し、Linux で案内付き停止、未知 OS で停止する"
+else
+  bad "OS 別の許可・停止が契約と異なる"
+fi
+
+cp "$profile" "$WORK/profile/"
+mutant="$WORK/profile/release-skip-profile.sh"
+table="$WORK/profile/release-skip-profile.tsv"
+if profile_case "$mutant" Linux 2 'プロファイルを読めない'; then
+  ok "プロファイル不在は停止する"
+else
+  bad "プロファイル不在を通した"
+fi
+: >"$table"
+if profile_case "$mutant" Linux 2 'プロファイルが空'; then
+  ok "空のプロファイルは停止する"
+else
+  bad "空のプロファイルを通した"
+fi
+printf 'invalid\tallow\tallow\n' >"$table"
+if profile_case "$mutant" Linux 2 'プロファイルの行が不正'; then
+  ok "欄が欠けたプロファイルは停止する"
+else
+  bad "欄が欠けたプロファイルを通した"
+fi
+awk -F '\t' 'BEGIN {OFS="\t"} /^\^bwrap が無いため/ {t=$3; $3=$4; $4=t} {print}' \
+  "$SCRIPT_DIR/../lib/release-skip-profile.tsv" >"$table"
+if ! profile_case "$mutant" Linux 1 'bubblewrap を入れて' &&
+  ! profile_case "$mutant" Darwin 0 "" &&
+  profile_case "$mutant" Darwin 1 'bubblewrap を入れて'; then
+  ok "Linux と macOS の欄を交換する変異を正負の対照で検出する"
+else
+  bad "OS 欄の交換を検出できない"
+fi
+emit "$WORK/gate-output" <<'EOF'
+  @C@ skip: unrelated: bwrap が無いため sandbox 上の経路判定は未検査
+EOF
+if profile_case "$profile" Darwin 1 '未分類の部分 skip'; then
+  ok "理由の途中に置いた OS 限定の許容句で停止を回避できない"
+else
+  bad "理由の途中に置いた許容句で停止を回避できる"
+fi
+printf '%s\t%s\n' 'plugins/other/tests/fake.sh:1' 'bwrap が無いため sandbox 上の経路判定は未検査' >"$WORK/reasons"
+if result="$(bash "$profile" --lint "$WORK/reasons")"; then
+  bad "固定した OS 限定の理由を別の suite から出せる"
+elif [[ "$result" == *'固定した発生元と異なる:'* ]]; then
+  ok "OS 限定の理由を別の suite から出すと静的照合で停止する"
+else
+  bad "固定した発生元と異なる理由の診断が不正"
+fi
+: >"$WORK/reasons"
+if result="$(bash "$profile" --lint "$WORK/reasons")"; then
+  bad "空の静的照合を通した"
+elif [[ "$result" == *'照合入力が空'* ]]; then
+  ok "空の静的照合を停止する"
+else
+  bad "空の静的照合の停止診断が不正"
+fi
 
 echo
 if [[ "$FAIL" -gt 0 ]]; then

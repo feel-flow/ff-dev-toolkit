@@ -49,7 +49,7 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
 
 ## 引数
 
-外部 CLI 経路の `$ARGUMENTS` は `multi-review.sh` へ渡す。意味は同梱 `--help` と [Perspective フィルタ](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#perspective-フィルタと単一-cli-縮退) が正本。`--staged` は `--base` / `MULTI_AGENT_BASE_BRANCH` と排他。AC は `--description '<AC 本文>'` で親が渡す。
+外部 CLI 経路の `$ARGUMENTS` は `multi-review.sh` へ渡す。意味は同梱 `--help` と [Perspective フィルタ](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#perspective-フィルタと単一-cli-縮退) が正本。`--staged` は `--base` / `MULTI_AGENT_BASE_BRANCH` と排他。未指定の AC は自動投入。明示 --description が優先。
 
 ## 手順
 
@@ -118,11 +118,7 @@ MCP: 取得値: MCP で同じ Issue / PR の最新 body / updated_at を取得�
 <!--d70084c3e53d57e3-->
 分類: 非操作: 書込先の例示。MCPはscratch保存しsource凍結
 
-**利用不可・失敗時（exit 0 の単一縮退も含む）**: 自動fallback無し。`Status: incomplete` は未確認。利用制限時は復旧待ち・予約より先に [失敗時の担当選択](../../docs-template/05-operations/deployment/self-review.md#失敗時の担当選択) に従う。取りこぼしたレーンは `FF_REVIEW_SUBAGENT_LOCK_MAX_AGE_SECONDS`（既定 14400 秒）と `FF_REVIEW_SUBAGENT_LOCK_PENDING_SECONDS`（既定 1800 秒）で回収し通知。主担当の🔑/💳は2a。他は主担当のみで完了。未完了観点の再実行:
-
-```bash
-FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --resume --timeout 1800
-```
+**利用不可・失敗時（exit 0 の単一縮退も含む）**: 自動fallback無し。`Status: incomplete` は未確認。利用制限時は復旧待ち・予約より先に [失敗時の担当選択](../../docs-template/05-operations/deployment/self-review.md#失敗時の担当選択) に従う。取りこぼしたレーンは `FF_REVIEW_SUBAGENT_LOCK_MAX_AGE_SECONDS`（既定 14400 秒）と `FF_REVIEW_SUBAGENT_LOCK_PENDING_SECONDS`（既定 1800 秒）で回収し通知。主担当の🔑/💳は2a。他は主担当のみで完了。未完了は証跡ありなら同じ出力先。pair主失敗と残る総合は別の主、他は`--exclude-cli`。無しは`--resume`。
 
 ### 3. 結果分析と修正提案
 
@@ -162,7 +158,7 @@ PR Review Response Policy に従い、Critical/Warning/妥当な Suggestion を�
 
 #### 3-7. fix ループの収束判定と打ち切り
 
-正本は [収束判定節](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#fix-ループの収束判定と打ち切り)。**上限は 2 巡**で（PR 作成前の起動も消費）、3 巡目は巡回カウンタが止める。2 巡目 fix は直読と suite 再実行で確認（1 巡目 fix が既存ロジックを再構成した回は fix 差分限定のクロスモデル 1 本を 2 巡目に回す）。停止条件は既出の Critical / Warning を全解消し新規が無いこと（green（全指摘ゼロ）を待たない）。再開は追加上限を宣言し `FF_REVIEW_ROUND_ACK=1` で 1 巡ずつ通す。残件は `/out-of-scope-issue` へ（独立 Warning のパーキングはしない）。
+正本は [収束判定節](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#fix-ループの収束判定と打ち切り)。**上限は 2 巡**で（PR 作成前の起動も消費）、3 巡目は巡回カウンタが止める。2 巡目 fix は直読と suite 再実行で確認（1 巡目 fix が既存ロジックを再構成した回は同じ --base と出力先のクロスモデル 1 本を 2 巡目に回す）。停止条件は既出の Critical / Warning を全解消し新規が無いこと（green（全指摘ゼロ）を待たない）。再開は追加上限を宣言し `FF_REVIEW_ROUND_ACK=1` で 1 巡ずつ通す。残件は `/out-of-scope-issue` へ（独立 Warning のパーキングはしない）。
 
 ## 重要ルール
 

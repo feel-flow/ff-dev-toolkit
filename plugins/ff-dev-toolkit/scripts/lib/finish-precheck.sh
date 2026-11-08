@@ -165,6 +165,27 @@ ff_precheck_change_class() {
   return 0
 }
 
+# PR の変更ファイル（stdout に 1 行 1 パス）。rc 0 = 読めた / 1 = API の files を読めない /
+# 2 = git の差分で読み直せない。API の一覧が空か上限に届いた回と file 入力（全 page が揃っている保証が
+# 無い）は git の差分で読み直す。base が古くても差分は増える側にしか振れない。git の出力が導入先の設定で
+# 変わらないよう固定する: -z はパスの引用を避ける（core.quotePath=false でも `"` や `\` を含むパスは
+# 引用され、glob に一致しない）。ルートで diff.relative=false にして読む（true だと cwd の外の変更が
+# 一覧から消える）。停止にするかどうかは呼び出し側が決める（マージ後工程は停止、専用セキュリティゲートの
+# 記録は判定不能 = 記録を要求する側）。呼び出し元の github_input / repo_root を読む。
+ff_precheck_pr_files() { # <PR JSON> <base> <head OID>
+  # gh pr view --json files が返す上限。これ未満なら一覧は全件（changedFiles=659 の PR で 100 件。2026-11-05 実測）
+  local count api_limit=100
+  # 件数は -j で読む（jq.exe は -r の行末が CRLF になり、数値比較が壊れる。ACE-2025-1）
+  count="$(printf '%s' "$1" | jq -ej '.files | if type == "array" then length else error("files") end')" || return 1
+  if [[ -z "$github_input" && "$count" -gt 0 && "$count" -lt "$api_limit" ]]; then
+    printf '%s' "$1" | jq -r '.files[] | if (.path | type) == "string" then .path else error("path") end' || return 1
+    return 0
+  fi
+  [[ -n "$3" ]] || return 2
+  git -C "$repo_root" -c diff.relative=false diff -z --name-only --no-renames "origin/${2}...${3}" 2>/dev/null | LC_ALL=C tr '\0' '\n' \
+    || return 2
+}
+
 # <Issue 番号> <EFFORT 行> — 4 指標がすべて (unmeasured) なら rc 0。行の形が変わって判定できない回は
 # rc 1 にして、計上先へ置き換えず読めた行をそのまま出す（実測を黙って捨てない側へ倒す）。
 ff_precheck_metrics_unmeasured() {
@@ -245,6 +266,7 @@ cmd_precheck() {
   need_bundled check-merge-freshness.sh
   need_bundled effort-report.sh
   need_bundled decision-tree/route.sh
+  need_bundled review-route.sh
   need_bundled lib/branch-issue.sh
 
   local PR_JSON PR_FIELDS="number,state,isDraft,headRefName,headRefOid,baseRefName,baseRefOid,title,body,closingIssuesReferences,commits,statusCheckRollup,additions,deletions,files,isCrossRepository"
@@ -471,6 +493,7 @@ cmd_precheck() {
     fi
   fi
   ff_precheck_post_merge_verdict
+  ff_precheck_security_record "$PR_JSON" "$base_ref" "$head_oid" "$PR_BODY"
 
   # ── 3. 工数の実測（Closes 群の同一リポジトリ Issue） ──
   local change_class repo_l measured_on=""

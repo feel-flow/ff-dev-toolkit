@@ -1,0 +1,2 @@
+out=`scripts/check.sh` rc=$?
+echo "$out"; echo "EXIT=$rc"

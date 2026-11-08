@@ -685,6 +685,7 @@ get_task_emoji() {
 MULTI_AGENT_PARTS=(
   "${SCRIPT_DIR}/lib/multi-agent-lanes.sh"
   "${SCRIPT_DIR}/lib/multi-agent-options.sh"
+  "${SCRIPT_DIR}/lib/multi-agent-review-ac.sh"
   "${SCRIPT_DIR}/lib/multi-agent-plan.sh"
   "${SCRIPT_DIR}/lib/multi-agent-boundary.sh"
   "${SCRIPT_DIR}/lib/multi-agent-prepare.sh"
@@ -758,6 +759,9 @@ unset -f ma_refuse_part
 main() {
   local emoji
   INVOCATION_DISPLAY="$(format_initial_invocation "$0" "$@")"
+  # 失敗案内が元の argv から衝突する --cli / --route / --wrapper-route と、
+  # route full/fast を含む --invocation-display を除くときに使う。表示文字列は再解析しない。
+  INVOCATION_ARGV=("$@")
 
   # Two-pass parsing: extract --config and --task first
   local prev_flag=""
@@ -1028,6 +1032,7 @@ main() {
   esac
 
   if [[ "$setup_failed" == "true" ]]; then
+    discard_review_ac || true
     echo "" >&2
     echo "❌ Aborted before running any task — no report was generated." >&2
     echo "   (a report here would list the previous run's output as if it were this run's)" >&2

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: 専用セキュリティゲートの記録（Issue `#2684`、security-record-cases.sh の R subset 34 件）を足した通常は421/0。scripts/lib/finish-precheck-security-record.sh と finish-precheck.sh（ff_precheck_pr_files）への単独変異 20 種は、欠落でも止めない 19件（R1/R3×12/R3b/R6/R6b/R6e/R7/R8）、最初の一致で読むのをやめる 1件（R2b。本文 112979 B で SIGPIPE）、値のどこかの語で認める 5件（R3）、行頭の検査を外す 1件（R3 の地の文の記入例）、引用（>）を行頭に許す 1件（R3d。引用の中のフェンスの記入例）、「未実施」を認める 1件（R3）、括弧で値の頭を切らない 8件（R2×5/R2b/R3c/R6c）、可視行の絞り込みを外す 1件（R3b）、コロン必須を外す 1件（R3）、判定不能を該当なしへ倒す 4件（R6/R6b/R6c/R6e）、off を無視する 17件（R5/R5b/R6d と P 系）、変更 0 件を判定できたことにする 1件（R6e）、fetch の案内を外す 1件（R6b）、先着の理由を上書きする 1件（R8）、停止理由を blocked_reason へ置かない 19件（欠落でも止めないと同じ）、off の回に理由を出さない 1件（R6d）、読めない回に review-route.sh を呼ばない 2件（R6d/P6c）、変更ファイルの CR を残す 1件（P2d3）、100件の一覧を信じる 8件（R6b/R6c/R6d/R7 と P 系）、常に git で読む 55件（R7b ほか）で赤（2026-11-07 macOS実測、全変異のbash構文rc0）。初版（R 23 件）は主担当の印なし・CLAUDECODE・CODEX_THREAD_ID・GROK_AGENT の 4 通りで 410/0 を確認した。針が当たらない入力の既定: 変更 0 件は R6e（unknown・記録要求）、ルータ不在は scripts/review-route.sh を判定行を出さないスタブ（rc 0 と rc 3）へ差し替えた複製で 75 件赤（precheck の全呼び出しが SECURITY_SENSITIVE=unknown・SECURITY_UNKNOWN_REASON=review-route.sh の判定行…がありません（rc=N: stderr）・missing になり、R4 / R5 の off も通らない）、本文を読めない回は PR の JSON を読めない回なのでこの検査より前に rc 2（B1 / B2 / B2b）。既存の P 系は fixture の migrations/*.sql が分類に当たるので MULTI_AGENT_SECURITY_REVIEW=off で隔離している。
 # 空振り検出: マージ後工程の判定（Issue `#2636`、post-merge-cases.sh の P subset）は通常362/0（P68件）。修正前は同じ入力で52件赤（P1はrc2のままMERGE_COMMANDまで通過）。scripts/lib/finish-precheck-post-merge.sh と finish-precheck.sh への単独変異は、停止の設定行を消す15件、ackの照合を外す2件、ackを無視する6件、パス条件を外す1件（P2）、コメント取得失敗を0件へ倒す1件（P7b）、100件の一覧を信じる3件（P2d/P2f/P2i）、空の一覧を信じる1件（P2d2）、markerを番号なしへ緩める1件（P1c）、全コメントを対象にする1件（P1c）、理由の制御文字検査を外す3件（P5b）、片方だけの設定を未設定へ倒す2件（P8）、空要素を読み飛ばす7件（P8）、大文字小文字を区別する1件（P1d）、可視行の絞り込みを外す1件（P1e）、インライン三連をフェンスへ戻す1件（P1e2）、未チェックの走査へ例外を広げる1件（P1e4）、報告を連結して走査する1件（P1e3）、停止理由の併記を消す1件（P1g）、gitの出力を引用付きで読む1件（P2i）、当たらない要素の検査を外す4件（P2h）、追跡一覧をcwd基準で読む1件（P2h2）、gitの差分の設定固定を外す1件（P2h3）、CRを残す1件（P2d3）、設定なしで変更ファイルを読む67件で赤（2026-11-05 macOS実測、全変異のbash構文rc0。bash 3.2でも全件緑）。macOSで G6c は TMPDIR を物理パスにしないと赤（`/var` の symlink と `/private/var` の表記差。変更と無関係）、環境に FF_MERGE_DELETE_SEPARATE=1 があると C4 / E / M の13件が赤（suite が隔離していない。変更と無関係）。
 # 空振り検出: 復帰案内の引用（F1c）を足した通常は272/0。finish-precheck.sh を base / head のブランチ名を裸で埋め込む旧形の案内へ戻すと271/1（F1c）で赤（2026-10-28 WSL実測）。
 # 空振り検出: マージ方式（--merge-method、Issue `#2313`）の M subset を足した通常は271/0。emitter へ方式の第9引数を渡さないと267/4（M1/M8/M9/M10）、merge方式のコミット由来抵触の停止を外すと269/2（件名M5・本文M5b）、重複拒否を外すと268/3（M4）、不正値を受理すると267/4（M3）、emitter の方式検証を外すと270/1（M11）、不正値の集合を空にすると267/1（件数照合のM3）で赤（2026-10-28 macOS実測、全変異のbash構文rc0）。
@@ -69,12 +70,15 @@ set -euo pipefail
 # suite の入口で隔離し、色設定は COLOR ケースごとに明示して注入する。
 unset FORCE_COLOR CLICOLOR_FORCE CLICOLOR
 # マージ後工程の判定は導入先の設定で動く。開発者の環境に値があると既存ケースの出力が変わる
-unset FF_POST_MERGE_TERMS FF_POST_MERGE_PATHS
+unset FF_POST_MERGE_TERMS FF_POST_MERGE_PATHS FF_MERGE_DELETE_SEPARATE
+# 専用セキュリティゲートの記録（Issue `#2684`）も同じく導入先の設定で動く。分類の設定を隔離する
+unset MULTI_AGENT_SECURITY_GLOB MULTI_AGENT_SECURITY_GLOB_EXTRA MULTI_AGENT_SECURITY_REVIEW MULTI_AGENT_CONFIG
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 TARGET="$PLUGIN_ROOT/scripts/finish.sh"
 PRECHECK_TARGET="$PLUGIN_ROOT/scripts/lib/finish-precheck.sh"
+SECURITY_RECORD_LIB="$PLUGIN_ROOT/scripts/lib/finish-precheck-security-record.sh"
 KC_LIB="$PLUGIN_ROOT/scripts/lib/finish-knowledge-commit-functions.sh"
 SKILLS_DIR="$PLUGIN_ROOT/skills"
 
@@ -87,7 +91,8 @@ for dep in jq awk sed git; do
 done
 
 if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ff-finish.XXXXXX" 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
-  TMP="$_ff_mktemp_out"
+  # finish reports physical paths. Compare the fixture paths in that same form.
+  TMP="$(CDPATH='' cd -P -- "$_ff_mktemp_out" && pwd -P)"
 else
   echo "✗ 一時ディレクトリを作成できません: $_ff_mktemp_out" >&2
   exit 1
@@ -367,13 +372,13 @@ else
     }
     { line[NR] = $0 }
     END { printf "%d\n", launches + 0 }
-  ' "$TARGET" "$PRECHECK_TARGET" "$KC_LIB")"
+  ' "$TARGET" "$PRECHECK_TARGET" "$SECURITY_RECORD_LIB" "$KC_LIB")"
   launch_n="${launch_gaps%%$'\n'*}"
   launch_rest="${launch_gaps#*$'\n'}"
-  if [ "$launch_n" -eq 12 ] && [ "$launch_rest" = "$launch_n" ]; then
-    ok "S6: finish.sh と knowledge-commit 構成ファイルの同梱スクリプト起動 12 件は、直前 4 行以内に shebang 検査がある"
+  if [ "$launch_n" -eq 13 ] && [ "$launch_rest" = "$launch_n" ]; then
+    ok "S6: finish.sh と knowledge-commit 構成ファイルの同梱スクリプト起動 13 件は、直前 4 行以内に shebang 検査がある"
   else
-    bad "S6: finish.sh の起動が検査の直前に無い、または件数が 12 でない（件数=${launch_n} 欠落行=${launch_rest})"
+    bad "S6: finish.sh の起動が検査の直前に無い、または件数が 13 でない（件数=${launch_n} 欠落行=${launch_rest})"
   fi
   source_gaps="$(awk '
     index($0, ". \"$identity_lib\"") || index($0, ". \"$playbook_lib\"") {
@@ -631,6 +636,8 @@ run_finish() { # <cwd> <args...>
 . "$SCRIPT_DIR/merge-delete-cases.sh"
 # shellcheck source=post-merge-cases.sh
 . "$SCRIPT_DIR/post-merge-cases.sh"
+# shellcheck source=security-record-cases.sh
+. "$SCRIPT_DIR/security-record-cases.sh"
 _ff_finish_precheck_guards
 _ff_finish_repository_url_guards
 
@@ -826,6 +833,7 @@ else
   bad "U5: 本文取得失敗の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
 fi
 _ff_finish_post_merge_cases
+_ff_finish_security_record_cases
 write_pr_json "Closes #${PRN}" '[]'
 : >"$STUB_LOG"
 FF_MERGE_DELETE_SEPARATE=yes run_finish "$WORK" precheck 7

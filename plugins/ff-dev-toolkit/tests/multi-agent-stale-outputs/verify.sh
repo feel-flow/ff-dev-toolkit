@@ -68,8 +68,9 @@ build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE MULTI_AGENT_CROS
 
 # rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
 # 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
-if _ff_mktemp_out="$(mktemp -d 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
-  TMP="$_ff_mktemp_out"
+if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ff-stale-outputs.XXXXXX" 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
+  # The output guard rejects symlink ancestors. Fixtures need a physical root.
+  TMP="$(CDPATH='' cd -P -- "$_ff_mktemp_out" && pwd -P)"
 else
   echo "○ skip: 一時ディレクトリを作成できない環境のためスキップ"
   printf '  mktemp: %s\n' "$_ff_mktemp_out"

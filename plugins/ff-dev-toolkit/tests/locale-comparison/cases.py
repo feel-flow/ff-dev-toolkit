@@ -281,7 +281,7 @@ class LocaleComparison(unittest.TestCase):
                           expected="1\n" if "retrospective" in relative else "0\n")
 
     def test_default_playbook_lookup_keeps_other_japanese_path_separate(self):
-        text = (PLUGIN / "scripts/knowledge-lookup.sh").read_text(encoding='utf-8')
+        text = (PLUGIN / "scripts/lib/knowledge-lookup-store.sh").read_text(encoding='utf-8')
         lines = [line for line in text.splitlines() if 'src="$(' in line and 'ace-record-hits' in line]
         self.assertEqual(len(lines), 1, "recorded default path command must be unique")
         with tempfile.TemporaryDirectory() as tmp:
