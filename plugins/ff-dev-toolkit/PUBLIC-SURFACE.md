@@ -11,7 +11,7 @@
 | **契約** | 導入先が名前で依存できる要素 | 削除・改名・意味の変更は**破壊的変更**。CHANGELOG の `### 破壊的変更` 節へ記録する |
 | **内部** | 実装詳細。スクリプト内のローカル変数、テストハーネスの注入口、配布物どうしの受け渡し値 | 予告なく変えてよい。破壊的変更として記録しない |
 
-1.0.0 より前のため、ここで言う「破壊的変更」は**記録の規約**であってバージョン番号の規約ではありません。1.0.0 を宣言してよい条件は、開発元リポジトリのアーキテクチャ決定記録（ADR）に置いてあります。
+1.0.0 より前（0.x）の版では、ここで言う「破壊的変更」は**記録の規約**で、破壊的変更を含む版も minor で上げます。1.0.0 以降は**バージョン番号の規約**にもなり、契約の破壊的変更を含む版で major を上げます（内部の変更では major を上げません）。1.0.0 以降に契約の要素を削除する（改名で旧名を消す場合を含む）ときは、最低 1 つ前のマイナー版で CHANGELOG の `### 変更` 節に「次の major で削除予定」と予告し、予告した版では旧名の受け入れを残します。予告なしには削除しません。1.0.0 を宣言してよい条件は、開発元リポジトリのアーキテクチャ決定記録（ADR）に置いてあります。
 
 ## 網羅の定義（`FF_*`）
 
@@ -483,6 +483,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_PAIRS`
 - `FF_PLAYBOOK_CHANGELOG_VERDICT`
 - `FF_PLAYBOOK_CHANGELOG_OUTPUT`
+- `FF_PUBLIC_LAYOUT_ALLOWED_SKIP_SUITES`（`tests/public-layout/verify.sh` が公開配置の合成実行で公開 workflow `weekly-public-run-all.yml` の step へ渡す、skip 許容名簿へ足す suite 名。公開側の CI は設定しない）
 - `FF_REVIEW_LOCK_MAX_AGE_SECONDS`
 - `FF_REVIEW_OUTPUT`
 - `FF_ROOT_SIDECAR_NAME`

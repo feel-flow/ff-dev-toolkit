@@ -38,6 +38,16 @@
 #
 # FF_PUBLIC_LAYOUT_SUITES（内部の差し替え口）: 空白区切りの suite 名を渡すと、workflow の
 # 選定の代わりにそれだけを合成配置で回す（変異注入の負の対照を 1 周 19 分かけずに取るため）。
+# この口は workflow の step を通らない（下の skip 許容名簿の判定も通らない）。
+#
+# FF_PUBLIC_LAYOUT_ALLOWED_SKIP_SUITES（内部の受け渡し値）: workflow の step へ渡す、skip 許容名簿へ足す
+# suite 名。step の前に knowledge-lookup-resident-acl を step と同じ PATH の bash で単体で回し
+# （判定は resident-skip-allow.sh）、suite 自身が先頭で出す「常駐 helper の経路を持たない」理由行つきの
+# suite skip を見た回だけ、その名前を入れる。macOS 標準の /bin/bash のように常駐 helper の経路を持たない
+# 起動 shell ではこの suite が必ず suite ごと skip し、公開側の CI（Linux の bash 5）の許容名簿のままでは
+# 内容に欠陥が無くても赤になるため。単体実行が赤なら step へ進まず赤、別の理由の skip・実際に回った回は
+# 空で渡す（呼び出し元の環境の値は持ち込まない）。公開側の CI はこの値を設定しないので、CI の許容名簿は
+# changelog-public-tags だけのまま。判定と workflow 側の既定は tests/skip-line-contract が固定する。
 #
 # 空振り検出: 開発元の配置（docs/ がある）で同期スクリプト・yq・mcp/node_modules・公開 workflow の該当 step のいずれかが無い回は skip ではなく非 0（検査不成立）。公開 checkout（docs/ も同期スクリプトも無い）では適用外として skip。合成配置で SSOT の root scripts/ を前提にする suite を 1 本混入させた HEAD では赤（ADR-068 の負の対照）。
 # run-all-required: no — run-all からは常に意図して丸ごと skip する（明示起動はリリースの gate 段。skip 理由を 1 行出す）
@@ -70,6 +80,10 @@ fi
 [[ -f "$SYNC_SCRIPT" ]] || fail "同期スクリプトがありません: ${SYNC_SCRIPT}（開発元リポジトリでのみ成立する suite。公開 CI の除外名簿に載っているか確認すること）"
 command -v yq >/dev/null 2>&1 || fail "yq（mikefarah v4）がありません。公開 workflow の step を取り出せません"
 [[ -d "$PLUGIN_ROOT/mcp/node_modules" ]] || fail "mcp/node_modules がありません（npm ci --prefix $PLUGIN_ROOT/mcp を先に実行）"
+RESIDENT_SKIP_LIB="$SCRIPT_DIR/resident-skip-allow.sh"
+[[ -f "$RESIDENT_SKIP_LIB" ]] || fail "suite skip の許容を決める判定がありません: $RESIDENT_SKIP_LIB"
+# shellcheck source=resident-skip-allow.sh
+. "$RESIDENT_SKIP_LIB"
 
 BASE="${XDG_CACHE_HOME:-$HOME/.cache}/ff-dev-toolkit"
 mkdir -p "$BASE" || fail "合成先の親ディレクトリを作れません: $BASE"
@@ -134,12 +148,17 @@ else
     || fail "公開 workflow の working-directory を読めません"
   cd "$TARGET/${step_wd}" || fail "step の working-directory へ移れません: ${step_wd}"
   printf '%s\n' "$step" > "$WORK/run-public.sh"
+  # step の前に knowledge-lookup-resident-acl を step と同じ PATH の bash で単体で回し、suite 自身の
+  # skip 理由行（常駐 helper の経路を持たない）を見た回だけ step の skip 許容名簿へ足す（header 参照）
+  ff_public_layout_resident_skip_allow "$PWD" "$WORK/resident-skip-allow.log" \
+    || { echo "✗ public-layout: ${ff_public_layout_resident_suite} の単体実行で suite skip の許容を決められない（赤・suite の不在・ログを書けない）ため、公開 suite セットの step へ進みません" >&2; exit 1; }
   echo "public-layout: 合成した公開配置で「${STEP_NAME}」を実行します（${WORK}）"
   # step 本文は Actions が用意するファイルへ要約を書く。ローカルには無いので合成先に置く
   # （GITHUB_ACTIONS は設定しない — 中の suite が CI 用の挙動へ切り替わるため）
   : > "$WORK/step-summary.md"
   env -u FF_RUN_ALL_FULL -u FF_RUN_ALL_FAST -u FF_RUN_ALL_CHANGED RUNNER_TEMP="$WORK" \
     GITHUB_STEP_SUMMARY="$WORK/step-summary.md" \
+    FF_PUBLIC_LAYOUT_ALLOWED_SKIP_SUITES="$ff_public_layout_resident_allowed" \
     bash -eo pipefail "$WORK/run-public.sh" \
     || { echo "✗ public-layout: 合成した公開配置で公開 suite セットが赤です（公開同期後の週次 CI で同じ赤になる）" >&2; exit 1; }
 fi

@@ -20,6 +20,17 @@
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-10
+
+### 変更
+
+- 公開面の文書 `plugins/ff-dev-toolkit/PUBLIC-SURFACE.md` の「契約と内部」に、版番号との関係を書き足した。1.0.0 より前（0.x）は破壊的変更を含む版も minor で上げ、1.0.0 以降は契約の破壊的変更を含む版で major を上げる（内部の変更では上げない）。1.0.0 以降に契約の要素を削除するときは、最低 1 つ前のマイナー版で CHANGELOG の「変更」節に「次の major で削除予定」と予告し、予告した版では旧名の受け入れを残す
+
+### 修正
+
+- 公開配置を合成して公開 suite セットを回す同梱テスト `tests/public-layout/verify.sh` が、macOS 標準の `/bin/bash`（3.2）のように常駐 helper の経路を持たない起動 shell で、内容に欠陥が無くても赤になっていた問題を直した。`knowledge-lookup-resident-acl` はその shell では suite ごと skip するが、公開リポジトリの週次 CI（`.github/workflows/weekly-public-run-all.yml`）の skip 許容名簿は `changelog-public-tags` だけなので、同じ step を合成配置で回すと「許容名簿に無い suite が skip した」で止まっていた。public-layout は step の前にこの suite を同じ PATH の bash で単体で回し、suite 自身の skip 理由行（常駐 helper の経路を持たない）を確かめた回だけ、内部の受け渡し値 `FF_PUBLIC_LAYOUT_ALLOWED_SKIP_SUITES` でこの suite を step の許容名簿へ足し、許容した旨を 1 行出す。単体実行が赤なら step へ進まずに止め、別の理由の skip は従来どおり許容しない。週次 CI はこの値を設定しないので、CI の許容名簿は `changelog-public-tags` だけのまま変わらない。
+- 判定は新しい `tests/public-layout/resident-skip-allow.sh` に置き、`tests/skip-line-contract/verify.sh` が stub の suite（理由行つきの skip・別の理由の skip・字下げした部分 skip・実際に回った回・赤・不在）と、週次 CI の workflow の許容名簿の既定（未設定・空なら `changelog-public-tags` だけで、workflow 自身はこの値を設定しない）を固定する。
+
 ## [0.181.0] - 2026-11-09
 
 ### 破壊的変更

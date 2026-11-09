@@ -83,6 +83,19 @@
 # 変異検出: sync 段の GATE_OK 要求を外すと release-runtime（--only sync が gate を素通り）が赤。
 # 変異検出: report 段の footer 非 green で止める行を外すと release-runtime が赤。
 # 変異検出: 版幅を「修正があれば patch」へ戻すと release-runtime（混在分類が minor にならない）が赤。
+# 変異検出（1.0.0 の宣言 --major と 1.0.0 以降の版幅。ADR-088。2026-11-10 macOS / Bash 3.2.57 実測。release-runtime の pass/fail で、
+# 無変異は 251/0）: 版幅の規則から「major 1 以上の破壊的変更 → major」を外すと release-runtime（v1.0.1 → v2.0.0）が赤（243/9）。
+# major 0 の「破壊的変更」も major にすると同（major 0 は従来どおり minor）が赤（239/12）。宣言を版の基点の major によらず効かせると
+# 同（準備済み・タグ前の 1.0.0 へ断片が後着した回の --major が v1.0.1）が赤（239/13）。後着断片の照合から 1.0.0 の宣言の読み取りを
+# 外すと同（宣言で準備した 1.0.0 への後着断片の判別）が赤（238/14）。公開側の最新タグの major が 1 以上の --major を準備の前に止める
+# 照合を外すと同が赤（249/2）。照合を公開側のタグではなく SSOT の版で行う形へ戻すと同（準備の後・タグ前の --major 付きの再実行が
+# 続く）が赤（244/7）。準備の要らない回の --major の停止を stage_check の「不要」の直前から外すと同が赤（250/1）、本流の
+# NEED_PREPARE=0 の分岐から外すと同（0.x の次の版を準備してタグの前に止めた状態への --major の本実行）が赤（250/2）。模擬（dry-run）の
+# 版幅が --major を読まないと同が赤（250/1）。本番の準備が読まないと同が赤（234/18）。再開の案内に足す --major（major_resume_arg）を
+# 常に空にすると同が赤（248/3）。承認待ちの次の一手だけ・prepare 段の次の一手だけ・release Issue の「再開:」行だけから外すと、
+# どれも同が赤（250/1）。タグの実在で宣言を使い終えた印（major_tag_seen）を付けない・照合が --major を止めた回に印を付けないと、
+# どちらも同（「再開:」行の関数単位の検査）が赤（250/1）。tag 段の push の後の印の呼び出しを外しても release-runtime は緑（251/0。
+# タグの後で再開の案内を出す停止を fixture で作れない）なので、(7) の箇所数の針が赤にする。
 # 変異検出: preflight の書きかけ巻き戻しを外すと release-runtime（bump 後 / footer 更新後の失敗から再開できない）が赤。
 # 変異検出: in-flight 印の取得（writer）を外すと release-runtime（ゲート走行中に印が見えない）が赤。
 # 変異検出: hook の stale 時の粒度判定ガードを外すと release-runtime（stale な drift で日次待ちに倒れる）が赤。
@@ -929,6 +942,10 @@ release_contains 'git -C "$PUBLIC" ls-remote --exit-code --tags origin "refs/tag
   "tag 段はリモートの実在を ls-remote の exit code で判定する"
 release_contains 'is_semver3 "$VER" || stop' \
   "tag 段は vX.Y.Z の完全一致を確かめてからタグを打つ"
+# 1.0.0 の宣言（--major。ADR-088）: 公開側に版のタグの実在を確かめた後の停止は、再開の案内に --major を載せない（再実行の
+# --major は公開側のタグの照合が止める）。タグの後で再開の案内を出す停止は fixture で作れないので、印を付ける箇所を静的に固定する
+release_contains_exactly 'major_tag_seen "$VER"' 3 \
+  "tag 段はタグの実在を確かめた 3 箇所（dry-run の実在・本実行の実在・push の後）で --major の宣言を使い終えた印を付ける"
 # footer 段: 限定ゲートを commit より前に通し、commit の後に push する。
 RF_GATE="$(release_line_of 'limited_gate || stop')"
 RF_COMMIT="$(release_line_of 'CHANGELOG 比較リンクを v${VER} へ追従" \\')"

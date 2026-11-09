@@ -190,7 +190,7 @@ case "$1" in
       for f in changelog.d/*.md; do
         [[ -f "$f" && "${f##*/}" != README.md ]] || continue
         t="${f##*/}"; t="${t#*.}"; t="${t%%.*}"
-        case "$t" in added) h=追加 ;; fixed) h=修正 ;; changed) h=変更 ;; *) h=ドキュメント ;; esac
+        case "$t" in breaking) h=破壊的変更 ;; added) h=追加 ;; fixed) h=修正 ;; changed) h=変更 ;; *) h=ドキュメント ;; esac
         printf '\n### %s\n\n' "$h"
         cat "$f"
       done
@@ -2018,6 +2018,270 @@ fi
 run_orch
 [[ "$RC" -eq 0 ]] || { bad "HEAD が動いて止まった後の再実行が完了しない (rc=$RC)"; dump; }
 sync_ssot
+
+echo "-- release: 1.0.0 の宣言（--major）と 1.0.0 以降の版幅（ADR-088） --"
+# 1.0.0 は実行時の宣言（--major）だけで上がり、断片の種別からは推論しない。宣言は公開側の最新の安定版タグの major が 0 の間
+# （1.0.0 を公開するまで）受け付け、公開側に 1.0.0 以降のタグができたら準備の前に止まる。1.0.0 を公開するまでの再実行・再開は
+# 同じ引数（--major 付き）で回せ、停止の再開の案内もその引数を出す。宣言が版幅に効くのは版の基点の major が 0 の準備だけ。
+# 0.x の「破壊的変更」は従来どおり minor、1.0.0 以降は「破壊的変更」で major が上がる。版幅は模擬（dry-run）・本番の準備・
+# 後着断片の照合の 3 箇所が同じ規則で決める
+run_orch --major --resume-with-edits
+_m_usage_rc="$RC"
+run_orch --major --only gate --dry-run
+if [[ "$_m_usage_rc" -eq 64 && "$RC" -eq 64 ]] && has "--major は全段を回す本実行・dry-run で 1.0.0 を準備する回だけに渡す"; then
+  ok "--major は --resume-with-edits / --only と同時に指定できない（使い方の誤り。rc=64）"
+else
+  bad "--major を --resume-with-edits / --only と同時に受けた (rc=${_m_usage_rc}/${RC})"; dump
+fi
+# 準備の要らない回: 「不要」で終えず止める（0.x の版のまま出さず、1.0.0 の宣言も黙って捨てない）
+_m0="$(cur_ver)"
+run_orch --major --dry-run
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped" && has "--major を渡したが、準備する変更（集約する changelog.d 断片）が無い" \
+  && ! has "RELEASE_VERSION=1.0.0" && ! has_head_line && [[ "$(cur_ver)" == "$_m0" && -z "$(git -C "$SSOT" status --porcelain)" ]]; then
+  ok "準備の要らない回の --major は v${_m0} のまま「不要」で終えず、準備の前に止まる"
+else
+  bad "準備の要らない回の --major が止まらない (rc=$RC)"; dump
+fi
+# 本流の準備の要らない回（stage_check の「不要」ではなく、未同期があってタグの無い NEED_PREPARE=0 の分岐）: --major なしで
+# 0.x の次の版を準備してタグの前に止めた状態へ --major を付けて本実行すると、0.x の版のまま出さず 1.0.0 も宣言せずに止まる
+printf '%s\n' '- 0.x の版を準備してタグの前に止める' >"$SSOT/changelog.d/159.fixed.major-unprepared.md"
+commit_push "fix: major unprepared"
+_mu_ver="$(next_patch)"
+run_orch --dry-run
+_mu_head="$(release_head)"
+[[ "$RC" -eq 0 && -n "$_mu_head" ]] && has "RELEASE_VERSION=${_mu_ver}" || { bad "0.x の patch の dry-run が完走しない (rc=$RC)"; dump; }
+: >"$STATE/public-layout.red"
+run_orch --expect-version "$_mu_ver" --approved-head "$_mu_head"
+rm -f "$STATE/public-layout.red"
+if ! { [[ "$RC" -eq 1 ]] && has "NG: [gate]" && origin_has_subject "release: ff-dev-toolkit v${_mu_ver}" && ! has_pub_tag "$_mu_ver"; }; then
+  bad "0.x の v${_mu_ver} を準備してタグの前に止める前提が作れない (rc=$RC)"; dump
+fi
+_m_runs="$(count_runall)"
+run_orch --major --expect-version "$_mu_ver" --approved-head "$_mu_head"
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped" && ! has "RELEASE_RESULT=stopped-needs-approval" \
+  && has "RELEASE_STAGE=check STATUS=done NOTE=準備は不要" \
+  && has "NG: [check] --major を渡したが、準備する変更（集約する changelog.d 断片）が無い — v${_mu_ver} のまま出さず" \
+  && [[ "$(stop_tail 3)" == '次の一手: 1.0.0 の宣言を告知する changelog.d 断片を develop へ入れてから'* ]] \
+  && [[ "$(count_runall)" -eq "$_m_runs" && "$(cur_ver)" == "$_mu_ver" ]] && ! has_pub_tag "$_mu_ver" && ! has_pub_tag 1.0.0; then
+  ok "0.x の次の版を準備してタグの前に止まった状態へ --major を付けた本実行は、本流の準備の要らない分岐で gate の前に止まる"
+else
+  bad "本流の準備の要らない分岐で --major が止まらない (rc=$RC)"; dump
+fi
+run_orch --expect-version "$_mu_ver" --approved-head "$_mu_head"
+[[ "$RC" -eq 0 ]] && has_pub_tag "$_mu_ver" || { bad "--major を外した v${_mu_ver} の再実行が完了しない (rc=$RC)"; dump; }
+sync_ssot
+_m0="$(cur_ver)"
+printf '%s\n' '- 契約の名前を変えた' >"$SSOT/changelog.d/160.breaking.major-zero.md"
+printf '%s\n' '- 動きを変えた' >"$SSOT/changelog.d/161.changed.major-zero.md"
+commit_push "feat: major zero"
+_m0_next="$(next_minor)"
+_m_head="$(git -C "$SSOT" rev-parse HEAD)"
+_m_pub="$(git -C "$PUB_ORIGIN" rev-parse main)"
+run_orch --dry-run
+if [[ "$RC" -eq 0 ]] && has "RELEASE_VERSION=${_m0_next}" && has "PLAN: version ${_m0} → ${_m0_next}（minor: 分類 変更/破壊的変更）" \
+  && [[ "$(release_head)" == "$_m_head" ]]; then
+  ok "major 0 では「破壊的変更」を含む回も従来どおり minor（v${_m0} → v${_m0_next}。--major を付けない回の出力は変わらない）"
+else
+  bad "major 0 の「破壊的変更」が minor にならない (rc=$RC)"; dump
+fi
+run_orch --major --dry-run
+if [[ "$RC" -eq 0 ]] && has "RELEASE_RESULT=dry-run" && has "RELEASE_VERSION=1.0.0" \
+  && has "PLAN: version ${_m0} → 1.0.0（major: --major の宣言。分類 変更/破壊的変更）" \
+  && has "PLAN: git -C \"${PUB}\" tag v1.0.0" && has "PLAN: gh release create v1.0.0" \
+  && [[ "$(release_head)" == "$_m_head" && "$(git -C "$SSOT" rev-parse HEAD)" == "$_m_head" && -z "$(git -C "$SSOT" status --porcelain)" ]] \
+  && [[ "$(git -C "$PUB_ORIGIN" rev-parse main)" == "$_m_pub" ]] && ! has_pub_tag 1.0.0; then
+  ok "0.x の --major の dry-run は v${_m0} → 1.0.0 の PLAN と RELEASE_VERSION=1.0.0・RELEASE_HEAD= を出して完走する（書き込み・外向き操作なし）"
+else
+  bad "--major の dry-run が 1.0.0 を出さない、または何かを書き換えた (rc=$RC)"; dump
+fi
+# 承認した 1.0.0 を --major なしで本実行すると、既存の版の照合（--expect-version）が外向き操作の前に止める。--major を
+# 付けない実行の承認の取り直しの案内は従来どおり（--major を足さない）
+_m_hint_plain='次の一手: scripts/release-dev-toolkit.sh --dry-run で PLAN: / RELEASE_VERSION= / RELEASE_HEAD= を出して承認を取り直し、承認した値を --expect-version <RELEASE_VERSION> --approved-head <RELEASE_HEAD> で渡して再実行する'
+_m_hint_major='次の一手: scripts/release-dev-toolkit.sh --major --dry-run で PLAN: / RELEASE_VERSION= / RELEASE_HEAD= を出して承認を取り直し、承認した値を --expect-version <RELEASE_VERSION> --approved-head <RELEASE_HEAD> で渡して --major を付けて再実行する'
+_m_runs="$(count_runall)"
+run_orch --expect-version 1.0.0 --approved-head "$_m_head"
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped-needs-approval" \
+  && has "承認した版（--expect-version 1.0.0）と、この実行が出そうとしている版（v${_m0_next}）が違う" \
+  && has "$_m_hint_plain" && ! has "--major を付けて" \
+  && ! origin_has_subject "release: ff-dev-toolkit v${_m0_next}" && ! origin_has_subject "release: ff-dev-toolkit v1.0.0" \
+  && [[ "$(git -C "$PUB_ORIGIN" rev-parse main)" == "$_m_pub" && "$(count_runall)" -eq "$_m_runs" ]] \
+  && ! has_pub_tag 1.0.0 && ! has_pub_tag "$_m0_next"; then
+  ok "--major を付けずに --expect-version 1.0.0 を渡した本実行は、版の照合で準備の push・同期・タグ・Release の前に止まる"
+else
+  bad "--major なしの --expect-version 1.0.0 で止まらない、または外向き操作をした (rc=$RC)"; dump
+fi
+# --major の本実行が承認待ちで止まった回: 承認の取り直しの dry-run と再実行の案内に --major が入る（外すと 0.x の次の版を準備して
+# 承認した 1.0.0 との照合で止まるのを繰り返す）
+run_orch --major --expect-version "$_m0_next" --approved-head "$_m_head"
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped-needs-approval" \
+  && has "承認した版（--expect-version ${_m0_next}）と、この実行が出そうとしている版（v1.0.0）が違う" \
+  && has "$_m_hint_major" && ! has "$_m_hint_plain" \
+  && ! origin_has_subject "release: ff-dev-toolkit v1.0.0" && [[ "$(count_runall)" -eq "$_m_runs" ]] && ! has_pub_tag 1.0.0; then
+  ok "--major の本実行が承認待ちで止まると、次の一手は --major を付けた dry-run と、--major を付けた再実行を案内する"
+else
+  bad "--major の本実行の承認待ちの次の一手に --major が入らない (rc=$RC)"; dump
+fi
+# --major の本実行が release コミットより前（prepare 段の昇格直後の検査）で止まった回: 次の一手は、--resume-with-edits の文には
+# --major を足さず（同時に指定できない）、断片から集約し直す再実行にだけ --major を足す
+: >"$STATE/fragments.fail-once"
+run_orch --major --expect-version 1.0.0 --approved-head "$_m_head"
+rm -f "$STATE/fragments.fail-once"
+if [[ "$RC" -eq 1 ]] && has "NG: [prepare] 昇格直後の検査" \
+  && [[ "$(stop_tail 3)" == '次の一手: 作業ツリーの準備内容'*'scripts/release-dev-toolkit.sh --resume-with-edits で直した内容を採用して再開する（付けずに --major を付けて再実行すると書きかけを戻して断片から集約し直す）'*'断片を直して develop へ入れてから --major を付けて再実行する' ]] \
+  && ! has "--resume-with-edits --major" && ! has "--major --resume-with-edits" \
+  && ! origin_has_subject "release: ff-dev-toolkit v1.0.0" && [[ "$(cur_ver)" == 1.0.0 ]] && ! has_pub_tag 1.0.0; then
+  ok "--major の本実行が release コミットより前で止まると、断片から集約し直す再実行の案内にだけ --major が入る"
+else
+  bad "release コミットより前で止まった --major の本実行の次の一手が違う (rc=$RC)"; dump
+fi
+# release コミットより前で止まった回を、同じ --major 付きの引数で再実行する: 書きかけを戻して 1.0.0 を準備し、release コミットを
+# push する。gate で止めて、タグ未作成の 1.0.0 を残す（以降の再実行・後着断片の前提）
+: >"$STATE/public-layout.red"
+run_orch --major --expect-version 1.0.0 --approved-head "$_m_head"
+rm -f "$STATE/public-layout.red"
+if [[ "$RC" -eq 1 ]] && has "NG: [gate]" && has "書きかけで止まった変更（記録と一致）を戻し" \
+  && origin_has_subject "release: ff-dev-toolkit v1.0.0" && ! has_pub_tag 1.0.0 \
+  && [[ "$(cur_ver)" == 1.0.0 && "$(section_count 1.0.0)" -eq 1 && "$(section_of 1.0.0)" == *"- 契約の名前を変えた"* ]]; then
+  ok "release コミットより前で止まった回を同じ --major 付きの引数で再実行すると、書きかけを戻して 1.0.0 を準備し release コミットを push する"
+else
+  bad "同じ --major 付きの引数の再実行が 1.0.0 を準備しない (rc=$RC)"; dump
+fi
+# 1.0.0 を準備した後（release コミットあり・タグ前）に同じ引数（--major 付き）で再実行すると、公開側はまだ 0.x なので照合で
+# 止まらずに続く（準備は要らず、準備済みの 1.0.0 のままゲートへ進む。ここでも gate で止めて 1.0.0 をタグ未作成のまま残す）
+_m_runs="$(count_runall)"
+: >"$STATE/public-layout.red"
+run_orch --major --expect-version 1.0.0 --approved-head "$_m_head"
+rm -f "$STATE/public-layout.red"
+if [[ "$RC" -eq 1 ]] && has "NG: [gate]" && has "RELEASE_STAGE=check STATUS=done NOTE=準備は不要" \
+  && ! has "--major は 0.x から 1.0.0 への" && ! has "--major を渡したが" && ! has "== [prepare]" \
+  && [[ "$(count_runall)" -gt "$_m_runs" && "$(release_commits 1.0.0)" -eq 1 && "$(cur_ver)" == 1.0.0 ]] && ! has_pub_tag 1.0.0; then
+  ok "1.0.0 の準備の後（タグ前）に同じ --major 付きの引数で再実行すると、照合で止まらずにゲートへ進む（release コミットを作り直さない）"
+else
+  bad "1.0.0 の準備の後の --major 付きの再実行が続かない (rc=$RC)"; dump
+fi
+# 宣言で準備した 1.0.0 への後着断片: 準備済みの版として判別し、1.0.0 以降の規則で次の版を準備する。--major を付けたままでも、
+# 版の基点（1.0.0）の major が 0 でないので宣言は版幅に効かない
+printf '%s\n' '- 1.0.0 の準備の後に入った修正' >"$SSOT/changelog.d/162.fixed.major-late.md"
+commit_push "fix: major late"
+_m_late_date="$(section_date_of 1.0.0)"
+run_orch --major --dry-run
+if [[ "$RC" -eq 0 ]] && has "RELEASE_VERSION=1.0.1" && has "LATE_FRAGMENTS=new-version" \
+  && has "PLAN: ## [1.0.0] - ${_m_late_date} は開き直さず、タグを打たない中間版として残す" \
+  && has "PLAN: version 1.0.0 → 1.0.1（patch: 分類 修正）" && ! has "--major の宣言" && ! has "準備が途中で止まった疑い"; then
+  ok "準備済み・タグ前の 1.0.0 へ断片が後着した回は、--major を付けたままでも宣言を版幅に使わず「修正」のみは patch（v1.0.0 → v1.0.1）"
+else
+  bad "準備済みの 1.0.0 への後着断片で --major が版幅に効いた、または判別しない (rc=$RC)"; dump
+fi
+run_orch --dry-run
+if [[ "$RC" -eq 0 ]] && has "RELEASE_VERSION=1.0.1" && has "LATE_FRAGMENTS=new-version" \
+  && has "PLAN: ## [1.0.0] - ${_m_late_date} は開き直さず、タグを打たない中間版として残す" \
+  && has "PLAN: version 1.0.0 → 1.0.1（patch: 分類 修正）" && ! has "準備が途中で止まった疑い"; then
+  ok "--major で準備した 1.0.0 への後着断片は、--major を外しても準備済みの版として判別し同じ版（v1.0.1）になる"
+else
+  bad "宣言で準備した 1.0.0 への後着断片を判別しない (rc=$RC)"; dump
+fi
+run_orch --major --expect-version 1.0.1 --approved-head "$(release_head)"
+if [[ "$RC" -eq 0 ]] && has "RELEASE_RESULT=released" && has "RELEASE_VERSION=1.0.1" && has_pub_tag 1.0.1 && ! has_pub_tag 1.0.0 \
+  && [[ "$(cat "$STATE/title-v1.0.1" 2>/dev/null)" == *"（v1.0.0 を含む）" ]]; then
+  ok "承認した v1.0.1 の本実行（--major を付けたまま）は、タグを打たない中間版 v1.0.0 を畳み込んで出す"
+else
+  bad "1.0.0 を中間版として畳み込む本実行が完了しない (rc=$RC)"; dump
+fi
+# 公開側に 1.0.0 以降のタグ（v1.0.1）ができた後: 準備の要る回の --major も、準備の前に停止文の共通形で止まる。
+# 「追加」は minor、「破壊的変更」は major、「修正」のみは patch
+printf '%s\n' '- 1.0.0 以降の追加' >"$SSOT/changelog.d/163.added.major-one.md"
+commit_push "feat: major one"
+_m_runs="$(count_runall)"
+run_orch --major --dry-run
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped" && ! has "RELEASE_RESULT=stopped-needs-approval" \
+  && has "公開側の最新の安定版タグ v1.0.1 の major は 1 以上" && ! has "== [check]" && ! has "== [prepare]" \
+  && [[ "$(stop_tail 1)" == '止めた層: ガード' ]] \
+  && [[ "$(stop_tail 2)" == '止めた規則: release-gate/preflight（scripts/release-dev-toolkit.sh）— --major は 0.x から 1.0.0 への 1 回限りの宣言だが、'* ]] \
+  && [[ "$(stop_tail 3)" == '次の一手: --major を外して再実行する'* ]] \
+  && ! has "PLAN: version " && ! has_head_line && [[ "$(count_runall)" -eq "$_m_runs" && -z "$(git -C "$SSOT" status --porcelain)" ]]; then
+  ok "公開側に v1.0.0 以降のタグがあれば、--major は準備の前に停止文の共通形で止まり、--major を外す次の一手を出す（RELEASE_HEAD= を出さない）"
+else
+  bad "公開側に v1.0.0 以降のタグがある状態の --major が準備の前に止まらない (rc=$RC)"; dump
+fi
+run_orch --dry-run
+if [[ "$RC" -eq 0 ]] && has "RELEASE_VERSION=1.1.0" && has "PLAN: version 1.0.1 → 1.1.0（minor: 分類 追加）"; then
+  ok "1.0.0 以降も「追加」を含む回は minor（v1.0.1 → v1.1.0）"
+else
+  bad "現版の major が 1 以上の「追加」が minor にならない (rc=$RC)"; dump
+fi
+printf '%s\n' '- 契約の名前をさらに変えた' >"$SSOT/changelog.d/164.breaking.major-one.md"
+commit_push "feat: major one breaking"
+run_orch --dry-run
+if [[ "$RC" -eq 0 ]] && has "RELEASE_VERSION=2.0.0" && has "PLAN: version 1.0.1 → 2.0.0（major: 分類 破壊的変更/追加）" \
+  && ! has "--major の宣言"; then
+  ok "1.0.0 以降は「破壊的変更」を含む回で major が上がる（v1.0.1 → v2.0.0。宣言は要らない）"
+else
+  bad "現版の major が 1 以上の「破壊的変更」で major が上がらない (rc=$RC)"; dump
+fi
+run_orch --expect-version 2.0.0 --approved-head "$(release_head)"
+if [[ "$RC" -eq 0 ]] && has "RELEASE_RESULT=released" && has "RELEASE_VERSION=2.0.0" && has_pub_tag 2.0.0 && [[ "$(cur_ver)" == 2.0.0 ]]; then
+  ok "本実行の準備も同じ規則で v2.0.0 を準備して出す"
+else
+  bad "本実行が「破壊的変更」で v2.0.0 を出さない (rc=$RC)"; dump
+fi
+printf '%s\n' '- 2.0.0 の修正' >"$SSOT/changelog.d/165.fixed.major-two.md"
+commit_push "fix: major two"
+run_orch --dry-run
+if [[ "$RC" -eq 0 ]] && has "RELEASE_VERSION=2.0.1" && has "PLAN: version 2.0.0 → 2.0.1（patch: 分類 修正）"; then
+  ok "1.0.0 以降も「修正」のみの回は patch（v2.0.0 → v2.0.1）"
+else
+  bad "現版の major が 1 以上の「修正」のみが patch にならない (rc=$RC)"; dump
+fi
+run_orch --expect-version 2.0.1 --approved-head "$(release_head)"
+[[ "$RC" -eq 0 ]] || { bad "v2.0.1 の本実行が完了しない (rc=$RC)"; dump; }
+sync_ssot
+# release Issue へ書く停止の「再開:」行（issue_finish）。--major の本実行と release Issue を組み合わせた状態は、Issue のケース
+# （release-issue-runtime.sh）が走る時点で公開側が 1.0.0 以降なので作れない。実物の lib を読み、Issue の読み書きだけを差し替えて、
+# 書く文字列を関数単位で確かめる: --major の実行は、公開側に 1.0.0 以降のタグを打つ前の間だけ同じ --major を載せる
+cat >"$TMP/major-resume-probe.sh" <<'PROBE'
+# $1=リポジトリのルート $2=MAJOR $3=空 / major_tag_seen へ渡す版 / guard（公開側の最新タグ v1.0.1 で宣言を照合する）
+set -u
+for lib in release-prepare-functions.sh release-issue-functions.sh; do
+  . "$1/scripts/lib/$lib" || exit 3
+done
+MAJOR="$2"
+RELEASE_ISSUE_NUMBER=7
+MARKER_TOKEN=probe-token
+CURRENT_STAGE=gate
+EXPECT_VERSION=1.0.0
+APPROVED_HEAD=0123456789abcdef0123456789abcdef01234567
+ISSUE_RUNNING='{"number":7,"data":{"owner":{"token":"probe-token"}}}'
+issue_lock() { :; }
+issue_load() { :; }
+issue_unlock() { RELEASE_ISSUE_LOCK=""; }
+issue_write() { :; }
+issue_comment() { printf '%s\n' "$2"; }
+is_semver3() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
+stable_remote_tags() { printf '%s\n' 0.40.0 1.0.1; }
+stop() { issue_finish stopped "$1"; exit 1; }
+unavailable() { echo "unavailable: $1"; exit 2; }
+case "$3" in
+  guard) major_declaration_guard; echo "照合が --major を通した" ;;
+  "") ;;
+  *) major_tag_seen "$3" ;;
+esac
+issue_finish stopped "probe"
+PROBE
+_rp() { "$ENV_BIN" bash "$TMP/major-resume-probe.sh" "$REPO_ROOT" "$1" "$2" 2>&1 || true; }
+_rp_cmd="再開: scripts/release-dev-toolkit.sh --executor <担当名>"
+_rp_tail="--expect-version 1.0.0 --approved-head 0123456789abcdef0123456789abcdef01234567"
+if [[ "$(_rp 1 "")" == "stopped (gate): probe。${_rp_cmd} --major ${_rp_tail}" \
+  && "$(_rp 1 0.40.0)" == "stopped (gate): probe。${_rp_cmd} --major ${_rp_tail}" \
+  && "$(_rp 0 "")" == "stopped (gate): probe。${_rp_cmd} ${_rp_tail}" \
+  && "$(_rp 1 1.0.0)" == "stopped (gate): probe。${_rp_cmd} ${_rp_tail}" \
+  && "$(_rp 1 guard)" == "stopped (gate): --major は 0.x から 1.0.0 への 1 回限りの宣言だが、公開側の最新の安定版タグ v1.0.1 の major は 1 以上"*"。${_rp_cmd} ${_rp_tail}" ]]; then
+  ok "release Issue の「再開:」行は、--major の実行で 1.0.0 以降のタグを打つ前だけ --major を載せる（タグの後・照合が止めた回・--major なしの実行は載せない）"
+else
+  bad "release Issue の「再開:」行の --major が違う"
+  for _rp_case in "1 " "1 0.40.0" "0 " "1 1.0.0" "1 guard"; do
+    printf '    | %s → %s\n' "$_rp_case" "$(_rp "${_rp_case%% *}" "${_rp_case#* }")" >&2
+  done
+fi
 
 echo "-- release: 粒度（--due） --"
 run_orch --due

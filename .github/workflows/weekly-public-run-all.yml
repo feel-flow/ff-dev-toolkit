@@ -290,7 +290,12 @@ jobs:
           # 名簿に無い suite の skip はここで失敗させる（配布物の欠落・依存不足で suite が
           # 静かに skip へ倒れる経路を「偽の green」にしない）。許容するのは外部到達性で
           # 正常 skip し得る系統だけ（公開タグを ls-remote で引く CHANGELOG 検査）。
-          ALLOWED_SKIP_SUITES="changelog-public-tags"
+          # FF_PUBLIC_LAYOUT_ALLOWED_SKIP_SUITES は CI では設定しない（この workflow も設定しない）。
+          # 設定するのは、開発元が公開同期の前にこの step を合成した公開配置で回すローカルの実行
+          # （tests/public-layout/verify.sh）だけで、起動 shell が常駐 helper の経路を持たないこと
+          # （macOS 標準の /bin/bash など）を knowledge-lookup-resident-acl 自身の skip 理由行で確かめた回に
+          # その suite 名を渡す。未設定・空のときの許容名簿は changelog-public-tags だけのまま。
+          ALLOWED_SKIP_SUITES="changelog-public-tags${FF_PUBLIC_LAYOUT_ALLOWED_SKIP_SUITES:+ ${FF_PUBLIC_LAYOUT_ALLOWED_SKIP_SUITES}}"
           if [ "${skipped_count:-0}" != "0" ]; then
             skipped_names="$(sed -n 's/^○ skipped (環境都合で検証本体が未実行): //p' "$RUNNER_TEMP/public-run-all.log" | tr ' ' '\n' | sed '/^$/d')"
             unexpected=""

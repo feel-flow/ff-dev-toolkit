@@ -177,6 +177,12 @@ class LocaleComparison(unittest.TestCase):
         self.assertIsNotNone(match, "function extraction expected bump_level")
         for stdin, expected in (("修正\n", "patch\n"), ("追加\n", "minor\n"), ("修正\n追加\n", "minor\n")):
             self.each(match.group() + '\nbump_level', stdin=stdin, expected=expected)
+        # From major 1 the breaking heading raises major; under major 0 it stays minor unless 1.0.0 is declared.
+        # The declaration counts only from a major 0 base; from 1.0.0 it is ignored and the headings decide.
+        for args, stdin, expected in ((["1.2.3"], "破壊的変更\n追加\n", "major\n"), (["0.9.0"], "破壊的変更\n", "minor\n"),
+                                      (["0.9.0", "1"], "修正\n", "major\n"), (["1.2.3"], "修正\n", "patch\n"),
+                                      (["1.0.0", "1"], "修正\n", "patch\n"), (["1.0.0", "1"], "破壊的変更\n", "major\n")):
+            self.each(match.group() + '\nbump_level "$@"', args, stdin=stdin, expected=expected)
 
     def test_metrics_gate_and_branch_filters_keep_distinct_repository_paths(self):
         with tempfile.TemporaryDirectory() as tmp:

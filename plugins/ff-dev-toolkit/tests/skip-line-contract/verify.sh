@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# 部分 skip の書式と、捕捉した子の skip 行の中継。
+# 部分 skip の書式と、捕捉した子の skip 行の中継。公開配置の合成実行（public-layout）が suite 全体の skip を許容名簿へ足す判定。
 # 空振り検出: 走査対象のディレクトリが無いとき (対象不在) と、読める対象ファイルが 0 件のとき (空振り) が赤になる。列 0 の部分 skip・識別子付きの丸印・成功行に紛れた見送り・中継の無い捕捉・列 0 を親へ写す中継を許す変異は赤になる。
 # 空振り検出: OS 別プロファイルが無い・空・不正な行、静的照合の対象が空、理由の固定句が無い場合は赤。Linux と macOS の欄を交換する変異は対照が赤になる。
 # 空振り検出: --check の停止で停止文の lib をサブシェルの外でも読ませると、先頭で exit する lib の写しのケースが赤（2026-11-08 macOS / Bash 3.2.57 実測。64/1。Issue `#2712`）。
+# 空振り検出: 公開配置の合成実行の suite skip の許容（public-layout/resident-skip-allow.sh）は、判定・public-layout・実物の suite・公開 workflow のいずれかが無い回と、workflow の許容名簿の代入が 0 件か 2 件以上の回を赤にする。写しの木に 1 つずつ当てた変異はすべて赤（2026-11-10 macOS / Bash 3.2.57 実測。無変異は 77 件 pass）: 列 0 の鍵を外す・skip の印を見ない（部分 skip で許容）、単体実行の rc を見ない、前回の値を持ち越す、suite の不在・ログを書けない回を起動へ進める、判定の不在、実物の suite の理由句の改稿、public-layout が値を渡さない・設定時だけ渡す・step の後で判定する、workflow の許容名簿を元へ戻す・既定へ suite を足す・env: やインラインで値を設定する・2 つ目の代入を足す、workflow の不在。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -564,6 +565,191 @@ elif [[ "$result" == *'照合入力が空'* ]]; then
   ok "空の静的照合を停止する"
 else
   bad "空の静的照合の停止診断が不正"
+fi
+
+# ── 公開配置の合成実行での suite skip の許容（tests/public-layout/resident-skip-allow.sh） ──
+# public-layout は公開 workflow の step の前に knowledge-lookup-resident-acl を単体で回し、suite 自身が列 0 に
+# 出す suite 全体の skip の理由行（常駐 helper の経路を持たない）を見た回だけ、その suite を step の skip
+# 許容名簿へ足す。別の理由の skip・字下げした部分 skip・実際に回った回は許容せず、赤い単体実行は止める。
+# step 側は FF_PUBLIC_LAYOUT_ALLOWED_SKIP_SUITES が設定されたときだけ名前を足し、公開側の CI は設定しない。
+# 19 分の public-layout 全体を回さずに、判定は stub の suite で、step 側は workflow の実物で固定する。
+resident_lib="$SCRIPT_DIR/../public-layout/resident-skip-allow.sh"
+resident_layout="$SCRIPT_DIR/../public-layout/verify.sh"
+resident_real="$SCRIPT_DIR/../knowledge-lookup-resident-acl/verify.sh"
+resident_ready=1
+for f in "$resident_lib" "$resident_layout" "$resident_real"; do
+  if [[ ! -f "$f" ]]; then
+    bad "公開配置の suite skip の許容: 検査対象がありません: $f"
+    resident_ready=0
+  fi
+done
+if [[ "$resident_ready" -eq 1 ]]; then
+  # shellcheck source=../public-layout/resident-skip-allow.sh
+  . "$resident_lib"
+  if [[ "$ff_public_layout_resident_suite" != knowledge-lookup-resident-acl || -z "$ff_public_layout_resident_reason" ]] ||
+    ! declare -F ff_public_layout_resident_skip_allow >/dev/null; then
+    bad "公開配置の suite skip の許容: 判定の suite 名・理由句・関数を読めない"
+    resident_ready=0
+  fi
+fi
+resident_case() { # <case 名> <期待 rc> <期待する許容名簿の値> <stdout に期待する部分（空なら stdout が空）> [stderr に期待する部分]。stub 本文は stdin
+  local name="$1" want_rc="$2" want_allowed="$3" want_out="$4" want_err="${5:-}" root out err rc=0
+  root="$WORK/resident/$name/plugins/ff-dev-toolkit"
+  if [[ "$name" != missing ]]; then
+    emit "$root/tests/${ff_public_layout_resident_suite}/verify.sh"
+  else
+    mkdir -p "$root/tests"
+  fi
+  # 前回の値を持ち越さないことも見る
+  ff_public_layout_resident_allowed="stale-$name"
+  ff_public_layout_resident_skip_allow "$root" "$WORK/resident/$name.log" \
+    >"$WORK/resident/$name.out" 2>"$WORK/resident/$name.err" || rc=$?
+  out="$(cat "$WORK/resident/$name.out")"
+  err="$(cat "$WORK/resident/$name.err")"
+  if [[ "$rc" -ne "$want_rc" || "$ff_public_layout_resident_allowed" != "$want_allowed" ]]; then
+    printf '    | rc=%s allowed=[%s] out=[%s] err=[%s]\n' "$rc" "$ff_public_layout_resident_allowed" "$out" "$err" >&2
+    return 1
+  fi
+  if [[ -z "$want_out" ]]; then
+    [[ -z "$out" ]] || { printf '    | stdout が空でない: [%s]\n' "$out" >&2; return 1; }
+  else
+    [[ "$out" == *"$want_out"* ]] || { printf '    | stdout に [%s] が無い: [%s]\n' "$want_out" "$out" >&2; return 1; }
+  fi
+  if [[ "$want_rc" -ne 0 ]]; then
+    [[ "$err" == *"${ff_public_layout_resident_suite}"* ]] || { printf '    | 赤の理由が suite を名指さない: [%s]\n' "$err" >&2; return 1; }
+  fi
+  if [[ -n "$want_err" ]]; then
+    [[ "$err" == *"$want_err"* ]] || { printf '    | stderr に [%s] が無い: [%s]\n' "$want_err" "$err" >&2; return 1; }
+  fi
+  return 0
+}
+if [[ "$resident_ready" -eq 1 ]]; then
+  mkdir -p "$WORK/resident"
+  resident_notice="起動 shell が常駐 helper の経路を持たないため ${ff_public_layout_resident_suite} の suite skip を許容した"
+  if resident_case reason 0 "$ff_public_layout_resident_suite" "$resident_notice" <<'EOF'
+echo "== knowledge-lookup-resident-acl: stub =="
+echo "@C@ skip: 起動 shell（PATH の bash 3.2.57(1)-release）に常駐機能が無く常駐 helper の経路を持たないため、W6 / W7 / W16 の suite を実行しません（検査は 1 件も実行されていません）"
+exit 0
+EOF
+  then
+    ok "理由行つきの suite skip（rc 0）は許容名簿へ suite 名を足し、許容した旨と suite 名を 1 行出す"
+  else
+    bad "理由行つきの suite skip を許容しない、または許容した旨・suite 名を出さない"
+  fi
+  if resident_case other-reason 0 "" "" <<'EOF'
+echo "@C@ skip: fixture が見つからないため suite を実行しません（検査は 1 件も実行されていません）"
+exit 0
+EOF
+  then
+    ok "別の理由の suite skip は許容しない（許容名簿は空のまま。step の許容名簿の照合で赤になる）"
+  else
+    bad "別の理由の suite skip を許容した"
+  fi
+  if resident_case partial 0 "" "" <<'EOF'
+echo "  @C@ skip: 常駐 helper の経路を持たないため W6 だけ未実行"
+echo "✓ knowledge-lookup-resident-acl verify: 3 件成功"
+exit 0
+EOF
+  then
+    ok "理由句を含む字下げした部分 skip の行は鍵にしない（列 0 の suite 全体の skip だけを許容の鍵にする）"
+  else
+    bad "字下げした部分 skip の行で suite skip を許容した"
+  fi
+  if resident_case ran 0 "" "" <<'EOF'
+echo "  ✓ W6"
+echo "✓ knowledge-lookup-resident-acl verify: 4 件成功"
+exit 0
+EOF
+  then
+    ok "実際に回った回（skip 行が無い緑）は許容名簿へ何も足さず、何も出さない"
+  else
+    bad "実際に回った回に許容名簿へ名前を足した、または許容した旨を出した"
+  fi
+  if resident_case red 1 "" "" <<'EOF'
+echo "  ✗ W6: stub red" >&2
+exit 1
+EOF
+  then
+    ok "単体実行が赤なら rc 1 で止め、suite を名指す（許容名簿は空）"
+  else
+    bad "単体実行の赤で止まらない、または suite を名指さない"
+  fi
+  if resident_case reason-red 1 "" "" <<'EOF'
+echo "@C@ skip: 起動 shell に常駐機能が無く常駐 helper の経路を持たないため、W6 / W7 / W16 の suite を実行しません"
+exit 1
+EOF
+  then
+    ok "理由行があっても単体実行の rc が 0 でなければ許容せず止める"
+  else
+    bad "理由行があれば rc 1 の単体実行でも許容した"
+  fi
+  if resident_case missing 1 "" "" "がありません" </dev/null; then
+    ok "合成配置に suite が無ければ起動せずに rc 1 で止め、不在を名指す（許容名簿は空）"
+  else
+    bad "suite の不在で止まらない"
+  fi
+  ff_public_layout_resident_allowed="stale-log"
+  if ! ff_public_layout_resident_skip_allow "$WORK/resident/reason/plugins/ff-dev-toolkit" "$WORK/resident/no-such-dir/reason.log" \
+    >/dev/null 2>"$WORK/resident/no-log.err" &&
+    [[ -z "$ff_public_layout_resident_allowed" ]] && grep -q 'ログを書けません' "$WORK/resident/no-log.err"; then
+    ok "単体実行のログを書けなければ suite を起動せずに rc 1 で止める（理由行つきの stub でも許容しない）"
+  else
+    bad "単体実行のログを書けないのに止まらない、または許容した"
+  fi
+
+  # 判定の理由句は実物の suite が列 0 の suite 全体の skip で出す文言から取る（suite 側の改稿で鍵が空振りしない）
+  if awk -v reason="$ff_public_layout_resident_reason" -v mark="echo \"${circle} skip:" '
+      { line = $0; sub(/^[ \t]+/, "", line) }
+      index(line, mark) == 1 && index(line, reason) > 0 { hit++ }
+      END { exit (hit == 1 ? 0 : 1) }' "$resident_real"; then
+    ok "判定の理由句「${ff_public_layout_resident_reason}」は knowledge-lookup-resident-acl の suite 全体の skip の echo 1 箇所に現れる"
+  else
+    bad "判定の理由句が knowledge-lookup-resident-acl の suite 全体の skip の echo に 1 箇所で現れない（suite 側の文言と判定がずれた）"
+  fi
+
+  # public-layout は step の前に判定を呼び、結果を常に step の環境へ渡す（呼び出し元の値を持ち込まない）
+  call_line="$(awk 'index($0, "ff_public_layout_resident_skip_allow \"$PWD\"") > 0 && $0 !~ /^[ \t]*#/ { print NR; exit }' "$resident_layout")"
+  # 渡す行は env の代入そのもの（行頭）で、step を起動する行まで行継続で続く（条件つきの展開で包まない）
+  pass_line="$(awk '{ line = $0; sub(/^[ \t]+/, "", line) } index(line, "FF_PUBLIC_LAYOUT_ALLOWED_SKIP_SUITES=\"$ff_public_layout_resident_allowed\" ") == 1 { print NR; exit }' "$resident_layout")"
+  step_line="$(awk 'index($0, "bash -eo pipefail \"$WORK/run-public.sh\"") > 0 && $0 !~ /^[ \t]*#/ { print NR; exit }' "$resident_layout")"
+  pass_chain=0
+  if [[ -n "$pass_line" && -n "$step_line" && "$pass_line" -lt "$step_line" ]]; then
+    pass_chain="$(awk -v from="$pass_line" -v to="$step_line" 'NR >= from && NR < to && $0 !~ /\\$/ { broken = 1 } END { print (broken ? 0 : 1) }' "$resident_layout")"
+  fi
+  if [[ -n "$call_line" && -n "$pass_line" && -n "$step_line" && "$call_line" -lt "$pass_line" && "$pass_chain" -eq 1 ]]; then
+    ok "public-layout は step の前に判定を呼び、その値を FF_PUBLIC_LAYOUT_ALLOWED_SKIP_SUITES として step の環境へ常に渡す"
+  else
+    bad "public-layout が step の前に判定を呼んでいない、または値を step の環境へ渡していない（call=${call_line:-なし} pass=${pass_line:-なし} step=${step_line:-なし}）"
+  fi
+
+  # 公開 workflow の step 側。開発元では oss/ff-dev-toolkit/ 配下、公開 checkout ではリポジトリ直下にある
+  workflow=""
+  for f in "$REPO_ROOT/oss/ff-dev-toolkit/.github/workflows/weekly-public-run-all.yml" \
+    "$REPO_ROOT/.github/workflows/weekly-public-run-all.yml"; do
+    if [[ -f "$f" ]]; then workflow="$f"; break; fi
+  done
+  if [[ -z "$workflow" ]]; then
+    bad "公開 workflow（weekly-public-run-all.yml）が開発元・公開 checkout のどちらの配置にも無い"
+  else
+    allow_lines="$(awk '/^[ \t]*ALLOWED_SKIP_SUITES=/ { n++; line = $0; sub(/^[ \t]+/, "", line) } END { if (n == 1) print line; else print "count=" n + 0 }' "$workflow")"
+    stray="$(awk 'index($0, "FF_PUBLIC_LAYOUT_ALLOWED_SKIP_SUITES") > 0 && $0 !~ /^[ \t]*#/ && $0 !~ /^[ \t]*ALLOWED_SKIP_SUITES=/ { print FNR ": " $0 }' "$workflow")"
+    if [[ "$allow_lines" == 'ALLOWED_SKIP_SUITES="changelog-public-tags'* && -z "$stray" ]]; then
+      ok "公開 workflow の許容名簿の代入は 1 行だけで、FF_PUBLIC_LAYOUT_ALLOWED_SKIP_SUITES を設定する行（env: / export / 別の代入）を持たない"
+    else
+      bad "公開 workflow の許容名簿の代入が 1 行でない、または workflow 自身が FF_PUBLIC_LAYOUT_ALLOWED_SKIP_SUITES を設定する（allow=[${allow_lines}] stray=[${stray}]）"
+    fi
+    # 代入の行そのものを実行して、未設定・空・設定済みの許容名簿を測る
+    printf '%s\n%s\n' "$allow_lines" 'printf "%s\n" "$ALLOWED_SKIP_SUITES"' >"$WORK/resident/allow-line.sh"
+    allow_unset="$(env -u FF_PUBLIC_LAYOUT_ALLOWED_SKIP_SUITES bash -u "$WORK/resident/allow-line.sh" 2>&1)" || allow_unset="rc=$?"
+    allow_empty="$(FF_PUBLIC_LAYOUT_ALLOWED_SKIP_SUITES="" bash -u "$WORK/resident/allow-line.sh" 2>&1)" || allow_empty="rc=$?"
+    allow_set="$(FF_PUBLIC_LAYOUT_ALLOWED_SKIP_SUITES="$ff_public_layout_resident_suite" bash -u "$WORK/resident/allow-line.sh" 2>&1)" || allow_set="rc=$?"
+    if [[ "$allow_unset" == changelog-public-tags && "$allow_empty" == changelog-public-tags &&
+      "$allow_set" == "changelog-public-tags ${ff_public_layout_resident_suite}" ]]; then
+      ok "公開 workflow の許容名簿は未設定・空なら changelog-public-tags だけ、設定したときだけ suite 名を足す"
+    else
+      bad "公開 workflow の許容名簿の既定・追加が契約と異なる（未設定=[${allow_unset}] 空=[${allow_empty}] 設定=[${allow_set}]）"
+    fi
+  fi
 fi
 
 echo
