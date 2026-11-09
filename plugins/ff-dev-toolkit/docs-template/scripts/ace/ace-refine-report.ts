@@ -2,7 +2,9 @@
  * ACE Playbook の refine 候補レポート（grow-and-refine の dry-run 入力）。
  * - Archive 候補: 既存の findArchiveCandidates（active・stale）に helpful === 0 の積集合を取る。
  *   ただし archive 内の別エントリが `> Merged into:` で指す **統合先 ID** は本体一覧から外し、
- *   「統合先のため除外」の別枠へ理由付きで回す（Issue #917）
+ *   「統合先のため除外」の別枠へ理由付きで回す（Issue `#917`）。残りのうち live の本文から ID か
+ *   アンカーで言及されているものは「live から参照あり」の別枠へ参照元付きで回す（Issue `#2708`。
+ *   走査と参照に数えない言及の定義は ace-live-references.ts）
  * - 行数バジェット超過: エントリブロック（anchor 行〜終端 `---`）の行数を計測し、
  *   ACE_MAX_ENTRY_LINES（既定 15）超過を列挙する。`ace-line-budget-exception` コメントを
  *   持つエントリは例外上限（既定 30 = ACE_MAX_ENTRY_LINES の 2 倍）で判定する
@@ -54,6 +56,13 @@ import {
 // import することはできない。
 import { discoverArchiveFiles } from "./check-archive-links";
 import { classifyDomainEntry, isDomainAutoArchiveSafe } from "./ace-domain";
+import {
+  LIVE_SCAN_ERROR_PREFIX,
+  runGit,
+  scanLiveReferences,
+  type GitRunner,
+  type LiveReferenceSource,
+} from "./ace-live-references";
 
 const EXIT_OK = 0;
 const EXIT_RUNTIME_ERROR = 1;
@@ -526,6 +535,46 @@ export function partitionArchiveCandidates(
   return { kept, excluded };
 }
 
+/** Archive 候補から外した live 参照のあるエントリと、その参照元。 */
+export type LiveReferenceExclusion = Readonly<{
+  readonly entry: PlaybookEntry;
+  /** 参照元（ファイル・行の昇順。1 件以上） */
+  readonly sources: readonly LiveReferenceSource[];
+}>;
+
+/**
+ * 統合先を外した残りの候補を「そのまま出す分」と「live から参照ありで除外する分」に分ける（Issue `#2708`）。
+ * 統合先の枠に入ったエントリはここへ渡さない（二重に出さない）。黙って落とさず別枠へ回す理由は
+ * partitionArchiveCandidates と同じで、参照元を併記するので書き換え先が同じ行から読める。
+ */
+export function partitionLiveReferenced(
+  candidates: readonly PlaybookEntry[],
+  references: ReadonlyMap<string, readonly LiveReferenceSource[]>,
+): Readonly<{ kept: readonly PlaybookEntry[]; excluded: readonly LiveReferenceExclusion[] }> {
+  const kept: PlaybookEntry[] = [];
+  const excluded: LiveReferenceExclusion[] = [];
+  for (const entry of candidates) {
+    const sources = references.get(entry.id) ?? [];
+    if (sources.length === 0) {
+      kept.push(entry);
+    } else {
+      excluded.push({ entry, sources });
+    }
+  }
+  return { kept, excluded };
+}
+
+/** 参照元をファイルごとに畳む（`a.md:3,9; b.sh:12`）。sources は昇順で渡される。 */
+export function formatLiveReferenceSources(sources: readonly LiveReferenceSource[]): string {
+  const byFile = new Map<string, number[]>();
+  for (const { file, line } of sources) {
+    const lines = byFile.get(file) ?? [];
+    lines.push(line);
+    byFile.set(file, lines);
+  }
+  return [...byFile].map(([file, lines]) => `${file}:${lines.join(",")}`).join("; ");
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
@@ -636,6 +685,8 @@ export type RefineReportInput = Readonly<{
   readonly archiveCandidates: readonly PlaybookEntry[];
   /** 統合先のため Archive 候補から外したエントリ（Issue #917。0 件でも節ごと出す） */
   readonly mergeTargetExclusions: readonly MergeTargetExclusion[];
+  /** live から参照ありで Archive 候補から外したエントリ（Issue `#2708`。0 件でも節ごと出す） */
+  readonly liveReferenceExclusions: readonly LiveReferenceExclusion[];
   readonly overBudget: readonly OverBudgetEntry[];
   readonly promotionCandidates: readonly PlaybookEntry[];
   readonly patternsPath: string;
@@ -690,6 +741,26 @@ export function formatRefineReport(input: RefineReportInput): string {
       const sources = mergeSources.length > 0 ? mergeSources.join(", ") : "不明";
       lines.push(
         `- ${entry.id}: ${entry.title}（Category: ${entry.category ?? "不明"} / Date: ${entry.date ?? "不明"} / Helpful: ${entry.helpful} / 統合元: ${sources}）`,
+      );
+    }
+  }
+  lines.push("");
+
+  // 統合先の節と同じく 0 件でも節ごと出す（除外ロジックが動いた回かどうかを見た目で区別できるように）。
+  lines.push(
+    `## Archive 候補から除外（live から参照あり、${input.liveReferenceExclusions.length} 件）`,
+  );
+  lines.push("");
+  if (input.liveReferenceExclusions.length === 0) {
+    lines.push("なし");
+  } else {
+    lines.push(
+      "> `docs/`・`plugins/`・`scripts/` と live の PLAYBOOK の追跡ファイル（`playbook/` 配下の `archive/`・`_archive/` を除く）で、エントリ自身のブロック以外から ID かアンカーで言及されている候補です（ID の定義行〔行頭の `### ACE-…:` / `<a id=\"ace-…\">`〕・PLAYBOOK.md の索引行・`## Changelog` 節・`CHANGELOG.md`・`legacy-format-allowlist.txt` の記載は数えません）。アーカイブするなら参照元の書き換えまで同じ refine で行うこと。テストの fixture や評価データが ID を例に使っているだけの参照も含むので、参照元を開いて判断してください。",
+    );
+    lines.push("");
+    for (const { entry, sources } of input.liveReferenceExclusions) {
+      lines.push(
+        `- ${entry.id}: ${entry.title}（Category: ${entry.category ?? "不明"} / Date: ${entry.date ?? "不明"} / Helpful: ${entry.helpful} / 参照元: ${formatLiveReferenceSources(sources)}）`,
       );
     }
   }
@@ -773,11 +844,14 @@ function readFileOrThrow(filePath: string, reader: KnowledgeReadBoundary): strin
 export type MainDeps = Readonly<{
   readonly readLog: (repoDir: string) => GitLogParseResult;
   readonly now: () => Date;
+  /** live 参照の走査に使う git（省略時は実 git。Issue `#2708`） */
+  readonly runGit?: GitRunner;
 }>;
 
 const DEFAULT_DEPS: MainDeps = {
   readLog: readGitLog,
   now: () => new Date(),
+  runGit,
 };
 
 /**
@@ -923,7 +997,7 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
     // 空配列を返すので、除外 0 件で従来どおりの候補一覧になる。
     const archiveContents = discoverArchiveFiles(playbookPath, reader).map(file => readFileOrThrow(file, reader));
     const mergeTargets = collectMergeTargets(archiveContents);
-    const { kept: archiveCandidates, excluded: mergeTargetExclusions } =
+    const { kept: notMergeTargets, excluded: mergeTargetExclusions } =
       partitionArchiveCandidates(
         findRefineArchiveCandidates(entries, stats, now, staleDays, rawEntries),
         mergeTargets,
@@ -952,11 +1026,24 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
     const patternsContent = patternsExists ? readFileOrThrow(patternsPath, reader) : null;
     const promotionCandidates = findPromotionCandidates(entries, patternsContent, promoteMin, rawEntries);
 
+    // live 参照の除外（Issue `#2708`）。入力の検査（フェンス・0 件・unmeasured）をすべて通った後に
+    // git を呼ぶ。走査が読めない・候補自身の見出しを拾えないときは throw し、候補一覧を出さない。
+    const liveReferences = scanLiveReferences({
+      playbookPath,
+      playbookContents: contentsByFile,
+      candidates: notMergeTargets.map((entry) => entry.id),
+      runGit: deps.runGit ?? runGit,
+      readText: (file) => readFileOrThrow(file, reader),
+    });
+    const { kept: archiveCandidates, excluded: liveReferenceExclusions } =
+      partitionLiveReferenced(notMergeTargets, liveReferences);
+
     console.log(
       formatRefineReport({
         domainEntries,
         archiveCandidates,
         mergeTargetExclusions,
+        liveReferenceExclusions,
         overBudget,
         promotionCandidates,
         patternsPath,
@@ -971,7 +1058,10 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
     return EXIT_OK;
   } catch (error) {
     const err = error as { code?: string; message?: string };
-    if (typeof err.message === "string" && err.message.startsWith(FILE_READ_ERROR_PREFIX)) {
+    if (
+      typeof err.message === "string" &&
+      (err.message.startsWith(FILE_READ_ERROR_PREFIX) || err.message.startsWith(LIVE_SCAN_ERROR_PREFIX))
+    ) {
       console.error(`ERROR: ${err.message}`);
     } else if (err.code === "ENOENT") {
       // 典型は git バイナリ不在だが、他経路の ENOENT の可能性もあるため原文を添える

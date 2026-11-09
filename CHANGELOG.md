@@ -20,6 +20,32 @@
 
 ## [Unreleased]
 
+## [0.180.0] - 2026-11-09
+
+### 追加
+
+- hook・全件ゲート・部分 skip の判定が止まるときの文を、末尾がちょうど 3 行（`止めた層:` / `止めた規則:` / `次の一手:`）で終わる共通形にそろえた。形は新しい lib `scripts/lib/stop-block.sh` の `ff_stop_block` が組み、層は 環境 / 方針 / ガード / 宣言 のどれか、規則は ASCII の kebab-case の名前と正本ファイルで名指す。採用したのは `hooks/guard-exit-code.sh` / `hooks/guard-literal-write.sh` / `hooks/guard-review-in-flight.sh` の deny（先頭の警告文は変えずに末尾へ足す）、`hooks/run-bash-hooks.sh` が書き換えを拒否する回、`tests/run-all.sh` の必須 suite の skip（次の一手に再現コマンド）、`tests/lib/release-skip-profile.sh --check` の停止（表の `stop:` の案内を次の一手の 1 行へまとめる）。lib を読めないときは各所の中で `stop-block-unavailable` の 3 行を出して止める（黙って通さない）。集約入口 `hooks/run-bash-hooks.sh` は、複数の deny をまとめるとき未実行の注記を理由文の先頭に置き、deny の理由のうち停止文の 3 行で終わるものを最後へ回す（停止文を持たない別のガードの deny が混ざっても、利用者が最後に読む 3 行を停止文にする）。hook は lib をサブシェルの中でだけ読み、lib が途中で抜けても素通しせずに止まる。部分 skip の停止は、表にあるが案内の無い `stop` 行（検査を回せる環境を整える）と表に無い行（表か検査を書き直す）で次の一手を分ける。リリースの gate 段は、全件ゲートが必須 suite の skip で停止文を出して止まった回にその 3 行を包み直さない。新しい検査 suite `tests/stop-block-contract` が形・採用名簿・deny の端から端を見る。
+- 新しい静的ゲート `env-branch-contract`（`tests/env-branch-contract/verify.sh`）を追加した。OS 名・MSYS 名・bash 版・coproc による環境分岐（OSTYPE / MSYSTEM / BASH_VERSINFO / BASH_VERSION の参照、uname の -s・-m・-o・-a・-p・-i と長オプション、コマンド位置の素の uname、coproc）を新しく書いてよいのは能力層（パス判定・WSL 案内・読み取り境界の lib と、部分 skip プロファイルの読み手）とセキュリティ境界の lib だけとし、それ以外のファイルへ足した分岐を既定の高速モードで赤にする。コメントと単一引用符の中は数えず、二重引用符の中はパラメータ展開とコマンド置換だけを数え、能力層の関数へ素の値を渡すだけの呼び出しは数えない。既存の分岐は縮める方向にしか動かさない基線 `tests/env-branch-contract/baseline.tsv` で受け、増えた・実在しない・減ったのに未更新のどれも赤にする。基線は `--print-baseline` で今の tree から区分コメントを保ったまま取り直せ、件数が増えたパスがあると `--allow-growth` を付けない限り出さずに止まる。走査根が git でない・tracked 一覧や shell ソースが空・読めないファイル・許可集合や基線の欠落は「違反なし」ではなく検査不成立として赤にする。
+
+### 変更
+
+- bash 4 以上でだけ成立していた検査を、macOS 標準の `/bin/bash`（3.2）でも成立する形へ書き直し、bash 版を理由にする部分 skip を無くした。`retrospective-stop-hook` の壁時計が戻る回の再現は、bash 3.2 が時間切れを EOF と同じ rc 1 で返す差を fixture の `read` の包みで rc 142 へそろえて測る。`skill-drift-check` のサブシェル数は、`BASHPID` の代わりに xtrace の行頭で `sh` の親 PID を読んで数える。Windows ACL の常駐 helper の経路（W6 / W7 と常駐側の W16）は coproc が要るので新しい suite `knowledge-lookup-resident-acl` へ分け、coproc の無い shell では suite ごと skip する。あわせて、bash 4 限定の部分 skip を macOS でだけ許可していた扱い（部分 skip プロファイルの bash 4 限定の行と、macOS 以外を赤にする OS 判定の分岐）は撤回した。
+- 開発元リポジトリの週次の全件 run-all を定期実行から手動起動だけにしたのに合わせ、公開同期のゲートは毎回全件（`FF_RUN_ALL_FULL=1`。対を持つ selftest を含む）で回し、週次の健全性判定は公開リポジトリ（https://github.com/feel-flow/ff-dev-toolkit）の `weekly-public-run-all.yml` を見る形へ、`tests/run-all.sh` と `tests/run-all/README.md`、`tests/public-layout/verify.sh`、`tests/mcp-dist-gate/verify.sh`、`scripts/check-merge-freshness.sh` のコメントと説明を書き直した。公開リポジトリの週次は従来どおり定期実行を続ける。
+- 公開同期のゲートの契約検査 `tests/sync-sha-contract/`（`verify.sh` / `release-gate-mode-runtime.sh` / `release-runtime.sh`）を新しい挙動へ合わせた。健全性判定の結果によらず全件で 1 回だけ起動し、ゲートの段では判定を呼ばないこと、同じ HEAD の全件の緑の記録だけを再利用し高速モードの記録は再利用しないこと、判定の呼び出しはリリース後の報告の段の 1 回だけで、healthy でなくても同期を止めないことを確かめる。
+- 週次の健全性判定の挙動検査 `tests/weekly-health-contract/verify.sh` は、判定対象が公開リポジトリの `weekly-public-run-all.yml` に固定され、`GH_REPO` やカレントの checkout の解決先、別リポジトリを指す origin、同名の環境変数を立てても判定対象が変わらないことを確かめる形へ変えた。判定規則の検査は変えていない。
+- 開発元リポジトリ専用の suite `scripts-node-tests`（`tests/scripts-node-tests/verify.sh`）を追加した。開発元の node テスト 3 本を 1 本ずつ `node --test --test-reporter=spec` で回し、node が無い・テストファイルが無い・0 件しか走らない・1 本でも失敗する回を赤にする。公開リポジトリには対象のテストが無いため、公開側の週次の除外名簿（`EXCLUDED_SSOT_SUITES`）に載せた。
+
+### 修正
+
+- macOS 標準の `/bin/bash`（3.2）でリリースの gate 段を回すと、bash 4 以上でしか成立しない検査（`skill-drift-check` のサブシェル数、`knowledge-lookup` の Windows ACL の W6 / W7 / W16）の部分 skip で止まり、Homebrew bash の導入を求めていた。macOS では Bash 4 以上を選び直さず標準の bash 3.2 のままゲートを回す扱いへ戻し、部分 skip プロファイル（`tests/lib/release-skip-profile.tsv`）のこの 4 行を macOS で許可にした。Linux と Windows では従来どおり停止し、bash 4 以上の分岐は週次 CI の Linux で実行される。あわせて、この 2 つの検査は macOS 以外で bash 4 以上の能力が無いと見送りではなく失敗にするようにした（Linux の週次 CI は部分 skip を数えないため、見送りのまま緑になる経路を残さない）。v0.179.0 の項目にある「macOS ではゲートの PATH で Bash 4 以上を選ぶ」はこの変更で改めた。
+- `/ace-refine` の候補レポート（`ace-refine-report.ts`）が、いま live の本文から引用・リンクされている知見を Archive 候補に並べ、承認どおりに適用すると使われている知見まで archive へ移っていた問題を直した。統合先を外した残りの候補を git grep で走査し、リポジトリ直下の docs・plugins・scripts ディレクトリと live の PLAYBOOK ファイル群（playbook 配下の archive / _archive ディレクトリを除く追跡ファイル）で、エントリ自身のブロック以外から ID かアンカー（`#ace-…`）で言及されている候補を、新しい節「Archive 候補から除外（live から参照あり、N 件）」へ参照元のパスと行番号付きで移す。ID の定義行（行頭の見出しとアンカー）・PLAYBOOK の索引行・`## Changelog`（`## 変更履歴`）節・CHANGELOG.md という名前のファイル・旧形式エントリの allowlist の記載は参照に数えない。Changelog 節は、フェンスと HTML コメントの中の見出しを除いて判定し、閉じていないフェンスか HTML コメントがある Markdown ではそのファイルの Changelog 節の除外をやめて全部数える。走査が読めないとき（git の失敗・stderr への出力・本文を読めない）と、live のエントリ見出しのうち走査で見えなかったものが 1 件でもあるとき（カテゴリファイルが git で追跡されていない等）は、「参照なし」へ倒さず終了コード 1 でレポートを出さない。Markdown の本文は読取り境界を通して読むので、レポートはリポジトリの中から実行する。走査の実装は新しい `ace-live-references.ts` にあり、ACE のスクリプト一式を導入済みのプロジェクトは同ファイルも配置する。
+- 静的ゲート `env-branch-contract`（`tests/env-branch-contract/verify.sh`）が、能力層の関数へ素の OSTYPE を渡す呼び出しを数えないときに前後の区切り（`;` など）まで伏せていたため、同じ行で呼び出しの直後・直前に書いたコマンド位置の素の uname（`ff_host_is_msys "${OSTYPE:-}"; uname | grep -q Darwin` など）を見逃していた。伏せるのを関数名から展開の閉じまでに狭め、後続・先行の分岐を数えるようにした。
+- 同じゲートの「読めない tracked shell は検査不成立」の検査が、`chmod 000` の後もファイルを読める Windows の Git Bash では正しい tree でも赤になっていた。ファイルが読めたままで、かつ MSYS / Cygwin のときだけ字下げした部分 skip にし、Linux / macOS では従来どおり実行する。
+
+### ドキュメント
+
+- ff-dev-toolkit が動作を約束する環境を 3 つに固定した: macOS 標準の `/bin/bash`（3.2。Homebrew bash を前提にしない）、Linux の bash 5（WSL を含む）、Windows の Git Bash（MSYS）。必須ツールは bash 3.2 以上・git・POSIX ユーティリティ（GNU / BSD のどちらでもよい）・perl・jq で、hook 全般は jq を前提にする（jq が無いと hook が無音で無効化される現状を名指しして止める形は今後の版で行う）。検査はこの 3 環境のすべてで成立する形に書き、シェルの版だけを理由にする部分 skip は設けない。v0.179.0 の項目にある「macOS ではゲートの PATH で Bash 4 以上を選ぶ」はこの方針で撤回し、macOS のゲートは標準の bash 3.2 のまま回す。
+
 ## [0.179.0] - 2026-11-08
 
 ### 追加

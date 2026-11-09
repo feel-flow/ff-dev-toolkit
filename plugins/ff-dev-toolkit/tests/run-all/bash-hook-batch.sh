@@ -149,12 +149,13 @@ with tempfile.TemporaryDirectory(prefix='ff-batch-test-') as temp:
             assert '拒否1' in result.stderr
         else:
             assert json.loads(result.stdout)['hookSpecificOutput']['permissionDecision'] == 'deny'
-    # 拒否時だけ、前段も未実行である旨が理由文の末尾に1回付く。
+    # 拒否時だけ、前段も未実行である旨が理由文の先頭に1回付く（JSON 経路）。deny の理由（各 hook の
+    # 停止文の 3 行で終わる）を最後に並べ、ask / allow の理由はその前に置く（Issue `#2712`）。
     note = ('この呼び出しは 1 つも実行されていません（同じ呼び出しの前段で作るつもりだった'
             'ファイル・書き込みも存在しません）。生成と、ガードに当たる反映は別の呼び出しに分けて'
             '再実行してください。')
     reason = json.loads(run([deny, ask, deny2]).stdout)['hookSpecificOutput']['permissionDecisionReason']
-    assert reason.splitlines()[-1] == note and reason.count(note) == 1, reason
+    assert reason.splitlines() == [note, '確認', '拒否1', '拒否2'] and reason.count(note) == 1, reason
     blocked = stub('blocked', 'echo 止めた >&2\nexit 2')
     for hooks in ([blocked], [blocked, deny], [blocked, warning],
                   [blocked, stub('unparsable', 'echo invalid')]):
@@ -213,7 +214,7 @@ with tempfile.TemporaryDirectory(prefix='ff-batch-test-') as temp:
     assert value['hookSpecificOutput']['permissionDecision'] == 'deny'
     assert value['systemMessage'] == '注意1\n' + notice
     assert value['hookSpecificOutput']['additionalContext'] == notice
-    assert value['hookSpecificOutput']['permissionDecisionReason'] == '拒否1\n' + note
+    assert value['hookSpecificOutput']['permissionDecisionReason'] == note + '\n拒否1'
     assert notice not in value['hookSpecificOutput']['permissionDecisionReason']
     # 出力が無い打ち切りでも、同じ文面を JSON へ載せる。拒否にはしない。
     start = time.monotonic()
@@ -255,7 +256,12 @@ with tempfile.TemporaryDirectory(prefix='ff-batch-test-') as temp:
     value = json.loads(result.stdout)
     assert value['hookSpecificOutput']['permissionDecision'] == 'deny'
     assert '解釈できない' in value['hookSpecificOutput']['permissionDecisionReason']
-    assert value['hookSpecificOutput']['permissionDecisionReason'].endswith(note)
+    # 集約入口自身の拒否も、注記を先頭に・停止文の 3 行を末尾に置く（Issue `#2712`）
+    rw_lines = value['hookSpecificOutput']['permissionDecisionReason'].splitlines()
+    assert rw_lines[0] == note and rw_lines[-3:] == [
+        '止めた層: ガード',
+        '止めた規則: hook-rewrite-rejected（hooks/run-bash-hooks.sh）— 入力の書き換えを全ガードの再検査つきで採用できない',
+        '次の一手: ガードの指摘どおりにコマンドを書き直して再実行する（書き換えに頼らない）'], rw_lines
     assert value['systemMessage'] == notice
     assert value['hookSpecificOutput']['additionalContext'] == notice
     # 競合する書き換え×打ち切りも同じ契約（reject_rewrite の別呼び出し）。
@@ -293,7 +299,10 @@ with tempfile.TemporaryDirectory(prefix='ff-batch-test-') as temp:
     result = run(args[2:], json.dumps(payload))
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)['hookSpecificOutput']['permissionDecision'] == 'deny'
-    assert json.loads(result.stdout)['hookSpecificOutput']['permissionDecisionReason'].endswith(note)
+    real_lines = json.loads(result.stdout)['hookSpecificOutput']['permissionDecisionReason'].splitlines()
+    assert real_lines[0] == note and real_lines[-3].startswith('止めた層: ガード'), real_lines
+    assert real_lines[-2].startswith('止めた規則: exit-code-misread（tests/lib/exit-code-guard.sh）— '), real_lines
+    assert real_lines[-1].startswith('次の一手: '), real_lines
     payload['tool_input']['command'] = 'gh api repos/o/r/issues/1/sub_issues -f sub_issue_id=123'
     result = run(args[2:], json.dumps(payload))
     assert result.returncode == 0, result.stderr

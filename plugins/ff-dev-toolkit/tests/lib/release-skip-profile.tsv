@@ -9,12 +9,8 @@ FF_MEDIA_RENDER=1 が未設定のため実レンダリングを行いません	a
 Windows の Git Bash でだけ成立する検査のため未実行	stop	allow	allow	plugins/ff-dev-toolkit/tests/ace-curate-commit/verify.sh|plugins/ff-dev-toolkit/tests/guard-review-in-flight/verify.sh|plugins/ff-dev-toolkit/tests/guard-shell-save/verify.sh|plugins/ff-dev-toolkit/tests/knowledge-lookup/windows-acl.sh|plugins/ff-dev-toolkit/tests/merge-cleanup/windows-junctions.sh|plugins/ff-dev-toolkit/tests/multi-agent-stale-outputs/windows-boundary-cases.sh
 起動回数の上限は Windows と Linux でだけ固定する検査のため未実行	stop	allow	stop	plugins/ff-dev-toolkit/tests/knowledge-lookup/verify.sh
 大文字小文字を区別するファイルシステムでは case-alias 分岐を作れないため未実行	allow	allow	allow	plugins/ff-dev-toolkit/tests/multi-agent-stale-outputs/admin-identity-cases.sh
-# This fixture invokes /bin/bash directly. The other Bash 4 checks use the invocation PATH.
-^壁時計が戻る回の再現（/bin/bash 	stop	allow	stop	plugins/ff-dev-toolkit/tests/retrospective-stop-hook/verify.sh
-系には BASHPID が無い）は、bash 4 以上でだけ成立する検査のため未実行	stop	stop:brew install bash の後、この呼び出しの PATH で Bash 4 以上を選ぶ	stop	plugins/ff-dev-toolkit/tests/skill-drift-check/verify.sh
-W6 は bash 4 以上でだけ成立する検査のため未実行	stop	stop:brew install bash の後、この呼び出しの PATH で Bash 4 以上を選ぶ	stop	plugins/ff-dev-toolkit/tests/knowledge-lookup/windows-acl.sh
-W7 は bash 4 以上でだけ成立する検査のため未実行	stop	stop:brew install bash の後、この呼び出しの PATH で Bash 4 以上を選ぶ	stop	plugins/ff-dev-toolkit/tests/knowledge-lookup/windows-acl.sh
-W16 は bash 4 以上でだけ成立する検査のため未実行	stop	stop:brew install bash の後、この呼び出しの PATH で Bash 4 以上を選ぶ	stop	plugins/ff-dev-toolkit/tests/knowledge-lookup/windows-acl.sh
+# No row allows a skip on the bash version: a check that needs coproc runs as a suite of its own,
+# which skips as a whole where the shell has none (knowledge-lookup-resident-acl. ADR-084 / Issue `#2711`).
 # Linux can run the bubblewrap test. Darwin can run the sandbox-exec fixture.
 ^bwrap が無いため sandbox 上の経路判定は未検査	allow	allow	stop:bubblewrap を入れて再実行する	plugins/ff-dev-toolkit/tests/decision-tree/verify.sh
 ^Darwin でだけ成立する検査のため未実行	allow	stop	allow	plugins/ff-dev-toolkit/tests/guard-exit-code/consumer-resource-cases.sh

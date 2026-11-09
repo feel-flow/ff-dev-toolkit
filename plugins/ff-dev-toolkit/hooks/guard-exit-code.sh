@@ -312,16 +312,33 @@ case "$DETECTOR_SHOWN" in
   */hooks/../*) DETECTOR_SHOWN="${DETECTOR_SHOWN%%/hooks/../*}/${DETECTOR_SHOWN#*/hooks/../}" ;;
 esac
 
-# deny の JSON を組み立てて出す。jq が失敗したら**黙って許可に落ちない** —
+# 停止文の共通形（末尾 3 行。scripts/lib/stop-block.sh / Issue `#2712`）。deny するときだけ読む。
+# 読めないときは stop-block-unavailable の 3 行で止める（deny 自体は変えず、素通しにしない）。
+STOP_BLOCK_LIB="${BASH_SOURCE[0]%/*}/../scripts/lib/stop-block.sh"
+
+# deny の JSON を組み立てて出す。理由文の末尾へ停止文の 3 行を足す。jq が失敗したら**黙って許可に落ちない** —
 # PreToolUse のもう 1 本のブロック経路（exit 2 + stderr）へ落とす（上記「出力チャネル」）。
-deny() { # <reason>
-  local out rc
-  out="$(jq -n --arg reason "$1" \
+deny() { # <reason> <rule-id> <正本> <理由 1 行> <次の一手>
+  local out rc block="" reason
+  # lib はサブシェルの中でだけ読む（lib の先頭の exit・set・trap・同名の関数や変数が hook 本体へ届かない）。
+  # 何も出さずに終わった回（lib が途中で exit した・関数が無い）は下の stop-block-unavailable へ落ちる。
+  # shellcheck source=../scripts/lib/stop-block.sh
+  block="$([ -f "$STOP_BLOCK_LIB" ] && [ -r "$STOP_BLOCK_LIB" ] && . "$STOP_BLOCK_LIB" 2>/dev/null \
+    && declare -F ff_stop_block >/dev/null 2>&1 && ff_stop_block ガード "${2-}" "${3-}" "${4-}" "${5-}")"
+  if [ -z "$block" ]; then
+    block="止めた層: ガード
+止めた規則: stop-block-unavailable（scripts/lib/stop-block.sh）— 停止文の共通形を読み込めません（元の規則: ${2-}）
+次の一手: ff-dev-toolkit を更新・再インストールして scripts/lib/stop-block.sh を復旧する"
+  fi
+  reason="$1
+$block"
+  out="$(jq -n --arg reason "$reason" \
     '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null)"
   rc=$?
   if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
-    printf '%s\n' "$1" >&2
+    # 停止文の 3 行が stderr の末尾に来るよう、診断行を先に出す。
     printf 'ff-dev-toolkit guard-exit-code: deny の JSON を組み立てられませんでした（jq rc=%s）。exit 2 でブロックします。\n' "$rc" >&2
+    printf '%s\n' "$reason" >&2
     exit 2
   fi
   printf '%s\n' "$out"
@@ -336,7 +353,10 @@ deny_unavailable() { # <理由>
 次のいずれかで進めてください:
   1) 判定できる状態に戻す（検出器が読めない・awk / jq が壊れている場合はその環境を直す。配布物が壊れているならプラグインを再インストールする）
   2) このコマンドに限って通す: コマンドの**先頭**へ環境代入 FF_EXIT_CODE_ACK=1 を付けて再実行する
-  3) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1 を設定する"
+  3) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1 を設定する" \
+    exit-code-guard-unavailable tests/lib/exit-code-guard.sh \
+    "終了コードの扱いを検査する対象の判定を完了できないため、判定不能として止めた" \
+    "判定できる状態に戻す（プラグインを再インストールする）。このコマンドに限って通すなら先頭へ FF_EXIT_CODE_ACK=1 を付けて再実行する"
 }
 
 # ---- 入力の取り出し -------------------------------------------------------------
@@ -422,7 +442,14 @@ if [ "$(type -t ff_wait_bounds_reason 2>/dev/null)" = function ]; then
         deny_unavailable "待ちの上限を判定できませんでした（rc=${wait_rc}）" ;;
     esac
   elif [ -n "$wait_reason" ]; then
-    deny "$wait_reason"
+    case "$wait_reason" in
+      *FF_UNBOUNDED_WAIT_ACK=1*)
+        deny "$wait_reason" wait-bounds tests/lib/wait-bounds.sh "背景実行の待ちに上限が無い" \
+          "待ちを回数の上限付きのループへ書き換えて再実行する（意図した待ちなら直前の文として FF_UNBOUNDED_WAIT_ACK=1; を置く）" ;;
+      *)
+        deny "$wait_reason" wait-bounds tests/lib/wait-bounds.sh "上限付きの待ちに使うコマンドがこの環境に無い" \
+          "理由文の書き換え案（perl -e 'alarm …'）へ直して再実行する（意図した形ならコマンドの先頭へ FF_TIMEOUT_ACK=1 を付ける）" ;;
+    esac
   fi
 fi
 unset wait_reason wait_rc
@@ -435,7 +462,10 @@ rg_unavailable() { # <理由>
 次のいずれかで進めてください:
   1) rg に検索パスを明示する（rg <パターン> .）か、標準入力を閉じる（rg <パターン> </dev/null）
   2) このコマンドに限って通す: コマンドの**先頭**へ環境代入 FF_RG_STDIN_ACK=1 を付けて再実行する
-  3) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1 を設定する"
+  3) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1 を設定する" \
+    rg-stdin-unavailable tests/lib/rg-stdin-scan.sh \
+    "rg の検索パスの有無を判定できないため、判定不能として止めた" \
+    "rg に検索パスを明示する（rg <パターン> .）か標準入力を閉じる（rg <パターン> </dev/null）。このコマンドに限って通すなら先頭へ FF_RG_STDIN_ACK=1 を付けて再実行する"
 }
 if [ "$ff_ack_rg" -ne 1 ] && rg_word_candidate "$cmd"; then
   RG_LIB="${BASH_SOURCE[0]%/*}/../tests/lib/rg-stdin-scan.sh"
@@ -457,7 +487,9 @@ if [ "$ff_ack_rg" -ne 1 ] && rg_word_candidate "$cmd"; then
   ${rg_first} .            （cwd を検索する。検索パスを明示する）
   ${rg_first} </dev/null   （標準入力を閉じる）
 パイプの受け側（cmd | rg …）・標準入力のリダイレクト（< file / <<< … / heredoc）・--files / --type-list / --version は止めません。
-このコマンドに限って通す: コマンドの**先頭**へ環境代入 FF_RG_STDIN_ACK=1 を付けて再実行する"
+このコマンドに限って通す: コマンドの**先頭**へ環境代入 FF_RG_STDIN_ACK=1 を付けて再実行する" \
+      rg-stdin tests/lib/rg-stdin-scan.sh "検索パスの無い rg が標準入力を待ち続ける形を検出した" \
+      "rg に検索パスを明示する（${rg_first} .）か標準入力を閉じる（${rg_first} </dev/null）。意図した形ならコマンドの先頭へ FF_RG_STDIN_ACK=1 を付けて再実行する"
   fi
   unset rg_hits rg_rc rg_first
 fi
@@ -684,4 +716,6 @@ ${fix}
   1) このコマンドに限って通す: コマンドの**先頭**へ環境代入 FF_EXIT_CODE_ACK=1 を付けて再実行する
   2) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1 を設定する"
 
-deny "$reason"
+deny "$reason" exit-code-misread tests/lib/exit-code-guard.sh \
+  "終了コードの誤読・握り潰しの形（検出タグ ${first_tag}）を検出した" \
+  "測りたいコマンドの終了コードを伝播させる形へ書き換えて再実行する（意図した形ならコマンドの先頭へ FF_EXIT_CODE_ACK=1 を付ける）"

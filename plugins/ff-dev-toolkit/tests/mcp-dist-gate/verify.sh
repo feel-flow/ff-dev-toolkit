@@ -46,7 +46,8 @@ DIST="$MCP_DIR/dist/index.js"
 # 混在すると「ローカル緑・CI 赤」の環境差になる。`npm ls --package-lock-only` は許容側の
 # 版でも非 0 を返す（npm 10.9.8 / 11.16.0 で実測）ので、node_modules に依存せず早期に
 # 検査するゲートにする。全 npm 版の `npm ci` 結果を保証するものではなく、npm 10 系の
-# `npm ci` そのものは週次 CI（weekly-run-all の install step）が最終防衛線として担う。
+# `npm ci` そのものは、全件ゲートの前提として手元で毎回回す `npm ci` と、Linux の CI（公開側の週次と、
+# 手動起動だけになった開発元の weekly-run-all の install step。ADR-086）が担う。
 # 発見経緯 (Issue #1325 / #1251): npm 11 の `npm install` が vitest 4 同梱 vite 8 の
 # optional peer（esbuild ^0.27 || ^0.28）の入れ子 esbuild@0.28.2 を prune し、peer が
 # root の esbuild 0.25.12 へ解決されて invalid になった。npm 11 では `npm ci` も vitest も

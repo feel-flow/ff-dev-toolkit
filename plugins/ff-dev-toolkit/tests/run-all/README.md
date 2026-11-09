@@ -37,8 +37,8 @@ ADR-031）で **除外により実行対象が 0 件になった場合も 1** �
 除外しなかった件数と suite 名はサマリーに出ます。
 
 **引数なしの既定一覧は高速モードで走ります（ADR-034）。** 全件実行は `FF_RUN_ALL_FULL=1` で明示
-指定します（リリース前・公開同期前の定期実行点は「週次 CI の成功実績確認 + ローカル run-all
-green」。healthy を確認できない回は全件で代替 — ADR-039）。`FF_RUN_ALL_FAST` は後方互換の入口として
+指定します（公開同期の定期実行点〈`scripts/release-dev-toolkit.sh` の gate 段〉は毎回全件で回し、
+週次 CI の健全性判定で高速モードへ切り替えない — ADR-086）。`FF_RUN_ALL_FAST` は後方互換の入口として
 残り、`1` は高速モード（既定と同じ）、`0` は「明示的に高速モードでない」= 全件実行として扱います。
 どちらの変数も `1` / `0` / 空値以外の値のときは 1 行警告のうえ全件実行（fail-safe 側）で続行し、
 `FF_RUN_ALL_FULL=1` と `FF_RUN_ALL_FAST=1` の同時指定も 1 行警告して全件実行を採ります。
@@ -212,7 +212,7 @@ FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh
   未実行には秒を付けない。`slowest:` は 1 秒以上の suite があるときだけ、大きい順・最大 8 件。
   両行は `ff_emit_summary_head` の外（指紋ブロックの後）に置く。
 - 検査総数ガード（末尾の `EXPECTED_CHECKS` 会計）は Issue #873 で廃止した。ケースを増減しても
-  期待値の更新は不要になった（針の黙った消失の検出は週次 CI での selftest 実行とレビューが担う。
+  期待値の更新は不要になった（針の黙った消失の検出は全件実行〈公開同期の gate 段は毎回全件〉での selftest 実行とレビューが担う。
   再導入はしない — TESTING.md §「検査総数ガードは廃止した」）。
 - 疑似 suite の目印文字列（`FIXTURE-PASS-EXECUTED` など）は `verify.sh` が探すので変えないこと。
   `not-executable/verify.sh` の mode を誤って 755 に戻すと、目印が出力に現れて FAIL する。

@@ -71,6 +71,8 @@
 # hook の in-flight 抑止）は release-runtime.sh が一時 Git リポジトリで固定する。
 # 変異検出（(7) と release-runtime。2026-09-23 実測）:
 # 変異検出: スクリプトの OS 別プロファイル照合（許容表に無い部分 skip で止める行）を削除すると (7) と release-runtime が赤。
+# 変異検出: gate 段の「run-all が失敗した」の stop() から第 3 引数（run-all が印字した停止文の 3 行）を外すと、release-runtime の必須 suite の skip のケース（次の一手が 1 行）が赤（2026-11-08 macOS / Bash 3.2.57 実測。218/1）。
+# 変異検出: release_stop_block で停止文の lib をサブシェルの外（本体のシェル）でも読ませると、先頭で exit する lib の写しのケースが rc 0 で赤（2026-11-08 macOS / Bash 3.2.57 実測。217/1。Issue `#2712`）。
 # 変異検出: スクリプトの main で stage_gate と stage_sync の行を入れ替えると (7) の順序が赤。
 # 変異検出: スクリプトの limited_gate 呼び出し行を削除すると (7) が赤。
 # 変異検出: スクリプトの dry-run 分岐（prepare 段の DRY_RUN 判定）を外すと release-runtime（dry-run は書き込まない）が赤。
@@ -90,6 +92,7 @@
 # 変異検出: 書きかけの一致判定（writing_match）を常に一致へ倒すと release-runtime（利用者の編集・公開側の未追跡を消す）が赤。
 # 変異検出: try_reclaim が判定後に token を読み直す形へ戻すと (7) の lib 針が赤（判定と読み直しの割り込みは runtime で決定的に作れないので静的に固定する。release-runtime は判定後の取り直しで rename 回収が失敗することを固定する）。
 # 変異検出: gate 段の週次 CI 再評価を記録の照合より後ろへ戻すと release-runtime（healthy でなくなった再実行を全件で回さない）が赤。
+# （2026-11-09 に gate 段から週次 CI 再評価を撤去した。ADR-086。下の 2026-11-09 の行を参照）
 # 変異検出: 完走サマリーの要求を外すと release-runtime（空出力・会計行欠落を緑と読む）が赤。
 # 変異検出: ローカルタグの commit 照合を外すと release-runtime（古いローカルタグを公開する）が赤。
 # 変異検出: tag 段の require_gate_ok を外すと release-runtime（--only tag が gate を素通り）が赤。
@@ -146,6 +149,14 @@
 # 変異検出: run_orch の FF_RUN_ALL_FULL 分離だけを外すと、外側は未設定でも neutral ケースの明示 FULL=1 が再検査へ漏れ、recheck 1 で赤（2026-10-23 実測、release-runtime 149 pass / 1 fail、exit 1）。健全性悪化時の全件実行は正常のまま。
 # 空振り検出: FF_SYNC_SHA_RELEASE_SCRIPT の明示不在と同名空ファイルはどちらも exit 1（2026-10-23 実測）。空ファイルの全件実行コマンドは 0 件一致となり赤で、検査対象の欠落を skip・緑へ倒さない。
 # 変異検出: gateのfast環境分離・部分出力拒否・鮮度分類器の部分拒否・再検査の環境分離・NESTED保持を各々除去すると実runtimeの新規ケースが赤（5/5）。正常対照は緑、外側FULL未設定/1のsuiteは各157pass（2026-10-23）。
+# 2026-11-09（ADR-086）: gate 段は健全性判定を呼ばず、毎回全件（FF_RUN_ALL_FULL=1）で回す形へ変えた。上の「gate 段の週次 CI 再評価」「fast 環境分離」の 2 変異は対象の行ごと撤去し、
+# 「run_orch の FF_RUN_ALL_FULL 分離」の変異は gate も再検査も全件になったので recheck の値（今は 1 が正常）では観測できなくなった（CHANGED / FAST の分離は引き続き gate-mode の各ケースが見る）。
+# 上の実測件数（149 / 157 pass）は撤去前の数で、撤去後の件数は下の ADR-086 の変異検出行に書く。
+# 変異検出（ADR-086。2026-11-09 macOS 実測。リリーススクリプトだけを写した検査用ツリーへ 1 件ずつ注入し、FF_SYNC_SHA_RELEASE_SCRIPT で当てた。変異と空振りの実測は PATH 先頭の Bash 5.3、正常対照は Bash 5.3 と /bin/bash 3.2.57 の両方で全 142 件 pass・release-runtime 232 pass / 0 fail。変異 3 件すべて赤転 / SURVIVED 0 件）:
+# 変異検出: gate 段へ weekly_health の呼び出しを戻すと、呼び出し行の件数（2 行）と report 段の中にある順序の針が赤、release-runtime は 217 pass / 15 fail（gate-mode の全件起動 12 ケースと dry-run 2 ケース、本実行の呼び出し回数のケースが、健全性判定を呼んだことで赤）。
+# 変異検出: 同じ HEAD の再利用に高速モードの記録を受け入れる条件を戻すと、再利用条件の針と gate 段の中の順序の針 2 件が赤、release-runtime は 231 pass / 1 fail（高速モードの記録を再利用しないケース）。
+# 変異検出: gate 段の run-all 起動から FF_RUN_ALL_FULL=1 を外すと、全件実行コマンドの針が赤、release-runtime は 221 pass / 11 fail（健全性判定 healthy / failed の本実行 2 ケース、呼び出し元が全件を指定しない gate-mode 8 ケース、高速モードの記録を置き換えるケース。呼び出し元が FF_RUN_ALL_FULL=1 を渡す 4 ケースは外側の指定が届くので緑のまま）。
+# 空振り検出: report 段の weekly_health の呼び出しを消すと、呼び出し行の件数（0 行）と順序の針（アンカー不在は fail-closed）が赤、release-runtime は 229 pass / 3 fail（同日実測、exit 1）。0 件一致を「gate 段は呼ばない」の緑へ倒さない。
 # 変異検出（後着断片の再集約と承認した版の照合。Issue `#2462` / `#2482`。2026-11-04 実測、判定と lib を写した検査用ツリーへ 1 件ずつ注入して変異 4 件すべて赤転 / SURVIVED 0 件）:
 # 変異検出: 後着断片の基点の版を準備前の版ではなく今の版にすると 35 件、--expect-version の無い本実行の再集約を止める行を外すと 3 件、prepare_finalize の承認版照合を外すと 2 件（承認と違う版の準備を push する）、resume_guard の呼び出しを外すと 3 件（Release の後で止まった再開が承認していない版のタグ・Release を作る）が赤。
 # 変異検出（構成上の固定。独立レビューの指摘で足したケース）: RELEASE_OPEN を worktree ごとの記録へ戻すと別 worktree のケースが、
@@ -372,39 +383,54 @@ contains 'HEAD から再導出してはならない' \
 contains 'stale な origin/develop で続行しない' \
   "退避経路の fetch 失敗時に中断することが明記されている"
 
-# 定期実行点ゲート（要求内容は ADR-039 が ADR-034 決定 2 の「全件ゲート充足」を置換。
-# 位置は ADR-042 が 1 点目を「タグ / Release の作成前」へ縮小）。既定が高速
-# モードのため、対を持つ selftest（REQUIRED_SUITES 掲載を含む）は既定実行では走らない。
-# その検出力の担保は週次 CI（weekly-run-all）で、手順 0b は (1) 週次 CI の状態を
-# check-weekly-run-all-health.sh で機械確認して HEALTH=healthy だけを高速モードへ受理し、
-# (2) healthy 以外の回は FF_RUN_ALL_FULL=1 の全件実行で代替したうえで、HEAD への
-# run-all green を要求する。どちらかが手順から消えると、selftest 層の担保を欠いたまま
-# （または HEAD を一度も検査しないまま）不可逆な公開同期へ接続する。手順から消えたら
-# 赤くする（機械強制ではなく手順の固定が、静的検査の上限。NG 文言と exit の対までは
-# 単行 grep で固定できない — 「NG を出して続行する」変異は静的検査の上限の外）。
+# 定期実行点ゲート（要求内容は ADR-039 が ADR-034 決定 2 の「全件ゲート充足」を置換し、
+# ADR-086 がその前提（非公開側の週次 CI の定期実行）を外して「HEAD への全件 run-all が緑」へ
+# 置き換えた。位置は ADR-042 が 1 点目を「タグ / Release の作成前」へ縮小）。対を持つ
+# selftest（REQUIRED_SUITES 掲載を含む）は全件実行でしか走らないので、gate 段は週次 CI の
+# 状態を見ずに毎回 FF_RUN_ALL_FULL=1 で回す。手順から全件の指定が消えると、selftest を
+# 回さないまま（または HEAD を一度も検査しないまま）不可逆な公開同期へ接続する。手順から
+# 消えたら赤くする（機械強制ではなく手順の固定が、静的検査の上限。NG 文言と exit の対までは
+# 単行 grep で固定できない — 「NG を出して続行する」変異は静的検査の上限の外。健全性判定を
+# 呼ばないこと・モードが健全性に左右されないことは release-runtime / release-gate-mode-runtime
+# が実行で測る）。
 # 針はコマンド形の行全体に固定する — 裸のスクリプト名だと、散文の言及が 1 行増えた
 # 時点で contains も line_of の順序アンカーも散文側に吸われて空振りする（レビュー W2）。
 # 実行面（コード行）はリリーススクリプトの gate 段が持つ（ADR-063）。SKILL は段を名指しで呼ぶ。
 contains 'scripts/release-dev-toolkit.sh --only gate' \
   "手順 0b がリリーススクリプトの gate 段を名指しで呼ぶ（本体の所在）"
-release_contains 'capture bash "$HEALTH_SCRIPT"' \
-  "gate 段が週次 CI の状態確認を踏む（selftest 層の担保。ADR-039）"
-release_contains 'if has_line "$HEALTH_OUT" "HEALTH=healthy"; then' \
-  "高速モードへ受理するのは HEALTH=healthy だけ（行単位の完全一致。warming-up / running を成功実績と読まない）"
-release_contains '⚠ 週次 CI の成功実績を確認できない（HEALTH が healthy 以外）— この回は全件実行で代替する' \
-  "healthy 以外の回に全件代替へ倒すことが明記されている"
+contains '要求は「HEAD への全件 run-all が緑」' \
+  "手順 0b の要求が毎回の全件 run-all である（週次 CI の成功実績に依存しない。ADR-086）"
+release_contains_exactly '  gate_mode=full' 1 \
+  "gate 段のモードは全件に固定されている（週次 CI の状態から導出しない。ADR-086）"
+release_not_contains 'gate_mode=fast' \
+  "gate 段に高速モードへ倒す分岐が無い"
 release_contains_exactly 'FF_RUN_ALL_FULL=1 bash "$RUN_ALL" >"$gate_out" 2>&1 || gate_rc=$?' 1 \
-  "healthy 以外の回の全件代替コマンドが gate 段の 1 箇所にある"
-release_contains 'if [[ "$gate_mode" == fast ]]; then' \
-  "ローカル実行のモードが週次 CI の状態から導出される"
+  "gate 段の全件実行コマンドが 1 箇所にある"
+release_contains_exactly 'bash "$RUN_ALL" >"$gate_out" 2>&1 || gate_rc=$?' 1 \
+  "gate 段が run-all を起動する行は全件実行の 1 行だけ（別のモードの起動行が無い）"
 release_contains 'run-all が失敗した — 同期しない' \
   "run-all が非 0 のとき同期しないことが明記されている"
 contains '非 0 なら**同期しない**' \
   "ゲートが非 0 のとき同期しないことが明記されている"
-# healthy の回にも CRON_NOTE= を報告する規約。ここが消えると、判定を据え置いた分の
+# 公開側の週次 CI の健全性判定は report 段だけが情報として呼ぶ（止めない。ADR-086）。
+# 健全性判定の呼び出し行（字下げ 2 の行全体）は report 段の 1 行だけで、gate 段には無い。
+release_contains 'capture bash "$HEALTH_SCRIPT"' \
+  "report 段が公開側の週次 CI の状態確認を踏む（gh 経路）"
+release_contains 'case "$CURRENT_STAGE" in report) ;; *) unavailable' \
+  "file 入力の健全性判定は report 段の呼び出しだけを受け付ける"
+_health_calls="$(awk '$0 == "  weekly_health" { n++ } END { print n + 0 }' "${RELEASE_SOURCES[@]}")"
+if [[ "$_health_calls" == 1 ]]; then
+  ok "健全性判定の呼び出し行は 1 行だけ（gate 段は呼ばない）"
+else
+  bad "健全性判定の呼び出し行が 1 行ではない（${_health_calls} 行。gate 段が健全性判定を呼ぶ退行か、report 段の呼び出しが消えた）"
+fi
+assert_order "$(release_exact_line_of 'stage_report() {')" "$(release_exact_line_of '  weekly_health')" \
+  "健全性判定の呼び出しは report 段の中にある" \
+  "健全性判定の呼び出しが report 段より前（gate 段など）にある"
+# healthy でない回と CRON_NOTE= を報告する規約。ここが消えると、判定を据え置いた分の
 # 可視性が消費側で失われ、実害（20 行に埋もれて 2 週間気づかれない）が戻る。
-contains 'CRON_NOTE=` が出ていれば、同期は続行してよいが週次 CI の異常として別途ユーザーへ報告する' \
-  "healthy の回でも赤い cron をユーザーへ報告することが明記されている"
+contains 'が出ていれば、同期は止めずに公開側の週次 CI の異常としてユーザーへ報告する' \
+  "report 段の healthy 以外と CRON_NOTE= を、同期を止めずにユーザーへ報告することが明記されている"
 contains '比較リンクの反映には全件ゲートと公開配置検査の再実行が要らない' \
   "固定版の比較リンク反映は限定ゲートだけで進む"
 release_contains '検査した tree と HEAD の tree が一致しない' \
@@ -844,12 +870,14 @@ assert_order "$R_SYNC" "$R_TAG" "順序(7): 同期がタグより前" "順序(7)
 assert_order "$R_TAG" "$R_REL" "順序(7): タグが Release より前" "順序(7): Release がタグより前にある"
 assert_order "$R_REL" "$R_FOOTER" "順序(7): Release が footer 追従より前" "順序(7): footer がタグ / Release より前にある"
 assert_order "$R_FOOTER" "$R_REPORT" "順序(7): 健全性判定と footer 検査の報告が最後" "順序(7): report が footer より前にある"
-# gate 段の中の順序: 週次 CI の状態確認 → run-all → 部分 skip の許容判定 → 緑の記録。
-RG_HEALTH="$(release_exact_line_of '  weekly_health')"
+# gate 段の中の順序: 全件のモード確定 → 同じ HEAD の記録の照合 → run-all → 部分 skip の許容判定 → 緑の記録。
+RG_MODE="$(release_exact_line_of '  gate_mode=full')"
+RG_REUSE="$(release_line_of 'if [[ "${rec%%:*}" == "$head" && "${rec#*:}" == full ]]; then')"
 RG_RUNALL="$(release_line_of 'bash "$RUN_ALL" >"$gate_out" 2>&1 || gate_rc=$?')"
 RG_SKIP="$(release_line_of 'release_skip_check "$gate_out"')"
 RG_RECORD="$(release_line_of 'state_set GATE_OK "$head:$gate_mode"')"
-assert_order "$RG_HEALTH" "$RG_RUNALL" "順序(7): 週次 CI の状態確認が run-all より前" "順序(7): 状態確認が run-all より後ろ — 中断点が不可逆操作へ近づく退行"
+assert_order "$RG_MODE" "$RG_REUSE" "順序(7): 全件のモード確定が記録の照合より前" "順序(7): モード確定が記録の照合より後ろ — 記録へ書くモードが未確定の退行"
+assert_order "$RG_REUSE" "$RG_RUNALL" "順序(7): 同じ HEAD の記録の照合が run-all より前" "順序(7): 記録の照合が run-all より後ろ — 緑の記録があっても全件を回し直す退行"
 assert_order "$RG_RUNALL" "$RG_SKIP" "順序(7): 部分 skip の許容判定が run-all より後" "順序(7): 許容判定が run-all より前 — 判定材料が無い"
 assert_order "$RG_SKIP" "$RG_RECORD" "順序(7): 緑の記録が許容判定より後" "順序(7): 許容判定の前に緑を記録する退行"
 release_contains_exactly 'require_gate_ok "' 3 \
@@ -880,8 +908,8 @@ release_contains 'ff_release_marker_try_reclaim "$MARKER_DIR"' \
   "残骸の in-flight 印は、判定に使った token で rename（CAS 相当）回収する 1 つの helper を通す"
 release_contains 'pub_ahead="$(git -C "$PUBLIC" rev-list --count origin/main..main)"' \
   "preflight が公開側の未 push の commit（前回の push 失敗の残り）を見る"
-release_contains 'if [[ "${rec%%:*}" == "$head" && ( "${rec#*:}" == full || "$gate_mode" == fast ) ]]; then' \
-  "gate 段は同じ HEAD の成功記録を再利用する（footer child は別の内容証明を要求）"
+release_contains_exactly 'if [[ "${rec%%:*}" == "$head" && "${rec#*:}" == full ]]; then' 1 \
+  "gate 段は同じ HEAD の全件の成功記録だけを再利用する（高速モードの記録は再利用しない。footer child は別の内容証明を要求）"
 release_contains 'if footer_gate_reusable "$rec" "$head"; then' \
   "public-layout の再利用には footer の内容証明関数を通す"
 release_contains "has_line \"\$proof\" 'FULL_GATE_REUSE=CHANGELOG_FOOTER_ONLY' || return 1" \

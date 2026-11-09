@@ -61,8 +61,8 @@
 #
 # **全件実行は明示指定する**: FF_RUN_ALL_FULL=1（値が 1 のときだけ有効。`0` と空値は
 # 「無効」、それ以外の非空値は解釈できない指定として 1 行警告のうえ全件実行で続行する）。
-# リリース前・公開同期前の定期実行点は「週次 CI の成功実績確認 + ローカル run-all green」
-# （healthy なら既定/高速で足り、確認できない回は全件で代替。ADR-039 / docs/04-quality/TESTING.md）。
+# 公開同期の定期実行点（scripts/release-dev-toolkit.sh の gate 段）は毎回この全件実行で回す
+# （ADR-086。週次 CI の健全性判定で高速モードへ切り替える形は取らない。docs/04-quality/TESTING.md）。
 #
 # FF_RUN_ALL_FAST は後方互換のために残す。`1` は高速モード（既定と同じなので実質 no-op、
 # ただし明示引数への適用だけは下記のとおり変える）、`0` は「明示的に高速モードでない」=
@@ -93,10 +93,9 @@
 # 残るトレードオフ（意図的な選択）: 対を持つ selftest は既定で除外されるので、その検査対象
 # （tests/*/verify.sh・tests/lib/*.sh）を変更した回を既定のまま通すと、ゲートの検出力の退行は
 # 全件実行まで検出されない。**既定反転により、このトレードオフは毎回取られることになる。**
-# その全件実行は開発元リポジトリの週次 CI（.github/workflows/weekly-run-all.yml、Issue #598 /
-# ADR-037。配布物には含まれない）が担保し、リリース前・公開同期前の定期実行点は「週次 CI の
-# 成功実績確認 + ローカル run-all green」を要求する（ADR-039。healthy を確認できない回は
-# 全件で代替）。`tests/` 等の変更時に高速モードを拒否する
+# その全件実行は開発元リポジトリの公開同期の定期実行点（scripts/release-dev-toolkit.sh の gate 段。
+# 配布物には含まれない）が毎回担う（ADR-086。開発元の週次 CI の定期実行はやめ、手動起動の口だけを
+# 残した）。`tests/` 等の変更時に高速モードを拒否する
 # 安全弁は置かない — 条件分岐を増やさず、挙動を単純に保つ（ADR-034 で再確認した）。
 #
 # 実行方式のトレードオフ: 各 suite の出力は skip マーカー判定のため command
@@ -571,6 +570,11 @@ else
     # 再発した（Issue `#1806`）ため、母集団をリポジトリ全体にした。検出器の陽性 / 陰性 fixture・
     # 再発元を修正前の形へ戻したコピー・検査不成立の既定（0 件・対象不在）を毎回実測する。
     "$SCRIPT_DIR/dialect-fallback/verify.sh"
+    # 能力層（ADR-084 決定 3）の外に新しい環境分岐（OSTYPE / MSYSTEM / BASH_VERSINFO /
+    # BASH_VERSION / uname -s|-m|-o / coproc）を書けなくする非回帰ゲート（Issue `#2713`）。
+    # dialect-fallback と同じ母集団・伏せ規則で plugin 配下の tracked shell を走査し、既存の分岐は
+    # 縮小のみの基線（tests/env-branch-contract/baseline.tsv）で受ける。skip 経路なし。
+    "$SCRIPT_DIR/env-branch-contract/verify.sh"
     # Jev 判定アダプタ（scripts/jev/jev-judge.sh）と offline 評価ハーネス（jev-eval.sh）の
     # 契約。PATH 先頭の偽 curl で呼び出しの形（-K - で設定を stdin 経由・argv にキーを
     # 載せない）と HTTP ステータス種別ごとの終了コード・再試行・入力不正の不送信・
@@ -845,6 +849,10 @@ else
     # 見出し書式の変更・配置の曖昧さに対する既定を隔離 fixture で実測する。gh は stub に
     # 解決させ、ネットワークには出ない。
     "$SCRIPT_DIR/knowledge-lookup/verify.sh"
+    # 読み取り境界の Windows 経路のうち、ACL helper を常駐させる経路（W6 / W7 / W16。Issue `#2711`）。
+    # coproc と動的 FD（bash 4 以上）でだけ成立するので、それらの無い shell では suite ごと ○ skip する
+    # （`# run-all-required: no`。部分 skip を出さない）。stub は knowledge-lookup の fixture を共有する。
+    "$SCRIPT_DIR/knowledge-lookup-resident-acl/verify.sh"
     # 知見の反映モード（ADR-083。Issue `#2690`）。マージごと（既定）の出力が変わらないことと、まとめるモードの
     # 書き込み先（staging への fast-forward・base への直接書き込みの拒否）・flush の送信範囲と衝突時の停止・
     # lookup の未反映表示を、bare の origin と clone で実際に動かして測る。gh は stub でネットワークに出ない。
@@ -981,8 +989,8 @@ else
     # 値域外・未閉鎖・ファイル削除・ツリー片側更新・抽出空振り・重複キー（引用符付き
     # キーを含む）・SemVer 先頭ゼロ・status の中間状態・日付プレースホルダー免除の
     # 境界・created/updated の前後関係）で実測する。赤ケースは理由の文言まで照合する
-    # （ケース消失の検出は週次 CI での selftest 実行とレビューが担う — Issue #873 で
-    # 検査総数ガードは廃止した）。
+    # （ケース消失の検出は全件実行〈公開同期の gate 段は毎回全件〉での selftest 実行とレビューが
+    # 担う。検査総数ガードは廃止した）。
     # perl 不在または一時領域不可なら丸ごと ○ skip。
     "$SCRIPT_DIR/docs-template-frontmatter-selftest/verify.sh"
     # 対象プロジェクトの docs/ 側 Frontmatter 付与規則の回帰ゲート。MASTER.md の
@@ -1097,6 +1105,9 @@ else
     "$SCRIPT_DIR/sync-sha-contract/verify.sh"
     # 部分 skip の書式と、捕捉した子の skip 行の中継。
     "$SCRIPT_DIR/skip-line-contract/verify.sh"
+    # 停止文の共通形（末尾 3 行: 止めた層 / 止めた規則 / 次の一手）の lib・採用名簿・hook の deny（Issue `#2712`）。
+    # skip 経路なし（jq は必須ツール）。read-only・外部ネットワークなし（〜数秒）。
+    "$SCRIPT_DIR/stop-block-contract/verify.sh"
     # 毎 sync リリース運用ゲート scripts/check-release-required.sh の検出力実測
     # （Issue #552）。live 状態は検査しない — 「実変更 + [Unreleased] 非空 + version
     # 据え置き」は開発中の PR では正常で、live 検査を常時ゲートに入れると通常開発が
@@ -1105,14 +1116,20 @@ else
     # sync-forbidden-patterns の直後に置く。スクリプト不在の checkout・jq 不在・
     # 一時領域不可なら丸ごと ○ skip。
     "$SCRIPT_DIR/release-required-selftest/verify.sh"
-    # 週次 CI 健全性判定 scripts/check-weekly-run-all-health.sh の挙動検査
-    # （Issue #1086 / #1017 統合。ADR-045）。cron 生存と成功実績の分離・既定ブランチ上の
+    # 公開側の週次 CI（weekly-public-run-all.yml）の健全性判定 scripts/check-weekly-run-all-health.sh の
+    # 挙動検査（ADR-045 / ADR-086）。cron 生存と成功実績の分離・既定ブランチ上の
     # workflow_dispatch 成功の受理と非受理の境界・三値の exit 契約・緩和の逃げ道が無いこと
-    # （負テスト）を、PATH 差し替えのモック gh で実測する。定期実行点ゲートの入口を守る
-    # 検査なので、同じ定期実行点の契約を見る sync-sha-contract / release-required-selftest の
+    # （負テスト）を、PATH 差し替えのモック gh で実測する。公開同期の report 段が読む判定の
+    # 検査なので、同じ公開同期の契約を見る sync-sha-contract / release-required-selftest の
     # 並びに置く。実ネットワーク・実 CLI は伴わない（〜3 秒）。スクリプト不在の checkout・
     # jq 不在・一時領域不可なら丸ごと ○ skip。
     "$SCRIPT_DIR/weekly-health-contract/verify.sh"
+    # 開発元の scripts/tests/ にある node テスト 3 本（ff-work-toolkit の配布物・ff-privacy-check の
+    # 公開同期の契約・両プラグインのリリーススクリプト）を node --test --test-reporter=spec で回す
+    # （ADR-086。手動起動になった週次ワークフローの独立 step から移した）。3 本の欠落・node 不在・
+    # test() が 0 件のファイル・1 件の失敗はどれも赤で、skip 経路は持たない。SSOT 専用なので
+    # 公開側の週次は EXCLUDED_SSOT_SUITES で外す。単独で約 45 秒。
+    "$SCRIPT_DIR/scripts-node-tests/verify.sh"
     "$SCRIPT_DIR/merge-cleanup/verify.sh"
     # 既存の孤児トランスクリプト sweep（実 ~/.claude は触らず隔離 tmp のみ）。
     # merge-cleanup の Step 5.5 と同じアーカイブ思想の別口。直後に置く。
@@ -1625,8 +1642,8 @@ REQUIRED_SUITES=(
   # 黙って通る。公開 checkout は root スクリプト不在で ○ skip するため、そちらでは
   # FF_RUN_ALL_ALLOW_SKIP=release-required-selftest が要る（上の 9 件の列挙参照）。
   release-required-selftest
-  # 週次 CI 健全性判定の挙動検査（#1086 / #1017）。定期実行点ゲートが高速モードを
-  # 受理してよいかの入口そのもので、判定を緩める変異（既定ブランチ外の受理・cron 異常の
+  # 公開側の週次 CI の健全性判定の挙動検査（ADR-086）。週次の健全性を判定する唯一の口で、
+  # 判定を緩める変異（既定ブランチ外の受理・cron 異常の
   # 握り潰し・判定不能の healthy への転落）を測る手段は他に無い。公開 checkout は root
   # スクリプト不在で ○ skip するため、そちらでは
   # FF_RUN_ALL_ALLOW_SKIP=weekly-health-contract が要る（上の 9 件の列挙参照）。
@@ -2636,7 +2653,7 @@ if [[ "$FAST_MODE" == "1" ]]; then
 fi
 
 # 全件実行であることを肯定的に 1 行で出す。「⚡ が出ていない」ことでしか全件を判別できないと、
-# 週次 CI や定期実行点の全件代替（ADR-037 / ADR-039）を実施したという報告が目視頼みになる。
+# 公開同期の定期実行点（毎回全件。ADR-086）や手動起動の Linux CI で全件を回したという報告が目視頼みになる。
 # 明示引数の実行も FAST_MODE=0 だが「全件」ではないので、既定一覧に限って出す。
 if [[ "$USING_DEFAULT_SCRIPTS" == "1" && "$FAST_MODE" == "0" && "$CHANGED_MODE" != "1" ]]; then
   echo "🔎 全件実行: 登録されている ${#SCRIPTS[@]} suite をすべて実行対象にします（高速モードの除外なし）"
@@ -3455,7 +3472,8 @@ if [[ ${#REQUIRED_SKIPPED[@]} -gt 0 ]]; then
   MODE_PREFIX=""
   [[ "$FAST_MODE" == "1" ]] || MODE_PREFIX="FF_RUN_ALL_FULL=1 "
   [[ "$ALLOW_MISSING_MCP_DEPS" != "1" ]] || MODE_PREFIX="${MODE_PREFIX}FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1 "
-  echo "    ${MODE_PREFIX}FF_RUN_ALL_ALLOW_SKIP=\"${REQUIRED_SKIPPED[*]}\" bash tests/run-all.sh" >&2
+  REQUIRED_SKIP_RERUN="${MODE_PREFIX}FF_RUN_ALL_ALLOW_SKIP=\"${REQUIRED_SKIPPED[*]}\" bash tests/run-all.sh"
+  echo "    ${REQUIRED_SKIP_RERUN}" >&2
 fi
 if [[ ${#NOT_RUN[@]} -gt 0 ]]; then
   echo "✗ not run (suite を起動できなかった): ${NOT_RUN[*]}" >&2
@@ -3717,6 +3735,27 @@ ff_gate_marker_nested() {
 
 if [[ ${#FAILED[@]} -gt 0 || ${#NOT_RUN[@]} -gt 0 || ${#REQUIRED_SKIPPED[@]} -gt 0 ]]; then
   ff_record_gate_head fail
+  # 必須 suite の skip で止まる回は、出力の最後を停止文の共通形の 3 行で終える（方針 / required-suite-skipped。
+  # scripts/lib/stop-block.sh / Issue `#2712`）。上の「✗ 環境都合で…」と再現コマンドの行は残したまま、
+  # 次の一手に同じ再現コマンドを載せる。読めないときは stop-block-unavailable の 3 行で止める（rc は 1 のまま）。
+  if [[ ${#REQUIRED_SKIPPED[@]} -gt 0 ]]; then
+    _sb_lib="$SCRIPT_DIR/../scripts/lib/stop-block.sh"
+    _sb_reason="必須名簿の suite が環境都合で skip した: ${REQUIRED_SKIPPED[*]}"
+    _sb_next="回せる環境で再実行する。回せない環境なら理由を承知のうえで ${REQUIRED_SKIP_RERUN:-FF_RUN_ALL_ALLOW_SKIP=<suite> bash tests/run-all.sh}"
+    # lib はサブシェルの中でだけ読む（hook と同じ形）。本体で読むと、lib の先頭の exit が rc 0 で run-all を
+    # 終わらせ、summary の failed=0 だけが残る。何も出さずに終わった回は下の stop-block-unavailable へ落ちる。
+    # shellcheck source=../scripts/lib/stop-block.sh
+    _sb_text="$([[ -f "$_sb_lib" && -r "$_sb_lib" ]] && . "$_sb_lib" 2>/dev/null \
+      && declare -F ff_stop_block >/dev/null 2>&1 \
+      && ff_stop_block 方針 required-suite-skipped tests/run-all.sh "$_sb_reason" "$_sb_next")" || :
+    if [[ -n "$_sb_text" ]]; then
+      printf '%s\n' "$_sb_text" >&2
+    else
+      printf '%s\n' '止めた層: 方針' \
+        '止めた規則: stop-block-unavailable（scripts/lib/stop-block.sh）— 停止文の共通形を読み込めません（元の規則: required-suite-skipped）' \
+        "次の一手: ${_sb_next}" >&2
+    fi
+  fi
   exit 1
 fi
 

@@ -103,8 +103,12 @@ if os.environ.get('TEST_REJECT_GH') == '1':
  sys.exit(97)
 with open(os.environ['TEST_GH_CALLS'],'a') as f:f.write(json.dumps(args)+'\n')
 d=json.loads(pathlib.Path(os.environ['TEST_DATA']).read_text())
-if args[:2]==['repo','view']: print(d['repo']['nameWithOwner'])
-elif args[:2]==['pr','list']:
+# Health reads answer only the public weekly workflow of a known repository;
+# any other workflow name or repository is a 404 like the real API.
+known={'repos/'+x['nameWithOwner']:x for x in (d['repo'],d['other_repo'])}
+def not_found():
+ sys.stderr.write('gh: Not Found (HTTP 404)\n');sys.exit(1)
+if args[:2]==['pr','list']:
  for x in d['prs']:
   if x['headRefName'].startswith('chore/'+chr(35)+'549-release-'):print('#%s(%s)'%(x['number'],x['headRefName']))
 elif args[:2]==['run','view']:sys.stdout.write(d['log'])
@@ -120,10 +124,16 @@ elif args and args[0]=='api':
    if x['draft'] is False:print(x['tag_name'])
  elif '/commits?' in endpoint:
   for x in d['commits']:print(x['commit']['message'].split('\n')[0])
- elif '/runs?' in endpoint:
-  event=endpoint.split('event=')[1].split('&')[0];print(json.dumps(d[event]))
- elif '/actions/workflows/' in endpoint:print(json.dumps(d['workflow']))
- elif endpoint.startswith('repos/'):print(json.dumps(d['repo']))
+ elif '/actions/workflows/' in endpoint:
+  base,_,rest=endpoint.partition('/actions/workflows/')
+  name,_,query=rest.partition('/runs?')
+  if base not in known or name!='weekly-public-run-all.yml':not_found()
+  if query:
+   event=query.split('event=')[1].split('&')[0];print(json.dumps(d[event]))
+  elif rest==name:print(json.dumps(d['workflow']))
+  else:not_found()
+ elif endpoint in known:print(json.dumps(known[endpoint]))
+ elif endpoint.startswith('repos/'):not_found()
  else:sys.exit(98)
 else:sys.exit(99)
 ''')
@@ -202,9 +212,14 @@ printf '%s\\n' 'fixture-media@1.0.0'
     (gitdir/'ff-release-state').write_text('GATE_OK='+base+':full\n')
     now=dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     iso=lambda days:(now-dt.timedelta(days=days)).isoformat().replace('+00:00','Z')
-    runrow=lambda ident,event,days=1:{'id':ident,'status':'completed','event':event,'head_branch':'develop','created_at':iso(days),'updated_at':iso(days),'html_url':'https://example.invalid/runs/'+str(ident),'conclusion':'success'}
+    runrow=lambda ident,event,days=1:{'id':ident,'status':'completed','event':event,'head_branch':'main','created_at':iso(days),'updated_at':iso(days),'html_url':'https://example.invalid/runs/'+str(ident),'conclusion':'success'}
     log=(SUITE/'fixtures/log.txt').read_text()
-    data={'repo':{'nameWithOwner':'owner/repo','default_branch':'develop'},'workflow':{'state':'active','created_at':iso(30)},
+    # The health checker judges the public weekly workflow of the public repository
+    # by default (ADR-086); other_repo serves only the explicit --repo override.
+    public_url='https://github.com/feel-flow/ff-dev-toolkit'
+    health_workflow='weekly-public-run-all.yml'
+    data={'repo':{'nameWithOwner':'feel-flow/ff-dev-toolkit','default_branch':'main'},'other_repo':{'nameWithOwner':'owner/repo','default_branch':'main'},
+          'workflow':{'state':'active','created_at':iso(30)},
           'schedule':{'workflow_runs':[runrow(11,'schedule',2)]},'workflow_dispatch':{'workflow_runs':[runrow(22,'workflow_dispatch')]},
           'log':log,'prs':[], 'releases':[{'draft':False,'tag_name':'v1.0.0'},{'draft':False,'tag_name':'v1.1.0'}],
           'latest':{'tag_name':'v1.1.0','published_at':iso(2)},'commits':[{'commit':{'message':f'sync: {ssot_name} {base[:12]} を反映\nbody'}}]}
@@ -219,15 +234,18 @@ printf '%s\\n' 'fixture-media@1.0.0'
         if text:result['format']='text'
         result.update(meta);return result
     entries=[]
-    def build(d=data):
+    def build(d=data,health_repo='repo'):
         global entries
         entries=[]
-        for phase in ['health','gate','report']:
-            entries.append(entry('release.health.repo',{'repository':repo_url},phase,d['repo']))
-            entries.append(entry('release.health.workflow',{'repository':repo_url,'workflow':'weekly-run-all.yml'},phase,d['workflow']))
+        # The gate stage reads no weekly health (it always runs the full gate), so
+        # only the standalone health phase and the report stage carry health inputs.
+        health_url='https://github.com/'+d[health_repo]['nameWithOwner']
+        for phase in ['health','report']:
+            entries.append(entry('release.health.repo',{'repository':health_url},phase,d[health_repo]))
+            entries.append(entry('release.health.workflow',{'repository':health_url,'workflow':health_workflow},phase,d['workflow']))
             for event in ['schedule','workflow_dispatch']:
-                entries.append(entry('release.health.runs',{'repository':repo_url,'workflow':'weekly-run-all.yml','event':event,'per_page':100,'max_age_days':14},phase,d[event]))
-            entries.append(entry('release.health.log',{'repository':repo_url,'run_id':22},phase,d['log'],last=True,text=True))
+                entries.append(entry('release.health.runs',{'repository':health_url,'workflow':health_workflow,'event':event,'per_page':100,'max_age_days':14},phase,d[event]))
+            entries.append(entry('release.health.log',{'repository':health_url,'run_id':22},phase,d['log'],last=True,text=True))
         for phase in ['sync','due','check']:
             entries.append(entry('release.sync-base',{'repository':'https://github.com/feel-flow/ff-dev-toolkit','per_page':30},phase,d['commits']))
         for phase in ['check','prepare-finalize']:
@@ -250,8 +268,8 @@ printf '%s\\n' 'fixture-media@1.0.0'
     def scalar(q,key):
         lines=[x[len(key)+1:] for x in q.stdout.decode().splitlines() if x.startswith(key+'=')]
         return lines[0] if len(lines)==1 else None
-    def parity(name,args,label,d=data):
-        build(d)
+    def parity(name,args,label,d=data,health_repo='repo'):
+        build(d,health_repo)
         g=invoke(name,args,file=False);f=invoke(name,args)
         check((g.returncode,g.stdout,g.stderr)==(f.returncode,f.stdout,f.stderr),label,repr((g.returncode,g.stdout[-400:],g.stderr[-200:],f.returncode,f.stdout[-400:],f.stderr[-200:])))
         return f
@@ -270,10 +288,28 @@ printf '%s\\n' 'fixture-media@1.0.0'
     health=SCRIPTS[3];drift=SCRIPTS[2];required=SCRIPTS[1];release=SCRIPTS[0]
     print('github-input-release verify:')
     EXECUTED.add('weekly-healthy')
+    def gh_calls():
+        p=T/'gh-calls'
+        return [json.loads(line) for line in p.read_text().splitlines()] if p.exists() else []
+    seen=len(gh_calls())
     f=parity(health,(), 'weekly healthy: whole stdout/stderr/rc gh=file')
     check(scalar(f,'HEALTH')=='healthy' and scalar(f,'EVIDENCE_RUN_ID')=='22','healthy uses latest completed adopted run22')
-    # Explicit repo overrides ambient GH_REPO; auto repo comes only from configured Git.
-    parity(health,('--repo','owner/repo'),'weekly explicit repo parity')
+    check(scalar(f,'REPO')=='feel-flow/ff-dev-toolkit','default target is the literal public repository, not the origin',repr(f.stdout[-300:]))
+    # The default target is fixed: no gh resolution, and every gh read names the public weekly workflow.
+    default_calls=gh_calls()[seen:]
+    api_paths=[next((x for x in c[1:] if x.startswith('repos/')),'') for c in default_calls if c[:1]==['api']]
+    check(default_calls and not any(c[:2]==['repo','view'] for c in default_calls),'default health makes no gh repo resolution',repr(default_calls))
+    check(['api','repos/feel-flow/ff-dev-toolkit/actions/workflows/'+health_workflow] in default_calls and
+          all(p=='repos/feel-flow/ff-dev-toolkit' or p.startswith('repos/feel-flow/ff-dev-toolkit/actions/workflows/'+health_workflow) for p in api_paths),
+          'default health reads only the public repository weekly-public-run-all.yml',repr(api_paths))
+    check(['run','view','22','--repo','feel-flow/ff-dev-toolkit','--log'] in default_calls,'gh whole adopted-run log exact argv names the public repository')
+    # Explicit --repo still overrides the fixed default (file scope and gh argv alike).
+    seen=len(gh_calls())
+    f=parity(health,('--repo','owner/repo'),'weekly explicit repo parity',health_repo='other_repo')
+    check(scalar(f,'HEALTH')=='healthy' and scalar(f,'REPO')=='owner/repo','explicit --repo overrides the public default',repr(f.stdout[-300:]))
+    check(['run','view','22','--repo','owner/repo','--log'] in gh_calls()[seen:],'gh explicit-repo log exact argv retained')
+    private_reads=[c for c in gh_calls() if any('/weekly-run-all.yml' in x for x in c)]
+    check(not private_reads,'no gh read names the private weekly workflow',repr(private_reads))
     EXECUTED.update(['weekly-empty','weekly-warming-up'])
     empty=copy.deepcopy(data);empty['schedule']={'workflow_runs':[]};empty['workflow_dispatch']={'workflow_runs':[]};empty['workflow']['created_at']=iso(1)
     f=parity(health,(),'valid empty runs => original warming-up',empty)
@@ -304,8 +340,21 @@ printf '%s\\n' 'fixture-media@1.0.0'
             if e['operation']=='release.health.runs' and e['phase']=='health' and e['scope']['event']=='schedule':e['scope'][key]=value
         commit_index();q=invoke(health)
         check(q.returncode==2 and b'release.health.runs' in q.stdout+q.stderr,f'wrong runs {key} => rc2')
+    # The private weekly workflow cannot stand in for the public one.
+    for op in ['release.health.workflow','release.health.runs']:
+        build()
+        for e in entries:
+            if e['operation']==op and e['phase']=='health':e['scope']['workflow']='weekly-run-all.yml'
+        commit_index();q=invoke(health)
+        check(q.returncode==2 and op.encode() in q.stdout+q.stderr,f'{op} private weekly workflow scope => rc2',repr((q.returncode,q.stdout[-300:],q.stderr[-200:])))
+    # Origin-scoped snapshots cannot select the default target (it is the literal public repository).
+    build()
+    for e in entries:
+        if e['operation'].startswith('release.health.'):e['scope']['repository']=repo_url
+    commit_index();q=invoke(health)
+    check(q.returncode==2 and b'release.health.repo' in q.stdout+q.stderr,'origin-scoped health snapshots cannot select default target => rc2',repr((q.returncode,q.stdout[-300:],q.stderr[-200:])))
     build();entries[:]=[x for x in entries if x['phase']!='health'];commit_index();q=invoke(health)
-    check(q.returncode==2 and b'release.health.repo' in q.stdout+q.stderr,'gate/report snapshots cannot fill health phase')
+    check(q.returncode==2 and b'release.health.repo' in q.stdout+q.stderr,'report snapshots cannot fill health phase')
     EXECUTED.add('drift-optional')
     f=parity(drift,(),'sync commit raw JSON: stdout/stderr/rc gh=file')
     check(f.returncode==0 and scalar(f,'DRIFT_COUNT')=='0','actual Git drift remains0')
@@ -329,9 +378,8 @@ printf '%s\\n' 'fixture-media@1.0.0'
     check(f.returncode==0 and scalar(f,'RELEASE_RESULT')=='stage-done','existing Release needs latest + fresh all-page after list')
     check(b'RELEASE_PYTHON_PATH=' in f.stdout and b'RELEASE_MEDIA_TYPECHECK=ready' in f.stdout,'release fixture reaches real upstream preflight before mandatory file acquisition')
     # Exact default gh argv survives: real original request selectors are recorded.
-    calls=[json.loads(line) for line in (T/'gh-calls').read_text().splitlines()]
+    calls=gh_calls()
     check(['api','--paginate','repos/feel-flow/ff-dev-toolkit/releases','--jq','.[] | select(.draft == false) | .tag_name'] in calls,'gh release-list exact argv retained')
-    check(['run','view','22','--repo','owner/repo','--log'] in calls,'gh whole adopted-run log exact argv retained')
     missing(release,('--public',pub,'--only','release'),'release.latest-post','tag_name')
     build();entries[:]=[e for e in entries if not(e['operation']=='release.list' and e['phase']=='after')];commit_index();q=invoke(release,('--public',pub,'--only','release'))
     check(q.returncode==2 and scalar(q,'RELEASE_RESULT')=='unavailable','before snapshot cannot satisfy mandatory after list')
@@ -382,12 +430,50 @@ printf '%s\\n' 'fixture-media@1.0.0'
     check(actual=={'tag_name':args.get('tag'),'name':args.get('title'),'body':args.get('notes'),'draft':False},'file PLAN title/notes match actual gh branch arguments byte-for-byte')
     EXECUTED.add('delegates')
     # Run the real orchestrator and all3 delegates; no stubbed delegate body.
-    for phase in ['gate','report']:
-        build();entries[:]=[e for e in entries if e['phase']!=phase];commit_index();q=invoke(release,('--public',pub,'--only',phase,'--dry-run'))
-        check(q.returncode==2 and scalar(q,'RELEASE_RESULT')=='unavailable' and b'release.health.repo' in q.stdout+q.stderr,f'orchestrator {phase} mandatory shortage propagated, no fallback')
-    # The gh inability branch retains its existing full-gate alternative.
-    build();bad=copy.deepcopy(data);bad['workflow']={};(T/'data').write_text(json.dumps(bad));(gitdir/'ff-release-state').write_text('');q=invoke(release,('--public',pub,'--only','gate','--dry-run'),file=False)
-    check(q.returncode==0 and b'FF_RUN_ALL_FULL=1 bash' in q.stdout,'gh weekly unknown still plans full-gate fallback',repr((q.returncode,q.stdout,q.stderr)))
+    # The report stage reads the public weekly health and reports it without stopping.
+    # The fixture has no footer verifier, so both runs end at the same later footer
+    # stop; health only changes the POST_HEALTH value and the warning line.
+    def after_health(q):
+        lines=q.stdout.splitlines()
+        marks=[i for i,x in enumerate(lines) if x.startswith(b'POST_HEALTH=')]
+        return (q.returncode,lines[marks[0]+1:]) if len(marks)==1 else None
+    seen=len(gh_calls())
+    ok=parity(release,('--public',pub,'--only','report','--dry-run'),'orchestrator report: stdout/stderr/rc gh=file')
+    check(scalar(ok,'POST_HEALTH')=='healthy' and after_health(ok) is not None and any(x.startswith(b'FOOTER_CHECK=') for x in after_health(ok)[1]),
+          'report reaches public weekly POST_HEALTH=healthy and continues to the footer check',repr((ok.returncode,ok.stdout[-400:],ok.stderr[-300:])))
+    check(['api','repos/feel-flow/ff-dev-toolkit/actions/workflows/'+health_workflow] in gh_calls()[seen:],'gh report reads the public weekly workflow')
+    d=copy.deepcopy(data);d['schedule']={'workflow_runs':[]};d['workflow_dispatch']={'workflow_runs':[]};d['workflow']['created_at']=iso(40)
+    f=parity(release,('--public',pub,'--only','report','--dry-run'),'orchestrator report stale: stdout/stderr/rc gh=file',d)
+    check(scalar(f,'POST_HEALTH')=='stale' and 'healthy ではない'.encode() in f.stderr and after_health(f) is not None and after_health(f)==after_health(ok),
+          'report with stale public weekly warns, then continues exactly as the healthy run',repr((f.returncode,f.stdout[-400:],f.stderr[-300:])))
+    # A file shortage in the report stage stops it (rc2), no fallback.
+    build();entries[:]=[e for e in entries if e['phase']!='report'];commit_index();q=invoke(release,('--public',pub,'--only','report','--dry-run'))
+    check(q.returncode==2 and scalar(q,'RELEASE_RESULT')=='unavailable' and b'release.health.repo' in q.stdout+q.stderr,'orchestrator report mandatory shortage propagated, no fallback')
+    # The gate stage reads no weekly health and always plans the full gate (ADR-086).
+    full_plan=b'PLAN: env -u FF_RUN_ALL_CHANGED -u FF_RUN_ALL_FAST FF_RUN_ALL_FULL=1 bash '
+    fast_plan=b'-u FF_RUN_ALL_FULL -u FF_RUN_ALL_FAST bash'
+    def gate_plans_full(q):
+        lines=q.stdout.splitlines()
+        return (q.returncode==0 and sum(1 for x in lines if x.startswith(full_plan))==1 and fast_plan not in q.stdout
+                and b'release.health' not in q.stdout+q.stderr and b'HEALTH=' not in q.stdout)
+    # File mode with every health input absent: nothing to read, still the full gate
+    # (any gh call would land in the rejecting stub's leak record checked below).
+    build();entries[:]=[e for e in entries if not e['operation'].startswith('release.health.')];commit_index()
+    (gitdir/'ff-release-state').write_text('');q=invoke(release,('--public',pub,'--only','gate','--dry-run'))
+    check(gate_plans_full(q),'file gate without any health input plans one full gate, no health read',repr((q.returncode,q.stdout,q.stderr)))
+    # gh mode with healthy weekly data: still full (no fast mode), and no weekly read at all.
+    for label,d in [('healthy',data),('unknown',dict(copy.deepcopy(data),workflow={}))]:
+        build(d);(gitdir/'ff-release-state').write_text('');seen=len(gh_calls())
+        q=invoke(release,('--public',pub,'--only','gate','--dry-run'),file=False)
+        gate_reads=[c for c in gh_calls()[seen:] if any('actions/workflows' in x for x in c) or c[:2]==['run','view'] or c[:2]==['repo','view']]
+        check(gate_plans_full(q) and not gate_reads,f'gh gate with {label} weekly data plans one full gate, no weekly read',repr((q.returncode,q.stdout,q.stderr,gate_reads)))
+    # The same-HEAD full record is still reused without any health input.
+    build();entries[:]=[e for e in entries if not e['operation'].startswith('release.health.')];commit_index()
+    (gitdir/'ff-release-state').write_text('GATE_OK='+base+':full\n');q=invoke(release,('--public',pub,'--only','gate','--dry-run'))
+    check(q.returncode==0 and full_plan not in q.stdout and b'release.health' not in q.stdout+q.stderr,'same-HEAD full gate record reused without health input',repr((q.returncode,q.stdout,q.stderr)))
+    # A fast-mode record from before ADR-086 is not reused: the full gate is planned again.
+    (gitdir/'ff-release-state').write_text('GATE_OK='+base+':fast\n');q=invoke(release,('--public',pub,'--only','gate','--dry-run'))
+    check(gate_plans_full(q),'same-HEAD fast record is not reused; full gate planned',repr((q.returncode,q.stdout,q.stderr)))
     (gitdir/'ff-release-state').write_text('GATE_OK='+base+':full\n')
     # No-op drift is a legitimate no-due result; forced drift reaches raw due latest.
     build();q=invoke(release,('--due','--drift-count','1','--last-sync-sha',base))

@@ -1,0 +1,72 @@
+# env-branch-contract の基線（path<TAB>件数。plugin 相対。縮める方向にしか動かさない）
+# 能力層の外に今ある環境分岐の数。増やさない — 新しい分岐は能力層の関数へ寄せる（ADR-084 決定 3）。
+# 減らしたら取り直す（区分コメントと並びは保たれ、0 件のパスは落ち、新しいパスは末尾の未区分へ入る）:
+#   out="$(bash plugins/ff-dev-toolkit/tests/env-branch-contract/verify.sh --print-baseline)" && printf '%s\n' "$out" > plugins/ff-dev-toolkit/tests/env-branch-contract/baseline.tsv
+# 増えたパスがあると取り直しは何も出さずに止まる。針を足して既存の分岐を数え直しただけの回に限り
+# --print-baseline --allow-growth で明示して出し、増えたパスを未区分から区分コメントの下へ移す。
+# 許可（能力層・セキュリティ境界の lib・この suite）に載るパスはここへ書かない。
+
+# ════ 実行コード ════
+# ── セキュリティ境界の呼び出し側（保持・統一禁止。OS 分岐そのものが境界） ──
+hooks/guard-review-in-flight.sh	5
+scripts/multi-agent.sh	1
+tests/lib/review-in-flight-judge.sh	1
+tests/lib/review-round-counter.sh	1
+tests/lib/review-write-scan.sh	2
+
+# ── Windows パス同型 7 箇所（第 2 段階で scripts/lib/abs-path.sh へ） ──
+hooks/guard-checkout-restore.sh	1
+hooks/guard-pr-followup.sh	1
+hooks/record-instruction-bytes.sh	1
+scripts/ace-pending.sh	1
+scripts/ace-run-ts.sh	1
+scripts/jev/triage-candidate.sh	1
+scripts/lib/github-input.sh	1
+
+# ── Windows 固有機能（保持。第 2 段階で lib 経由へ） ──
+hooks/guard-wsl-shell.sh	1
+scripts/check-plugin-versions.sh	2
+scripts/gh-auth-doctor.sh	1
+scripts/lib/merge-cleanup-local.sh	1
+
+# ── 除去可能（第 2 段階で能力値へ。msys の child_limit / alarm と budget） ──
+hooks/guard-merge-closing-keyword.sh	1
+hooks/run-bash-hooks.sh	1
+
+# ── 任意ツールの導入（OS / CPU 名で配布物を選ぶ。第 2 段階で能力層へ） ──
+scripts/lib/setup-yq.sh	3
+
+# ════ テスト ════
+# ── OS 別の部分 skip（能力層の外の包み tests/lib/msys-case.sh の ff_skip_msys_case へ OSTYPE を渡す） ──
+tests/claude-hooks-path/verify.sh	2
+tests/host-route-parity/verify.sh	1
+tests/multi-agent-parts/verify.sh	1
+tests/sync-forbidden-patterns/verify.sh	2
+tests/sync-sha-contract/footer-reuse-runtime.sh	1
+
+# ── テストの能力 probe（ADR-084 決定 4。第 2 段階で能力層へ） ──
+tests/knowledge-lookup/windows-acl-fixture.sh	1
+
+# ── テスト fixture（OS 別ケースの分岐。第 3 段階で検査パラメータへ） ──
+tests/ace-curate-commit/verify.sh	4
+tests/ace-pending/verify.sh	2
+tests/adapter-prompt-guard/verify.sh	1
+tests/closing-keyword-guard/merge-hook-cases.sh	1
+tests/docs-fact-drift-selftest/verify.sh	1
+tests/docs-frontmatter-repo-selftest/verify.sh	1
+tests/github-input-precheck/verify.sh	1
+tests/github-input/verify.sh	1
+tests/guard-exit-code/consumer-resource-cases.sh	1
+tests/guard-review-in-flight/verify.sh	1
+tests/guard-shell-save/verify.sh	1
+tests/jev-adapter/verify.sh	1
+tests/knowledge-lookup/read-boundary.sh	1
+tests/knowledge-lookup/verify.sh	4
+tests/merge-cleanup/long-paths.sh	1
+tests/merge-cleanup/verify.sh	1
+tests/merge-cleanup/windows-junctions.sh	1
+tests/multi-agent-stale-outputs/native-temp-alias-cases.sh	1
+tests/multi-agent-stale-outputs/verify.sh	1
+tests/multi-agent-stale-outputs/windows-boundary-cases.sh	2
+tests/plugin-version-check/verify.sh	1
+tests/workflow-doctor/verify.sh	1

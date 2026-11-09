@@ -304,8 +304,8 @@ run_check --remote-head "$ABSENT" --measured "$ABSENT"
 run_check --remote-head "$C1" --measured "$ABSENT"
 [[ "$RC" -eq 1 ]] && ok "不一致は実測対象が手元に無くても止める（判定不能へ格下げしない）" || bad "不一致 + 不在実測で exit ${RC}（期待 1）"
 
-# 高速モードの記録でも一致は exit 0。全件実行が要るのは週次 CI と定期実行点の代替経路で
-# あって、マージのたびではない（ADR-037 / ADR-039）。**意図的な非ブロック**なので契約として固定する。
+# 高速モードの記録でも一致は exit 0。全件実行が要るのは定期実行点（公開同期の gate 段は毎回全件）で
+# あって、マージのたびではない（ADR-039 / ADR-086）。**意図的な非ブロック**なので契約として固定する。
 bash "$RECORD" --gate "tests/run-all.sh" --mode fast --result "passed=71" --record "$WORK/fast-record" >/dev/null 2>&1
 FAST_COMMIT="$(sed -n 's/^COMMIT=//p' "$WORK/fast-record" | head -n 1)"
 run_check --remote-head "$FAST_COMMIT" --record "$WORK/fast-record"

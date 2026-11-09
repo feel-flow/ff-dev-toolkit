@@ -1661,9 +1661,16 @@ echo "retrospective hooks: 時間切れの後に壁時計が戻っても、上�
 # SECONDS は壁時計に従い、WSL2 は時刻の同期で壁時計を動かす。rc 142 で時間切れになったのに SECONDS の
 # 差が 1 の回が 50 回中 2 回あり、捨て読みを飛ばして書き手が SIGPIPE を受けていた（Issue `#2020`）。
 # BASH_ENV のファイルで組み込みの read を包み、時間切れ（rc > 128）の直後に SECONDS を読み取り前の値へ
-# 戻して、その回を毎回再現する。bash 3.2 は時間切れを rc 1 で返すので、この再現は成り立たない。
+# 戻して、その回を毎回再現する。bash 3.2 は時間切れを EOF と同じ rc 1 で返すので、包みは `-t` 付きの
+# read が rc 1 のまま上限の秒数以上かかった回を、bash 4 以上と同じ rc 142 へ正規化してから SECONDS を
+# 戻す。SECONDS は整数秒なので、上限の 1 秒前を過ぎてから返る EOF も時間切れへ正規化される。この包みは
+# 書き手が上限より遅い clock_step_probe（sleep 2.5）でだけ使い、書き手が上限より速い probe へ流用しない。
+# これで /bin/bash 3.2 でも rc > 128 の経路を毎回通し、bash 版で検査を飛ばさない（Issue `#2711`）。
 CLOCK_STEP_ENV="$TEST_TMP/clock-step-env.sh"
-printf '%s\n' 'read() {' '  builtin read "$@"' '  local _rc=$?' \
+printf '%s\n' 'read() {' '  local _t="" _a _p="" _s=$SECONDS _rc' \
+  '  for _a in "$@"; do [ "$_p" = -t ] && _t=$_a; _p=$_a; done' \
+  '  builtin read "$@"' '  _rc=$?' \
+  '  if [ -n "$_t" ] && [ "$_rc" -eq 1 ] && [ "$((SECONDS - _s))" -ge "${_t%%.*}" ]; then _rc=142; fi' \
   '  if [ "$_rc" -gt 128 ] && [ -n "${DRAIN_STARTED:-}" ]; then SECONDS=$DRAIN_STARTED; fi' \
   '  return "$_rc"' '}' > "$CLOCK_STEP_ENV"
 clock_step_probe() { # <hook> <RETROSPECTIVE_MODE の値>。DIAG_RC / DIAG_ERR に結果を入れる
@@ -1672,40 +1679,35 @@ clock_step_probe() { # <hook> <RETROSPECTIVE_MODE の値>。DIAG_RC / DIAG_ERR �
     | (cd "$TEST_TMP" && env BASH_ENV="$CLOCK_STEP_ENV" RETROSPECTIVE_MODE="$2" FF_DEV_TOOLKIT_STATE_DIR="$DIAG_STATE" /bin/bash "$1" 2>&1 >/dev/null); } )" \
     || DIAG_RC=$?
 }
-clock_bash_major="$(/bin/bash -c 'printf "%s" "${BASH_VERSINFO[0]}"')"
-if [ "${clock_bash_major:-0}" -lt 4 ]; then
-  echo "  ○ skip: 壁時計が戻る回の再現（/bin/bash ${clock_bash_major:-?} 系は時間切れを rc 1 で返す）は、bash 4 以上でだけ成立する検査のため未実行"
+for clock_target in "$TARGET" "$PLUGIN_ROOT/hooks/decision-tree.sh"; do
+  clock_name="$(basename "$clock_target")"
+  clock_step_probe "$clock_target" ""
+  if [ "$DIAG_RC" -eq 0 ] && [[ "$DIAG_ERR" == *"$clock_name"*stdin* ]]; then
+    ok "$clock_name: 時間切れの後に壁時計が戻っても捨て読みし、診断を残す"
+  else
+    bad "$clock_name: 時間切れの後に壁時計が戻ると捨て読みを飛ばす: rc=$DIAG_RC stderr=[$DIAG_ERR]"
+  fi
+done
+clock_step_probe "$CONTEXT_TARGET" off
+if [ "$DIAG_RC" -eq 0 ]; then
+  ok "retrospective-context.sh: RETROSPECTIVE_MODE=off で時間切れの後に壁時計が戻っても書き手が SIGPIPE を受けない"
 else
-  for clock_target in "$TARGET" "$PLUGIN_ROOT/hooks/decision-tree.sh"; do
-    clock_name="$(basename "$clock_target")"
-    clock_step_probe "$clock_target" ""
-    if [ "$DIAG_RC" -eq 0 ] && [[ "$DIAG_ERR" == *"$clock_name"*stdin* ]]; then
-      ok "$clock_name: 時間切れの後に壁時計が戻っても捨て読みし、診断を残す"
-    else
-      bad "$clock_name: 時間切れの後に壁時計が戻ると捨て読みを飛ばす: rc=$DIAG_RC stderr=[$DIAG_ERR]"
-    fi
-  done
-  clock_step_probe "$CONTEXT_TARGET" off
-  if [ "$DIAG_RC" -eq 0 ]; then
-    ok "retrospective-context.sh: RETROSPECTIVE_MODE=off で時間切れの後に壁時計が戻っても書き手が SIGPIPE を受けない"
+  bad "retrospective-context.sh: RETROSPECTIVE_MODE=off で時間切れの後に壁時計が戻ると捨て読みを飛ばす: rc=$DIAG_RC"
+fi
+# 変異: rc > 128 の判定を外す（SECONDS だけで見る元の形）と、同じ再現で書き手が SIGPIPE を受ける。
+# 再現が効いていない（SECONDS が戻っていない）回は変異も緑になるので、ここが再現の針も兼ねる
+CLOCK_MUT="$TEST_TMP/clock-mut/hooks/retrospective-stop.sh"
+mkdir -p "${CLOCK_MUT%/*}"
+sed 's/\[ "\$READ_RC" -gt 128 \]/false/' "$TARGET" > "$CLOCK_MUT"
+if grep -qF '{ false \' "$CLOCK_MUT"; then
+  clock_step_probe "$CLOCK_MUT" ""
+  if [ "$DIAG_RC" -ne 0 ] || [[ "$DIAG_ERR" != *stdin* ]]; then
+    ok "壁時計の変異: rc > 128 の判定を外すと捨て読みを飛ばして検出できる（rc=${DIAG_RC}）"
   else
-    bad "retrospective-context.sh: RETROSPECTIVE_MODE=off で時間切れの後に壁時計が戻ると捨て読みを飛ばす: rc=$DIAG_RC"
+    bad "壁時計の変異: rc > 128 の判定を外しても捨て読みする（再現が効いていない。検出力なし）"
   fi
-  # 変異: rc > 128 の判定を外す（SECONDS だけで見る元の形）と、同じ再現で書き手が SIGPIPE を受ける。
-  # 再現が効いていない（SECONDS が戻っていない）回は変異も緑になるので、ここが再現の針も兼ねる
-  CLOCK_MUT="$TEST_TMP/clock-mut/hooks/retrospective-stop.sh"
-  mkdir -p "${CLOCK_MUT%/*}"
-  sed 's/\[ "\$READ_RC" -gt 128 \]/false/' "$TARGET" > "$CLOCK_MUT"
-  if grep -qF '{ false \' "$CLOCK_MUT"; then
-    clock_step_probe "$CLOCK_MUT" ""
-    if [ "$DIAG_RC" -ne 0 ] || [[ "$DIAG_ERR" != *stdin* ]]; then
-      ok "壁時計の変異: rc > 128 の判定を外すと捨て読みを飛ばして検出できる（rc=${DIAG_RC}）"
-    else
-      bad "壁時計の変異: rc > 128 の判定を外しても捨て読みする（再現が効いていない。検出力なし）"
-    fi
-  else
-    bad "壁時計の変異が当たっていない（rc > 128 の判定が見つからない）"
-  fi
+else
+  bad "壁時計の変異が当たっていない（rc > 128 の判定が見つからない）"
 fi
 rm -rf "$DIAG_PAYLOAD" "$DIAG_STATE"
 

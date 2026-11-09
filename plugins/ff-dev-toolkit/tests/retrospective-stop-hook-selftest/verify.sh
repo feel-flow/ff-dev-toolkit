@@ -9,12 +9,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONSUMER="$PLUGIN_ROOT/tests/retrospective-stop-hook/verify.sh"
+# 同一 private と外部公開の承認境界を測る10件と、壁時計が戻る回の再現 4 件（Issue `#2020`）を含む。
+# 再現は bash 3.2 の時間切れ rc 1 を包みで正規化するので、/bin/bash の版に依らず件数は同じ（Issue `#2711`）。
 EXPECTED_CONSUMER_CHECKS=159
-# 壁時計が戻る回の再現（4 件。Issue `#2020`）は、時間切れを rc 1 で返す /bin/bash 4 未満では consumer が skip する
-# 同一 private と外部公開の承認境界を測る10件を含む。Bash 4未満は時間切れ4件を除く。
-if [ "$(/bin/bash -c 'printf "%s" "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0)" -lt 4 ]; then
-  EXPECTED_CONSUMER_CHECKS=155
-fi
 
 command -v perl >/dev/null 2>&1 || { echo "○ skip: perl が無いため retrospective Stop hook self-test をスキップ"; exit 0; }
 # rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ

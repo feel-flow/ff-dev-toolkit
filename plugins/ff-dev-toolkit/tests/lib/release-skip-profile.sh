@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # Read the same OS policy in release checks, source checks and the runbook.
 set -euo pipefail
+# --check が止まるとき（rc 1）は、出力の末尾を停止文の共通形の 3 行で終える（方針 / partial-skip-policy。
+# scripts/lib/stop-block.sh / Issue `#2712`）。表の stop:<復旧> のヒントは行ごとには出さず、3 行目の
+# `次の一手:` へまとめる（`次の一手:` を 2 行にしない）。呼び出し側（リリースゲート）はこの 3 行を包み直さない。
 
-profile="$(dirname -- "$0")/release-skip-profile.tsv"
+here="$(dirname -- "$0")"
+profile="$here/release-skip-profile.tsv"
+stop_lib="$here/../../scripts/lib/stop-block.sh"
 mode="${1:-}"
 column=0
 case "$mode" in
@@ -27,7 +32,8 @@ if [[ ! -f "$profile" || ! -r "$profile" ]]; then
   exit 2
 fi
 
-LC_ALL=C awk -F '\t' -v mode="$mode" -v column="$column" '
+rc=0
+out="$(LC_ALL=C awk -F '\t' -v mode="$mode" -v column="$column" '
 function valid(value) {
   return value == "allow" || value == "stop" || value ~ /^stop:[^[:space:]]/
 }
@@ -92,7 +98,8 @@ FILENAME == ARGV[1] {
   }
   if (matched != 1) {
     print where (matched ? "複数の規則に一致: " : "未分類の部分 skip: ") reason
-    stopped = 1
+    stopped++
+    unclassified = 1
   } else if (mode == "--lint" && sources[selected] > 0) {
     file = $1
     sub(/:[0-9]+$/, "", file)
@@ -106,8 +113,16 @@ FILENAME == ARGV[1] {
     if (j > sources[selected]) invalid(where "固定した発生元と異なる: " key[selected])
   } else if (mode == "--check" && policy[selected] != "allow") {
     print $0
-    if (index(policy[selected], "stop:") == 1) print "   次の一手: " substr(policy[selected], 6)
-    stopped = 1
+    if (index(policy[selected], "stop:") == 1) {
+      hint = substr(policy[selected], 6)
+      if (!(hint in hinted)) {
+        hinted[hint] = 1
+        hints = hints (hints == "" ? "" : " / ") hint
+      }
+    } else {
+      bare = 1
+    }
+    stopped++
   }
 }
 END {
@@ -121,6 +136,54 @@ END {
     }
   }
   if (broken) exit 2
+  # 停止文の材料（件数・表に無い行の有無・ヒントの無い stop 行の有無・ヒント）を最終行で bash へ渡す。印字はしない。
+  if (mode == "--check" && stopped) printf "\034stop-block\t%d\t%d\t%d\t%s\n", stopped, unclassified, bare, hints
   if (stopped) exit 1
 }
-' "$profile" "$1"
+' "$profile" "$1")" || rc=$?
+marker=$'\034stop-block\t'
+material=""
+case "$out" in
+  "$marker"* | *$'\n'"$marker"*)
+    material="${out##*"$marker"}"
+    out="${out%"$marker"*}"
+    out="${out%$'\n'}"
+    ;;
+esac
+[[ -z "$out" ]] || printf '%s\n' "$out"
+if [[ "$rc" -eq 1 && "$mode" == --check ]]; then
+  stopped_n="${material%%$'\t'*}"
+  material="${material#*$'\t'}"
+  unclassified="${material%%$'\t'*}"
+  material="${material#*$'\t'}"
+  bare="${material%%$'\t'*}"
+  hints="${material#*$'\t'}"
+  case "$stopped_n" in '' | *[!0-9]*) stopped_n="?" ;; esac
+  # 表に無い行（未分類・複数一致）と、表にあるがヒントの無い stop 行（素の stop）は直し方が違うので分けて
+  # 案内する。前者は表か検査を直し、後者は表が止めると決めた検査を回せる環境を整えて回し直す。
+  next_step=""
+  [[ -z "$hints" ]] || next_step="$hints"
+  if [[ "$bare" == 1 ]]; then
+    next_step="${next_step:+${next_step} / }表の stop 行に当たった検査を回せる環境を整えて再実行する（許容表は tests/lib/release-skip-profile.tsv）"
+  fi
+  if [[ "$unclassified" == 1 ]]; then
+    next_step="${next_step:+${next_step} / }許容表に無い行は表を確認し検査を書き直す（ADR-084 決定 4。許容表は tests/lib/release-skip-profile.tsv）"
+  fi
+  [[ -n "$next_step" ]] || next_step="表を確認し検査を書き直す（ADR-084 決定 4。許容表は tests/lib/release-skip-profile.tsv）"
+  reason="OS 別プロファイルで許可されない部分 skip が ${stopped_n} 件ある"
+  # lib はサブシェルの中でだけ読む（hook と同じ形）。本体で読むと、lib の先頭の exit がこのスクリプトごと
+  # rc 0 で終わらせ、許可されない部分 skip の停止が合格へ化ける。何も出さずに終わった回は下の 3 行へ落ちる。
+  # shellcheck source=../../scripts/lib/stop-block.sh
+  stop_text="$([[ -f "$stop_lib" && -r "$stop_lib" ]] && . "$stop_lib" 2>/dev/null \
+    && declare -F ff_stop_block >/dev/null 2>&1 \
+    && ff_stop_block 方針 partial-skip-policy tests/lib/release-skip-profile.tsv "$reason" "$next_step")" || :
+  if [[ -n "$stop_text" ]]; then
+    printf '%s\n' "$stop_text"
+  else
+    # 停止文の共通形を読めないときも、止めた事実と次の一手は落とさない（rc 1 のまま）。
+    printf '%s\n' '止めた層: 方針' \
+      '止めた規則: stop-block-unavailable（scripts/lib/stop-block.sh）— 停止文の共通形を読み込めません（元の規則: partial-skip-policy）' \
+      "次の一手: ${next_step}"
+  fi
+fi
+exit "$rc"

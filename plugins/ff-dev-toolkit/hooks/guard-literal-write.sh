@@ -130,14 +130,32 @@ case "$HELPER_DIR_SHOWN" in
   */hooks/../*) HELPER_DIR_SHOWN="${HELPER_DIR_SHOWN%%/hooks/../*}/${HELPER_DIR_SHOWN#*/hooks/../}" ;;
 esac
 
-deny() { # <reason>
-  local out rc
-  out="$(jq -n --arg reason "$1" \
+# 停止文の共通形（末尾 3 行。scripts/lib/stop-block.sh / Issue `#2712`）。deny するときだけ読む。
+# 読めないときは stop-block-unavailable の 3 行で止める（deny 自体は変えず、素通しにしない）。
+STOP_BLOCK_LIB="${BASH_SOURCE[0]%/*}/../scripts/lib/stop-block.sh"
+
+# deny の JSON を組み立てて出す。理由文の末尾へ停止文の 3 行を足す。
+deny() { # <reason> <rule-id> <正本> <理由 1 行> <次の一手>
+  local out rc block="" reason
+  # lib はサブシェルの中でだけ読む（lib の先頭の exit・set・trap・同名の関数や変数が hook 本体へ届かない）。
+  # 何も出さずに終わった回（lib が途中で exit した・関数が無い）は下の stop-block-unavailable へ落ちる。
+  # shellcheck source=../scripts/lib/stop-block.sh
+  block="$([ -f "$STOP_BLOCK_LIB" ] && [ -r "$STOP_BLOCK_LIB" ] && . "$STOP_BLOCK_LIB" 2>/dev/null \
+    && declare -F ff_stop_block >/dev/null 2>&1 && ff_stop_block ガード "${2-}" "${3-}" "${4-}" "${5-}")"
+  if [ -z "$block" ]; then
+    block="止めた層: ガード
+止めた規則: stop-block-unavailable（scripts/lib/stop-block.sh）— 停止文の共通形を読み込めません（元の規則: ${2-}）
+次の一手: ff-dev-toolkit を更新・再インストールして scripts/lib/stop-block.sh を復旧する"
+  fi
+  reason="$1
+$block"
+  out="$(jq -n --arg reason "$reason" \
     '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null)"
   rc=$?
   if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
-    printf '%s\n' "$1" >&2
+    # 停止文の 3 行が stderr の末尾に来るよう、診断行を先に出す。
     printf 'ff-dev-toolkit guard-literal-write: deny の JSON を組み立てられませんでした（jq rc=%s）。exit 2 でブロックします。\n' "$rc" >&2
+    printf '%s\n' "$reason" >&2
     exit 2
   fi
   printf '%s\n' "$out"
@@ -151,7 +169,10 @@ deny_unavailable() { # <理由>
   1) ff-dev-toolkit を更新・再インストールしてヘルパを復旧する
   2) ファイル本文は Write / Edit ツールで直接書く（シェルを経由しない）
   3) このコマンドに限って通す: コマンドの**先頭**へ環境代入 FF_LITERAL_WRITE_ACK=1 を付けて再実行する
-  4) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD=1 を設定する"
+  4) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD=1 を設定する" \
+    literal-write-unavailable tests/lib/literal-write-scan.sh \
+    "判定ヘルパで走査を完了できないため、候補コマンドを判定不能として止めた" \
+    "ff-dev-toolkit を更新・再インストールしてヘルパを復旧する（このコマンドに限って通すなら先頭へ FF_LITERAL_WRITE_ACK=1 を付けて再実行する）"
 }
 
 jq_rc=0
@@ -302,4 +323,7 @@ deny "⚠️ ff-dev-toolkit guard（literal-write: 書き込む本文がシェ�
 次のいずれかで書き直してください:
   - ファイル本文は Write / Edit ツールで直接書く（シェルも別言語のリテラルも経由しない。最も確実）${advice}
 誤検知の場合（大文字始まりの Perl 変数を意図して書いた・呼び出しの外で export 済み・バックスラッシュ / バッククォートの解釈を承知のうえで書いた等）は、コマンドの**先頭**へ環境代入を付けて再実行します: FF_LITERAL_WRITE_ACK=1 <コマンド>
-このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD=1 を設定します。判定の正本は ${HELPER_DIR_SHOWN}/literal-write-scan.sh です。"
+このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD=1 を設定します。判定の正本は ${HELPER_DIR_SHOWN}/literal-write-scan.sh です。" \
+  literal-write tests/lib/literal-write-scan.sh \
+  "書き込む本文・値がシェルや別言語の解釈で無音に変わる形を検出した" \
+  "ファイル本文は Write / Edit ツールで直接書く（誤検知ならコマンドの先頭へ FF_LITERAL_WRITE_ACK=1 を付けて再実行する）"

@@ -32,7 +32,8 @@
 # 公開 suite セット 1 周は全件ゲートとほぼ同じ規模（macOS 実測で単体約 19 分・全件ゲート内の並列実行で約 36 分）なので、
 # run-all の既定・全件モードのどちらでも回さない（全件ゲートが倍になる）。明示起動するのは公開同期の
 # 直前 1 回だけ — scripts/release-dev-toolkit.sh の gate 段が run-all の緑の後に呼ぶ。
-# CI（GITHUB_ACTIONS=true）でも skip する — SSOT 側 CI の run-all step は上限 45 分で、予算を超えうる。Linux（GNU coreutils）固有の差は、公開側の
+# CI（GITHUB_ACTIONS=true）でも skip する — SSOT 側 CI（手動起動だけの weekly-run-all.yml。ADR-086）の run-all step は
+# 上限 90 分で、全件（手動実行の job 全体で約 38 分。2026-11-04 実測）に本 suite を足すと予算を圧迫する。Linux（GNU coreutils）固有の差は、公開側の
 # 週次 CI が引き続き拾う（本 suite は macOS の開発ツリーで回る限り、その型は検出できない）。
 #
 # FF_PUBLIC_LAYOUT_SUITES（内部の差し替え口）: 空白区切りの suite 名を渡すと、workflow の
@@ -54,7 +55,7 @@ if [[ "${FF_RUN_PUBLIC_LAYOUT:-}" != "1" && -z "${FF_PUBLIC_LAYOUT_SUITES:-}" ]]
   exit 0
 fi
 if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-  echo "○ skip: CI では回しません（本 suite の検査は1件も実行されていません。run-all step の上限 45 分に対し、全件 + 本 suite は予算を超えうるため。公開単体の検査は公開側の週次 CI が担う）"
+  echo "○ skip: CI では回しません（本 suite の検査は1件も実行されていません。手動起動の run-all step の上限 90 分に対し、全件 + 本 suite は予算を圧迫するため。公開単体の検査は公開側の週次 CI が担う）"
   exit 0
 fi
 

@@ -27,6 +27,7 @@ for file in \
   "$SOURCE_SCRIPTS/check-archive-links.ts" \
   "$SOURCE_SCRIPTS/check-refine-invariants.ts" \
   "$SOURCE_SCRIPTS/ace-reuse-report.ts" \
+  "$SOURCE_SCRIPTS/ace-live-references.ts" \
   "$SOURCE_SCRIPTS/ace-refine-report.ts"; do
   if [[ ! -s "$file" ]]; then
     echo "✗ live-ace-gates-selftest の入力が存在しないか空です: $file" >&2
@@ -94,6 +95,7 @@ cp "$SOURCE_SCRIPTS/sync-playbook-frontmatter.ts" "$FIXTURE_REPO/scripts/ace/"
 cp "$SOURCE_SCRIPTS/check-archive-links.ts" "$FIXTURE_REPO/scripts/ace/"
 cp "$SOURCE_SCRIPTS/check-refine-invariants.ts" "$FIXTURE_REPO/scripts/ace/"
 cp "$SOURCE_SCRIPTS/ace-reuse-report.ts" "$FIXTURE_REPO/scripts/ace/"
+cp "$SOURCE_SCRIPTS/ace-live-references.ts" "$FIXTURE_REPO/scripts/ace/"
 cp "$SOURCE_SCRIPTS/ace-refine-report.ts" "$FIXTURE_REPO/scripts/ace/"
 
 cat >"$FIXTURE_PLAYBOOK" <<'EOF'

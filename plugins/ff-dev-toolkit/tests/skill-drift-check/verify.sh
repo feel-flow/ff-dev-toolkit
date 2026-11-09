@@ -23,6 +23,7 @@
 #
 # すべての経路で exit 0 と stderr 無出力を検査する（fail-open 契約）。
 #
+# 空振り検出: サブシェル数の検査は bash 版で見送らない。PS4 の sh を引けない名前へ変えた写しは PID が 0 種類になり、サブシェル数とその変異の 2 件が赤（rc=1）。正常対照は /bin/bash 3.2 と Homebrew bash 5.3 の両方で 75 件成功（3 種類のまま、変異は 11 → 65 種類）。PS4 の `exec` を外した写しは緑のままだが種類数が膨らむ（同じ回で 4 種類、変異 172 → 1306 種類）ので exec を残す（2026-11-08 macOS 実測）。PATH に sh が無い回は計測前に赤。
 # 空振り検出: 9 節は、起動を記録するシムが 10 個未満しか作れない・記録して本物へ委ねない・30 件側の記録に sort が
 #   無い（シムを通っていない）ときに赤（同じ回数どうしの比較が何も測っていない状態を緑にしない。2026-10-04）。
 #   サブシェル数の比較は、xtrace に現れた PID が 2 種類未満（BASH_ENV の PS4 が効いていない）なら赤。
@@ -861,11 +862,17 @@ else
   bad "起動回数の変異が当たっていない（base の取り出し行が見つからない）"
 fi
 # サブシェル（fork）の数も件数に比例しない: 外部コマンドを起こさない "$(...)" も、1 件ごとに fork すれば
-# Windows では同じく遅い（fork 1 回 ≒ 33 ms）。シムでは見えないので、xtrace の行頭に BASHPID を出して
-# 現れた PID の種類を数える。PS4 は BASH_ENV のファイルで渡す（環境変数の PS4 は bash 4.4 以降の root では
-# 引き継がれない）。BASHPID は bash 4.0 から。
+# Windows では同じく遅い（fork 1 回 ≒ 33 ms）。シムでは見えないので、xtrace の行頭にその行を実行した
+# shell の PID を出して、現れた PID の種類を数える。PS4 は BASH_ENV のファイルで渡す（環境変数の PS4 は
+# bash 4.4 以降の root では引き継がれない）。PID は BASHPID（bash 4.0 から）ではなく、PS4 のコマンド置換の
+# 中で sh を exec して、その親（= 行を実行した shell）の PID を読む。bash 3.2 でもサブシェルごとに PID が
+# 分かれる（Issue `#2711`）。exec を外すと bash 3.2 はコマンド置換の中の行で置換用の子を挟み、行ごとに
+# 別の PID が出る（最小再現で BASHPID の 7 種類に対し 10 種類。2026-11-08 実測）。
 TRACE_ENV="$TMP/trace-env.sh"
-printf '%s\n' "PS4='+\${BASHPID} '" 'set -x' > "$TRACE_ENV"
+cat > "$TRACE_ENV" << 'TRACE_ENV'
+PS4='+$(exec sh -c "echo \$PPID") '
+set -x
+TRACE_ENV
 count_subshells() {
   # $1=fixture 名  $2=hook。SUBSHELLS に xtrace（stderr）へ現れた PID の種類数を入れる
   HOOK="$2"
@@ -876,9 +883,9 @@ count_subshells() {
     FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$TMP/count-$1/claude"
   SUBSHELLS="$(sed -n 's/^+*\([0-9][0-9]*\) .*/\1/p' "$TMP/stderr" | sort -u | wc -l | tr -d ' ')"
 }
-trace_bash_major="$(bash -c 'printf "%s" "${BASH_VERSINFO[0]}"')"
-if [ "${trace_bash_major:-0}" -lt 4 ]; then
-  echo "  ○ skip: サブシェル数の検査（bash ${trace_bash_major:-?} 系には BASHPID が無い）は、bash 4 以上でだけ成立する検査のため未実行"
+# PS4 の sh は run_hook が渡す PATH（この suite の PATH のまま）で引く。無ければ計測が成り立たないので赤。
+if ! command -v sh >/dev/null 2>&1; then
+  bad "サブシェル数の検査: PATH に sh が無く、xtrace の行頭へ PID を出せない（PATH=${PATH}）"
 else
   count_subshells small "$TARGET"
   sub_small="$SUBSHELLS"

@@ -502,6 +502,7 @@ claude-hooks-path/verify.sh
 decision-tree/verify.sh
 docs-gates-runtime/ci-example-cases.sh
 effort-contract/verify.sh
+env-branch-contract/verify.sh
 finish/merge-delete-cases.sh
 finish/verify.sh
 github-input-precheck/verify.sh
@@ -549,6 +550,7 @@ shared-version-convergence/cases/base-guard-fetch-stderr.sh
 shared-version-convergence/cases/claim-helper-failures.sh
 shared-version-convergence/cases/merge-races.sh
 shared-version-convergence/verify.sh
+stop-block-contract/verify.sh
 sync-forbidden-patterns/verify.sh
 sync-sha-contract/footer-reuse-runtime.sh
 sync-sha-contract/release-runtime.sh

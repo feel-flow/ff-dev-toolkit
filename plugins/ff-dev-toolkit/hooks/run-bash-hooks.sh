@@ -152,9 +152,33 @@ json_timeout="$timeout_note"
 [ "${#outputs[@]}" -gt 0 ] || { emit_timeout_only; finish; }
 # 複数 JSON をそのまま連結するとホストが読めない。deny > ask > allow とし、
 # 全理由・警告を残す。壊れた1本の出力で他の判定まで失わないよう個別に検証する。
+# 停止文の共通形（末尾 3 行。scripts/lib/stop-block.sh / Issue `#2712`）。子の deny は各 hook が自分の
+# ブロックを付けるので包み直さない。ここで組むのは集約入口自身が止める書き換えの拒否だけ。
+# 読めないときは stop-block-unavailable の 3 行で止める（拒否自体は変えない）。
+STOP_BLOCK_LIB="${BASH_SOURCE[0]%/*}/../scripts/lib/stop-block.sh"
+rewrite_stop_block() {
+  local block=""
+  # lib はサブシェルの中でだけ読む（lib の先頭の exit・set・trap・同名の関数や変数が集約入口へ届かない）。
+  # shellcheck source=../scripts/lib/stop-block.sh
+  block="$([ -f "$STOP_BLOCK_LIB" ] && [ -r "$STOP_BLOCK_LIB" ] && . "$STOP_BLOCK_LIB" 2>/dev/null \
+    && declare -F ff_stop_block >/dev/null 2>&1 && ff_stop_block ガード hook-rewrite-rejected hooks/run-bash-hooks.sh \
+      '入力の書き換えを全ガードの再検査つきで採用できない' \
+      'ガードの指摘どおりにコマンドを書き直して再実行する（書き換えに頼らない）')"
+  if [ -z "$block" ]; then
+    block="止めた層: ガード
+止めた規則: stop-block-unavailable（scripts/lib/stop-block.sh）— 停止文の共通形を読み込めません（元の規則: hook-rewrite-rejected）
+次の一手: ff-dev-toolkit を更新・再インストールして scripts/lib/stop-block.sh を復旧する"
+  fi
+  printf '%s' "$block"
+}
 reject_rewrite() {
+  # 未実行の注記を先頭に置き、停止文の 3 行を末尾に置く（利用者が最後に読む 3 行を崩さない）。
+  local reason
+  reason="$not_run_note
+$1
+$(rewrite_stop_block)"
   # 終了コード2以外では json_timeout も載せる（emit_timeout_only / 集約 jq と同じ契約）。
-  if ! jq -n --arg reason "$1 $not_run_note" --arg timeout "$json_timeout" '
+  if ! jq -n --arg reason "$reason" --arg timeout "$json_timeout" '
     {hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
@@ -163,8 +187,8 @@ reject_rewrite() {
     + (if $timeout == "" then {} else {systemMessage: $timeout} end)
     | .hookSpecificOutput += (if $timeout == "" then {} else {additionalContext: $timeout} end)
   '; then
-    printf '%s\n' "$1 $not_run_note" >&2
     [ -z "$json_timeout" ] || printf '%s\n' "$json_timeout" >&2
+    printf '%s\n' "$reason" >&2
     exit 2
   fi
   exit 0
@@ -196,6 +220,10 @@ fi
 done
 [ "${#valid[@]}" -gt 0 ] || { emit_timeout_only; finish; }
 # exit 2 の経路は finish が stderr 末尾へ足すため、JSON 側では重ねない。
+# 拒否の理由文は「未実行の注記 → ask / allow の理由 → deny の理由」の順に並べ、deny の理由の中では
+# 停止文の 3 行で終わるもの（最終行が `次の一手: ` で始まる）を後ろへ回す。注記や ask の理由・停止文を
+# 持たない hook（採用外のガード）の deny を後ろへ置くと、利用者が最後に読む 3 行が停止文でなくなる
+# （Issue `#2712`）。jq の sort_by は安定なので、全部が停止文を持つ回・全部が持たない回は従来順のまま。
 deny_note="$not_run_note"
 [ "$blocking" -ne 2 ] || deny_note=""
 merged="$(jq -s --arg note "$deny_note" --arg timeout "$json_timeout" '
@@ -210,8 +238,11 @@ merged="$(jq -s --arg note "$deny_note" --arg timeout "$json_timeout" '
         hookEventName: "PreToolUse",
         permissionDecision: (if any($decisions[]; .permissionDecision == "deny") then "deny"
           elif any($decisions[]; .permissionDecision == "ask") then "ask" else "allow" end),
-        permissionDecisionReason: ([$decisions[].permissionDecisionReason]
-          + (if $note != "" and any($decisions[]; .permissionDecision == "deny") then [$note] else [] end)
+        permissionDecisionReason: (
+          (if $note != "" and any($decisions[]; .permissionDecision == "deny") then [$note] else [] end)
+          + [$decisions[] | select(.permissionDecision != "deny") | .permissionDecisionReason]
+          + ([$decisions[] | select(.permissionDecision == "deny") | .permissionDecisionReason]
+            | sort_by((. // "" | tostring | split("\n") | map(select(length > 0)) | last // "") | startswith("次の一手: ")))
           | join("\n"))
       }} end)
 ' "${valid[@]}")" || { echo 'ff-dev-toolkit: hook の結果を集約できません' >&2; finish; }

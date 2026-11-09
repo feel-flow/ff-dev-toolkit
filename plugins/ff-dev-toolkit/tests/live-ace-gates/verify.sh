@@ -36,7 +36,7 @@ fi
 # 以下は**実在検査**であってゲートの一覧ではない。entry として起動するのは 5 本
 # （check-entry-format / sync-playbook-frontmatter / check-archive-links /
 # check-refine-invariants / check-category-size）で、ace-reuse-report と
-# ace-refine-report は他スクリプトの共有 import 専用である（どちらも閾値超過で
+# ace-refine-report（とその import 先の ace-live-references）は他スクリプトの共有 import 専用である（どちらも閾値超過で
 # 非 0 を返す経路を持たないレポート器なので、実行しないのが正しい）。
 # 「リストに載っているから実行されている」という読み方が ADR-033 決定 4 の誤りを生んだ。
 for file in \
@@ -52,6 +52,7 @@ for file in \
   "$ACE_SCRIPTS/check-refine-invariants.ts" \
   "$ACE_SCRIPTS/check-refine-invariants-evaluate.ts" \
   "$ACE_SCRIPTS/ace-reuse-report.ts" \
+  "$ACE_SCRIPTS/ace-live-references.ts" \
   "$ACE_SCRIPTS/ace-refine-report.ts"; do
   if [[ ! -s "$file" ]]; then
     echo "✗ live ACE ゲートの検査対象が存在しないか空です: $file" >&2
@@ -115,6 +116,8 @@ transpile_shared "$ACE_SCRIPTS/changelog-layout.ts"
 transpile_shared "$ACE_SCRIPTS/knowledge-read-boundary.ts"
 transpile_shared "$ACE_SCRIPTS/ace-domain.ts"
 transpile_shared "$ACE_SCRIPTS/ace-reuse-report.ts"
+# ace-refine-report は ./ace-live-references を拡張子なしで読む（Issue `#2708`）。
+transpile_shared "$ACE_SCRIPTS/ace-live-references.ts"
 transpile_shared "$ACE_SCRIPTS/ace-refine-report.ts"
 transpile_shared "$ACE_SCRIPTS/check-archive-links.ts"
 "$ESBUILD_BIN" "$ACE_SCRIPTS/check-entry-format.ts" \

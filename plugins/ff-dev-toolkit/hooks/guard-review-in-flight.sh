@@ -311,10 +311,27 @@ ROOT="$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null)" || exit 0
 ROUND_NOTE=""
 ROUND_NOTE_DONE=0
 ROUND_PENDING=0
-emit_deny() { # <reason>
+# 停止文の共通形（末尾 3 行。scripts/lib/stop-block.sh / Issue `#2712`）。deny するときだけ読む。
+# 読めないときは stop-block-unavailable の 3 行で止める（deny 自体は変えず、素通しにしない）。
+# deny 1 件につき 1 ブロック（emit_deny は exit するので、1 回の呼び出しで 2 つ並ばない）。
+STOP_BLOCK_LIB="${BASH_SOURCE[0]%/*}/../scripts/lib/stop-block.sh"
+emit_deny() { # <reason> <rule-id> <正本> <理由 1 行> <次の一手>
+  local block="" reason
   ROUND_NOTE_DONE=1
   ROUND_PENDING=0
-  jq -n --arg reason "$1" --arg rn "$ROUND_NOTE" \
+  # lib はサブシェルの中でだけ読む（lib の先頭の exit・set・trap・同名の関数や変数が hook 本体へ届かない）。
+  # 何も出さずに終わった回（lib が途中で exit した・関数が無い）は下の stop-block-unavailable へ落ちる。
+  # shellcheck source=../scripts/lib/stop-block.sh
+  block="$([ -f "$STOP_BLOCK_LIB" ] && [ -r "$STOP_BLOCK_LIB" ] && . "$STOP_BLOCK_LIB" 2>/dev/null \
+    && declare -F ff_stop_block >/dev/null 2>&1 && ff_stop_block ガード "${2-}" "${3-}" "${4-}" "${5-}")"
+  if [ -z "$block" ]; then
+    block="止めた層: ガード
+止めた規則: stop-block-unavailable（scripts/lib/stop-block.sh）— 停止文の共通形を読み込めません（元の規則: ${2-}）
+次の一手: ff-dev-toolkit を更新・再インストールして scripts/lib/stop-block.sh を復旧する"
+  fi
+  reason="$1
+$block"
+  jq -n --arg reason "$reason" --arg rn "$ROUND_NOTE" \
     '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}} + (if $rn == "" then {} else {systemMessage: $rn} end)' 2>/dev/null
   exit 0
 }
@@ -343,7 +360,9 @@ review_round_gate() { # <agent|bash>
   # shellcheck source=../tests/lib/review-round-counter.sh
   if [ -r "$lib" ] && . "$lib" 2>/dev/null && [ "$(type -t ff_review_round_gate 2>/dev/null)" = "function" ]; then
     ff_review_round_gate "$1" || return 0
-    [ "$RR_VERDICT" = "deny" ] && emit_deny "$RR_REASON"
+    [ "$RR_VERDICT" = "deny" ] && emit_deny "$RR_REASON" review-round-limit tests/lib/review-round-counter.sh \
+      "このブランチのレビュー巡回が上限に達した" \
+      "残件を /out-of-scope-issue の bundle 統合へ流す（この 1 巡だけ通すなら、Bash は起動コマンドの先頭へ・Agent / Task は prompt の行頭の 1 行に FF_REVIEW_ROUND_ACK=1 を置く）"
     ROUND_NOTE="$RR_NOTE"
     [ -n "$RR_PENDING_FILE" ] && ROUND_PENDING=1
   else
@@ -434,7 +453,10 @@ esac
 # ロックの有無はここの関数が読むので、読めない回は「ロック無しだから通す」に倒さない。
 _ff_judge="${BASH_SOURCE[0]%/*}/../tests/lib/review-in-flight-judge.sh"
 _ff_judge_deny() { # <理由>
-  emit_deny "⚠️ ff-dev-toolkit guard（レビュー走行中）: 判定ライブラリを読めないため、編集とコマンドを止めます（${1}）。対象: ${_ff_judge}。cache を手で直さず、plugin を更新・再導入してください。"
+  emit_deny "⚠️ ff-dev-toolkit guard（レビュー走行中）: 判定ライブラリを読めないため、編集とコマンドを止めます（${1}）。対象: ${_ff_judge}。cache を手で直さず、plugin を更新・再導入してください。" \
+    review-judge-unavailable tests/lib/review-in-flight-judge.sh \
+    "レビュー走行中の判定ライブラリを読めないため、判定不能として止めた" \
+    "cache を手で直さず、ff-dev-toolkit を更新・再導入する"
 }
 if [ -L "$_ff_judge" ]; then
   _ff_judge_deny "symlink です"
@@ -876,6 +898,13 @@ case "${WRITE_REASON:-}${write_note:-}" in
 "
     ;;
 esac
+# 停止文の次の一手は、その呼び出しが実際に通せる形だけを案内する（ACE-2615-2）。コマンド先頭の
+# FF_REVIEW_LOCK_OVERRIDE=1 が効くのは Bash だけで、編集系ツールはロック・レーンを消すしかない。
+if [ "$tool" = "Bash" ]; then
+  review_next="完了通知が出るまで待つ。続行するなら対象のコマンド（区間）の先頭へ FF_REVIEW_LOCK_OVERRIDE=1 を付けて再実行するか、理由文の 1) でロック・レーンを消す"
+else
+  review_next="完了通知が出るまで待つ。続行するなら理由文の 1) でロック・レーンを消す（${tool:-編集系ツール} にはコマンド先頭の解除指定を付けられない）"
+fi
 emit_deny "⚠️ ff-dev-toolkit guard（レビュー走行中・作業ツリー編集の抑止）: ${undetermined_prefix}${deny_head}${write_note:-}走行中に作業ツリーが動くと、実行後のリビジョン検証が結果を**全破棄**します（数分〜十数分ぶんのレビューが失われます）。サブエージェント経路には破棄の機構が無い代わりに、走行中の編集は「レビュー対象と食い違う指摘」を生みます。完了通知が出るまで編集・commit・checkout をしないでください。
 待ち時間にできることは multi-review スキルの「レビュー待ち時間の使い方」節を参照してください。
 続行する必要がある場合（走行が既に終わっている / 結果の破棄を承知で編集する）:
@@ -890,4 +919,6 @@ emit_deny "⚠️ ff-dev-toolkit guard（レビュー走行中・作業ツリー
      継承するだけなので、この変数はセッションを再起動せずには変えられません。編集系を
      通したいときは 1) を使ってください。
 このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD=1 を設定します
-（同じくセッション環境。非対話実行での opt-out はこちら）。"
+（同じくセッション環境。非対話実行での opt-out はこちら）。" \
+  review-in-flight tests/lib/review-in-flight-judge.sh \
+  "レビューの走行中に作業ツリーを動かす操作を検出した" "$review_next"

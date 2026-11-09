@@ -3115,6 +3115,17 @@ case "$REASON" in
   *'3 巡目'*'/out-of-scope-issue'*'bundle'*'FF_REVIEW_ROUND_ACK=1'*) ok "(n4) deny 文が 3 巡目・bundle 統合への案内・1 回限りの通過口を出す" ;;
   *) bad "(n4) deny 文に案内が欠けている: reason=[$REASON]" ;;
 esac
+# 停止文の共通形（末尾 3 行。scripts/lib/stop-block.sh / Issue `#2712`）: 巡回上限の deny も規則を名指しして終え、
+# 次の一手は 1 行だけで 1 回限りの通過口を含む
+N_TAIL="$(printf '%s\n' "$REASON" | tail -n 3)"
+if [ "$(printf '%s\n' "$N_TAIL" | sed -n 1p)" = '止めた層: ガード' ] \
+  && case "$(printf '%s\n' "$N_TAIL" | sed -n 2p)" in '止めた規則: review-round-limit（tests/lib/review-round-counter.sh）— '?*) true ;; *) false ;; esac \
+  && case "$(printf '%s\n' "$N_TAIL" | sed -n 3p)" in '次の一手: '*FF_REVIEW_ROUND_ACK=1*) true ;; *) false ;; esac \
+  && [ "$(printf '%s\n' "$REASON" | grep -c '^次の一手: ')" -eq 1 ]; then
+  ok "(n4) 巡回上限の deny は末尾 3 行が停止文（ガード / review-round-limit）で、次の一手 1 行に FF_REVIEW_ROUND_ACK=1 を含む"
+else
+  bad "(n4) 巡回上限の deny の末尾 3 行が停止文でない: reason=[$REASON]"
+fi
 if [ "$(lane_count)" = "$N_LANES_BEFORE" ] && [ "$(n_heads)" = "2" ]; then
   ok "(n4) deny した起動（非隔離）はレーンも巡も残さない"
 else

@@ -2,6 +2,7 @@
 # 部分 skip の書式と、捕捉した子の skip 行の中継。
 # 空振り検出: 走査対象のディレクトリが無いとき (対象不在) と、読める対象ファイルが 0 件のとき (空振り) が赤になる。列 0 の部分 skip・識別子付きの丸印・成功行に紛れた見送り・中継の無い捕捉・列 0 を親へ写す中継を許す変異は赤になる。
 # 空振り検出: OS 別プロファイルが無い・空・不正な行、静的照合の対象が空、理由の固定句が無い場合は赤。Linux と macOS の欄を交換する変異は対照が赤になる。
+# 空振り検出: --check の停止で停止文の lib をサブシェルの外でも読ませると、先頭で exit する lib の写しのケースが赤（2026-11-08 macOS / Bash 3.2.57 実測。64/1。Issue `#2712`）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -423,7 +424,9 @@ else
   bad "未知の理由の停止診断が不正: $result"
 fi
 
-mkdir -p "$WORK/bin" "$WORK/profile"
+# 写しはプラグインの配置（tests/lib と scripts/lib）を保つ。停止文の共通形（scripts/lib/stop-block.sh）を
+# 実際の相対パスで読ませるため（Issue `#2712`）。
+mkdir -p "$WORK/bin" "$WORK/profile/tests/lib" "$WORK/profile/scripts/lib"
 emit "$WORK/bin/uname" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$OS_CASE_HOST"
@@ -446,9 +449,72 @@ else
   bad "OS 別の許可・停止が契約と異なる"
 fi
 
-cp "$profile" "$WORK/profile/"
-mutant="$WORK/profile/release-skip-profile.sh"
-table="$WORK/profile/release-skip-profile.tsv"
+# --check の停止は出力の末尾を停止文の共通形の 3 行で終え、表の stop: ヒントを 3 行目の次の一手へ載せる。
+# 次の一手は 1 行だけ（行ごとのヒントと二重にしない。Issue `#2712`）
+stop_tail_case() { # <checker> <expected 規則行> <expected 次の一手の部分>
+  local result rc=0 n
+  result="$(PATH="$WORK/bin:$PATH" OS_CASE_HOST=Linux bash "$1" --check "$WORK/gate-output")" || rc=$?
+  n="$(printf '%s\n' "$result" | grep -c '次の一手: ' || true)"
+  [[ "$rc" -eq 1 && "$n" -eq 1 ]] || return 1
+  [[ "$(printf '%s\n' "$result" | tail -n 3 | sed -n 1p)" == '止めた層: 方針' ]] || return 1
+  [[ "$(printf '%s\n' "$result" | tail -n 2 | sed -n 1p)" == "$2"* ]] || return 1
+  [[ "$(printf '%s\n' "$result" | tail -n 1)" == "次の一手: "*"$3"* ]]
+}
+if stop_tail_case "$profile" '止めた規則: partial-skip-policy（tests/lib/release-skip-profile.tsv）— ' 'bubblewrap を入れて'; then
+  ok "--check の停止は末尾 3 行が停止文の共通形（方針 / partial-skip-policy）で、次の一手 1 行に表のヒントが入る"
+else
+  bad "--check の停止の末尾 3 行が停止文の共通形でない・次の一手が 1 行でない"
+fi
+
+# 表にあるがヒントの無い stop 行（素の stop）と、表に無い行（未分類）は次の一手で別の案内にする。
+# 素の stop を「表を確認し検査を書き直す」へ混ぜると、表どおりの停止に表の書き換えを勧めてしまう。
+emit "$WORK/gate-output-bare" <<'EOF'
+  @C@ skip: 起動回数の上限は Windows と Linux でだけ固定する検査のため未実行
+  @C@ skip: bwrap が無いため sandbox 上の経路判定は未検査
+EOF
+emit "$WORK/gate-output-bare-unknown" <<'EOF'
+  @C@ skip: 起動回数の上限は Windows と Linux でだけ固定する検査のため未実行
+  @C@ skip: novel builtin reason for the next-step split
+EOF
+bare_result="$(PATH="$WORK/bin:$PATH" OS_CASE_HOST=Linux bash "$profile" --check "$WORK/gate-output-bare")" && bare_rc=0 || bare_rc=$?
+bare_next="$(printf '%s\n' "$bare_result" | tail -n 1)"
+if [[ "$bare_rc" -eq 1 && "$(printf '%s\n' "$bare_result" | grep -c '次の一手: ' || true)" -eq 1 &&
+  "$bare_next" == '次の一手: '*'bubblewrap を入れて'*'表の stop 行に当たった検査を回せる環境を整えて再実行する'* &&
+  "$bare_next" != *'許容表に無い行'* ]]; then
+  ok "素の stop 行とヒント付きの行が並ぶと、次の一手 1 行にヒントと「検査を回せる環境を整える」が入り、未分類の案内は出ない"
+else
+  bad "素の stop 行の次の一手が未分類の案内と分かれていない: rc=$bare_rc out=[$bare_result]"
+fi
+bare_result="$(PATH="$WORK/bin:$PATH" OS_CASE_HOST=Linux bash "$profile" --check "$WORK/gate-output-bare-unknown")" && bare_rc=0 || bare_rc=$?
+bare_next="$(printf '%s\n' "$bare_result" | tail -n 1)"
+if [[ "$bare_rc" -eq 1 && "$(printf '%s\n' "$bare_result" | grep -c '次の一手: ' || true)" -eq 1 &&
+  "$bare_next" == '次の一手: 表の stop 行に当たった検査を回せる環境を整えて再実行する'*' / 許容表に無い行は表を確認し検査を書き直す（ADR-084 決定 4'* ]]; then
+  ok "素の stop 行と未分類の行が並ぶと、次の一手 1 行に 2 つの案内を分けて並べる"
+else
+  bad "素の stop 行と未分類の行の次の一手が分かれていない: rc=$bare_rc out=[$bare_result]"
+fi
+
+cp "$profile" "$WORK/profile/tests/lib/"
+cp "$SCRIPT_DIR/../../scripts/lib/stop-block.sh" "$WORK/profile/scripts/lib/"
+mutant="$WORK/profile/tests/lib/release-skip-profile.sh"
+table="$WORK/profile/tests/lib/release-skip-profile.tsv"
+rm -f "$WORK/profile/scripts/lib/stop-block.sh"
+cp "$SCRIPT_DIR/../lib/release-skip-profile.tsv" "$table"
+if stop_tail_case "$mutant" '止めた規則: stop-block-unavailable（scripts/lib/stop-block.sh）— ' 'bubblewrap を入れて'; then
+  ok "停止文の共通形を読めない写しも rc 1 で止まり、stop-block-unavailable の 3 行に表のヒントを残す"
+else
+  bad "停止文の共通形を読めない写しの停止が契約と異なる（rc 1・stop-block-unavailable・ヒントの保持）"
+fi
+# 先頭で exit する lib も同じ 3 行で止まる（lib をサブシェルの外で読むと --check ごと rc 0 で終わり、
+# 許可されない部分 skip が合格へ化ける。Issue `#2712`）
+{ printf '%s\n' 'exit 0'; cat "$SCRIPT_DIR/../../scripts/lib/stop-block.sh"; } >"$WORK/profile/scripts/lib/stop-block.sh"
+if stop_tail_case "$mutant" '止めた規則: stop-block-unavailable（scripts/lib/stop-block.sh）— ' 'bubblewrap を入れて'; then
+  ok "先頭で exit する停止文の lib でも rc 1 で止まり（rc 0 の素通しにならない）、stop-block-unavailable の 3 行に表のヒントを残す"
+else
+  bad "先頭で exit する停止文の lib で --check の停止が契約と異なる（rc 1・stop-block-unavailable・ヒントの保持）"
+fi
+cp "$SCRIPT_DIR/../../scripts/lib/stop-block.sh" "$WORK/profile/scripts/lib/"
+rm -f "$table"
 if profile_case "$mutant" Linux 2 'プロファイルを読めない'; then
   ok "プロファイル不在は停止する"
 else

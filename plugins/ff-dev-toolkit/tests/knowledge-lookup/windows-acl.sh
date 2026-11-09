@@ -2,93 +2,11 @@
 # Sourced by verify.sh. The Windows branch of the shared reader: stub
 # uname / cygpath / powershell.exe let every platform drive it, and on Windows'
 # Git Bash the real ACL helper checks a real AppContainer capability ACE.
-win_root="$(mktemp -d "$TMP/windows-acl.XXXXXX")" || exit 1
-win_root="$(cd -P "$win_root" && pwd -P)" || exit 1 # the reader names physical paths
-win_bin="$win_root/bin"
-mkdir -p "$win_bin" "$win_root/Windows/System32/WindowsPowerShell/v1.0" "$win_root/project" "$win_root/tmp" "$win_root/state"
-cat >"$win_bin/uname" <<'EOF'
-#!/usr/bin/env bash
-echo MINGW64_NT-10.0-26200
-EOF
-# Identity spelling: the stub helper reads the same POSIX paths it is asked about.
-cat >"$win_bin/cygpath" <<'EOF'
-#!/usr/bin/env bash
-case "$1" in
-  -W) printf '%s\n' "$WIN_FAKE_WINDOWS" ;;
-  -am|-u) shift; for p in "$@"; do printf '%s\n' "$p"; done ;;
-  *) exit 2 ;;
-esac
-EOF
-# Speaks the request protocol of knowledge-read-acl.ps1; a listed path is writable by a capability SID.
-cat >"$win_root/Windows/System32/WindowsPowerShell/v1.0/powershell.exe" <<'EOF'
-#!/usr/bin/env bash
-printf 'start\n' >>"$WIN_FAKE_STARTS"
-printf '%s\n' "${PSModulePath-<unset>}|${PSMODULEPATH-<unset>}" >>"$WIN_FAKE_MODULES"
-request=()
-answer() {
-  local header="${request[0]}" tag="" prefix="" position=0 path
-  printf '%s\n' "${header%% *}" >>"$WIN_FAKE_REQUESTS"
-  case "$header" in *' '*) tag="${header#* }"; prefix="$tag|" ;; esac
-  for path in "${request[@]:1}"; do
-    [[ -z "${WIN_FAKE_SLOW:-}" ]] || sleep "$WIN_FAKE_SLOW"
-    if grep -qxF -- "$path" "$WIN_FAKE_ERROR" 2>/dev/null; then printf '%sE|Unverified path type\n' "$prefix"; break; fi
-    if grep -qxF -- "$path" "$WIN_FAKE_DANGER" 2>/dev/null; then printf '%s%s|1|1||S-1-15-3-1024-2461\n' "$prefix" "$position"
-    else printf '%s%s|1|0\n' "$prefix" "$position"; fi
-    position=$((position + 1))
-  done
-  [[ "$1" -eq 0 ]] || printf '.%s\n' "$tag"
-}
-while IFS= read -r line; do
-  [[ "$line" != quit ]] || exit 0 # lets a check kill the helper on every platform
-  if [[ "$line" != . ]]; then request+=("$line"); continue; fi
-  [[ ${#request[@]} -eq 0 ]] || answer 1
-  request=()
-done
-[[ ${#request[@]} -eq 0 ]] || answer 0
-EOF
-chmod +x "$win_bin/uname" "$win_bin/cygpath" "$win_root/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-win_project="$(cd -P "$win_root/project" && pwd -P)"
-win_tmp="$(cd -P "$win_root/tmp" && pwd -P)"
-win_state="$(cd -P "$win_root/state" && pwd -P)"
-
-win_slow=""; win_error="" # per run: seconds per reply line, and a path the helper fails on
-win_env=() # per run: NAME=value pairs in place before the reader is sourced
-# Probe the same bash executable win_run will invoke, independently of the reader's
-# state. Bash 3.2 has neither coproc nor dynamic descriptors and uses one-shot ACLs.
-# A failed/empty/unknown probe is a broken test input, not an unsupported capability.
-win_coproc="$(env PATH="$win_bin:$PATH" bash -c '
-  case "$(type -t coproc 2>/dev/null)" in
-    keyword) ;;
-    "") echo unsupported; exit 0 ;;
-    *) exit 2 ;;
-  esac
-  if ( eval "exec {probe_fd}<>/dev/null" ) 2>/dev/null; then echo supported; else echo unsupported; fi
-')" || { bad 'Windows ACL: 起動 shell の常駐機能を確認できない'; return 1; }
-case "$win_coproc" in
-  supported|unsupported) ;;
-  *) bad 'Windows ACL: 常駐機能 probe の結果が空または未知'; return 1 ;;
-esac
-win_runs=0
-win_initial_fail="$FAIL"
-win_run() { # <snippet> [dangerous paths...]: stub Windows without SystemRoot in any spelling
-  win_runs=$((win_runs + 1))
-  : >"$win_root/starts"; : >"$win_root/requests"; : >"$win_root/danger"; : >"$win_root/error"; : >"$win_root/modules"
-  [[ $# -lt 2 ]] || printf '%s\n' "${@:2}" >"$win_root/danger"
-  [[ -z "$win_error" ]] || printf '%s\n' "$win_error" >"$win_root/error"
-  win_rc=0; win_began="$SECONDS"
-  env -u SystemRoot -u SYSTEMROOT -u windir -u WINDIR -u PSModulePath -u PSMODULEPATH PATH="$win_bin:$PATH" \
-    ${win_env[@]+"${win_env[@]}"} \
-    WIN_FAKE_WINDOWS="$win_root/Windows" WIN_FAKE_STARTS="$win_root/starts" WIN_FAKE_REQUESTS="$win_root/requests" \
-    WIN_FAKE_MODULES="$win_root/modules" \
-    WIN_FAKE_DANGER="$win_root/danger" WIN_FAKE_ERROR="$win_root/error" WIN_FAKE_SLOW="$win_slow" \
-    TMPDIR="$win_tmp" FF_DEV_TOOLKIT_STATE_DIR="$win_state" WIN_PROJECT="$win_project" \
-    WIN_LIB="$PLUGIN_ROOT/scripts/lib/knowledge-read-boundary.sh" \
-    bash -c '. "$WIN_LIB"; '"$1" >"$win_root/out" 2>"$win_root/err" || win_rc=$?
-  win_elapsed=$((SECONDS - win_began)); win_slow=""; win_error=""; win_env=()
-  win_out="$(cat "$win_root/out")"; win_err="$(cat "$win_root/err")"
-  win_starts="$(awk 'END { print NR + 0 }' "$win_root/starts")"
-  win_requests="$(awk 'END { print NR + 0 }' "$win_root/requests")"
-}
+# The resident-helper cases (W6 / W7 / W16) need coproc and dynamic descriptors (bash 4+); they
+# live in the knowledge-lookup-resident-acl suite, which skips as a whole on a shell without them,
+# so this file emits no bash-version skip (Issue `#2711`).
+# shellcheck source=windows-acl-fixture.sh
+. "$SCRIPT_DIR/windows-acl-fixture.sh"
 
 win_run 'ff_knowledge_storage "$WIN_PROJECT" dir'
 [[ "$win_rc" -eq 0 && -z "$win_err" && "$win_requests" -ge 1 ]] \
@@ -119,27 +37,6 @@ win_run 'ff_knowledge_job_directory w5' "$win_tmp" "$win_state"
   && ok 'W5: 代替先も通らないときは止め、両方の止めた場所を名指す（境界は緩めない）' \
   || bad "W5: 代替先の拒否を黙って通した、または片方しか名指さない（rc=${win_rc} out=${win_out} err=${win_err}）"
 
-# The stale reply accepts a clean path; the live request must still refuse its own.
-if [[ "$win_coproc" == supported ]]; then
-  win_run 'printf "inspect stale\n%s\n.\n" "$WIN_PROJECT" >&"$ff_knowledge_acl_out"; ff_knowledge_storage "$TMPDIR" dir' "$win_tmp"
-  [[ "$win_rc" -eq 2 && "$win_starts" -eq 1 && "$win_requests" -eq 2 && "$win_err" == *"止めた場所: ${win_tmp} — "* && "$win_err" != *'Bad file descriptor'* ]] \
-    && ok 'W6: 先に放棄された要求の応答（別の tag）を読み飛ばし、今の要求の判定で止める' \
-    || bad "W6: 古い応答を今の要求の答えとして読んだ、または常駐要求が成立しない（rc=${win_rc} starts=${win_starts} requests=${win_requests} err=${win_err}）"
-else
-  echo '  ○ skip: W6 は bash 4 以上でだけ成立する検査のため未実行（起動 shell に coproc/動的 FD が無い）'
-fi
-
-if [[ "$win_coproc" == supported ]]; then
-  win_run 'printf "quit\n" >&"$ff_knowledge_acl_out"; wait "$ff_knowledge_acl_service_PID" 2>/dev/null; rc=0; ff_knowledge_storage "$WIN_PROJECT" dir || rc=$?; echo "alive rc=$rc"'
-  # The one-shot fallback needs timeout(1); without it the call refuses instead of passing.
-  win_expect=2; ! command -v timeout >/dev/null 2>&1 || win_expect=0
-  [[ "$win_out" == "alive rc=$win_expect" && ( "$win_expect" -eq 2 || "$win_starts" -eq 2 ) ]] \
-    && ok "W7: helper が死んでも shell は SIGPIPE で落ちず、1 回きりの起動で判定を返す（${win_out}、起動 ${win_starts} 回）" \
-    || bad "W7: helper の死で shell ごと終わった、または判定を返さない（rc=${win_rc} out=${win_out} starts=${win_starts} err=${win_err}）"
-else
-  echo '  ○ skip: W7 は bash 4 以上でだけ成立する検査のため未実行（起動 shell に coproc/動的 FD が無い）'
-fi
-
 # A helper that answers each line within 10 s but the whole reply in far more must
 # not hold the caller: one deadline covers the reply, and the helper is stopped.
 win_slow=4
@@ -169,33 +66,38 @@ win_run 'ff_knowledge_job_directory w12'
   || bad "W12: ACL の判定でない拒否で作業場所を移した（rc=${win_rc} out=${win_out} err=${win_err}）"
 
 # Issue `#2566`: a host started from PowerShell 7 hands its PSModulePath down; the helper
-# must start without it on both the resident and the one-shot path, and the caller keeps it.
-# The value is in place before sourcing: sourcing the reader is what starts the resident helper.
-win_has_timeout=0; ! command -v timeout >/dev/null 2>&1 || win_has_timeout=1
-if [[ "$win_coproc" == supported ]]; then
-  win_expected_starts=$((1 + win_has_timeout)); win_expect_out="first rc=0"$'\n'"second rc=$((2 - 2 * win_has_timeout))"
-else
-  win_expected_starts=$((2 * win_has_timeout)); win_expect_out="first rc=$((2 - 2 * win_has_timeout))"$'\n'"second rc=$((2 - 2 * win_has_timeout))"
-fi
-win_env=('PSModulePath=D:\home\u\PowerShell\Modules;c:\program files\powershell\7\Modules' 'PSMODULEPATH=D:\x')
-win_run 'rc=0; ff_knowledge_storage "$WIN_PROJECT" dir || rc=$?; echo "first rc=${rc}"
-  if [[ "${ff_knowledge_acl_state:-}" == on ]]; then printf "quit\n" >&"$ff_knowledge_acl_out"; wait "$ff_knowledge_acl_service_PID" 2>/dev/null; fi
+# must start without it, and the caller keeps it. The value is in place before sourcing:
+# sourcing the reader is what starts the resident helper. A shell with coproc runs W16 on the
+# resident path (and the one-shot path after the helper dies) in knowledge-lookup-resident-acl.
+# A shell without it reaches the helper one-shot only, which needs timeout(1) — W1 does too,
+# so a host without timeout(1) is red here instead of skipping (Issue `#2711`).
+if [[ "$win_coproc" != supported ]]; then
+  win_env=('PSModulePath=D:\home\u\PowerShell\Modules;c:\program files\powershell\7\Modules' 'PSMODULEPATH=D:\x')
+  win_run 'rc=0; ff_knowledge_storage "$WIN_PROJECT" dir || rc=$?; echo "first rc=${rc}"
   rc=0; ff_knowledge_storage "$WIN_PROJECT" dir || rc=$?; echo "second rc=${rc}"
   echo "caller=${PSModulePath}|${PSMODULEPATH}"'
-win_modules_unset="$(awk '$0 != "<unset>|<unset>" { bad = 1 } END { print (bad ? "no" : "yes") }' "$win_root/modules")"
-if [[ "$win_expected_starts" -eq 0 ]]; then
-  echo '  ○ skip: W16 は bash 4 以上でだけ成立する検査のため未実行（起動 shell に coproc/動的 FD が無く、1 回きりの起動に要る timeout(1) も無い）'
+  win_modules_unset="$(awk '$0 != "<unset>|<unset>" { bad = 1 } END { print (bad ? "no" : "yes") }' "$win_root/modules")"
+  [[ "$win_out" == $'first rc=0\nsecond rc=0\ncaller=D:\\home\\u\\PowerShell\\Modules;c:\\program files\\powershell\\7\\Modules|D:\\x' \
+    && "$win_starts" -eq 2 && "$win_modules_unset" == yes ]] \
+    && ok "W16: 1 回きりの起動の helper は PSModulePath を受け取らず、呼び出し元の値は変わらない（起動 ${win_starts} 回）" \
+    || bad "W16: helper へ PSModulePath が渡った、呼び出し元の値が変わった、または 1 回きりの起動に要る timeout(1) が無い（capability=${win_coproc} starts=${win_starts} modules=$(tr '\n' ' ' <"$win_root/modules") out=${win_out} err=${win_err}）"
+fi
+
+# The real-Windows branches (W15 / W8〜W9 / W17) ask the capability layer (scripts/lib/wsl-notice.sh,
+# ADR-084 decision 3) once instead of reading the platform here (Issue `#2711`). A layer that cannot be
+# read fails the suite rather than quietly taking the stub branch.
+win_msys=no
+if [[ -r "$PLUGIN_ROOT/scripts/lib/wsl-notice.sh" ]] && . "$PLUGIN_ROOT/scripts/lib/wsl-notice.sh" \
+  && declare -F ff_host_is_msys >/dev/null; then
+  ff_host_is_msys "${OSTYPE:-}" && win_msys=yes
 else
-  [[ "$win_out" == "${win_expect_out}"$'\ncaller=D:\\home\\u\\PowerShell\\Modules;c:\\program files\\powershell\\7\\Modules|D:\\x' \
-    && "$win_starts" -eq "$win_expected_starts" && "$win_modules_unset" == yes ]] \
-    && ok "W16: helper は常駐・1 回きりの起動のどちらでも PSModulePath を受け取らず、呼び出し元の値は変わらない（起動 ${win_starts} 回）" \
-    || bad "W16: helper へ PSModulePath が渡った、または呼び出し元の値が変わった（capability=${win_coproc} starts=${win_starts} modules=$(tr '\n' ' ' <"$win_root/modules") out=${win_out} err=${win_err}）"
+  bad '能力層 scripts/lib/wsl-notice.sh の ff_host_is_msys を読めず、実 Windows 分岐（W8〜W9 / W15 / W17）を判定できない'
 fi
 
 # Issue `#2530`: Windows hosts hand the plugin root over as C:/…; a reader sourced by that
 # spelling keeps the helper path as is instead of joining it to the cwd.
-case "$(uname -s 2>/dev/null)" in
-  MSYS*|MINGW*|CYGWIN*)
+case "$win_msys" in
+  yes)
     win_drive_lib="$(cygpath -m "$PLUGIN_ROOT/scripts/lib/knowledge-read-boundary.sh")"
     # A lost helper exits 2 inside the substitution; take the rc so a lost helper fails W15 instead of ending the suite under set -e.
     win_drive_rc=0; win_drive_out="$(cd "$win_project" && bash -c '. "$1"; printf "%s\n" "$ff_knowledge_acl_resource"; ff_knowledge_acl_command && echo found' _ "$win_drive_lib" 2>&1)" || win_drive_rc=$?
@@ -222,8 +124,8 @@ case "$(uname -s 2>/dev/null)" in
     ;;
 esac
 
-case "$(uname -s 2>/dev/null)" in
-  MSYS*|MINGW*|CYGWIN*)
+case "$win_msys" in
+  yes)
     # internetClient capability SID: the kind of ACE an MSIX app adds under AppData.
     win_sid='S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681'
     win_real_rc=0; win_real="$(env -u SystemRoot SYSTEMROOT='C:\Windows' TMPDIR="${kl_tmpdir_given:-${TMPDIR:-/tmp}}" bash -c '. "$1"; ff_knowledge_job_directory win-real' _ "$PLUGIN_ROOT/scripts/lib/knowledge-read-boundary.sh")" || win_real_rc=$?
@@ -258,8 +160,8 @@ case "$(uname -s 2>/dev/null)" in
   *) echo '  ○ skip: W8〜W9 は Windows の Git Bash でだけ成立する検査のため未実行（実 ACL と powershell.exe を使う）' ;;
 esac
 
-win_expected_runs=12
-[[ "$win_coproc" == supported ]] || win_expected_runs=10
+win_expected_runs=9
+[[ "$win_coproc" == supported ]] || win_expected_runs=10 # + W16 on the one-shot path
 if [[ "$win_runs" -eq "$win_expected_runs" ]]; then
   ok "Windows ACL: ${win_coproc} shell の合成 case ${win_expected_runs} 件を実行した"
 else

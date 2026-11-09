@@ -621,6 +621,16 @@ contains "$REFINE_REPORT_SCRIPT" \
 contains "$REFINE_FILE" \
   "除外枠は R3-a の対象にしない" \
   "SKILL.md R1: 統合先の除外枠を R3-a の対象にしない案内"
+# live の本文から引用・リンクされている候補を Archive 候補に並べると、承認どおりの適用で
+# 使われている知見が archive へ移る（Issue `#2708`。PR `#2705` は 9 件を手作業で外した）。
+# 判定そのものは ace-live-references.test.ts / ace-refine-report.test.ts が固定する。ここは
+# 別枠（参照元付き）として出す設計と、承認ゲートでの扱いの案内が消えないことだけを見る。
+contains "$REFINE_REPORT_SCRIPT" \
+  "## Archive 候補から除外（live から参照あり、" \
+  "ace-refine-report が live 参照のある候補を参照元付きの別枠へ回す"
+contains "$REFINE_FILE" \
+  "「live から参照あり」の除外枠も既定では R3-a の対象にしない" \
+  "SKILL.md R1: live 参照の除外枠を既定で R3-a の対象にしない案内"
 
 echo
 echo "== エントリ形式ゲート（Issue #286） =="

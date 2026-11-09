@@ -6,7 +6,7 @@ Every file invocation takes `--github-input /absolute/index.json`. The existing 
 
 ## Exact selectors and phases
 
-`repository` is a full URL. Public Release operations use `https://github.com/feel-flow/ff-dev-toolkit`. The preparation PR and default health context use the repository configured in Git's origin before transport rewrites. An explicit health `--repo OWNER/REPO` instead selects `https://github.com/OWNER/REPO`; GH_REPO/GH_HOST and response payloads do not select another repository. `release.sync-base` retains the existing explicit SYNC_DRIFT_PUBLIC_REPO selector when set.
+`repository` is a full URL. Public Release operations use `https://github.com/feel-flow/ff-dev-toolkit`. The preparation PR uses the repository configured in Git's origin before transport rewrites. The health checker judges the public weekly workflow (`weekly-public-run-all.yml`, ADR-086), so its default repository is literally `https://github.com/feel-flow/ff-dev-toolkit`; it is never derived from Git's origin or gh's resolution. An explicit health `--repo OWNER/REPO` instead selects `https://github.com/OWNER/REPO`; GH_REPO/GH_HOST and response payloads do not select another repository, and no argument selects another workflow name. `release.sync-base` retains the existing explicit SYNC_DRIFT_PUBLIC_REPO selector when set.
 
 | Operation | Exact scope in addition to repository | Phase | Position / completeness | Raw requirements |
 | --- | --- | --- | --- | --- |
@@ -16,16 +16,16 @@ Every file invocation takes `--github-input /absolute/index.json`. The existing 
 | release.latest-post | none | after | `{}` | tag_name string; mismatch remains existing rc1 stop |
 | release.open-preparation | state=open, limit=200 | check / prepare-finalize | `{}`, last=true | array of number/headRefName, at most200; original prefix selection |
 | release.sync-base | per_page=30 | sync / due / check | `{}` | array of commit.message; original first-line sync anchor |
-| release.health.repo | none | health / gate / report | `{}` | nameWithOwner matches selected repo; nonempty default_branch |
-| release.health.workflow | workflow=weekly-run-all.yml | health / gate / report | `{}` | state/created_at; original ISO and time rules |
-| release.health.runs | workflow=weekly-run-all.yml, event=schedule or workflow_dispatch, per_page=100, max_age_days=14 by default | health / gate / report | `{}` | workflow_runs array; id/status/event/head_branch/created_at/updated_at/html_url/conclusion; event must match selector |
-| release.health.log | run_id=adopted evidence ID | health / gate / report | `{}`, last=true | nonempty complete whole-run raw text, original complete suite summary |
+| release.health.repo | none | health / report | `{}` | nameWithOwner matches selected repo; nonempty default_branch |
+| release.health.workflow | workflow=weekly-public-run-all.yml | health / report | `{}` | state/created_at; original ISO and time rules |
+| release.health.runs | workflow=weekly-public-run-all.yml, event=schedule or workflow_dispatch, per_page=100, max_age_days=14 by default | health / report | `{}` | workflow_runs array; id/status/event/head_branch/created_at/updated_at/html_url/conclusion; event must match selector |
+| release.health.log | run_id=adopted evidence ID | health / report | `{}`, last=true | nonempty complete whole-run raw text, original complete suite summary |
 | release.issue-repo | private source repository URL | queue | `{}` | exact full_name, private=true, visibility=private |
 | release.issue-list | private source repository URL | queue | `{}`, last=true | flat array of all open release Issues with number, state and managed body |
 
-The weekly run request retains the original one-page100 window, rather than claiming an all-history enumeration. max_age_days follows the explicit checker option. Release lists preserve the original all-page request. A missing next page, missing attempt, wrong phase, wrong repo/event/window or wrong adopted log ID cannot reuse another entry.
+The weekly run request retains the original one-page100 window, rather than claiming an all-history enumeration. max_age_days follows the explicit checker option. Release lists preserve the original all-page request. A missing next page, missing attempt, wrong phase, wrong repo/event/window/workflow, an origin-scoped health entry or wrong adopted log ID cannot reuse another entry.
 
-The real orchestrator passes `--github-phase` only with `--github-input`: due→sync-drift(due), check→required(check) and sync-drift(check), prepare's offline simulation→required(prepare-simulation), finalization→required(prepare-finalize), gate→weekly(gate), report→weekly(report). The three standalone defaults are sync, check and health, respectively. The accepted phase sets are closed. Preparation simulation still runs without `--fetch`, removes its temporary origin and performs no GitHub read; the phase handoff is not an acquisition receipt. No repository override was added for that offline path.
+The real orchestrator passes `--github-phase` only with `--github-input`: due→sync-drift(due), check→required(check) and sync-drift(check), prepare's offline simulation→required(prepare-simulation), finalization→required(prepare-finalize), report→weekly(report). The gate stage performs no weekly read (ADR-086): it always runs the full gate, so it needs no health entry, and a same-HEAD full gate record is reused while a fast record is not. The three standalone defaults are sync, check and health, respectively. The accepted phase sets are closed. Preparation simulation still runs without `--fetch`, removes its temporary origin and performs no GitHub read; the phase handoff is not an acquisition receipt. No repository override was added for that offline path.
 
 ## Write handoff and evidence boundary
 
@@ -33,7 +33,7 @@ The Issue entries support read-only dry-run decisions. A real queue update or re
 
 File mode never runs `gh release create`. When creation is needed after the normal Git/gate conditions, it emits the common `PLAN:{...}` containing exact tag/repo/title/notes/verify-tag/latest and requests a separate fresh `release.create` create-readback. Without it, the command returns rc2/unavailable. An already matching fresh read-back emits no new creation PLAN and still requires fresh post Latest plus all-page Release/tag reconciliation. Static phase names cannot establish when a host acquired the bytes; the host must perform the approved actual write and capture fresh read-back. The existing release approval boundary remains in the canonical sync skill.
 
-Optional sync-drift acquisition failure keeps SKIP_REASON/rc1; it does not claim DRIFT_COUNT=0 or synchronized status. The release caller still stops on that unknown result. File weekly shortages stop the release orchestrator with rc2 and cannot select a full-gate alternative or fall through to released. The original gh unknown→full-gate/warning behavior remains.
+Optional sync-drift acquisition failure keeps SKIP_REASON/rc1; it does not claim DRIFT_COUNT=0 or synchronized status. The release caller still stops on that unknown result. A file weekly shortage in the report stage stops the release orchestrator with rc2 and cannot fall through to released. An acquired weekly result that is not healthy (gh or file) is reported as POST_HEALTH with a warning and does not stop the sync; the run continues exactly as a healthy one would.
 
 ## GitHub MCP mapping and limitations
 
@@ -43,6 +43,6 @@ Historical MCP probes confirmed some Release/commit/open-PR GET paths, while wor
 
 The local release fixture also passes the unchanged upstream environment preflight with real Python/Node, the existing media Node resolver, local manifest/tsc data and an npm stub that accepts only `ls`. Its unset loader condition uses a matching `disabled` state receipt; this is a synthetic fixture condition, not evidence of a live gate.
 
-The suite measures exact stdout/stderr/rc parity on meaningful acquired paths, mandatory missing-field/scope/phase/page/log controls, complete create arguments and read-back separation, the six-attempt/five-second policy, and three independent suite-miss failures (empty case set, deleted raw fixture, removed source needle). Missing source or dependencies fails the suite; it is not a zero-case green result.
+The suite measures exact stdout/stderr/rc parity on meaningful acquired paths (including the report stage), mandatory missing-field/scope/phase/page/log controls, the gh argv of the fixed public health target (the gh stub answers only `weekly-public-run-all.yml` of a known repository and returns 404 otherwise), the gate stage's single full-gate plan without any weekly read in gh and file modes, complete create arguments and read-back separation, the six-attempt/five-second policy, and three independent suite-miss failures (empty case set, deleted raw fixture, removed source needle). Missing source or dependencies fails the suite; it is not a zero-case green result.
 
 The prepare-finalize regression invokes the actual extracted function with the actual capture/delegate/checker and disposable Git fetches; only the outer writing snapshot is inert and dry-run prevents commits. It distinguishes operation-prefixed mandatory input shortages (rc2) from valid open preparation PRs and Git fetch failures (the existing gh stopped/rc1 result), and checks adjacent phase isolation.

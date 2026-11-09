@@ -34,7 +34,8 @@ for need in "$REPO_ROOT/scripts/lib/release-in-flight-functions.sh" "$REPO_ROOT/
   "$REPO_ROOT/scripts/lib/release-partial-write-functions.sh" "$REPO_ROOT/scripts/lib/release-prepare-functions.sh" \
   "$REPO_ROOT/scripts/lib/release-publish-functions.sh" \
   "$SCRIPT_DIR/release-gate-mode-runtime.sh" "$SCRIPT_DIR/../lib/shared-changelog-judge.sh" \
-  "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/commit-identity-functions.sh"; do
+  "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/commit-identity-functions.sh" \
+  "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/stop-block.sh"; do
   [[ -f "$need" ]] || { echo "✗ オーケストレータの依存 lib がありません: $need" >&2; exit 1; }
 done
 bash "$SCRIPT_DIR/footer-reuse-runtime.sh" "$ORCH" || exit 1
@@ -203,6 +204,8 @@ exit 2
 STUB
   write_stub "$r/scripts/check-weekly-run-all-health.sh" <<'STUB'
 #!/usr/bin/env bash
+# 呼ばれた回数を数える（gate 段は呼ばず、report 段だけが呼ぶ。ADR-086）
+echo called >>"$RELEASE_RT_STATE/health.log"
 if [[ -f "$RELEASE_RT_STATE/health.bad" ]]; then printf '%s\n' "HEALTH=failed" "CRON=alive" "EVIDENCE=failed"; exit 1; fi
 printf '%s\n' "HEALTH=healthy" "CRON=alive" "EVIDENCE=satisfied"
 STUB
@@ -333,6 +336,16 @@ if [[ -f "$RELEASE_RT_STATE/runall.advance" ]]; then
   exit 1
 fi
 [[ ! -f "$RELEASE_RT_STATE/runall.empty" ]] || exit 0
+# 必須 suite の skip で止まる回: 本物の run-all と同じく、出力の最後を停止文の 3 行（方針 / required-suite-skipped）で終える
+if [[ -f "$RELEASE_RT_STATE/runall.required-skip" ]]; then
+  echo "suites: total=3 run=3 passed=2 failed=0 skipped=1 not-run=0"
+  echo "checks-skipped: total=0 suites=0"
+  echo "✗ 環境都合で必須名簿の suite が skip した: stub-suite（再現: FF_RUN_ALL_ALLOW_SKIP=stub-suite bash tests/run-all.sh）" >&2
+  printf '%s\n' '止めた層: 方針' \
+    '止めた規則: required-suite-skipped（tests/run-all.sh）— 必須名簿の suite が環境都合で skip した: stub-suite' \
+    '次の一手: 回せる環境で再実行する。回せない環境なら理由を承知のうえで FF_RUN_ALL_ALLOW_SKIP=stub-suite bash tests/run-all.sh' >&2
+  exit 1
+fi
 m="$(git -C "$(dirname "$0")" rev-parse --absolute-git-dir)/ff-release-in-flight/info"
 [[ ! -f "$m" ]] || cp "$m" "$RELEASE_RT_STATE/marker-seen"
 echo "  ○ skip: estimation カテゴリファイルは未作成（stub）"
@@ -342,8 +355,6 @@ if [[ -f "$RELEASE_RT_STATE/runall.media-typecheck-skip" ]]; then echo "    ○ 
 if [[ -f "$RELEASE_RT_STATE/runall.media-render-skip" ]]; then echo "    ○ skip: FF_MEDIA_RENDER=1 が未設定のため実レンダリングを行いません（検査は1件も実行されていません）"; fi
 # OS 限定の検査が Linux / macOS で出す skip（guard-review-in-flight の (w1)〜(w5) と同じ文言。Issue `#2033`）
 if [[ -f "$RELEASE_RT_STATE/runall.os-limited-skip" ]]; then echo "  ○ skip: (w1)〜(w5) はドライブ付きのパスを扱う、Windows の Git Bash でだけ成立する検査のため未実行"; fi
-# bash 版限定の検査が macOS 標準の bash 3.2 で出す skip（retrospective-stop-hook / skill-drift-check と同じ文言。Issue `#2077`）
-if [[ -f "$RELEASE_RT_STATE/runall.bash4-limited-skip" ]]; then echo "  ○ skip: 壁時計が戻る回の再現（/bin/bash 3 系は時間切れを rc 1 で返す）は、bash 4 以上でだけ成立する検査のため未実行"; fi
 # bwrap の無いホストで decision-tree が出す skip（同じ文言。Issue `#2457`）
 if [[ -f "$RELEASE_RT_STATE/runall.bwrap-skip" ]]; then echo "  ○ skip: bwrap が無いため sandbox 上の経路判定は未検査（J0 の静的固定は実施済み）"; fi
 echo "suites: total=3 run=3 passed=3 failed=0 skipped=0 not-run=0"
@@ -435,6 +446,8 @@ cp "$REPO_ROOT/plugins/ff-dev-toolkit/tests/lib/release-skip-profile.sh" \
 printf '%s\n' 'issue_begin() { :; }' 'issue_require_execution_arguments() { :; }' >>"$SSOT/scripts/lib/release-issue-functions.sh"
 cp "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/commit-identity-functions.sh" "$SSOT/plugins/ff-dev-toolkit/scripts/lib/"
 cp "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/github-input.sh" "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/abs-path.sh" "$SSOT/plugins/ff-dev-toolkit/scripts/lib/"
+# 停止文の共通形（stop() と部分 skip のプロファイルが末尾 3 行を組む。Issue `#2712`）
+cp "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/stop-block.sh" "$SSOT/plugins/ff-dev-toolkit/scripts/lib/"
 # changelog-fragments の stub が呼ぶ共有 CHANGELOG の判定（実物。検査対象のオーケストレータではなく本 suite と同じ木から写す）
 mkdir -p "$SSOT/plugins/ff-dev-toolkit/tests/lib"
 cp "$SCRIPT_DIR/../lib/shared-changelog-judge.sh" "$SSOT/plugins/ff-dev-toolkit/tests/lib/"
@@ -491,7 +504,7 @@ export PATH="$STUB_BIN:$PATH"
 OUT="" RC=0
 run_orch() { # 引数はオーケストレータへ
   RC=0
-  # 外側の suite のモードを漏らさず、模擬リリース自身の健全性判定で gate のモードを選ばせる。
+  # 外側の suite のモードを漏らさない（gate 段は自分で全件を指定する。ADR-086）。
   OUT="$("$ENV_BIN" -u FF_RUN_ALL_FULL bash "$SSOT/scripts/release-dev-toolkit.sh" --public "$PUB" "$@" 2>&1)" || RC=$?
 }
 has() { [[ "$OUT" == *"$1"* ]]; }
@@ -501,6 +514,8 @@ release_head() { printf '%s\n' "$OUT" | awk -F= '/^RELEASE_HEAD=/ { n++; v = $2 
 has_head_line() { [[ $'\n'"$OUT" == *$'\n'"RELEASE_HEAD="* ]]; }
 stage_order() { printf '%s\n' "$OUT" | awk '/^RELEASE_STAGE=/ { sub(/^RELEASE_STAGE=/, ""); sub(/ .*/, ""); printf "%s%s", (n++ ? " " : ""), $0 }'; }
 dump() { printf '%s\n' "$OUT" | sed 's/^/    | /' >&2; }
+# 停止文の共通形（Issue `#2712`）: stdout の結果行（RELEASE_RESULT= / RELEASE_VERSION=）を除いた出力の末尾 3 行の n 行目
+stop_tail() { printf '%s\n' "$OUT" | grep -v -E '^RELEASE_(RESULT|VERSION)=' | tail -n 3 | sed -n "${1}p"; }
 count_runall() { if [[ -f "$STATE/runall.log" ]]; then grep -c . "$STATE/runall.log"; else echo 0; fi; }
 origin_subjects() { git -C "$SSOT_ORIGIN" log --format=%s develop; }
 # パイプ + grep -q は pipefail 下で一致時に反転しうるので、出力を受けてから行単位で照合する
@@ -590,6 +605,7 @@ echo "-- release: 本実行（準備 → 同期 → タグ → Release → foote
 # ファイル内容は公開可能でも、非公開 SSOT の自由文の件名は別の入力。
 printf '%s\n' 'public content for metadata regression' >>"$SSOT/plugins/ff-dev-toolkit/README.md"
 commit_push "fix: PRIVATE-SYNC-SUBJECT-ONLY"
+: >"$STATE/health.log"
 run_orch --summary "デモ"
 if [[ "$RC" -eq 0 ]] && has "RELEASE_RESULT=released" && has "RELEASE_VERSION=0.32.0"; then
   ok "本実行が released / v0.32.0 で完了する"
@@ -641,9 +657,15 @@ else
   bad "収束の同期が期待どおりでない（sync commit ${pub_syncs} 件）"; git -C "$PUB_ORIGIN" log --format=%s main | sed 's/^/    | /' >&2
 fi
 if has "POST_HEALTH=healthy" && has "POST_FOOTER=green" && has "stub digest 0.31.0..0.32.0"; then
-  ok "report 段が週次 CI の健全性判定・footer 検査・要約をジョブ出力に残す"
+  ok "report 段が公開側の週次 CI の健全性判定・footer 検査・要約をジョブ出力に残す"
 else
   bad "report 段の出力が不足"; dump
+fi
+# gate は 2 周（footer-only の収束）走り、report は 1 回。健全性判定の呼び出しが report の 1 回だけなら gate は呼んでいない（ADR-086）
+if [[ "$(count_runall)" -eq 2 && "$(grep -c . "$STATE/health.log" 2>/dev/null || true)" == 1 ]]; then
+  ok "健全性判定を呼ぶのは report 段の 1 回だけ（gate 段は 2 周とも呼ばない）"
+else
+  bad "健全性判定の呼び出しが report 段の 1 回ではない（$(grep -c . "$STATE/health.log" 2>/dev/null || echo 0) 回）"; dump
 fi
 if [[ ! -d "$SSOT/.git/ff-release-in-flight" ]]; then ok "完了後に in-flight 印を片付ける"; else bad "in-flight 印が残った"; fi
 
@@ -750,6 +772,15 @@ if [[ "$RC" -eq 1 ]] && has "NG: [gate] OS 別プロファイルで部分 skip �
 else
   bad "typecheck の環境 skip で止まらない・次の一手が npm ci を名指ししない (rc=$RC)"; dump
 fi
+# 規則を決めたプロファイル（方針）が停止文を印字し、stop() は包み直さない（次の一手は 1 行。Issue `#2712`）
+if [[ "$RC" -eq 1 && "$(printf '%s\n' "$_next_step" | grep -c .)" -eq 1 ]] \
+  && [[ "$(stop_tail 1)" == '止めた層: 方針' ]] \
+  && [[ "$(stop_tail 2)" == '止めた規則: partial-skip-policy（tests/lib/release-skip-profile.tsv）— '* ]] \
+  && [[ "$(stop_tail 3)" == '次の一手: '*'npm ci --prefix plugins/ff-media-toolkit --no-audit --no-fund'* ]]; then
+  ok "部分 skip の停止は末尾 3 行がプロファイルの停止文（方針）で、ゲートは包み直さず次の一手が 1 行"
+else
+  bad "部分 skip の停止の末尾 3 行がプロファイルの停止文でない・次の一手が 1 行でない (rc=$RC)"; dump
+fi
 # 既定環境（setup 前）は 2 行が同時に出る。許容行があっても環境 skip の停止は消えず、許容行は未知として再掲されない
 # （run-all 出力の写し 1 回だけ。typecheck 行は写し + 未知の再掲で 2 回）
 : >"$STATE/runall.media-render-skip"
@@ -773,19 +804,23 @@ if [[ "$RC" -eq 1 ]] && has "NG: [gate] OS 別プロファイルで部分 skip �
 else
   bad "Linux の gate が bwrap 不在の skip で止まらない・次の一手が bubblewrap を名指ししない (rc=$RC)"; dump
 fi
+if [[ "$(printf '%s\n' "$_next_step" | grep -c .)" -eq 1 && "$(stop_tail 3)" == '次の一手: '*'bubblewrap を入れて'* ]]; then
+  ok "bwrap 不在の停止も次の一手は 1 行で、出力の末尾に置かれる（Issue \`#2712\`）"
+else
+  bad "bwrap 不在の停止で次の一手が 1 行でない・末尾にない (rc=$RC)"; dump
+fi
 printf '%s\n' Darwin >"$STATE/uname.os"
-# OS 限定の skip（Linux / macOS の run-all で必ず出る）と bash 版限定の skip（macOS 標準の bash 3.2 で出る）も同じ回に出す。
-# どちらかで止まるとリリースが進まない。フラグを分け、停止文でどちらが残っていたかを名指しする
+# OS 限定の skip（Linux / macOS の run-all で必ず出る）も同じ回に出す。これで止まるとリリースが進まない。
+# bash 版を理由にする部分 skip は許容表に無い（bash 4 以上が要る検査は suite ごと skip する。Issue `#2711`）
 : >"$STATE/runall.os-limited-skip"
-: >"$STATE/runall.bash4-limited-skip"
 run_orch
-if [[ "$RC" -eq 0 ]] && has "RELEASE_VERSION=0.33.0" && has "Windows の Git Bash でだけ成立する検査のため未実行" && has "bash 4 以上でだけ成立する検査のため未実行"; then ok "typecheck の原因を取り除いた再実行は、opt-in の render-smoke skip・OS 限定・bash 版限定の skip が残っていても v0.33.0 まで完了する（許容表にある）"; else bad "再実行で完了しない（render-smoke の opt-in skip か OS 限定・bash 版限定の skip で止まった可能性。出力に OS 限定=$(has "Windows の Git Bash でだけ成立する検査のため未実行" && echo あり || echo なし) / bash 版限定=$(has "bash 4 以上でだけ成立する検査のため未実行" && echo あり || echo なし)） (rc=$RC)"; dump; fi
+if [[ "$RC" -eq 0 ]] && has "RELEASE_VERSION=0.33.0" && has "Windows の Git Bash でだけ成立する検査のため未実行"; then ok "typecheck の原因を取り除いた再実行は、opt-in の render-smoke skip・OS 限定の skip が残っていても v0.33.0 まで完了する（許容表にある）"; else bad "再実行で完了しない（render-smoke の opt-in skip か OS 限定の skip で止まった可能性。出力に OS 限定=$(has "Windows の Git Bash でだけ成立する検査のため未実行" && echo あり || echo なし)） (rc=$RC)"; dump; fi
 if [[ "$RC" -eq 0 ]] && has "bwrap が無いため sandbox 上の経路判定は未検査"; then
   ok "Darwin の gate は bwrap 不在の skip が残っていても完了する（条件付きの OS 限定）"
 else
   bad "Darwin の gate が bwrap 不在の skip で止まった・skip 行が出ていない (rc=$RC)"; dump
 fi
-rm -f "$STATE/runall.media-render-skip" "$STATE/runall.os-limited-skip" "$STATE/runall.bash4-limited-skip" "$STATE/runall.bwrap-skip" "$STATE/uname.os"
+rm -f "$STATE/runall.media-render-skip" "$STATE/runall.os-limited-skip" "$STATE/runall.bwrap-skip" "$STATE/uname.os"
 
 echo "-- release: 進行中のサイクル（in-flight 印） --"
 MARKER="$SSOT/.git/ff-release-in-flight"
@@ -1052,7 +1087,7 @@ fi
 run_orch
 [[ "$RC" -eq 0 ]] || { bad "同期差分の確認の後の本実行が完了しない (rc=$RC)"; dump; }
 
-echo "-- release: ゲートの完走証拠と週次 CI の再評価 --"
+echo "-- release: ゲートの完走証拠と、健全性判定に左右されない全件ゲートの再利用 --"
 printf '%s\n' '- ゲート' >"$SSOT/changelog.d/112.added.gate.md"
 commit_push "feat: gate"
 : >"$STATE/runall.empty"
@@ -1064,14 +1099,25 @@ run_orch
 if [[ "$RC" -eq 1 ]] && has "完走サマリー"; then ok "部分 skip の会計行（checks-skipped）が無ければ緑と読まない"; else bad "会計行の無い run-all を緑と読んだ (rc=$RC)"; dump; fi
 rm -f "$STATE/runall.no-skipline"
 : >"$STATE/sync.fail-once"
+runs_before="$(count_runall)"
 run_orch
+runs_mid="$(count_runall)"
+if [[ "$RC" -eq 1 ]] && has "NG: [sync]" && [[ "$((runs_mid - runs_before))" -eq 1 && "$(tail -n 1 "$STATE/runall.log")" == "run 1" ]] \
+  && grep -qx "GATE_OK=$(git -C "$SSOT" rev-parse HEAD):full" "$SSOT/.git/ff-release-state"; then
+  ok "健全性判定が healthy でも gate は全件（FF_RUN_ALL_FULL=1）で回り、全件の記録を残す"
+else
+  bad "healthy の回の gate が全件で回らない、または記録が全件でない (rc=$RC / $(tr '\n' ' ' <"$STATE/runall.log"))"; dump
+fi
+# 健全性判定が failed になっても、同じ HEAD の全件の記録は再利用する（gate は判定を見ない。ADR-086）
 : >"$STATE/health.bad"
 run_orch
 rm -f "$STATE/health.bad"
-if [[ "$RC" -eq 0 ]] && [[ "$(tail -n 2 "$STATE/runall.log" | head -n 1)" == "run 1" ]]; then
-  ok "同じ HEAD で fast のゲートが緑でも、週次 CI が healthy でなくなった再実行は全件で回し直す"
+runs_after="$(count_runall)"
+if [[ "$RC" -eq 0 ]] && has "RELEASE_STAGE=gate STATUS=skip" && has "POST_HEALTH=failed" && has "RELEASE_RESULT=released" \
+  && [[ "$((runs_after - runs_mid))" -eq 1 && "$(tail -n 1 "$STATE/runall.log")" == "run 1" ]]; then
+  ok "健全性判定が failed でも同じ HEAD の全件の記録でゲートを省き（footer 後の 1 回だけ全件で回す）、report は止めずに POST_HEALTH=failed を残す"
 else
-  bad "週次 CI の悪化を見ずにゲートを省いた (rc=$RC / $(tr '\n' ' ' <"$STATE/runall.log"))"; dump
+  bad "健全性判定の悪化で全件の記録を捨てた、または report が止まった (rc=$RC run-all: ${runs_before}→${runs_mid}→${runs_after} / $(tr '\n' ' ' <"$STATE/runall.log"))"; dump
 fi
 
 echo "-- release: ローカルにだけある古いタグ --"
@@ -1820,13 +1866,13 @@ printf '%s\n' '- 前進の検査' >"$SSOT/changelog.d/120.added.advance.md"
 commit_push "feat: advance"
 printf 'neutral\n' >"$STATE/runall.advance"
 : >"$STATE/recheck.log"
-# 既定実行でも外側の全件モードを明示的に渡し、run_orch の分離を外した退行を検出する。
-FF_RUN_ALL_FULL=1 run_orch
+# gate は毎回全件なので（ADR-086）、鮮度の suite の再検査も全件の指定（recheck 1）で回る。
+run_orch
 side_sha="$(cat "$STATE/side.sha" 2>/dev/null || true)"
 gate_ok_sha="$(awk -F= '$1 == "GATE_OK" { v = $2 } END { sub(/:.*/, "", v); print v }' "$SSOT/.git/ff-release-state")"
 if [[ "$RC" -eq 0 ]] && has "RELEASE_RESULT=released" && has "公開対象・リリース機構・changelog.d の外だけ進んだ" && has "GATE_STALE_RECHECK=green" \
   && [[ -n "$side_sha" ]] && git -C "$SSOT" merge-base --is-ancestor "$side_sha" HEAD \
-  && grep -qx "recheck 0 plugins/ff-dev-toolkit/tests/changelog-fragments/verify.sh plugins/ff-dev-toolkit/tests/shared-version-convergence/verify.sh" "$STATE/recheck.log" \
+  && grep -qx "recheck 1 plugins/ff-dev-toolkit/tests/changelog-fragments/verify.sh plugins/ff-dev-toolkit/tests/shared-version-convergence/verify.sh" "$STATE/recheck.log" \
   && [[ "$(grep -c . "$STATE/recheck.log")" -eq 1 ]] && git -C "$SSOT" merge-base --is-ancestor "$side_sha" "$gate_ok_sha"; then
   ok "neutral の前進で鮮度の赤になった gate は、HEAD を進めて鮮度の suite だけを同じモードで再検査し、続行して released になる"
 else
@@ -1879,6 +1925,44 @@ if [[ "$RC" -eq 1 ]] && has "NG: [gate] run-all が失敗した — 同期しな
 else
   bad "鮮度以外の赤が混ざる回で止まらない、または再検査した (rc=$RC)"; dump
 fi
+# stop() は NG 行の後ろに停止文の共通形の 3 行（ガード / release-gate/<段>）を置き、次の一手は 1 行（Issue `#2712`）
+if [[ "$(stop_tail 1)" == '止めた層: ガード' ]] \
+  && [[ "$(stop_tail 2)" == '止めた規則: release-gate/gate（scripts/release-dev-toolkit.sh）— run-all が失敗した — 同期しない' ]] \
+  && [[ "$(stop_tail 3)" == '次の一手: 修正して develop へ入れた後、'* ]] \
+  && [[ "$(printf '%s\n' "$OUT" | grep -c '次の一手: ')" -eq 1 ]]; then
+  ok "stop() の停止は末尾 3 行が停止文の共通形（ガード / release-gate/gate）で、次の一手が 1 行"
+else
+  bad "stop() の停止の末尾 3 行が停止文の共通形でない・次の一手が 1 行でない"; dump
+fi
+# run-all が必須 suite の skip で停止文を印字して止まった回は、規則を決めた run-all の 3 行を末尾に残し、
+# stop() は包み直さない（次の一手は 1 行。Issue `#2712`）
+: >"$STATE/runall.required-skip"
+run_orch
+if [[ "$RC" -eq 1 ]] && has "NG: [gate] run-all が失敗した — 同期しない" \
+  && [[ "$(stop_tail 1)" == '止めた層: 方針' ]] \
+  && [[ "$(stop_tail 2)" == '止めた規則: required-suite-skipped（tests/run-all.sh）— '* ]] \
+  && [[ "$(stop_tail 3)" == '次の一手: 回せる環境で再実行する。'* ]] \
+  && [[ "$(printf '%s\n' "$OUT" | grep -c '次の一手: ')" -eq 1 ]] \
+  && [[ "$(printf '%s\n' "$OUT" | grep -c '^止めた層: ')" -eq 1 ]]; then
+  ok "必須 suite の skip（required-suite-skipped）で止まる回は、run-all の停止文が末尾に 1 回だけ残り、次の一手が 1 行"
+else
+  bad "必須 suite の skip の停止で停止文が二重・末尾にない (rc=$RC)"; dump
+fi
+# 停止文の lib が先頭で exit しても、stop() は finish stopped 1 まで届く（lib を本体のシェルで読むと
+# rc 0・RELEASE_RESULT 無しで終わる。Issue `#2712`）。写しで作業ツリーが汚れるので、preflight の停止で測る
+SB_LIB="$SSOT/plugins/ff-dev-toolkit/scripts/lib/stop-block.sh"
+{ printf '%s\n' 'exit 0'; cat "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/stop-block.sh"; } >"$SB_LIB"
+run_orch
+if [[ "$RC" -eq 1 ]] && has "RELEASE_RESULT=stopped" \
+  && [[ "$(stop_tail 1)" == '止めた層: ガード' ]] \
+  && [[ "$(stop_tail 2)" == '止めた規則: stop-block-unavailable（scripts/lib/stop-block.sh）— '* ]] \
+  && [[ "$(stop_tail 3)" == '次の一手: '* ]]; then
+  ok "停止文の lib が先頭で exit しても、stop() は rc 1・RELEASE_RESULT=stopped で止まり、stop-block-unavailable の 3 行を残す"
+else
+  bad "停止文の lib が先頭で exit すると stop() が止まらない・3 行が無い (rc=$RC)"; dump
+fi
+cp "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/stop-block.sh" "$SB_LIB"
+rm -f "$STATE/runall.required-skip"
 run_orch
 [[ "$RC" -eq 0 ]] || { bad "鮮度以外の赤で止まった後の再実行が完了しない (rc=$RC)"; dump; }
 sync_ssot

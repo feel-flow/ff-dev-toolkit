@@ -64,12 +64,15 @@
 #   W1〜W14. 読み取り境界の Windows 経路（windows-acl.sh。Issue `#2461`）: SystemRoot の綴りに依らず ACL の検査まで
 #        進む・常駐対応 shell は helper を 1 回だけ起動し、非対応 shell は要求ごとに起動する・止めた祖先と SID と TMPDIR の案内を出す・TMPDIR の祖先が
 #        ACL の判定で通らなければ状態ディレクトリ配下へ移して移したことを出し、そこも通らなければ両方を名指して止める
-#        （判定以外の拒否では移さない）・別の要求の応答を読み飛ばす・helper の死で shell が落ちない・応答全体の期限・
+#        （判定以外の拒否では移さない）・応答全体の期限・
 #        helper が判定できなかったパスの理由・素の wait が helper を待たない・相対の綴りを止める。
-#        W8〜W9 は Windows の Git Bash でだけ、実 ACL と capability SID の ACE で確かめる
+#        W8〜W9 は Windows の Git Bash でだけ、実 ACL と capability SID の ACE で確かめる。
+#        常駐 helper の経路でだけ成立する W6（別の要求の応答を読み飛ばす）・W7（helper の死で shell が落ちない）と
+#        常駐側の W16 は suite knowledge-lookup-resident-acl へ分けた（coproc の無い shell では suite ごと skip。Issue `#2711`）
 #   W15. C:/… と C:\…/… の綴りで読み込んだ境界は helper のパスを cwd へ連結しない（Issue `#2530`）。Windows の Git Bash では
 #        実ドライブの綴りで helper を見つけ、他のホストでは cwd 下の C: ディレクトリで MINGW（そのまま）と他の OS（連結）を分ける
-#   W16. ACL helper は常駐・1 回きりの起動のどちらでも PSModulePath を受け取らず、呼び出し元の値は変わらない（Issue `#2566`）
+#   W16. ACL helper は 1 回きりの起動で PSModulePath を受け取らず、呼び出し元の値は変わらない（Issue `#2566`）。ここでは
+#        常駐を持たない shell の 1 回きりの起動だけを測り、常駐側は knowledge-lookup-resident-acl が測る
 #   W17. Windows の Git Bash で PowerShell 7 を入れた機械では、PowerShell 7 の PSModulePath を受け継いでも実 ACL の検査が判定を返す
 #   K28. --resolve-playbook の出力契約（unreadable の PATH、相対指定の REL、root 内外は実体で判定、
 #        symlink ファイルは実体が root 内のときだけ REL、キーワード拒否）
@@ -83,9 +86,11 @@
 # 空振り検出: resolve_playbook へ 1 件ずつ当てた 9 変異 — 記録段の削除・記録段で docs-template を一律除外・plugin 同梱テンプレートの除外を外す・曖昧時に先頭を採る・既定パス優先を外す・env 段の削除・env の空白判定を外す・旧 resolve_store へ戻す・記載ファイル相対の解決を外す — がすべて K22〜K26 のいずれかで赤（1〜12 件）、正常対照は 69 件成功（2026-10-18 実測）。
 # 空振り検出: レビュー対応後の 7 変異 — 記録段の symlink 除外・root 前置照合・node_modules 除外を外す、記録 1 件で実在する既定パスを置き換える、--resolve-playbook の絶対パス実体化を外す、symlink ファイルの実体確認を外す — がそれぞれ K25 / K27 / K28 で赤（1〜2 件）、正常対照は 82 件成功（2026-10-18 実測）。awk が読める記載ファイルで失敗する分岐（読み取り失敗の rc=2）は再現手段が無く未検査。
 # 空振り検出: 検索・解決の前に ACE_INDEX を実体化する処理を外すと K28 が 4 件赤、非 ASCII まで含める 2 本目のトークン抽出を外すと K29 が赤（rc=2 / absent）、正常対照は 84 件成功（2026-10-18 実測）。
-# 空振り検出: windows-acl.sh は、隔離コピーへ 1 件ずつ当てた変異 — helper の場所を SystemRoot だけから求める（W1〜W8 ほか 10 件赤）・helper を常駐させない（W2 / W7 / W11）・止めた場所の名指しを外す（W3〜W6 / W8 / W11 / W12）・作業場所の代替を外す（W4 / W5 / W8）・ACL の判定以外の拒否でも代替へ移す（W12）・応答全体の期限を行ごとの 10 秒へ戻す（W10）・helper が判定できなかった理由の名指しを外す（W11 / W12）・helper を disown しない（W13 で素の wait が止まり suite が打ち切られる）・生存確認と subshell を外して死んだ helper へ直接書く（W7） — がすべて赤、正常対照は 13 件成功（2026-10-29 Windows 11 ARM64 の Git Bash 実測）。helper を kill で止める形は MSYS では包み側のプロセスにしか届かず死を作れなかったため、stub の quit 要求で止める。相対の綴りの無限ループへ戻す変異は suite ごと止まるので当てていない（W14 は戻り値と診断で止めたことを見る）。
+# 空振り検出: windows-acl.sh は、隔離コピーへ 1 件ずつ当てた変異 — helper の場所を SystemRoot だけから求める（W1〜W8 ほか 10 件赤）・helper を常駐させない（W2 / W7 / W11）・止めた場所の名指しを外す（W3〜W6 / W8 / W11 / W12）・作業場所の代替を外す（W4 / W5 / W8）・ACL の判定以外の拒否でも代替へ移す（W12）・応答全体の期限を行ごとの 10 秒へ戻す（W10）・helper が判定できなかった理由の名指しを外す（W11 / W12）・helper を disown しない（W13 で素の wait が止まり suite が打ち切られる）・生存確認と subshell を外して死んだ helper へ直接書く（W7） — がすべて赤、正常対照は 13 件成功（2026-10-29 Windows 11 ARM64 の Git Bash 実測。W6 / W7 は Issue `#2711` で suite knowledge-lookup-resident-acl へ移したので、この行は移す前の実測）。helper を kill で止める形は MSYS では包み側のプロセスにしか届かず死を作れなかったため、stub の quit 要求で止める。相対の綴りの無限ループへ戻す変異は suite ごと止まるので当てていない（W14 は戻り値と診断で止めたことを見る）。
 # 空振り検出: W16〜W17（Issue `#2566`）は、隔離コピーへ当てた 3 変異 — 常駐 helper の起動から PSModulePath を外す処理を消す・1 回きりの起動から消す・両方から消す — がすべて W16 で赤（stub が受け取った値を名指す）、常駐側を消す 2 変異は W17 も赤（read-unverifiable）。正常対照は windows-acl.sh 17 件成功（2026-11-01 Windows 11 ARM64 の Git Bash 実測。WSL の Linux でも 3 変異が W16 で赤、正常対照 14 件成功）。値は reader を source する前の環境で渡す — source が常駐 helper を起動するので、snippet の中の export では常駐側の変異が空振りする（実測）。
-# 空振り検出: 起動 shell の常駐機能は reader の状態と独立に probe する。macOS Bash 3.2 の正常対照は10件成功（合成9case＋集合照合）。probe空/未知/失敗・常駐対応の偽宣言・W2/W11のone-shot起動数を1へ戻す・W6/W7の分岐逆転・W11の後続要求削除・case数0・途中return・入力空/不在・完了名だけの14変異は各rc1（2026-10-29実測）。W6/W7は非対応shellで部分skip、W8〜W9の実Windows限定も維持。今回の常駐対応shellと実Windowsの再実測は未実施。
+# 空振り検出: 起動 shell の常駐機能は reader の状態と独立に probe する。macOS Bash 3.2 の正常対照は10件成功（合成9case＋集合照合）。probe空/未知/失敗・常駐対応の偽宣言・W2/W11のone-shot起動数を1へ戻す・W6/W7の分岐逆転・W11の後続要求削除・case数0・途中return・入力空/不在・完了名だけの14変異は各rc1（2026-10-29実測）。W8〜W9の実Windows限定も維持。今回の常駐対応shellと実Windowsの再実測は未実施。W6/W7はIssue `#2711` でsuite knowledge-lookup-resident-aclへ移したので、この行は移す前の実測。
+# 空振り検出: W6 / W7 と常駐側の W16 を suite knowledge-lookup-resident-acl へ分けた後（Issue `#2711`）、windows-acl.sh は bash 版で部分 skip しない。1 回きりの起動の W16 は timeout(1) が無い機械では skip せず赤にする（W1 と同じ前提。timeout(1) の無い機械では未実測）。正常対照は /bin/bash 3.2 で 164 件成功（合成 10 case、W16 は起動 2 回）、Homebrew bash 5.3 を PATH の先頭に置いて 163 件成功（合成 9 case）。部分 skip は K32 と W8〜W9 の 2 行だけ（2026-11-08 macOS 実測）。
+# 空振り検出: 実 Windows 分岐（W8〜W9 / W15 / W17）の判定は windows-acl.sh で `uname` を読まず、能力層の ff_host_is_msys（scripts/lib/wsl-notice.sh。ADR-084 決定 3）へ 1 回だけ委ねる（Issue `#2711`）。隔離コピーで判定を msys 固定にすると macOS でも実機分岐へ入り suite が rc=127 で打ち切られ、wsl-notice.sh を消すと能力層を読めない旨を名指して赤（2026-11-08 macOS 実測。コピーの正常対照は配置に依存する K31 の 2 件を除き 162 件成功、実ツリーでは 164 件成功）。
 #
 # 変異検出（2026-09-19 実測。変異は 1 件ずつ当て、前後で対照を取る）:
 #           emit_obs の archived 除外を外すと 2 件赤（K2 と K11 の行数）。emit_obs の Status 抽出を

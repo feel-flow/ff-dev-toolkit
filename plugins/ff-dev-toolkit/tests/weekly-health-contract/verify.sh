@@ -23,6 +23,12 @@
 #     受理側（healthy）へは倒れない
 #   - 三値の exit 契約（0 / 1 / 2）が実測で区別できる
 #   - 受理を緩める逃げ道が CLI にも環境変数にも無い（負テスト。ACE-692-1 / ACE-437-5）
+#   - 判定対象は公開側の週次（weekly-public-run-all.yml。ADR-086）に固定され、ワークフロー名を
+#     切り替える入口が CLI にも環境変数にも無い。gh スタブはそのワークフローの API パスにだけ
+#     応答し、別のワークフロー名（非公開側の weekly-run-all.yml を含む）には実 gh と同じ 404 を返す
+#   - --repo を省いた回の判定対象は文字どおり feel-flow/ff-dev-toolkit で、gh の解決先（GH_REPO・
+#     gh repo view）やカレントの checkout の origin からは導かれない。gh へ渡る呼び出しは
+#     すべてそのリポジトリを明示する
 #
 # 旧判定器 `check-full-gate-reuse.sh` は `reuse-runtime.sh`（実 fixture での挙動検査）を
 # 持っていた。ADR-039 で置き換わった新判定器にはそれが無く、契約は SKILL.md の文面固定
@@ -102,7 +108,9 @@ fi
 # --- gh スタブ -------------------------------------------------------------------
 # 実 gh の呼び分けを引数で再現する。fixture は env で与える（スタブ側の env であって、
 # 判定スクリプト自身は環境変数を 1 つも読まない — 下の負テストで機械保証する）:
-#   STUB_REPO              gh repo view が返す OWNER/REPO（GH_REPO があればそちらが勝つ = 実 gh と同じ）
+#   STUB_REPO              gh repo view が返す OWNER/REPO（GH_REPO があればそちらが勝つ = 実 gh と同じ）。
+#                          判定スクリプトは gh repo view を呼ばない（呼ぶと STUB_CALL_MARKER に残る）
+#   STUB_CALL_MARKER       スタブが受けた引数列（"$*"）を 1 呼び出し 1 行で追記するファイル
 #   STUB_DEFAULT_BRANCH    repos/OWNER/REPO の default_branch
 #   STUB_WORKFLOW_STATE    workflow の state（既定 active）
 #   STUB_WORKFLOW_CREATED  workflow の created_at（空文字を指定できるよう `:-` ではなく `-` で既定を当てる）
@@ -124,14 +132,15 @@ cat > "$BIN/gh" <<'STUBEOF'
 #!/usr/bin/env bash
 set -uo pipefail
 args="$*"
+[ -n "${STUB_CALL_MARKER:-}" ] && printf '%s\n' "$args" >> "$STUB_CALL_MARKER"
 case "$args" in
   repo\ view*)
-    # 実 gh と同じく GH_REPO をローカル解決より優先する。判定スクリプトが GH_REPO を
-    # 明示的に落としていなければ、この行が判定対象を差し替える。
+    # 実 gh と同じく GH_REPO をローカル解決より優先する。判定スクリプトがここから判定対象を
+    # 導くように戻ると、この行が判定対象を差し替える。
     printf '%s\n' "${GH_REPO:-${STUB_REPO:-owner/repo}}"
     exit 0
     ;;
-  *runs?event=schedule*)
+  api\ repos/*/actions/workflows/weekly-public-run-all.yml/runs\?event=schedule*)
     [ "${STUB_FAIL_SCHEDULE:-0}" = 1 ] && { echo "gh: stubbed schedule runs failure" >&2; exit 1; }
     if [ "${STUB_BROKEN_SCHEDULE:-0}" = 1 ]; then
       printf '%s\n' '{"workflow_runs": [ {"id":'
@@ -146,7 +155,7 @@ case "$args" in
     printf '{"workflow_runs": %s}\n' "${STUB_SCHEDULE_RUNS:-[]}"
     exit 0
     ;;
-  *runs?event=workflow_dispatch*)
+  api\ repos/*/actions/workflows/weekly-public-run-all.yml/runs\?event=workflow_dispatch*)
     [ "${STUB_FAIL_DISPATCH:-0}" = 1 ] && { echo "gh: stubbed dispatch runs failure" >&2; exit 1; }
     if [ -n "${STUB_DISPATCH_RUNS_FILE:-}" ]; then
       runs="$(cat "$STUB_DISPATCH_RUNS_FILE")" || { echo "gh: stub fixture unreadable" >&2; exit 1; }
@@ -156,7 +165,7 @@ case "$args" in
     printf '{"workflow_runs": %s}\n' "${STUB_DISPATCH_RUNS:-[]}"
     exit 0
     ;;
-  api\ repos/*/actions/workflows/*)
+  api\ repos/*/actions/workflows/weekly-public-run-all.yml)
     [ "${STUB_FAIL_WORKFLOW:-0}" = 1 ] && { echo "gh: stubbed workflow failure" >&2; exit 1; }
     if [ "${STUB_BROKEN_WORKFLOW:-0}" = 1 ]; then
       printf '%s\n' '{"state": "active"'
@@ -165,6 +174,12 @@ case "$args" in
     printf '{"state":"%s","created_at":"%s"}\n' \
       "${STUB_WORKFLOW_STATE:-active}" "${STUB_WORKFLOW_CREATED-2026-01-01T00:00:00Z}"
     exit 0
+    ;;
+  api\ repos/*/actions/*)
+    # 判定対象以外のワークフロー（非公開側の weekly-run-all.yml を含む）。公開リポジトリに
+    # 存在しないワークフロー名を引いた実 gh と同じ 404 を返す。
+    echo "gh: Not Found (HTTP 404)" >&2
+    exit 1
     ;;
   api\ repos/*)
     [ "${STUB_FAIL_META:-0}" = 1 ] && { echo "gh: stubbed repository metadata failure" >&2; exit 1; }
@@ -221,13 +236,36 @@ run_checker() { # 残りの引数は判定スクリプトへ渡す。env は呼�
   RC=$?
 }
 
-run_checker_autorepo() { # --repo を渡さず、判定スクリプト自身にリポジトリを解決させる
-  OUT="$(PATH="$BIN:$PATH" bash "$CHECKER" "$@" 2>&1)"
+run_checker_autorepo() { # $1: 実行時の cwd。--repo を渡さず、既定の判定対象で回す
+  local cwd="$1"
+  shift
+  OUT="$(cd "$cwd" && PATH="$BIN:$PATH" bash "$CHECKER" "$@" 2>&1)"
   RC=$?
 }
 
 has_line() { grep -qxF "$1" <<<"$OUT"; }
 dump()     { printf '%s' "$OUT" | tr '\n' ' '; }
+
+# スタブが受けた呼び出しが 1 件以上あり、すべてが $2（OWNER/REPO）の公開側の週次を名指ししているか。
+# 空のマーカーは「何も測っていない」なので偽にする。列挙外の呼び出し（gh repo view・別の
+# ワークフロー名・別のリポジトリ）が 1 行でも混じれば偽。
+all_calls_target() { # $1: STUB_CALL_MARKER のファイル / $2: OWNER/REPO
+  local line n=0
+  [ -s "$1" ] || return 1
+  while IFS= read -r line; do
+    n=$((n + 1))
+    case "$line" in
+      "api repos/$2") ;;
+      "api repos/$2/actions/workflows/weekly-public-run-all.yml") ;;
+      "api repos/$2/actions/workflows/weekly-public-run-all.yml/runs?event=schedule&per_page=100") ;;
+      "api repos/$2/actions/workflows/weekly-public-run-all.yml/runs?event=workflow_dispatch&per_page=100") ;;
+      "run view "*" --repo $2 --log") ;;
+      *) return 1 ;;
+    esac
+  done < "$1"
+  [ "$n" -gt 0 ]
+}
+calls_dump() { tr '\n' ' ' < "$1"; }
 
 D0="$(iso_ago 0)"
 D1="$(iso_ago 1)"
@@ -258,8 +296,21 @@ echo "weekly-health-contract verify:"
 # #1086 の実測状況（run 33335212197 failure → 33395047272 success）の再現。
 MARKER="$TMP/log-requests"
 : > "$MARKER"
+CALLS="$TMP/calls-explicit-repo"
+: > "$CALLS"
 STUB_SCHEDULE_RUNS="$SCHED_FAIL_FRESH" STUB_DISPATCH_RUNS="$DISPATCH_OK_FRESH" \
-  STUB_LOG_TOTALS="221=207 111=101" STUB_LOG_MARKER="$MARKER" run_checker
+  STUB_LOG_TOTALS="221=207 111=101" STUB_LOG_MARKER="$MARKER" STUB_CALL_MARKER="$CALLS" run_checker
+# 判定対象のワークフロー（ADR-086）。healthy まで進んだ回の全呼び出しが、--repo で渡した
+# リポジトリの weekly-public-run-all.yml を名指しし、非公開側の weekly-run-all.yml を引かない。
+if all_calls_target "$CALLS" owner/repo \
+  && grep -qxF 'api repos/owner/repo/actions/workflows/weekly-public-run-all.yml' "$CALLS" \
+  && grep -qxF 'api repos/owner/repo/actions/workflows/weekly-public-run-all.yml/runs?event=schedule&per_page=100' "$CALLS" \
+  && grep -qxF 'run view 221 --repo owner/repo --log' "$CALLS" \
+  && ! grep -qF '/weekly-run-all.yml' "$CALLS"; then
+  ok "判定対象は weekly-public-run-all.yml（workflow / run 一覧 / ログの全呼び出しが --repo のリポジトリを明示する）"
+else
+  bad "gh への呼び出しが公開側の週次を名指ししていない: $(calls_dump "$CALLS")"
+fi
 if [ "$RC" -eq 0 ] && has_line 'HEALTH=healthy' && has_line 'CRON=alive' \
   && has_line 'EVIDENCE=satisfied' && has_line 'EVIDENCE_RUN_ID=221' \
   && has_line 'EVIDENCE_EVENT=workflow_dispatch' && has_line 'EVIDENCE_CONCLUSION=success' \
@@ -567,7 +618,7 @@ else
 fi
 
 # --- ケース 10: 受理を緩める逃げ道が無い（負テスト。ACE-692-1）---------------------
-for flag in --event --accept-dispatch --allow-any-branch --force-healthy --skip-cron-check; do
+for flag in --event --accept-dispatch --allow-any-branch --force-healthy --skip-cron-check --workflow; do
   STUB_SCHEDULE_RUNS="$SCHED_FAIL_FRESH" STUB_DISPATCH_RUNS="$DISPATCH_OTHER_BRANCH" \
     run_checker "$flag" schedule
   if [ "$RC" -eq 64 ] && ! has_line 'HEALTH=healthy'; then
@@ -635,21 +686,63 @@ else
   bad "負テスト: 最初の代入より前に読まれる大文字変数がある（環境から緩和されうる）: $(printf '%s' "$undeclared" | tr '\n' ' ')"
 fi
 
-# gh は GH_REPO でローカル解決先を差し替えられる。判定スクリプトが素で `gh repo view` を
-# 呼ぶと、別リポジトリの healthy で判定をすり替えられる（--repo と違い出力に選択の痕跡が
-# 残らない）。--repo 省略時の解決が環境から動かないことを、GH_REPO を尊重するスタブで測る。
-GH_REPO=attacker/repo STUB_REPO=owner/repo STUB_SCHEDULE_RUNS="$SCHED_FAIL_FRESH" run_checker_autorepo
-if has_line 'REPO=owner/repo' && ! has_line 'REPO=attacker/repo'; then
-  ok "負テスト: GH_REPO で判定対象のリポジトリを差し替えられない"
-else
-  bad "負テスト: GH_REPO が判定対象を差し替えた (rc=$RC): $(dump)"
+# --repo を省いた回の判定対象は文字どおり feel-flow/ff-dev-toolkit（ADR-086）。gh の解決先は
+# GH_REPO やカレントの checkout で動き、非公開側の checkout で回すと非公開側を指す。そこから
+# 導くと、別リポジトリの healthy で判定をすり替えられる（--repo と違い出力に選択の痕跡が残らない）。
+# 差し替えの入口を一斉に立てる: GH_REPO、gh repo view の応答、origin が別リポジトリの checkout、
+# 判定スクリプトの内部変数と同名の環境変数（REPO / WORKFLOW）。
+ORIGIN_CHECKOUT="$TMP/other-checkout"
+_origin_url=""
+if git init -q "$ORIGIN_CHECKOUT" >/dev/null 2>&1 \
+  && git -C "$ORIGIN_CHECKOUT" remote add origin https://github.com/other-owner/other-repo >/dev/null 2>&1; then
+  _origin_url="$(git -C "$ORIGIN_CHECKOUT" config --get remote.origin.url 2>/dev/null || true)"
 fi
-# 陰性対照 — スタブ側は実 gh と同じく GH_REPO を優先する（上の緑が空振りでないこと）。
+if [ "$_origin_url" != "https://github.com/other-owner/other-repo" ]; then
+  bad "origin が別リポジトリの checkout を作れていない（この検査は何も測っていない）: ${_origin_url:-none}"
+else
+  CALLS="$TMP/calls-default-repo"
+  : > "$CALLS"
+  GH_REPO=attacker/repo STUB_REPO=other-owner/other-repo REPO=attacker/repo WORKFLOW=weekly-run-all.yml \
+    STUB_DEFAULT_BRANCH=main STUB_SCHEDULE_RUNS="[$(mkrun 801 completed '"success"' main "$D2" "$D2" schedule)]" \
+    STUB_LOG_TOTALS="801=64" STUB_CALL_MARKER="$CALLS" run_checker_autorepo "$ORIGIN_CHECKOUT"
+  if [ "$RC" -eq 0 ] && has_line 'HEALTH=healthy' && has_line 'REPO=feel-flow/ff-dev-toolkit' \
+    && has_line 'DEFAULT_BRANCH=main' && has_line 'EVIDENCE_RUN_ID=801' \
+    && ! has_line 'REPO=attacker/repo' && ! has_line 'REPO=other-owner/other-repo'; then
+    ok "--repo 省略時の判定対象は feel-flow/ff-dev-toolkit（GH_REPO・origin・同名の環境変数で動かない）"
+  else
+    bad "--repo 省略時の判定対象が feel-flow/ff-dev-toolkit でない (rc=$RC): $(dump)"
+  fi
+  if all_calls_target "$CALLS" feel-flow/ff-dev-toolkit \
+    && grep -qxF 'run view 801 --repo feel-flow/ff-dev-toolkit --log' "$CALLS"; then
+    ok "--repo 省略時も gh への呼び出しはすべて feel-flow/ff-dev-toolkit の weekly-public-run-all.yml を明示する（gh repo view を呼ばない）"
+  else
+    bad "--repo 省略時の gh 呼び出しが既定の判定対象だけを名指ししていない: $(calls_dump "$CALLS")"
+  fi
+fi
+# 陰性対照 — スタブ側は実 gh と同じく GH_REPO を優先する。判定スクリプトが gh repo view から
+# 判定対象を導くように戻れば、上の検査は attacker/repo を観測して赤になる（空振りでないこと）。
 _stub_repo_out="$(GH_REPO=attacker/repo STUB_REPO=owner/repo PATH="$BIN:$PATH" gh repo view --json nameWithOwner --jq .nameWithOwner)"
 if [ "$_stub_repo_out" = "attacker/repo" ]; then
   ok "負テスト: スタブは実 gh と同様 GH_REPO を優先する（上の検査が空振りでない）"
 else
   bad "負テスト: スタブが GH_REPO を無視している（GH_REPO の検査が空振りする）: $_stub_repo_out"
+fi
+# 陰性対照 — スタブは判定対象以外のワークフロー名（非公開側の weekly-run-all.yml）へ実 gh と
+# 同じ 404 で応じる。判定スクリプトの WORKFLOW が戻れば、全ケースが判定不能へ倒れて赤になる。
+if _stub_wf_out="$(PATH="$BIN:$PATH" gh api repos/owner/repo/actions/workflows/weekly-run-all.yml 2>&1)"; then
+  bad "負テスト: スタブが非公開側のワークフロー名にも応答する（判定対象の検査が空振りする）: $_stub_wf_out"
+elif [ "$_stub_wf_out" = "gh: Not Found (HTTP 404)" ]; then
+  ok "負テスト: スタブは非公開側のワークフロー名へ 404 を返す（判定対象の検査が空振りでない）"
+else
+  bad "負テスト: 非公開側のワークフロー名へのスタブ応答が想定と違う: $_stub_wf_out"
+fi
+# 判定対象の定数を構造で固定する（ADR-086）。上書きの入口が増えていないことは、上の
+# 「最初の代入より前に読まれる大文字変数」と引数パーサの catch-all が別に塞ぐ。
+if [ "$(grep -c '^WORKFLOW=' "$CHECKER")" = 1 ] && grep -qxF 'WORKFLOW="weekly-public-run-all.yml"' "$CHECKER" \
+  && [ "$(grep -c '^REPO=' "$CHECKER")" = 1 ] && grep -qxF 'REPO="feel-flow/ff-dev-toolkit"' "$CHECKER"; then
+  ok "判定対象の定数は WORKFLOW=weekly-public-run-all.yml / REPO=feel-flow/ff-dev-toolkit の各 1 箇所"
+else
+  bad "判定対象の定数が想定と違う（WORKFLOW / REPO の代入が 1 箇所でない、または値が違う）"
 fi
 
 # 引数パーサの catch-all を構造で固定する。上のフラグ列挙は「いま名前を知っているもの」

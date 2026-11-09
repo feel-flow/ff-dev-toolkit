@@ -566,6 +566,9 @@ awk '
 [ "$(grep -c '^  mcp-guard-probe$' "$_mg_fx/repo/tests/run-all.sh")" -eq 1 ] \
   || bad "case 40: 複製ランナーの MISS_PROBE_BASELINE 差し替えが適用されていない（見出し行の改稿で awk が空振り）"
 cp "$TESTS_DIR/../scripts/record-gate-head.sh" "$_mg_fx/repo/scripts/record-gate-head.sh"
+# 41-G の停止文（scripts/lib/stop-block.sh）を実際の相対パスで読ませる（Issue `#2712`）
+mkdir -p "$_mg_fx/repo/scripts/lib"
+cp "$TESTS_DIR/../scripts/lib/stop-block.sh" "$_mg_fx/repo/scripts/lib/stop-block.sh"
 
 _mg_git() { git -c commit.gpgsign=false -c user.email=t@example.invalid -c user.name=T -c init.defaultBranch=main "$@"; }
 _mg_setup_rc=0
@@ -647,6 +650,35 @@ else
   expect_rc nz "必須 suite が skip した回は従来どおり非 0"
   expect_has '環境都合で消してはいけない suite が skip しました' "必須 skip の停止理由を出す"
   expect_has 'FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1 FF_RUN_ALL_ALLOW_SKIP=' "再現コマンドにオプトアウト前置が残る（コピペで再実行できる）"
+  # 出力の最後は停止文の共通形の 3 行（方針 / required-suite-skipped）で、次の一手に同じ再現コマンドが入る（Issue `#2712`）
+  _mg_tail="$(printf '%s\n' "$RUN_OUT" | tail -n 3)"
+  _mg_t1="$(printf '%s\n' "$_mg_tail" | sed -n 1p)"
+  _mg_t2="$(printf '%s\n' "$_mg_tail" | sed -n 2p)"
+  _mg_t3="$(printf '%s\n' "$_mg_tail" | sed -n 3p)"
+  if [ "$_mg_t1" = '止めた層: 方針' ] \
+    && case "$_mg_t2" in '止めた規則: required-suite-skipped（tests/run-all.sh）— '*) true ;; *) false ;; esac \
+    && case "$_mg_t3" in '次の一手: '*'FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1 FF_RUN_ALL_ALLOW_SKIP="'*'" bash tests/run-all.sh') true ;; *) false ;; esac \
+    && [ "$(printf '%s\n' "$RUN_OUT" | grep -c '次の一手: ')" -eq 1 ]; then
+    ok "必須 skip の停止は出力の最後を停止文の 3 行で終え、次の一手 1 行に再現コマンドを載せる"
+  else
+    bad "必須 skip の停止の末尾 3 行が停止文の共通形でない: [${_mg_tail}]"
+  fi
+  # 41-G2: 停止文の lib が先頭で exit しても run-all は非 0 で止まり、stop-block-unavailable の 3 行を残す
+  # （lib を本体のシェルで読むと rc 0 で終わり、summary の failed=0 だけが残る。Issue `#2712`）
+  cp "$_mg_fx/repo/scripts/lib/stop-block.sh" "$_mg_fx/stop-block.sh.saved"
+  { printf '%s\n' 'exit 0'; cat "$_mg_fx/stop-block.sh.saved"; } >"$_mg_fx/repo/scripts/lib/stop-block.sh"
+  # 写しの差し替えで fixture の作業ツリーが汚れるので、汚れた木の停止より先へ進めるため ALLOW_DIRTY を付ける
+  _mg_run FF_RUN_ALL_ALLOW_DIRTY=1 FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1 FIXTURE_MCP_GUARD_REQUIRED_SKIP=1
+  expect_rc nz "停止文の lib が先頭で exit しても、必須 suite が skip した回は非 0"
+  _mg_tail="$(printf '%s\n' "$RUN_OUT" | tail -n 3)"
+  if [ "$(printf '%s\n' "$_mg_tail" | sed -n 1p)" = '止めた層: 方針' ] \
+    && case "$(printf '%s\n' "$_mg_tail" | sed -n 2p)" in '止めた規則: stop-block-unavailable（scripts/lib/stop-block.sh）— '*) true ;; *) false ;; esac \
+    && case "$(printf '%s\n' "$_mg_tail" | sed -n 3p)" in '次の一手: '*) true ;; *) false ;; esac; then
+    ok "停止文の lib が先頭で exit しても、必須 skip の停止は stop-block-unavailable の 3 行で終わる"
+  else
+    bad "停止文の lib が先頭で exit すると、必須 skip の停止の末尾 3 行が stop-block-unavailable でない: [${_mg_tail}]"
+  fi
+  cp "$_mg_fx/stop-block.sh.saved" "$_mg_fx/repo/scripts/lib/stop-block.sh"
 
   # 41-H: install が不完全（node_modules は在るが .bin/esbuild が無い）な回も止める。
   # 述語をディレクトリの実在へ退行させるとここだけが赤くなる — npm ci --omit=dev / 中断した

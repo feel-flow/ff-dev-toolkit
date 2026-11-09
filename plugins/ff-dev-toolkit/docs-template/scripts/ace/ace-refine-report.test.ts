@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -49,6 +50,19 @@ function statsOf(
     });
   }
   return map;
+}
+
+/**
+ * live 参照の走査（Issue `#2708`）は git の追跡ファイルを読むので、main を通す fixture は PLAYBOOK の
+ * ディレクトリを git に追跡させる（追跡しないと針＝候補自身の見出しが外れて exit 1 になる）。
+ * 追跡した後の書き換えは作業ツリーの内容として読まれる。後から新しく足したファイルは追跡されない。
+ * GIT_* を外すのは、git hook 経由で走ったときに GIT_DIR を引き継いで開発元のリポジトリへ add しないため。
+ */
+function trackPlaybookDir(playbookPath: string): void {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+  const dir = path.dirname(playbookPath);
+  execFileSync("git", ["init", "-q", dir], { env, stdio: "pipe" });
+  execFileSync("git", ["-C", dir, "add", "-A"], { env, stdio: "pipe" });
 }
 
 describe("measureEntryLines", () => {
@@ -554,6 +568,7 @@ describe("domain の分類と候補保護（Issue #1338）", () => {
     fs.writeFileSync(playbookPath, "# ACE Playbook\n");
     const content = fixtureContent();
     fs.writeFileSync(domainPath, content);
+    trackPlaybookDir(playbookPath);
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
     expect(main([playbookPath], { readLog: () => ({ commits: [], malformedCount: 0 }), now: () => NOW })).toBe(0);
@@ -854,6 +869,7 @@ describe("formatRefineReport", () => {
       domainEntries: [],
       archiveCandidates: [],
       mergeTargetExclusions: [],
+      liveReferenceExclusions: [],
       overBudget: [],
       promotionCandidates: [],
       patternsPath: "/repo/docs/03-implementation/PATTERNS.md",
@@ -868,6 +884,7 @@ describe("formatRefineReport", () => {
     expect(report).toContain("## Archive 候補（helpful=0 かつ stale、0 件）");
     // 除外節は 0 件でも出す（「候補 0 件」と「除外して 0 件」を読者が区別できるように）
     expect(report).toContain("## Archive 候補から除外（他エントリの統合先、0 件）");
+    expect(report).toContain("## Archive 候補から除外（live から参照あり、0 件）\n\nなし");
     expect(report).toContain("## 行数バジェット超過（0 件）");
     expect(report).toContain("## PATTERNS.md 昇格候補（Helpful >= 5、0 件）");
     expect(report).toContain("## ドメイン知識（active、0 件）");
@@ -895,6 +912,7 @@ describe("formatRefineReport", () => {
       domainEntries: [],
       archiveCandidates: [],
       mergeTargetExclusions: [{ entry, mergeSources: ["ACE-279-7"] }],
+      liveReferenceExclusions: [],
       overBudget: [],
       promotionCandidates: [],
       patternsPath: "/repo/docs/03-implementation/PATTERNS.md",
@@ -910,6 +928,203 @@ describe("formatRefineReport", () => {
       "- ACE-153-4: 統合先になっているエントリ（Category: coding / Date: 2026-01-01 / Helpful: 0 / 統合元: ACE-279-7）",
     );
     expect(report).toContain("check-refine-invariants");
+  });
+
+  it("live 参照の除外は参照元をファイルごとに畳んで別枠に出す（Issue `#2708`）", () => {
+    const [entry] = parsePlaybookEntries(
+      [
+        "### ACE-400-7: ADR の根拠として引用されるエントリ",
+        "",
+        "| Category | coding | Origin | fixture |",
+        "| Date | 2026-01-01 |",
+        "| Helpful | 0 | Harmful | 0 |",
+        "| Status | active |",
+        "",
+        "---",
+      ].join("\n"),
+      () => {},
+    );
+    const report = formatRefineReport({
+      domainEntries: [],
+      archiveCandidates: [],
+      mergeTargetExclusions: [],
+      liveReferenceExclusions: [
+        {
+          entry,
+          sources: [
+            { file: "docs/06-reference/DECISIONS.md", line: 2917 },
+            { file: "docs/06-reference/DECISIONS.md", line: 2973 },
+            { file: "plugins/x/verify.sh", line: 23 },
+          ],
+        },
+      ],
+      overBudget: [],
+      promotionCandidates: [],
+      patternsPath: "/repo/docs/03-implementation/PATTERNS.md",
+      patternsExists: true,
+      totalEntries: 3,
+      now: NOW,
+      staleDays: 90,
+      maxEntryLines: 15,
+      promoteMin: 5,
+    });
+    expect(report).toContain("## Archive 候補から除外（live から参照あり、1 件）");
+    expect(report).toContain(
+      "- ACE-400-7: ADR の根拠として引用されるエントリ（Category: coding / Date: 2026-01-01 / Helpful: 0 / 参照元: docs/06-reference/DECISIONS.md:2917,2973; plugins/x/verify.sh:23）",
+    );
+    expect(report).toContain("参照元の書き換えまで同じ refine で行うこと");
+  });
+});
+
+describe("main の live 参照の除外（Issue `#2708`・実 git の fixture）", () => {
+  const tempDirs: string[] = [];
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const block = (id: string, body: string): string[] => [
+    `<a id="${id.toLowerCase()}"></a>`,
+    "",
+    `### ${id}: ${id} のタイトル`,
+    "",
+    `| Category | coding | Origin | PR #${id.split("-")[1]} |`,
+    "| Date | 2026-01-01 |",
+    "| Helpful | 0 | Harmful | 0 |",
+    "| Status | active |",
+    "",
+    body,
+    "",
+    "---",
+    "",
+  ];
+
+  /**
+   * ACE-400-1: 参照なし（Archive 候補に残る）/ ACE-400-2: 他エントリからのリンク / ACE-400-3: ADR の引用 /
+   * ACE-400-4: 統合先かつ live 参照あり（統合先の枠だけに出る）/ ACE-400-5: Changelog と索引だけ（候補に残る）
+   */
+  function makeRepo(): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ace-refine-live-"));
+    tempDirs.push(root);
+    const knowledge = path.join(root, "docs", "08-knowledge");
+    fs.mkdirSync(path.join(knowledge, "playbook", "archive"), { recursive: true });
+    fs.mkdirSync(path.join(root, "docs", "06-reference"), { recursive: true });
+    fs.writeFileSync(
+      path.join(knowledge, "PLAYBOOK.md"),
+      [
+        "# ACE Playbook",
+        "",
+        "## エントリ一覧",
+        "",
+        "| ID | タイトル | カテゴリ | リンク |",
+        "| --- | --- | --- | --- |",
+        "| ACE-400-5 | ACE-400-5 のタイトル | coding | [playbook/coding.md#ace-400-5](./playbook/coding.md#ace-400-5) |",
+        "",
+        "## Changelog",
+        "",
+        "- ACE-400-5 を追加",
+        "",
+      ].join("\n"),
+    );
+    fs.writeFileSync(
+      path.join(knowledge, "playbook", "coding.md"),
+      [
+        "# PLAYBOOK — コーディング (coding)",
+        "",
+        ...block("ACE-400-1", "誰からも参照されない。"),
+        ...block("ACE-400-2", "参照されるだけ。"),
+        ...block("ACE-400-3", "ADR から引用される。"),
+        ...block("ACE-400-4", "統合先。"),
+        ...block("ACE-400-5", "索引と Changelog にだけ現れる。"),
+        ...block("ACE-400-6", "関連: [ACE-400-2](#ace-400-2)、[ACE-400-4](#ace-400-4)").map((line) =>
+          line === "| Helpful | 0 | Harmful | 0 |" ? "| Helpful | 3 | Harmful | 0 |" : line,
+        ),
+      ].join("\n"),
+    );
+    fs.writeFileSync(
+      path.join(knowledge, "playbook", "archive", "coding.md"),
+      [
+        "# PLAYBOOK archive — コーディング (coding)",
+        "",
+        "### ACE-400-99: 統合元",
+        "",
+        "| Status | merged |",
+        "",
+        "> Merged into: [ACE-400-4](../coding.md#ace-400-4)",
+        "",
+        "archive の本文は live ではない: ACE-400-1",
+        "",
+      ].join("\n"),
+    );
+    fs.writeFileSync(path.join(root, "docs", "06-reference", "DECISIONS.md"), "# 決定\n\n## ADR-1\n\n根拠: ACE-400-3。\n");
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+    execFileSync("git", ["init", "-q", root], { env, stdio: "pipe" });
+    execFileSync("git", ["-C", root, "add", "-A"], { env, stdio: "pipe" });
+    vi.spyOn(process, "cwd").mockReturnValue(root);
+    return path.join(knowledge, "PLAYBOOK.md");
+  }
+
+  const deps = { readLog: () => ({ commits: [], malformedCount: 0 }), now: () => NOW };
+
+  function section(report: string, heading: string): string {
+    const start = report.indexOf(heading);
+    expect(start, heading).toBeGreaterThanOrEqual(0);
+    return report.slice(start).split("\n## ")[0];
+  }
+
+  it("live から参照される候補は参照元付きの別枠へ移り、統合先の枠と二重に出ない", () => {
+    const playbookPath = makeRepo();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(main([playbookPath], deps)).toBe(0);
+    const report = logSpy.mock.calls.flat().join("\n");
+
+    const archive = section(report, "## Archive 候補（");
+    expect(archive).toContain("helpful=0 かつ stale、2 件");
+    expect(archive).toContain("- ACE-400-1:");
+    expect(archive).toContain("- ACE-400-5:");
+
+    const merge = section(report, "## Archive 候補から除外（他エントリの統合先、");
+    expect(merge).toContain("- ACE-400-4:");
+
+    const live = section(report, "## Archive 候補から除外（live から参照あり、");
+    expect(live).toContain("live から参照あり、2 件");
+    expect(live).toMatch(/- ACE-400-2: .*参照元: docs\/08-knowledge\/playbook\/coding\.md:\d+）/u);
+    expect(live).toContain("参照元: docs/06-reference/DECISIONS.md:5）");
+    expect(live).not.toContain("ACE-400-4:");
+  });
+
+  it("走査が読めない（git の失敗）なら exit 1 で候補一覧を出さない", () => {
+    const playbookPath = makeRepo();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    // 「not a git repository」を含めて、git log 向けの分岐より先に走査の分岐で名指すことまで見る
+    const failing = () => ({ status: 128, stdout: "", stderr: "fatal: not a git repository (or any of the parent directories): .git\n" });
+    expect(main([playbookPath], { ...deps, runGit: failing })).toBe(1);
+    expect(logSpy).not.toHaveBeenCalled();
+    const stderr = errorSpy.mock.calls.flat().join("\n");
+    // 専用の分岐で名指す（汎用の「レポート生成に失敗しました」や git log 向けの案内へ落ちない）
+    expect(stderr).toContain("ERROR: live 参照の走査に失敗しました（リポジトリの特定）");
+    expect(stderr).not.toContain("レポート生成に失敗しました");
+    expect(stderr).not.toContain("git log を取得できない");
+  });
+
+  // main は Markdown の本文を KnowledgeReadBoundary で読む（境界が拒否する入力は走査不能として止まる）。
+  // hardlink は POSIX でだけ境界の拒否条件になる（native Windows の境界は ACL で判定する）。
+  it.skipIf(process.platform === "win32")("Markdown の本文は読取り境界を通して読み、境界が拒否したら exit 1", () => {
+    const playbookPath = makeRepo();
+    const decisions = path.join(path.dirname(playbookPath), "..", "06-reference", "DECISIONS.md");
+    fs.linkSync(decisions, `${decisions}.alias`);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(main([playbookPath], deps)).toBe(1);
+    expect(logSpy).not.toHaveBeenCalled();
+    const stderr = errorSpy.mock.calls.flat().join("\n");
+    expect(stderr).toContain("live 参照の走査に失敗しました（本文の読み込み）: docs/06-reference/DECISIONS.md");
+    expect(stderr).toContain("hardlinked-input");
   });
 });
 
@@ -981,6 +1196,7 @@ describe("main（fixture E2E）", () => {
 
     fs.writeFileSync(path.join(implDir, "PATTERNS.md"), "# PATTERNS.md\n", "utf8");
     vi.spyOn(process, "cwd").mockReturnValue(root);
+    trackPlaybookDir(playbookPath);
     return { playbookPath };
   }
 
@@ -1303,6 +1519,7 @@ describe("stale 日数既定値の単一源（ace-reuse-report との結合）",
     );
     fs.writeFileSync(path.join(implDir, "PATTERNS.md"), "# PATTERNS.md\n", "utf8");
     vi.spyOn(process, "cwd").mockReturnValue(root);
+    trackPlaybookDir(playbookPath);
     return playbookPath;
   }
 
@@ -1415,6 +1632,7 @@ describe("stale 日数既定値の単一源（ace-reuse-report との結合）",
     );
     fs.writeFileSync(path.join(implDir, "PATTERNS.md"), "# PATTERNS.md\n", "utf8");
     vi.spyOn(process, "cwd").mockReturnValue(root);
+    trackPlaybookDir(playbookPath);
     return playbookPath;
   }
 
@@ -1536,6 +1754,7 @@ describe("行数バジェット定数の単一源（check-category-size との�
       `# PLAYBOOK — コーディング (coding)\n\n${entries}`,
       "utf8",
     );
+    trackPlaybookDir(playbookPath);
     return playbookPath;
   }
 
