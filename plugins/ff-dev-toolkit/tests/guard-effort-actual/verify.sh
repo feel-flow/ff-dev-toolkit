@@ -38,7 +38,7 @@ TARGET="$PLUGIN_ROOT/hooks/guard-effort-actual.sh"
 # 先頭で 1 回落とす。ケース固有の `NAME=v bash "$TARGET"` はこの後に代入として届く（Issue `#1808`）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-isolate_hook_env "FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD" "$TARGET"
+isolate_hook_env "FF_EFFORT_ACTUAL_ACK" "$TARGET"
 # ASDD ゲートが早期終了する経路でも stdin を読み切ることを測る共有ヘルパー
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
@@ -475,8 +475,8 @@ esac
 echo "guard-effort-actual: AC2（案内された迂回手段を使えば通す）"
 run_hook "FF_EFFORT_ACTUAL_ACK=1 gh pr merge 42 --squash --delete-branch"
 assert_pass "AC2: 対象コマンド先頭の FF_EFFORT_ACTUAL_ACK=1 で停止しない"
-run_hook "gh pr merge 42 --squash" FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD=1
-assert_pass "AC2: FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD=1 でガードごと無効化できる"
+run_hook "gh pr merge 42 --squash" FF_DEV_TOOLKIT_SKIP=update-check,effort-actual
+assert_pass "AC2: FF_DEV_TOOLKIT_SKIP=update-check,effort-actual（鍵 effort-actual）でガードごと無効化できる"
 run_hook "echo FF_EFFORT_ACTUAL_ACK=1 && gh pr merge 42 --squash"
 assert_fire "迂回は対象コマンド先頭の環境代入だけ（文字列として現れるだけでは無効）"
 
@@ -620,9 +620,9 @@ else
   bad "PATH 空の drain: exit=$RC out=[$OUT]（rc=141 なら hook が stdin を drain せずに exit している）"
 fi
 RC=0
-OUT="$(printf '%s' "$BIG_PAYLOAD" | FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD=1 PATH="/nonexistent" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
+OUT="$(printf '%s' "$BIG_PAYLOAD" | FF_DEV_TOOLKIT_SKIP=effort-actual PATH="/nonexistent" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
 if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
-  ok "opt-out（FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD=1）でも stdin を読み切ってから無出力 exit 0"
+  ok "opt-out（FF_DEV_TOOLKIT_SKIP=effort-actual）でも stdin を読み切ってから無出力 exit 0"
 else
   bad "opt-out の drain: exit=$RC out=[$OUT]（rc=141 なら opt-out の早期 exit が read より前にある）"
 fi
@@ -704,8 +704,8 @@ ff_mcp_assert_message "抜け道: hook の環境変数 FF_EFFORT_ACTUAL_ACK=1 �
 assert_no_gh_call "抜け道で通すときは gh を 1 度も呼ばない"
 run_hook "gh pr merge 42 --squash" FF_EFFORT_ACTUAL_ACK=1
 assert_fire "hook の環境変数 FF_EFFORT_ACTUAL_ACK=1 は Bash 経路を通さない（Bash 経路の抜け道はコマンド先頭の環境代入だけ）"
-run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":42}' FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD=1
-assert_pass "FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD=1 は MCP 経路も止める"
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":42}' FF_DEV_TOOLKIT_SKIP=effort-actual
+assert_pass "FF_DEV_TOOLKIT_SKIP=effort-actual は MCP 経路も止める"
 echo "guard-effort-actual: GitHub MCP 経路で gh を使えないとき（止めずに理由を出す）"
 NOGH_DIR="$TEST_TMP/nogh-wrappers"
 mkdir -p "$NOGH_DIR"

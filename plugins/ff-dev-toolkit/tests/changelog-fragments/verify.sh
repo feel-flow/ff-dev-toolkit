@@ -8,6 +8,7 @@
 # 空振り検出: 公開側 clone が無い入力は赤にも黙った緑にもせず、判定しない旨の名指しの警告で通す（開発者の手元に clone が無いのは通常。リリース時の再判定が fail-closed で同じ判定を行う）。不在を赤へ倒す変異で cases/attribution.sh が赤になる（2026-09-24 実測）。
 # 空振り検出: 共有 CHANGELOG の判定 lib（tests/lib/shared-changelog-judge.sh）の不在・読めない（mode 000）・同名の空ファイル・関数名の消失の 4 入力は、いずれも起動直後に名指しの ✗ で exit 1（skip へ倒さない。Issue `#2619`。2026-11-04 実測）。判定表は cases/footer.sh の一時リポジトリで 4 分類（unchanged / release-prep / footer-only / direct-edit）すべてに当てて固定する。
 # 変異検出: 判定 lib の direct-edit を許容（rc 0）へ倒すと cases/footer.sh の direct-edit 2 件、footer-only の許容を外すと footer-only 1 件、release-prep の許容を外すと release-prep 1 件が赤（2026-11-04 実測。各回とも鮮度の赤 2 件の上に足された赤）。
+# 変異検出: 公開面の判定（cases/footer.sh の変異バッテリー）で、名指しの判定 ff_surface_names_token を「breaking 断片が 1 件でもあれば名指しあり」（強化前の判定）へ倒すと 4 件（無関係な断片・語の一部だけの断片・breaking 以外の断片・別の鍵だけを名指す断片）、ff_surface_contract_tokens から skip:（4-3 の鍵）を外すと 2 件が赤（2026-11-09 macOS / Bash 3.2.57 実測）。
 set -euo pipefail
 
 # 鮮度分岐は「CI か否か」で比較基準の取り方を変える（cases/footer.sh 参照）。fixture が

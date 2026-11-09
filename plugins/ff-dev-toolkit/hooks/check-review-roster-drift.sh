@@ -101,10 +101,11 @@ asdd_hook_enabled hooks || exit 0
 # 既知の限界: 突き合わせ側は **hook ファイルの既定値**だけを名簿として読む。利用者が
 # 環境変数 `FF_REVIEW_SUBAGENT_LOCK_TYPES` で名簿を上書きして実行時のレーン漏れを直しても、
 # この検査の判定は変わらない。通知文はその非対称を明示し、環境変数で直した利用者には
-# `FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK=1` を併せて案内する。
+# `FF_DEV_TOOLKIT_SKIP=review-roster-check` を併せて案内する。
 #
 # 環境変数:
-#   FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK=1  検査を無効化する（ユーザー向け）
+#   FF_DEV_TOOLKIT_SKIP=review-roster-check  検査を無効化する（ユーザー向け。鍵の名簿は
+#                                            scripts/lib/l4-declarations.tsv）
 #   以下はテストシーム（tests/guard-review-in-flight/verify.sh が実 ~/.claude に
 #   触れずに本スクリプトを駆動するための注入口。通常運用で設定する必要はない）:
 #   FF_DEV_TOOLKIT_ROSTER_DRIFT_CLAUDE_HOME   Claude 設定ディレクトリの上書き
@@ -113,9 +114,9 @@ asdd_hook_enabled hooks || exit 0
 
 # fail-open のため set -e / set -u は使わない。参照は ${VAR:-default} 形で行う。
 
-if [ "${FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK:-0}" = "1" ]; then
-  exit 0
-fi
+# L4 宣言（ADR-087）。lib を読めない配置では止めない側（検査は効いたまま）に倒し、stderr も汚さない
+{ [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
+if ff_l4_skipped 'review-roster-check' 'FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK'; then exit 0; fi
 
 json_escape() {
   # 改行・制御文字は落とす。残るのは path / REASON / レビュアー名だけ。
@@ -128,13 +129,13 @@ emit_json() { # <systemMessage> <additionalContext>
 }
 
 # 通知末尾の共通案内。修理先を 1 か所に持つ（文面を 2 か所へ書き分けない）。
-HOWTO="恒久的な修理は開発元での hooks/guard-review-in-flight.sh の REVIEW_LOCK_TYPES 既定値の更新（共有ツリーを編集する前提のレビュアーは意図的な除外なので scripts/check-review-roster-drift.sh の EXCLUDED_AGENTS へ理由付きで足す）。本検査が名簿として読むのは**同梱の既定値だけ**で、環境変数 FF_REVIEW_SUBAGENT_LOCK_TYPES による上書きは見ない — 実行時のレーン漏れを環境変数で直した場合、この通知は止まらないので FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK=1 を併せて設定すること。差分は bash scripts/check-review-roster-drift.sh --agents-dir <実体のパス> で再現できる。"
+HOWTO="恒久的な修理は開発元での hooks/guard-review-in-flight.sh の REVIEW_LOCK_TYPES 既定値の更新（共有ツリーを編集する前提のレビュアーは意図的な除外なので scripts/check-review-roster-drift.sh の EXCLUDED_AGENTS へ理由付きで足す）。本検査が名簿として読むのは**同梱の既定値だけ**で、環境変数 FF_REVIEW_SUBAGENT_LOCK_TYPES による上書きは見ない — 実行時のレーン漏れを環境変数で直した場合、この通知は止まらないので FF_DEV_TOOLKIT_SKIP=review-roster-check（ほかの鍵と並べるときはカンマ区切り）を併せて設定すること。差分は bash scripts/check-review-roster-drift.sh --agents-dir <実体のパス> で再現できる。"
 
 # 判定不能を 1 件だけ報告して終わる経路（走査そのものが始められない回）。
 emit_undetermined_and_exit() { # <理由>
   emit_json \
     "⚠️ レビュー凍結レーンの名簿が実体に追随しているかを判定できませんでした（${1}）。「一致」は未確認です。" \
-    "ff-dev-toolkit の SessionStart 検査が、hooks/guard-review-in-flight.sh の名簿と別プラグインのレビュアー実体の突き合わせを開始できなかった。理由: ${1}。これは「一致」ではなく「判定不能」であり、名簿が実体から遅れている可能性は排除できない。${HOWTO}この通知を止めたい場合は FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK=1 を設定する。"
+    "ff-dev-toolkit の SessionStart 検査が、hooks/guard-review-in-flight.sh の名簿と別プラグインのレビュアー実体の突き合わせを開始できなかった。理由: ${1}。これは「一致」ではなく「判定不能」であり、名簿が実体から遅れている可能性は排除できない。${HOWTO}この通知を止めたい場合は FF_DEV_TOOLKIT_SKIP=review-roster-check（ほかの鍵と並べるときはカンマ区切り）を設定する。"
   exit 0
 }
 
@@ -434,7 +435,7 @@ if [ -n "$UNDET_DIRS" ]; then
   ctx="${ctx}${ctx:+ }突き合わせが成立しなかった実体: ${UNDET_DIRS}。理由: ${UNDET_REASON:-不明}。これは「一致」ではなく「判定不能」であり、名簿が実体から遅れている可能性は排除できない。"
 fi
 if [ -n "$sys" ]; then
-  emit_json "$sys" "${ctx}${HOWTO}この通知を止めたい場合は FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK=1 を設定する。"
+  emit_json "$sys" "${ctx}${HOWTO}この通知を止めたい場合は FF_DEV_TOOLKIT_SKIP=review-roster-check（ほかの鍵と並べるときはカンマ区切り）を設定する。"
 fi
 
 exit 0

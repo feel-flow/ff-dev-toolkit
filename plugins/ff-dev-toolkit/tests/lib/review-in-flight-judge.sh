@@ -844,7 +844,7 @@ if [ "$tool" = "Agent" ] || [ "$tool" = "Task" ]; then
   emit_ask "${lock_note}⚠️ ff-dev-toolkit guard（レビュー起動時の dirty 検査）: 作業ツリーに未コミットの変更が ${changed} 件あります（${ROOT}）。
 レビューエージェントは git diff <base>...HEAD を見るので、未コミットの修正は無いものとして扱われます。1 回転目の指摘に対応した fix が未コミットのままだと、その指摘は「未解消」と判定され、解消済みかどうかの確認に 1 往復ぶん余計にかかります。
 先にコミットしてから起動するか、この状態で起動するのが意図どおりならそのまま続行してください（レビュー待ち時間の使い方は multi-review スキルの「レビュー待ち時間の使い方」節を参照）。
-このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD=1 を設定します。"
+このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=review-in-flight を設定します。"
 fi
 
 # ── A / C) 走行中ロック（orchestrator のロックと、サブエージェントのレーン） ──

@@ -48,7 +48,7 @@ TARGET="$PLUGIN_ROOT/hooks/guard-literal-write.sh"
 # 先頭で 1 回落とす。ケース固有の `NAME=v bash "$TARGET"` はこの後に代入として届く（Issue `#1808`）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-isolate_hook_env "FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD" "$TARGET"
+isolate_hook_env "FF_DEV_TOOLKIT_SKIP" "$TARGET"
 SCAN_LIB="$PLUGIN_ROOT/tests/lib/literal-write-scan.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 # shellcheck source=../lib/asdd-gate-drain.sh
@@ -63,7 +63,7 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 # 利用者の環境（抜け道・opt-out・差し替え口・検査で使う変数名）を引き継いで偽緑 / 偽赤にしない。
-unset FF_LITERAL_WRITE_ACK FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD FF_LITERAL_WRITE_AWK ROW REPO FF_LW_PRESET
+unset FF_LITERAL_WRITE_ACK FF_DEV_TOOLKIT_SKIP FF_LITERAL_WRITE_AWK ROW REPO FF_LW_PRESET
 
 if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ff-guard-literal-write.XXXXXX" 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
   TEST_TMP="$_ff_mktemp_out"
@@ -248,7 +248,7 @@ assert_fire "F20: hook の環境に無い名前を export せずに代入して�
 
 echo "guard-literal-write: 停止文の契約（検出箇所・対処・抜け道を出力自体に案内する）"
 run_hook "${FIRE_CASES[1]}"
-for needle in '$REPO' 'Write / Edit' "cat > <file> <<'EOF'" '\$NAME' 'FF_LITERAL_WRITE_ACK=1' 'FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD=1' 'OBS-130' 'literal-write-scan.sh'; do
+for needle in '$REPO' 'Write / Edit' "cat > <file> <<'EOF'" '\$NAME' 'FF_LITERAL_WRITE_ACK=1' 'FF_DEV_TOOLKIT_SKIP=literal-write' 'OBS-130' 'literal-write-scan.sh'; do
   case "$REASON" in
     *"$needle"*) ok "述語 A の停止文が [$needle] を含む" ;;
     *) bad "述語 A の停止文に [$needle] が無い: [$REASON]" ;;
@@ -292,8 +292,10 @@ assert_fire "A4: 引用値の中に現れる ACK は無効"
 run_hook "FF_LITERAL_WRITE_ACK=1 true
 ${FIRE_CASES[0]}"
 assert_pass "A5: 呼び出しの先頭に置いた ACK は呼び出し全体に効く（単位は Bash ツールの 1 呼び出し）"
-run_hook "${FIRE_CASES[0]}" FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD=1
-assert_pass "A6: FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD=1 で無効化できる"
+run_hook "${FIRE_CASES[0]}" FF_DEV_TOOLKIT_SKIP=literal-write
+assert_pass "A6: FF_DEV_TOOLKIT_SKIP=literal-write で無効化できる"
+run_hook "${FIRE_CASES[0]}" FF_DEV_TOOLKIT_SKIP=literal-write,
+assert_fire "A6: FF_DEV_TOOLKIT_SKIP の値が文法に合わない（末尾のカンマ）と全体を未設定として扱い、止まったまま"
 
 echo "guard-literal-write: C 判定不能（候補コマンドに限り fail-closed）"
 make_tree() { # <dir>
@@ -375,7 +377,7 @@ else
   bad "PATH 空の drain: exit=$RC out=[$OUT]（rc=141 なら hook が stdin を drain せずに exit している）"
 fi
 RC=0
-OUT="$(printf '%s' "$BIG_PAYLOAD" | env FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD=1 PATH=/nonexistent /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
+OUT="$(printf '%s' "$BIG_PAYLOAD" | env FF_DEV_TOOLKIT_SKIP=literal-write PATH=/nonexistent /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
 if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "opt-out でも stdin を読み切ってから無出力 exit 0"; else bad "opt-out の drain: exit=$RC out=[$OUT]"; fi
 ASDD_ON="$TEST_TMP/asdd-hooks-on"
 ASDD_OFF="$TEST_TMP/asdd-hooks-off"

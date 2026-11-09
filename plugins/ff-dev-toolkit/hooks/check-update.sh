@@ -59,8 +59,12 @@ asdd_hook_enabled hooks || exit 0
 #     （細工されたタグ名による JSON 注入の防止）。
 #
 # 環境変数:
-#   FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1  更新チェックを無効化する（ユーザー向け）
-#   FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=1    Windows の Git Bash での WSL 案内を無効化する（ユーザー向け。Issue `#2030`）
+#   FF_DEV_TOOLKIT_SKIP=<鍵>[,<鍵>…]    鍵 update-check で更新チェックを、鍵 wsl-notice で Windows の Git Bash
+#                                       での WSL 案内を無効化する（ユーザー向け。鍵の名簿は
+#                                       scripts/lib/l4-declarations.tsv、判定は scripts/lib/l4-declarations.sh。ADR-087）
+#   L4 宣言の通知: 名簿の旧名（内部の別名）が効く値で設定されている・FF_DEV_TOOLKIT_SKIP に名簿の
+#   kind=skip に無い鍵がある・値が文法に合わない、のどれかがあれば、更新チェックを止めた回も含めて
+#   毎回の SessionStart で置き換えの案内と停止文の 3 行（ADR-084 決定 6）を出す（下の L4 宣言の節）
 #   以下はテストシーム（tests/update-check/verify.sh が実ネットワークに触れずに
 #   本スクリプトを駆動するための注入口。通常運用で設定する必要はない）:
 #   FF_DEV_TOOLKIT_UPDATE_REPO_URL      参照先リポジトリ URL の上書き
@@ -80,11 +84,129 @@ asdd_hook_enabled hooks || exit 0
 # fail-open のため set -e は使わない。set -u も、未定義変数参照が非 0 終了で
 # フックを汚すため使わない（参照はすべて ${VAR:-default} 形で行う）。
 
+# ---- L4 宣言（ADR-087） ------------------------------------------------------------
+# 判定は scripts/lib/l4-declarations.sh の ff_l4_skipped。lib を読めない配置（古い配布物・fixture
+# コピー）では止めない側（更新チェックも WSL 案内も効いたまま）に倒し、stderr も汚さない。
+{ [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
+# 通知: 名簿（scripts/lib/l4-declarations.tsv）を組み込みの read で 1 回読み、
+#   (1) legacy 列の旧名が legacy_value_rule で効く値になっている（kind=ack の別名も含む）
+#   (2) FF_DEV_TOOLKIT_SKIP に名簿の kind=skip に無い鍵がある
+#   (3) FF_DEV_TOOLKIT_SKIP の値が文法（lib と同じ規則）に合わず、全体を未設定として扱った
+# のどれかがあれば、置き換えの行と停止文の 3 行（ADR-084 決定 6）を組む。出力は更新通知・WSL 案内と
+# 同じ JSON 1 つへ並べる（更新チェックを止めた回も EXIT trap で出す）。外部コマンドもサブシェルも
+# 起動しない。旧名は名簿から読み、この hook には書かない。JSON の文字列へそのまま埋め込むので、
+# 埋め込む値は名簿の形（旧名は英大文字・数字・_、鍵は文法を通った小文字のケバブ）に限り、文法に
+# 合わない値そのものは埋め込まない。行の区切りは JSON のエスケープ \n（2 文字）で書く。
+ff_cu_tsv="${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.tsv"
+ff_cu_l4_msg=""
+ff_cu_l4_ctx=""
+ff_cu_nl='\n'
+# 小文字のケバブ → 英大文字・_ 区切り（ACK の名前を組む。組み込みだけ。結果は ff_cu_up）
+ff_cu_upper() {
+  local s="${1-}" c pre lower=abcdefghijklmnopqrstuvwxyz upper=ABCDEFGHIJKLMNOPQRSTUVWXYZ
+  ff_cu_up=""
+  while [ -n "$s" ]; do
+    c="${s:0:1}"
+    s="${s:1}"
+    case "$c" in
+      [abcdefghijklmnopqrstuvwxyz]) pre="${lower%%"$c"*}"; c="${upper:${#pre}:1}" ;;
+      -) c="_" ;;
+    esac
+    ff_cu_up="${ff_cu_up}${c}"
+  done
+}
+ff_cu_l4_build() {
+  local k kind legacy rule ra val first=1 skip_keys=" " list item rest repl
+  local lines="" legacy_n=0 legacy_skip_names="" legacy_skip_keys="" ack_steps="" unknown="" unknown_n=0 bad=0
+  local suggest="" rule_id reason next
+  [ -f "$ff_cu_tsv" ] && [ -r "$ff_cu_tsv" ] || return 0
+  # owner / covers の列は読み捨てる
+  while IFS=$'\t' read -r k kind _ _ legacy rule ra || [ -n "$k" ]; do
+    case "$k" in '' | '#'*) continue ;; esac
+    if [ "$first" = 1 ]; then first=0; continue; fi
+    [ "$kind" = "skip" ] && skip_keys="${skip_keys}${k} "
+    case "$legacy" in FF_*) ;; *) continue ;; esac
+    case "$legacy" in *[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]*) continue ;; esac
+    case "$k" in '' | *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) continue ;; esac
+    val="${!legacy-}"
+    case "$rule" in
+      nonempty) [ -n "$val" ] || continue ;;
+      *) [ "$val" = "1" ] || continue ;;
+    esac
+    if [ "$kind" = "skip" ]; then
+      repl="FF_DEV_TOOLKIT_SKIP=${k}"
+      case " ${legacy_skip_keys} " in *" ${k} "*) ;; *) legacy_skip_keys="${legacy_skip_keys}${legacy_skip_keys:+ }${k}" ;; esac
+      legacy_skip_names="${legacy_skip_names}${legacy_skip_names:+, }${legacy}"
+    else
+      ff_cu_upper "$k"
+      # 置き場所は ACK ごとに違い（区間の先頭・hook の環境など）、改名でも変えていない。この通知が見るのは
+      # セッションの環境だけで、環境で効く ACK（Edit / Write にはコマンド行が無いので hook の環境を読むもの）と、
+      # コマンドの先頭でしか読まない ACK（環境に置いても元から効いていない）の両方がある。どちらにも正しい
+      # よう、名前だけを替え、置き場所は ACK ごとの決まりに従う案内にする
+      repl="FF_${ff_cu_up}_ACK=1（1 回分だけ通す承認。置き場所は旧名と同じで、ACK ごとに決まっている）"
+      ack_steps="${ack_steps}${ack_steps:+、}${legacy} を FF_${ff_cu_up}_ACK=1 へ改名する（セッションの環境で効くのは hook の環境を読む ACK だけで、それ以外はコマンドの先頭に置く。置き場所は各 hook の停止文が示す）"
+    fi
+    case "$ra" in '' | *[!0123456789.]*) ra="次の版" ;; esac
+    lines="${lines}・旧名 ${legacy} は内部の別名で、${ra} で読まなくなります。置き換え: ${repl}${ff_cu_nl}"
+    legacy_n=$((legacy_n + 1))
+  done < "$ff_cu_tsv"
+  list="${FF_DEV_TOOLKIT_SKIP-}"
+  if [ -n "$list" ]; then
+    case "$list" in
+      *[!abcdefghijklmnopqrstuvwxyz0123456789,-]* | ,* | *, | *,,*) bad=1 ;;
+      *)
+        rest="${list},"
+        while [ -n "$rest" ]; do
+          item="${rest%%,*}"
+          rest="${rest#*,}"
+          case "$skip_keys" in
+            *" ${item} "*) case " ${suggest} " in *" ${item} "*) ;; *) suggest="${suggest}${suggest:+ }${item}" ;; esac ;;
+            *) unknown="${unknown}${unknown:+, }${item}"; unknown_n=$((unknown_n + 1)) ;;
+          esac
+        done
+        ;;
+    esac
+  fi
+  [ "$legacy_n" -gt 0 ] || [ "$unknown_n" -gt 0 ] || [ "$bad" = 1 ] || return 0
+  if [ "$unknown_n" -gt 0 ]; then
+    lines="${lines}・FF_DEV_TOOLKIT_SKIP の鍵 ${unknown} は名簿の kind=skip にありません（何も止めていません。打ち間違いなら直す）${ff_cu_nl}"
+  fi
+  if [ "$bad" = 1 ]; then
+    lines="${lines}・FF_DEV_TOOLKIT_SKIP の値が文法（小文字の鍵をカンマで並べる。空白・大文字・空の要素・前後のカンマは不可）に合わないため、全体を未設定として扱いました（どのガードも止めていません）${ff_cu_nl}"
+  fi
+  for item in $legacy_skip_keys; do
+    case " ${suggest} " in *" ${item} "*) ;; *) suggest="${suggest}${suggest:+ }${item}" ;; esac
+  done
+  suggest="${suggest// /,}"
+  if [ "$bad" = 1 ]; then
+    rule_id="l4-declarations/invalid-value"
+  elif [ "$unknown_n" -gt 0 ]; then
+    rule_id="l4-declarations/unknown-key"
+  else
+    rule_id="l4-declarations/legacy-alias"
+  fi
+  reason="L4 宣言の読み替え（旧名 ${legacy_n} 件・名簿に無い鍵 ${unknown_n} 件・文法違反 ${bad} 件）"
+  next=""
+  if [ "$bad" = 1 ]; then
+    next="FF_DEV_TOOLKIT_SKIP を小文字の鍵のカンマ区切り（例: FF_DEV_TOOLKIT_SKIP=update-check,wsl-notice）に直す"
+  elif [ -n "$suggest" ]; then
+    next="FF_DEV_TOOLKIT_SKIP=${suggest} と書く"
+  elif [ "$unknown_n" -gt 0 ]; then
+    next="FF_DEV_TOOLKIT_SKIP から名簿に無い鍵を外す"
+  fi
+  [ -z "$legacy_skip_names" ] || next="${next}${next:+。}旧名（${legacy_skip_names}）は外す"
+  [ -z "$ack_steps" ] || next="${next}${next:+。}${ack_steps}"
+  next="${next}。書き換えたら新しい会話を開始する"
+  ff_cu_l4_msg="⚠️ ff-dev-toolkit: L4 宣言（SKIP / ACK）に書き換えの要るところがあります。${ff_cu_nl}${lines}止めた層: 宣言${ff_cu_nl}止めた規則: ${rule_id}（scripts/lib/l4-declarations.tsv）— ${reason}${ff_cu_nl}次の一手: ${next}"
+  ff_cu_l4_ctx="ff-dev-toolkit の SessionStart 検査が、利用者の L4 宣言（ADR-087。SKIP は FF_DEV_TOOLKIT_SKIP=<鍵>[,<鍵>…] の 1 変数、ACK は FF_<鍵>_ACK の型）に書き換えの要るところを見つけた。利用者に次を伝え、環境変数の書き換えを案内すること:${ff_cu_nl}${lines}止めた層: 宣言${ff_cu_nl}止めた規則: ${rule_id}（scripts/lib/l4-declarations.tsv）— ${reason}${ff_cu_nl}次の一手: ${next}"
+}
+ff_cu_l4_build
+
 # ---- Windows の Git Bash での WSL 案内（Issue `#2030`） ---------------------------
 # Git Bash（MSYS / Cygwin）上のときだけ、WSL での利用をすすめる案内を 1 日 1 回出す。判定と文言は
 # scripts/lib/wsl-notice.sh（全件ゲートの冒頭案内と共有）が持つ。hook を新設せずここへ畳むのは、
 # 決定木（scripts/decision-tree/tree.tsv）の葉が当時の上限 50 に達しており、hook 1 本で 51 件になったため（上限はその後 55 へ補正した）。
-#   - 更新チェックのオプトアウトより前で判定する（無効化は FF_DEV_TOOLKIT_SKIP_WSL_NOTICE で独立）
+#   - 更新チェックのオプトアウトより前で判定する（無効化は鍵 wsl-notice で独立）
 #   - lib が読めない配置（古い配布物・fixture コピー）では WSL 案内だけを飛ばし、更新通知は従来どおり
 #   - Linux / macOS / WSL の中では判定（bash 組み込みの OSTYPE）だけで抜け、プロセスを起動しない
 #   - 記録（<cache>/wsl-notice）は出力の直前に書き、書けたときだけ出す（間引きは記録で成り立つ）。
@@ -99,7 +221,9 @@ wsl_emitted=0
 wsl_hold=0
 wsl_cache_dir="${FF_DEV_TOOLKIT_UPDATE_CACHE_DIR:-${XDG_CACHE_HOME:-${HOME:-}/.cache}/ff-dev-toolkit}"
 wsl_lib="${BASH_SOURCE[0]%/*}/../scripts/lib/wsl-notice.sh"
-if [ "${FF_DEV_TOOLKIT_SKIP_WSL_NOTICE:-0}" != "1" ] && [ -f "$wsl_lib" ] \
+ff_cu_wsl_skip=0
+if ff_l4_skipped 'wsl-notice' 'FF_DEV_TOOLKIT_SKIP_WSL_NOTICE'; then ff_cu_wsl_skip=1; fi
+if [ "$ff_cu_wsl_skip" = 0 ] && [ -f "$wsl_lib" ] \
   && source "$wsl_lib" 2>/dev/null && ff_host_is_msys "${OSTYPE:-}"; then
   # 現在時刻は bash 組み込みで取る。%(...)T の無い bash 3.2 だけ date へ落とす（ここは Git Bash /
   # Cygwin の経路なので、外部プロセスを起動しても Linux / macOS の費用にはならない）
@@ -123,21 +247,31 @@ wsl_record() {
   [ -d "$wsl_cache_dir/wsl-notice" ] && rm -rf "$wsl_cache_dir/wsl-notice" 2>/dev/null
   printf '%s\n' "$wsl_now" 2>/dev/null > "$wsl_cache_dir/wsl-notice" || return 1
 }
-# 更新通知を出さずに終わる経路（オプトアウト・キャッシュ命中・最新版など）で、WSL 案内だけを出す
-wsl_emit_only() {
+# 更新通知を出さずに終わる経路（オプトアウト・キャッシュ命中・最新版など）で、WSL 案内と L4 宣言の
+# 通知だけを出す。L4 宣言の通知は記録で間引かない（毎回の SessionStart で出す）ので、WSL 案内の記録が
+# 書けなかった回も L4 宣言の通知だけは出す。並びは WSL 案内 → L4 宣言（停止文の 3 行を末尾に置く）
+notice_emit_only() {
+  local sys="" ctx=""
   [ "$wsl_hold" = 0 ] || return 0
   [ "$wsl_emitted" = 0 ] || return 0
   wsl_emitted=1
-  wsl_record || return 0
+  if wsl_record; then
+    sys="$wsl_msg"
+    ctx="$wsl_ctx"
+  fi
+  if [ -n "$ff_cu_l4_msg" ]; then
+    sys="${sys}${sys:+${ff_cu_nl}${ff_cu_nl}}${ff_cu_l4_msg}"
+    ctx="${ctx}${ctx:+${ff_cu_nl}${ff_cu_nl}}${ff_cu_l4_ctx}"
+  fi
+  [ -n "$sys" ] || return 0
   printf '{"systemMessage":"%s","hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' \
-    "$wsl_msg" "$wsl_ctx"
+    "$sys" "$ctx"
 }
-[ -z "$wsl_msg" ] || trap wsl_emit_only EXIT
+[ -z "${wsl_msg}${ff_cu_l4_msg}" ] || trap notice_emit_only EXIT
 
 # ---- 更新チェックのオプトアウト（更新チェックのキャッシュ読み書きを含め、以降の処理より先） ----
-if [ "${FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK:-0}" = "1" ]; then
-  exit 0
-fi
+# 止めた回も、上の EXIT trap が WSL 案内と L4 宣言の通知を出す
+if ff_l4_skipped 'update-check' 'FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK'; then exit 0; fi
 
 # ---- 自バージョン取得 --------------------------------------------------------
 # 実運用では Claude Code が CLAUDE_PLUGIN_ROOT を与える。テストや手動実行では
@@ -326,17 +460,22 @@ fi
 # 「更新して」と言われたときに正しいコマンドを案内できるようにする。
 # marketplace 名はユーザーのローカル登録名に依存するため固定しない
 # （引数なしの `claude plugin marketplace update` は全 marketplace を更新する）。
-# WSL 案内が出る回は同じ JSON の末尾へ並べる（JSON は 1 回の実行で 1 つ）。'\n\n' は JSON の
-# エスケープとして埋め込む（%s の引数は printf のエスケープ解釈を受けない）。この後は EXIT trap が
-# WSL 案内だけの JSON を重ねて出さないよう、記録の成否に関わらず出力済みにする
+# WSL 案内と L4 宣言の通知が出る回は同じ JSON の末尾へこの順で並べる（JSON は 1 回の実行で 1 つ。
+# 停止文の 3 行を末尾に置く）。'\n\n' は JSON のエスケープとして埋め込む（%s の引数は printf の
+# エスケープ解釈を受けない）。この後は EXIT trap が案内だけの JSON を重ねて出さないよう、記録の成否に
+# 関わらず出力済みにする
 wsl_sys_tail=""
 wsl_ctx_tail=""
 if [ "$wsl_emitted" = 0 ] && wsl_record; then
   wsl_sys_tail='\n\n'"$wsl_msg"
   wsl_ctx_tail='\n\n'"$wsl_ctx"
 fi
+if [ "$wsl_emitted" = 0 ] && [ -n "$ff_cu_l4_msg" ]; then
+  wsl_sys_tail="${wsl_sys_tail}"'\n\n'"$ff_cu_l4_msg"
+  wsl_ctx_tail="${wsl_ctx_tail}"'\n\n'"$ff_cu_l4_ctx"
+fi
 wsl_emitted=1
-printf '{"systemMessage":"📦 ff-dev-toolkit v%s が利用可能です（現在 v%s）。自動更新 hook が有効なら裏で更新済みのことがあり、新しい会話の開始で反映されます。手動更新: claude plugin marketplace update → claude plugin list で登録 ID を確認 → claude plugin update その ID%s","hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"ff-dev-toolkit の新バージョン v%s が公開されています（インストール済みは v%s）。同梱の自動更新 hook（auto-update-marketplace.sh）が有効な環境では、この更新は既にバックグラウンドで実行済みのことがあり、その場合は新しい会話を開始するだけで反映される（本通知は現在版が変わるまで日次で続く）。ユーザーが手動更新を希望したら次の手順を案内すること: (1) claude plugin marketplace update （引数なし。marketplace 名はユーザーの登録名に依存するため） (2) claude plugin list で登録 ID を確認する。ID は プラグイン名@marketplace名 の形式で、素の名前を渡すと Plugin not found で失敗する (3) claude plugin update に (2) で確認した ID を渡す (4) 適用には Claude Code の再起動が必要。ただし既存の会話を再開すると古いプラグインのスナップショットへ再接続されるため、新しい会話を開始すること。変更点は https://github.com/feel-flow/ff-dev-toolkit/blob/main/CHANGELOG.md を参照。この通知を止めたい場合は環境変数 FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1 を設定する。%s"}}\n' \
+printf '{"systemMessage":"📦 ff-dev-toolkit v%s が利用可能です（現在 v%s）。自動更新 hook が有効なら裏で更新済みのことがあり、新しい会話の開始で反映されます。手動更新: claude plugin marketplace update → claude plugin list で登録 ID を確認 → claude plugin update その ID%s","hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"ff-dev-toolkit の新バージョン v%s が公開されています（インストール済みは v%s）。同梱の自動更新 hook（auto-update-marketplace.sh）が有効な環境では、この更新は既にバックグラウンドで実行済みのことがあり、その場合は新しい会話を開始するだけで反映される（本通知は現在版が変わるまで日次で続く）。ユーザーが手動更新を希望したら次の手順を案内すること: (1) claude plugin marketplace update （引数なし。marketplace 名はユーザーの登録名に依存するため） (2) claude plugin list で登録 ID を確認する。ID は プラグイン名@marketplace名 の形式で、素の名前を渡すと Plugin not found で失敗する (3) claude plugin update に (2) で確認した ID を渡す (4) 適用には Claude Code の再起動が必要。ただし既存の会話を再開すると古いプラグインのスナップショットへ再接続されるため、新しい会話を開始すること。変更点は https://github.com/feel-flow/ff-dev-toolkit/blob/main/CHANGELOG.md を参照。この通知を止めたい場合は環境変数 FF_DEV_TOOLKIT_SKIP=update-check を設定する（ほかの鍵と並べるときはカンマ区切り）。%s"}}\n' \
   "$latest" "$current" "$wsl_sys_tail" "$latest" "$current" "$wsl_ctx_tail"
 
 # 通知済みを記録（書き込み失敗は fail-open: 次セッションで再通知されるだけ）。

@@ -92,7 +92,7 @@ with tempfile.TemporaryDirectory(prefix='github-input-release.') as tmp:
         (bin_dir / name).write_text('#!/bin/bash\nexec '+shlex.quote(found)+' "$@"\n')
         (bin_dir / name).chmod(0o755)
     env = {'HOME': os.environ['HOME'], 'PATH': str(bin_dir), 'TMPDIR': str(T), 'LC_ALL': 'C', 'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1',
-           'FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD': '1', 'TEST_DATA': str(T/'data'), 'TEST_GH_CALLS': str(T/'gh-calls'), 'TEST_GH_LEAKS': str(T/'gh-leaks')}
+           'FF_DEV_TOOLKIT_SKIP': 'commit-identity', 'TEST_DATA': str(T/'data'), 'TEST_GH_CALLS': str(T/'gh-calls'), 'TEST_GH_LEAKS': str(T/'gh-leaks')}
     # The executable path is an observed local interpreter; this stub cannot fetch/write.
     gh = bin_dir / 'gh'
     gh.write_text('#!' + sys.executable + '\n' + r'''

@@ -235,7 +235,7 @@ class Evidence(HostDelegationCases, unittest.TestCase):
             ('MULTI', 'AGENT'), ('FF', 'DEV', 'TOOLKIT'), ('FF', 'REVIEW')]))
                and k not in ('CLAUDE_PLUGIN_ROOT', 'GROK_PLUGIN_ROOT')}
         env.update(PATH=str(stub_bin) + ':' + env['PATH'], FF_REVIEW_ROUND_LIMIT='0',
-                   FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE='1', FF_DEV_TOOLKIT_ROOT=str(root))
+                   FF_DEV_TOOLKIT_SKIP='codex-auto-update', FF_DEV_TOOLKIT_ROOT=str(root))
         if extra == ('--archive-only',):
             cmd = ['bash', str(root / 'scripts/multi-review.sh'), '--base', 'develop', '--archive-only']
         else:
@@ -511,7 +511,7 @@ class Evidence(HostDelegationCases, unittest.TestCase):
             env = {k: v for k, v in os.environ.items() if not k.startswith(tuple('_'.join(parts) + '_' for parts in [
                 ('MULTI', 'AGENT'), ('FF', 'DEV', 'TOOLKIT'), ('FF', 'REVIEW')]))}
             env.update(PATH=str(stub) + ':' + env['PATH'], FF_REVIEW_ROUND_LIMIT='0',
-                       FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE='1')
+                       FF_DEV_TOOLKIT_SKIP='codex-auto-update')
             cmd = ['bash', str(SCRIPT.parent / 'multi-review.sh'), '--cli', 'codex-cli',
                    '--perspective', 'code-review', '--base', 'develop', '--evidence', '--fresh']
             result = subprocess.run(cmd, capture_output=True, text=True, env=env)

@@ -63,7 +63,7 @@ class HostDelegationCases:
             ('MULTI', 'AGENT'), ('FF', 'DEV', 'TOOLKIT'), ('FF', 'REVIEW')]))
                and k not in ('CLAUDE_PLUGIN_ROOT', 'GROK_PLUGIN_ROOT')}
         env.update(PATH=str(stub_bin) + ':' + env['PATH'], HOME=str(home),
-                   FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE='1',
+                   FF_DEV_TOOLKIT_SKIP='codex-auto-update',
                    FF_DEV_TOOLKIT_ROOT=str(root), MULTI_AGENT_REVIEW_MAIN='claude-code',
                    MULTI_AGENT_REVIEW_SUB='codex-cli', MULTI_AGENT_CROSS_REVIEW='auto')
         self.output = self.output / "partial output's"

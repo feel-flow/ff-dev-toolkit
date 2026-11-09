@@ -20,6 +20,24 @@
 
 ## [Unreleased]
 
+## [0.181.0] - 2026-11-09
+
+### 破壊的変更
+
+- hook のガード・通知・記録を止める宣言（SKIP）を 1 つの変数 `FF_DEV_TOOLKIT_SKIP` にまとめ、次の 25 の名前を契約から外した: `FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE` / `FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD` / `FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD` / `FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE` / `FF_DEV_TOOLKIT_SKIP_CREDENTIAL_OUTPUT_GUARD` / `FF_DEV_TOOLKIT_SKIP_DECISION_TREE` / `FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD` / `FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS` / `FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD` / `FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD` / `FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD` / `FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD` / `FF_DEV_TOOLKIT_SKIP_MERGE_CLOSING_GUARD` / `FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD` / `FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD` / `FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK` / `FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK` / `FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD` / `FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK` / `FF_DEV_TOOLKIT_SKIP_WSL_NOTICE` / `FF_DEV_TOOLKIT_SKIP_WSL_SHELL_GUARD` / `FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD` / `FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD` / `FF_DISCARD_UNCOMMITTED` / `FF_REVIEW_LOCK_OVERRIDE`
+- SKIP の置き換えの規則: 旧名から接頭辞 `FF_DEV_TOOLKIT_SKIP_` と末尾の `_GUARD` だけを外し、小文字と `-` にした鍵を書く。`FF_DEV_TOOLKIT_SKIP_X_GUARD=1` は `FF_DEV_TOOLKIT_SKIP=x` へ書き換える（例: `FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1` は `FF_DEV_TOOLKIT_SKIP=zsh-glob`、`FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1` は `FF_DEV_TOOLKIT_SKIP=update-check`）。鍵の一覧は配布物の `PUBLIC-SURFACE.md` の 4-3 と README の鍵の表にある。値は小文字の鍵をカンマで区切った形だけを受け付け、それ以外の値は全体を未設定として扱う（ガードは効いたまま）。すべてを止める鍵は置かない
+- 1 回だけ通す承認（ACK）は `FF_` + 鍵 + `_ACK` の型に揃え、型から外れていた 3 つを改名した: `FF_REVIEW_LOCK_OVERRIDE=1` は `FF_REVIEW_LOCK_ACK=1` へ
+- 同じく `FF_DISCARD_UNCOMMITTED=1` は `FF_DISCARD_UNCOMMITTED_ACK=1` へ
+- 同じく、`gh issue create` の先頭へ 1 回分として前置していた `FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1` は `FF_ISSUE_LABEL_ACK=1` へ（環境に置いてセッションの間ずっと止める形は `FF_DEV_TOOLKIT_SKIP=issue-label`）。ほかの 16 の ACK（`FF_ZSH_GLOB_ACK` など）の名前と置き場所は変えていない
+- 意味の違い: `FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE` は値が空でなければ（`0` でも）自動更新を止めていたが、新しい形は `FF_DEV_TOOLKIT_SKIP` に鍵 `auto-update` を書いたときだけ止める。ISSUE_LABEL の 1 回分の前置は SKIP の名前から ACK（`FF_ISSUE_LABEL_ACK`）へ移った
+- 復旧手順: ホストの settings.json の `env`、shell の rc（`~/.zshrc` / `~/.bashrc` など）、CI のワークフローの環境から旧名を探し、上の規則で書き換える。探すときは `grep -rnswE 'FF_DEV_TOOLKIT_SKIP_[A-Z0-9_]+|FF_REVIEW_LOCK_OVERRIDE|FF_DISCARD_UNCOMMITTED' ~/.claude/settings.json .claude/settings.json .claude/settings.local.json ~/.zshrc ~/.bashrc .github/workflows` の 1 行を使える
+- 複数の宣言は 1 つの変数にカンマで並べる。例: `FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1` と `FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=1` を置いていたなら `FF_DEV_TOOLKIT_SKIP=update-check,wsl-notice` の 1 つにする
+- 旧名（上の 25 と、以前から内部だった `FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD`）は内部の別名として 1.1.0 より前の版まで読まれる。hooks が発火するホストでは、旧名で止めると新しい書き方が通知される（SKIP の旧名はセッション開始時、ACK の旧名はその呼び出しのとき。scripts から読む宣言は通知しない）。1.1.0 からは読まれなくなる
+
+### 追加
+
+- hook のガード・通知・記録を止める宣言（SKIP）の鍵と、1 回だけ通す承認（ACK）の名前を 1 つの名簿へまとめ、SKIP の判定を共通の関数へ集めた。名簿と実装・公開文書・試験の隔離が食い違うと、新しい検査 `l4-declarations` が赤にする
+
 ## [0.180.0] - 2026-11-09
 
 ### 追加

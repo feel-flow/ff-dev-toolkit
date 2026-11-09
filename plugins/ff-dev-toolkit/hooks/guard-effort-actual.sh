@@ -44,7 +44,7 @@
 #   - 対象コマンドの先頭に環境代入 `FF_EFFORT_ACTUAL_ACK=1` を付ける
 #     （文字列としてコマンド中に現れるだけでは無効。コマンド位置の
 #     `gh pr merge` の直前に置いた場合だけ素通しする）
-#   - ガードごと止めるなら環境変数 `FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD=1`
+#   - ガードごと止めるなら環境変数 `FF_DEV_TOOLKIT_SKIP=effort-actual`
 #
 # 判定の流れ:
 #   1. heredoc 本文（`<<` / `<<-` のトークン以降、終端行まで）を走査対象から落とし、
@@ -110,7 +110,7 @@
 #     エラーの区別が実装依存で、fail-open が fail-closed へ反転しうる）。
 #
 # 環境変数:
-#   FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD=1  このガードを無効化する
+#   FF_DEV_TOOLKIT_SKIP=effort-actual  このガードを無効化する（鍵の名簿は scripts/lib/l4-declarations.tsv）
 #   FF_EFFORT_ACTUAL_ACK=1  Bash 経路ではコマンド先頭の環境代入（その 1 回だけ）、GitHub MCP 経路では
 #                           hook の環境変数（セッション全体）として読む抜け道。hook の環境の値は
 #                           MCP 経路だけが読み、Bash 経路は通さない
@@ -139,7 +139,9 @@ if ! source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh"; then
 fi
 asdd_hook_enabled hooks || exit 0
 
-[ "${FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD:-0}" = "1" ] && exit 0
+# L4 宣言（ADR-087）。lib を読めない配置では止めない側（ガードは効いたまま）に倒し、stderr も汚さない
+{ [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
+if ff_l4_skipped 'effort-actual' 'FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD'; then exit 0; fi
 
 # ---- GitHub MCP 経路（merge_pull_request）------------------------------------
 # MCP の呼び出しにはコマンド文字列が無い。tool_input の owner / repo / pullNumber を同じ意味の
@@ -579,7 +581,7 @@ reason="⛔ ff-dev-toolkit guard（工数実績が未記入のままのマージ
   1) AI エージェントへ /close-issue ${pr_number} を実行し、AC 照合と工数実績の書き戻しを済ませてから同じマージコマンドを実行する（推奨）
   ${bypass_line}
 ff-effort ブロックが無い Issue はこのガードの対象外です（遡及付与は強制しません）。
-このガード自体を止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD=1 を設定します。"
+このガード自体を止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=effort-actual を設定します（ほかの鍵と並べるときはカンマ区切り）。"
 
 jq -n --arg reason "$reason" \
   '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null

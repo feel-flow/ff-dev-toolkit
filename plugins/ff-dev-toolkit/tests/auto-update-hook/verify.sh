@@ -15,7 +15,8 @@
 #   - 日付が変われば再実行し、古いゲートファイルを掃除する
 #   - ゲートを書けない環境では実行せず無出力で exit 0（毎セッション再試行しない）
 #   - claude CLI が無い環境では何も書かず exit 0（fail-silent。起動を妨げない）
-#   - FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE=1 で無効化できる
+#   - FF_DEV_TOOLKIT_SKIP=auto-update（鍵の一覧のどこかにあればよい）で無効化でき、鍵の打ち間違いでは止まらない
+#     （旧名の別名は tests/l4-declarations が持つ）
 #   - claude が失敗しても exit 0（オフライン耐性）
 #   - hooks.json に async: true + timeout 付きで登録されている（SessionStart の
 #     体感遅延を作らない — AC）
@@ -34,6 +35,12 @@ HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 . "$SCRIPT_DIR/../lib/crlf-jq-shim.sh"
 
 [[ -f "$TARGET" ]] || { echo "✗ hooks/auto-update-marketplace.sh がありません" >&2; exit 1; }
+# L4 宣言（ADR-087）をホストから引き継がない: 素の FF_DEV_TOOLKIT_SKIP と名簿の旧名（内部の別名）を落とす。
+# 旧名は名簿から読み、この suite には書かない（旧名のケースは tests/l4-declarations が持つ）
+unset FF_DEV_TOOLKIT_SKIP
+while IFS=$'\t' read -r _l4_k _l4_kind _l4_owner _l4_covers _l4_legacy _l4_rest || [[ -n "$_l4_k" ]]; do
+  case "$_l4_legacy" in FF_[A-Z0-9_]*) unset "$_l4_legacy" ;; esac
+done < "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv"
 command -v jq >/dev/null 2>&1 || { echo "○ skip: jq が無いため auto-update-hook を検証できません（検査は1件も実行されていません）"; exit 0; }
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/auto-update-hook.XXXXXX")"
@@ -154,13 +161,25 @@ fi
 : > "$CALLS"
 rm -f "$TMP/stamps"/*
 set +e
-OUT="$(FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE=1 FF_DEV_TOOLKIT_AUTO_UPDATE_STAMP="$STAMP" PATH="$STUB_BIN:$PATH" bash "$TARGET" 2>&1)"
+OUT="$(FF_DEV_TOOLKIT_SKIP=update-check,auto-update FF_DEV_TOOLKIT_AUTO_UPDATE_STAMP="$STAMP" PATH="$STUB_BIN:$PATH" bash "$TARGET" 2>&1)"
 RC=$?
 set -e
-if [[ "$RC" -eq 0 && ! -s "$CALLS" && "$(gate_count)" == "0" ]]; then
-  ok "FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE=1 で何もしない"
+if [[ "$RC" -eq 0 && -z "$OUT" && ! -s "$CALLS" && "$(gate_count)" == "0" ]]; then
+  ok "FF_DEV_TOOLKIT_SKIP=update-check,auto-update（鍵 auto-update）で何もしない"
 else
-  bad "オプトアウトが効かない（rc=${RC}）"
+  bad "オプトアウトが効かない（rc=${RC} / out=${OUT}）"
+fi
+# 鍵の打ち間違い（auto-updates）は止めない（宣言の外は効いたまま）
+: > "$CALLS"
+rm -f "$TMP/stamps"/*
+set +e
+OUT="$(FF_DEV_TOOLKIT_SKIP=auto-updates FF_DEV_TOOLKIT_AUTO_UPDATE_STAMP="$STAMP" PATH="$STUB_BIN:$PATH" bash "$TARGET" 2>&1)"
+RC=$?
+set -e
+if [[ "$RC" -eq 0 && -s "$CALLS" ]]; then
+  ok "FF_DEV_TOOLKIT_SKIP=auto-updates（打ち間違い）では止めず、更新を呼ぶ"
+else
+  bad "打ち間違いの鍵で止まった（rc=${RC} / calls=$(cat "$CALLS" 2>/dev/null)）"
 fi
 
 # ---- 7. claude が失敗しても exit 0（オフライン耐性） ---------------------------

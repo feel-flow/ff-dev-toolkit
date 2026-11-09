@@ -113,9 +113,9 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 <!--30dc8e97b78e1e23-->
 MCP: 取得値: MCP で同じ Issue / PR の最新 body / updated_at を取得。形式: body原文と title/labels の構造化引数。渡し先: 親が update_issue / update_pull_request / create_issue → fresh後読。不足時: MCP 必須不足は名指し停止。
 
-走行中の deny の例外として、**通る書き込み先は 3 つ: 作業ツリーの外（scratchpad / `mktemp -d` / `/tmp`）・`.review-results/`・gitignore 済みのパス**（`gh ... > tmp/<slug>/body.md` など）。復旧は deny 理由文の `rm` か、Bash の区間先頭の `FF_REVIEW_LOCK_OVERRIDE=1`。非対話で起動を自動化するときは `FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD=1`。待ちは2つ。修正版は scratchpad へ下書きし全レーン終端後に `cp`。次の独立 Issue は別 worktree。python の文字列パッチは書き込み先がリテラルで無いと deny。`FF_REVIEW_LOCK_OVERRIDE=1` は別 worktree だけ（レビュー対象ツリーには使わない）。詳細は [references/waiting-work.md](references/waiting-work.md)。
+走行中の deny の例外として、**通る書き込み先は 3 つ: 作業ツリーの外（scratchpad / `mktemp -d` / `/tmp`）・`.review-results/`・gitignore 済みのパス**（`gh ... > tmp/<slug>/body.md` など）。復旧は deny 理由文の `rm` か、Bash の区間先頭の `FF_REVIEW_LOCK_ACK=1`。非対話で起動を自動化するときは `FF_DEV_TOOLKIT_SKIP=review-in-flight`。待ちは2つ。修正版は scratchpad へ下書きし全レーン終端後に `cp`。次の独立 Issue は別 worktree。python の文字列パッチは書き込み先がリテラルで無いと deny。`FF_REVIEW_LOCK_ACK=1` は別 worktree だけ（レビュー対象ツリーには使わない）。詳細は [references/waiting-work.md](references/waiting-work.md)。
 
-<!--d70084c3e53d57e3-->
+<!--da959777571a4daf-->
 分類: 非操作: 書込先の例示。MCPはscratch保存しsource凍結
 
 **利用不可・失敗時（exit 0 の単一縮退も含む）**: 自動fallback無し。`Status: incomplete` は未確認。利用制限時は復旧待ち・予約より先に [失敗時の担当選択](../../docs-template/05-operations/deployment/self-review.md#失敗時の担当選択) に従う。取りこぼしたレーンは `FF_REVIEW_SUBAGENT_LOCK_MAX_AGE_SECONDS`（既定 14400 秒）と `FF_REVIEW_SUBAGENT_LOCK_PENDING_SECONDS`（既定 1800 秒）で回収し通知。主担当の🔑/💳は2a。他は主担当のみで完了。未完了は証跡ありなら同じ出力先。pair主失敗と残る総合は別の主、他は`--exclude-cli`。無しは`--resume`。

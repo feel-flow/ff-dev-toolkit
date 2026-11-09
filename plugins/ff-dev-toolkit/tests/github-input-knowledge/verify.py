@@ -145,7 +145,7 @@ fixture
   out=run('workflow-doctor.sh',[*argv,'--github-input',index([{**x,'body':str(put(kind+'.json',payload))} if x['operation']=='doctor.parents' else x for x in base])]);check(b'SKIP\t6\t' in out,'doctor '+kind+' cannot establish orphan set')
  if not args.consumer_only:
   # Optional identity lookup must not turn local add/commit/probe/push into a stop.
-  env['FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD']='1'  # only disposable fixture commits
+  env['FF_DEV_TOOLKIT_SKIP']='commit-identity'  # only disposable fixture commits
   for transport in ['userinfo','local-bare']:
    for lane in ['direct','wrapper']:
     origin_root,origin_git=repo('optional-'+transport+'-'+lane,'ace-from-pr-7-'+chr(35)+'9');bare=t/(origin_root.name+'.git')
@@ -174,7 +174,7 @@ fixture
    (pushing/'seed').write_text('knowledge update\n');push_git('add','seed');push_git('commit','-m','knowledge: optional identity')
    out=run('finish.sh',['knowledge-commit','push','--github-input',index([])],cwd=pushing)
    check(b'KNOWLEDGE_PUSH=ok' in out and b'KNOWLEDGE_CI=(unavailable)' in out,'optional '+transport+' push is local delivered with CI unavailable')
-  env.pop('FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD')
+  env.pop('FF_DEV_TOOLKIT_SKIP')
   # Central finish glue is required, never silently skipped by the registered suite.
   root,g=repo('finish-probe');ix=index([entry('knowledge.repo',{},f/'repo.json','probe'),entry('knowledge.classic-protection',{'branch':'develop'},f/'classic.json','probe',http_status=200),entry('knowledge.rulesets',{'branch':'develop'},f/'rules.json','probe')]);out=run('finish.sh',['knowledge-commit','probe','--github-input',ix],cwd=root);check(b'protection=unprotected' in out,'finish file protection probe')
   for status in [403,400]:

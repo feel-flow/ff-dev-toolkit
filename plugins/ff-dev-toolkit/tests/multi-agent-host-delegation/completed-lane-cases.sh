@@ -3,7 +3,7 @@
 completed_lane_hook() { # <repo> <event> <tool-key> <agent-id> <log-prefix>
   local repo="$1" event="$2" key="$3" agent="$4" log="$5" hook="$PLUGIN_ROOT/hooks/guard-review-in-flight.sh"
   (
-    isolate_hook_env 'FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD FF_REVIEW_LOCK_OVERRIDE' "$hook"
+    isolate_hook_env 'FF_DEV_TOOLKIT_SKIP FF_REVIEW_LOCK_ACK' "$hook"
     export FF_REVIEW_ROUND_LIMIT=0
     jq -n --arg d "$repo" --arg ev "$event" --arg key "$key" --arg id "$agent" '
       {cwd:$d,hook_event_name:$ev} +

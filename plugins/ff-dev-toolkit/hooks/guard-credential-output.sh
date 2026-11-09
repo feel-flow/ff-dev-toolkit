@@ -11,7 +11,10 @@ fi
 asdd_hook_enabled hooks
 asdd_rc=$?
 [ "$asdd_rc" -eq 3 ] && exit 0
-[ "${FF_DEV_TOOLKIT_SKIP_CREDENTIAL_OUTPUT_GUARD:-0}" = 1 ] && exit 0
+# 宣言の判定は共通関数 scripts/lib/l4-declarations.sh（ADR-087）。読めないときは止めない側に倒す。
+# shellcheck source=../scripts/lib/l4-declarations.sh
+{ [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
+if ff_l4_skipped 'credential-output' 'FF_DEV_TOOLKIT_SKIP_CREDENTIAL_OUTPUT_GUARD'; then exit 0; fi
 
 candidate_name() {
   case "$1" in
@@ -35,7 +38,7 @@ deny() {
 認証設定の本文を表示せず、npm config get registry のような非秘密キーだけを個別に照会してください。
 grep -v による除外やキー名抽出は免除になりません。
 誤検知の場合だけ、コマンド先頭に FF_CREDENTIAL_OUTPUT_ACK=1 を付けられます。
-ガード全体の無効化: FF_DEV_TOOLKIT_SKIP_CREDENTIAL_OUTPUT_GUARD=1。"
+ガード全体の無効化: FF_DEV_TOOLKIT_SKIP=credential-output。"
   out="$(jq -nc --arg r "$reason" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null)" || {
     printf '%s\n' "$reason" >&2
     exit 2

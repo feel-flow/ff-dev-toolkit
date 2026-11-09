@@ -24,7 +24,8 @@
 #     SIGKILL でも fail が残ることを stub git で証明）
 #   - オフライン（到達不能）時は無出力 + exit 0 + fail キャッシュ記録
 #   - 到達可能だが SemVer タグが 1 件も無いリポジトリでは通知せず fail が残る
-#   - FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1 はキャッシュ作成すら行わず即終了（WSL 案内を止めた状態。案内は第 17 節）
+#   - FF_DEV_TOOLKIT_SKIP=update-check（鍵の一覧のどこにあってもよい）はキャッシュ作成すら行わず即終了
+#     （WSL 案内を止めた状態。案内は第 17 節）。旧名の別名と L4 宣言の通知は tests/l4-declarations が持つ
 #   - SemVer 3 要素でないタグ（v1.2.3-rc.1 等）の除外（peeled ref は fixture の
 #     annotated tag で ls-remote 出力に並ぶ状態を作っている。$ アンカー除去の
 #     退行はこの rc タグ検査が拾う）
@@ -59,6 +60,16 @@ HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 . "$SCRIPT_DIR/../lib/git-fixture.sh"
 
 [ -f "$TARGET" ] || { echo "✗ hooks/check-update.sh が見つかりません: $TARGET" >&2; exit 1; }
+# L4 宣言（ADR-087）をホストから引き継がない。素の FF_DEV_TOOLKIT_SKIP と、名簿の legacy 列の旧名
+# （内部の別名。hook は旧名が効く値だと SessionStart で通知を出す）を落とす。旧名は名簿から読み、
+# この suite には書かない（旧名と通知のケースは tests/l4-declarations が持つ）
+L4_TSV="$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv"
+L4_LIB="$PLUGIN_ROOT/scripts/lib/l4-declarations.sh"
+[ -f "$L4_TSV" ] && [ -f "$L4_LIB" ] || { echo "✗ L4 宣言の名簿か判定 lib が見つかりません: $L4_TSV / $L4_LIB" >&2; exit 1; }
+unset FF_DEV_TOOLKIT_SKIP
+while IFS=$'\t' read -r _l4_k _l4_kind _l4_owner _l4_covers _l4_legacy _l4_rest || [ -n "$_l4_k" ]; do
+  case "$_l4_legacy" in FF_[A-Z0-9_]*) unset "$_l4_legacy" ;; esac
+done < "$L4_TSV"
 command -v git >/dev/null 2>&1 || { echo "✗ git が必要です" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "✗ jq が必要です（通知 JSON の構文検証に使用）" >&2; exit 1; }
 
@@ -153,9 +164,12 @@ REPO_NOSEMVER="$TMP/origin-nosemver.git"
 
 # ---- fixture: フックのプラグイン構造コピー -----------------------------------
 FIX="$TMP/plugin"
-mkdir -p "$FIX/hooks" "$FIX/.claude-plugin"
+mkdir -p "$FIX/hooks" "$FIX/scripts/lib" "$FIX/.claude-plugin"
 cp "$TARGET" "$FIX/hooks/check-update.sh"
 cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$FIX/hooks/asdd-hook-gate.sh"
+# L4 宣言の判定 lib と名簿（鍵 update-check / wsl-notice で止める経路を本番と同じ配置で通す）。
+# WSL 案内の lib はここへ置かない（「lib が無い配置」の検査が既定の FIX を使う）
+cp "$L4_LIB" "$L4_TSV" "$FIX/scripts/lib/"
 HOOK="$FIX/hooks/check-update.sh"
 
 set_version() {
@@ -173,12 +187,13 @@ run_hook() {
   local repo="$1" cache="$2"
   shift 2
   RC=0
-  OUT="$(env -u CLAUDE_PLUGIN_ROOT -u FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK \
+  # WSL 案内は鍵 wsl-notice で止める（追加の env で FF_DEV_TOOLKIT_SKIP を渡したケースはそれで上書きされる）
+  OUT="$(env -u CLAUDE_PLUGIN_ROOT -u FF_DEV_TOOLKIT_SKIP \
     -u FF_DEV_TOOLKIT_UPDATE_TTL_OK -u FF_DEV_TOOLKIT_UPDATE_TTL_FAIL \
     -u FF_DEV_TOOLKIT_UPDATE_TTL_NOTIFIED \
     FF_DEV_TOOLKIT_UPDATE_REPO_URL="$repo" \
     FF_DEV_TOOLKIT_UPDATE_CACHE_DIR="$cache" \
-    FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=1 \
+    FF_DEV_TOOLKIT_SKIP=wsl-notice \
     "$@" bash "$HOOK" 2>"$TMP/stderr")" || RC=$?
   ERR="$(cat "$TMP/stderr" 2>/dev/null || true)"
 }
@@ -584,7 +599,7 @@ mkdir -p "$TMP/stubbin"
 printf '#!/bin/sh\nsleep 30\n' > "$TMP/stubbin/git"
 chmod +x "$TMP/stubbin/git"
 CACHE="$TMP/cache10"
-env -u CLAUDE_PLUGIN_ROOT -u FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK \
+env -u CLAUDE_PLUGIN_ROOT -u FF_DEV_TOOLKIT_SKIP \
   -u FF_DEV_TOOLKIT_UPDATE_TTL_OK -u FF_DEV_TOOLKIT_UPDATE_TTL_FAIL \
   FF_DEV_TOOLKIT_UPDATE_REPO_URL="$REPO" \
   FF_DEV_TOOLKIT_UPDATE_CACHE_DIR="$CACHE" \
@@ -601,11 +616,19 @@ fi
 
 # ---- 11. オプトアウト: 一切の処理を行わない ----------------------------------
 CACHE="$TMP/cache11"
-run_hook "$REPO" "$CACHE" FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1
+run_hook "$REPO" "$CACHE" FF_DEV_TOOLKIT_SKIP=wsl-notice,update-check
 if [ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ] && [ ! -e "$CACHE" ]; then
-  ok "オプトアウト: 無出力 + キャッシュディレクトリ未作成"
+  ok "オプトアウト（FF_DEV_TOOLKIT_SKIP=wsl-notice,update-check）: 無出力 + キャッシュディレクトリ未作成"
 else
   bad "オプトアウト: exit=$RC output=[$OUT] cache_exists=$([ -e "$CACHE" ] && echo yes || echo no)"
+fi
+# 鍵 update-check だけでも止まる（並びの位置に依らない。WSL 案内は Git Bash 以外では出ない）
+CACHE="$TMP/cache11b"
+run_hook "$REPO" "$CACHE" FF_DEV_TOOLKIT_SKIP=update-check
+if [ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ] && [ ! -e "$CACHE" ]; then
+  ok "オプトアウト（FF_DEV_TOOLKIT_SKIP=update-check）: 無出力 + キャッシュディレクトリ未作成"
+else
+  bad "オプトアウト（update-check だけ）: exit=$RC output=[$OUT] cache_exists=$([ -e "$CACHE" ] && echo yes || echo no)"
 fi
 
 # ---- 12. plugin.json から version が読めない: silent skip --------------------
@@ -664,7 +687,7 @@ cp "$TARGET" "$TMP/detached/check-update.sh"
 cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$TMP/detached/asdd-hook-gate.sh"
 CACHE="$TMP/cache15"
 RC=0
-OUT="$(env -u FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK \
+OUT="$(env -u FF_DEV_TOOLKIT_SKIP \
   -u FF_DEV_TOOLKIT_UPDATE_TTL_OK -u FF_DEV_TOOLKIT_UPDATE_TTL_FAIL \
   CLAUDE_PLUGIN_ROOT="$FIX" \
   FF_DEV_TOOLKIT_UPDATE_REPO_URL="$REPO" \
@@ -737,7 +760,7 @@ if [ -f "$WSL_LIB" ]; then
     case "$t" in
       *'"'* | *'\'*) bad "WSL 案内: ${fn} の文言に \" か \\ がある（JSON が壊れる）" ;;
       *) if [[ "$t" == *[[:cntrl:]]* ]]; then bad "WSL 案内: ${fn} の文言に制御文字がある"
-         elif [[ "$t" == *WSL* && "$t" == *FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=1* ]]; then ok "WSL 案内: ${fn} は JSON へ埋め込める形で、WSL と止め方を名指しする"
+         elif [[ "$t" == *WSL* && "$t" == *FF_DEV_TOOLKIT_SKIP=wsl-notice* ]]; then ok "WSL 案内: ${fn} は JSON へ埋め込める形で、WSL と止め方を名指しする"
          else bad "WSL 案内: ${fn} が WSL か止め方を名指ししない"; fi ;;
     esac
   done
@@ -774,6 +797,7 @@ if [ -f "$WSL_LIB" ]; then
   cp "$TARGET" "$WFIX/hooks/check-update.sh"
   cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$WFIX/hooks/asdd-hook-gate.sh"
   cp "$WSL_LIB" "$WFIX/scripts/lib/wsl-notice.sh"
+  cp "$L4_LIB" "$L4_TSV" "$WFIX/scripts/lib/"
   printf 'OSTYPE=msys\n' > "$TMP/bashenv-msys"
   printf 'OSTYPE=linux-gnu\n' > "$TMP/bashenv-linux"
   wsl_set_version() {
@@ -783,11 +807,11 @@ if [ -f "$WSL_LIB" ]; then
     local os="$1" repo="$2" cache="$3"
     shift 3
     RC=0
-    OUT="$(env -u CLAUDE_PLUGIN_ROOT -u FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK \
+    OUT="$(env -u CLAUDE_PLUGIN_ROOT -u FF_DEV_TOOLKIT_SKIP \
       -u FF_DEV_TOOLKIT_UPDATE_TTL_OK -u FF_DEV_TOOLKIT_UPDATE_TTL_FAIL \
       -u FF_DEV_TOOLKIT_UPDATE_TTL_NOTIFIED \
       FF_DEV_TOOLKIT_UPDATE_REPO_URL="$repo" FF_DEV_TOOLKIT_UPDATE_CACHE_DIR="$cache" \
-      BASH_ENV="$TMP/bashenv-$os" FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=0 "$@" \
+      BASH_ENV="$TMP/bashenv-$os" "$@" \
       bash "$WFIX/hooks/check-update.sh" </dev/null 2>"$TMP/stderr")" || RC=$?
     ERR="$(cat "$TMP/stderr" 2>/dev/null || true)"
   }
@@ -825,14 +849,14 @@ if [ -f "$WSL_LIB" ]; then
     bad "WSL 案内（msys）: 更新通知と並べた出力が不正（out=[${OUT}]）"
   fi
   wsl_set_version "99.0.0"
-  run_wsl_hook msys "$REPO" "$TMP/wsl-cache3" FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=1
+  run_wsl_hook msys "$REPO" "$TMP/wsl-cache3" FF_DEV_TOOLKIT_SKIP=wsl-notice
   assert_clean "WSL 案内（msys）: 無効化"
   if [ -z "$OUT" ] && [ ! -e "$TMP/wsl-cache3/wsl-notice" ]; then
-    ok "WSL 案内（msys）: FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=1 で案内も記録もしない"
+    ok "WSL 案内（msys）: FF_DEV_TOOLKIT_SKIP=wsl-notice で案内も記録もしない"
   else
     bad "WSL 案内（msys）: 無効化が効かない（out=[${OUT}]）"
   fi
-  run_wsl_hook msys "$REPO" "$TMP/wsl-cache4" FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1
+  run_wsl_hook msys "$REPO" "$TMP/wsl-cache4" FF_DEV_TOOLKIT_SKIP=update-check
   assert_clean "WSL 案内（msys）: 更新チェックの無効化"
   if wsl_only_json && [ ! -e "$TMP/wsl-cache4/update-check" ]; then
     ok "WSL 案内（msys）: 更新チェックを止めても WSL 案内は独立して出る（更新チェックのキャッシュは作らない）"
@@ -862,7 +886,7 @@ if [ -f "$WSL_LIB" ]; then
   fi
   # lib が無い配置（既定の FIX）では WSL 案内だけを飛ばし、更新通知は従来どおり
   set_version "0.13.3"
-  run_hook "$REPO" "$TMP/wsl-cache7" FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=0 BASH_ENV="$TMP/bashenv-msys"
+  run_hook "$REPO" "$TMP/wsl-cache7" FF_DEV_TOOLKIT_SKIP= BASH_ENV="$TMP/bashenv-msys"
   assert_clean "WSL 案内（msys）: lib が無い配置"
   if printf '%s' "$OUT" | jq -e '.systemMessage | contains("📦") and (contains("WSL") | not)' >/dev/null 2>&1 \
     && [ ! -e "$TMP/wsl-cache7/wsl-notice" ]; then

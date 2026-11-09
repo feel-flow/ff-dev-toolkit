@@ -109,13 +109,65 @@ Desktop の旧版はローカルの自動更新では解消しないため、Des
 
 直接実行する場合は、読み込んだプラグインの `scripts/check-plugin-versions.sh --json` を bash で実行する。終了コード 0 は更新ありを含む検査完了、2 は確認不可を含む部分結果、1 は起動エラー。Codex からも実行できるが、検査対象は Claude の登録形式であり Codex の登録は含まない。
 
+### hook を止める宣言と 1 回だけ通す承認
+
+下の各 hook のガード・通知・記録は、利用者が書く 2 種類の宣言で止めたり通したりできます。
+
+**止める宣言（SKIP）** — 1 つの環境変数 `FF_DEV_TOOLKIT_SKIP` に、下の表の鍵をカンマで並べて書きます。ホストの env 設定（Claude Code なら settings.json の `env`）・shell の rc・CI の環境に置き、そのセッションの間ずっと効きます。
+
+```bash
+export FF_DEV_TOOLKIT_SKIP=update-check,wsl-notice
+```
+
+- 値は小文字・数字・`-` の鍵をカンマで区切った形だけを受け付けます。空白区切り・大文字・空の要素（`a,,b`）・前後のカンマを含む値は、値全体を未設定として扱います（ガードは効いたまま）
+- 表に無い鍵（打ち間違い）は何も止めません。すべてを止める鍵（`all`）はありません
+- 「包含」の列の鍵は、その行の鍵で併せて止まります（例: `zsh-glob` は `zsh-expansion` も止める）
+
+| 鍵 | 止めるもの | 包含 |
+| --- | --- | --- |
+| `auto-update` | マーケットプレイス自動更新（`hooks/auto-update-marketplace.sh`） | - |
+| `background-cwd` | cwd ガード（`hooks/guard-background-cwd.sh`） | - |
+| `checkout` | 未コミット変更ガード（`hooks/guard-checkout-restore.sh`） | `discard-uncommitted` |
+| `codex-auto-update` | `/multi-*` の dispatch 前の codex-cli の自動更新（`scripts/lib/multi-agent-codex-update.sh`） | - |
+| `commit-identity` | 定型コミットを作るスクリプトの、検査用の合成 git identity の検査（`scripts/lib/commit-identity-functions.sh`） | - |
+| `credential-output` | 認証設定の表示ガード（`hooks/guard-credential-output.sh`） | - |
+| `decision-tree` | 決定木の経路判定と葉の到達記録（`hooks/decision-tree.sh`） | - |
+| `effort-actual` | 工数実績未記入マージガード（`hooks/guard-effort-actual.sh`） | - |
+| `effort-metrics` | 工数の実測記録（`hooks/record-effort-wallclock.sh`・`hooks/record-instruction-bytes.sh`・`scripts/record-gate-minutes.sh`） | - |
+| `exit-code` | 終了コード誤読ガード（`hooks/guard-exit-code.sh`） | `timeout`・`unbounded-wait`・`rg-stdin` |
+| `issue-label` | 起票ラベル契約ガード（`hooks/guard-issue-labels.sh`） | - |
+| `literal-write` | literal-write ガード（`hooks/guard-literal-write.sh`） | - |
+| `long-gate-background` | 委譲先の background ガード（`hooks/guard-long-gate-background.sh`） | - |
+| `merge-closing` | squash closing keyword ガード（`hooks/guard-merge-closing-keyword.sh`） | - |
+| `pr-followup` | PR フォローアップ宣言ガードと Draft PR の検出（`hooks/guard-pr-followup.sh`） | `pr-draft` |
+| `review-in-flight` | レビュー走行中の編集の凍結（`hooks/guard-review-in-flight.sh`） | `review-lock`・`review-round` |
+| `review-roster-check` | レビュアー名簿ドリフト検査（`hooks/check-review-roster-drift.sh`） | - |
+| `skill-drift-check` | スキル実体ドリフト検査（`hooks/check-skill-drift.sh`） | - |
+| `sub-issue-id` | sub-issues integer フィールドガード（`hooks/guard-sub-issue-id.sh`） | - |
+| `update-check` | 更新通知（`hooks/check-update.sh`） | - |
+| `wsl-notice` | Windows（Git Bash）での WSL 案内（`hooks/check-update.sh`） | - |
+| `wsl-shell` | WSL シェル本文ガード（`hooks/guard-wsl-shell.sh`） | - |
+| `zsh-expansion` | zsh 展開ガード（`hooks/guard-zsh-glob.sh` の追加検出） | - |
+| `zsh-glob` | zsh 未引用 glob ガード（`hooks/guard-zsh-glob.sh` 全体） | `zsh-expansion` |
+
+包含は表の hook の中だけで効きます。`review-in-flight` は `scripts/multi-agent.sh` のレビュー巡回の上限を止めません。
+
+**1 回だけ通す承認（ACK）** — `FF_` + 鍵を大文字・`_` 区切りにしたもの + `_ACK` の名前を `=1` で書き、その呼び出しだけを通します（例 `FF_ZSH_GLOB_ACK=1`）。置き場所（コマンドの先頭・区間の先頭・hook のプロセス環境）は ACK ごとに決まっていて、各 hook の説明と停止文が示します。
+
+- `FF_DISCARD_UNCOMMITTED_ACK=1` — 未コミット変更ガードで、意図して変更を破棄する `git checkout` / `git restore` の先頭に付けます
+- `FF_ISSUE_LABEL_ACK=1` — 起票ラベル契約ガードで、ラベルの欠けた `gh issue create` の先頭に付けます
+- `FF_REVIEW_LOCK_ACK=1` — レビュー走行中の凍結で、その書き込みだけを通します。Bash では書き込みを含む区間の先頭に付け、Bash 以外のツールでは hook のプロセス環境で渡します
+- 名前の変わらない ACK: `FF_CREDENTIAL_OUTPUT_ACK` / `FF_EFFORT_ACTUAL_ACK` / `FF_EXIT_CODE_ACK` / `FF_LITERAL_WRITE_ACK` / `FF_LONG_GATE_BACKGROUND_ACK` / `FF_MERGE_CLOSING_ACK` / `FF_PR_DRAFT_ACK` / `FF_REVIEW_ROUND_ACK` / `FF_RG_STDIN_ACK` / `FF_SHELL_SAVE_ACK` / `FF_SUB_ISSUE_ID_ACK` / `FF_TIMEOUT_ACK` / `FF_UNBOUNDED_WAIT_ACK` / `FF_WSL_SHELL_ACK` / `FF_ZSH_EXPANSION_ACK` / `FF_ZSH_GLOB_ACK`
+
+この形にまとめる前の個別の名前は、1.1.0 より前の版まで内部の別名として読まれます。hooks が発火するホスト（Claude Code など）では、使うと新しい書き方を通知します（SKIP の旧名はセッション開始時、ACK の旧名はその呼び出しのとき）。scripts から読む宣言（commit identity の判定・codex-cli の自動更新）は、旧名で止めても自分では通知しません。対応表は同梱の `PUBLIC-SURFACE.md` の「破壊的変更の記録」と CHANGELOG にあります。
+
 ### 更新通知
 
 セッション開始時に本リポジトリの最新リリースタグを確認し、新しいバージョンが公開されていれば通知します（更新コマンドは通知に表示されます）。同じ組み合わせ（使っている版 × 公開されている版）についての通知は 1 日に一度までで、**更新するまで日をまたぐたびに届きます**。更新すれば止まり、さらに新しい版が出れば間隔を待たずに通知します。
 
 - チェック成功の結果は 24 時間キャッシュされます。オフライン時や取得失敗時は何もせず黙ってスキップし（セッション起動を妨げません）、1 時間後に再試行します
 - 通知の間隔は環境変数 `FF_DEV_TOOLKIT_UPDATE_TTL_NOTIFIED`（秒・既定 86400）で変更できます。0 を指定すると毎セッション通知します
-- 通知を止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1` を設定してください
+- 通知を止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP=update-check` を設定してください
 
 ### Windows（Git Bash）での WSL 案内
 
@@ -123,7 +175,7 @@ Windows の Git Bash 上で Claude Code を使っていると、セッション�
 
 - Linux / macOS / WSL の中では何も表示せず、判定のために外部プロセスを起動しません
 - WSL の PATH には既定で Windows 側の PATH が足されるため、Windows 版の CLI が見えて判定が揺れることがあります。`/etc/wsl.conf` の `[interop]` に `appendWindowsPath=false` を書くと外せます
-- 案内を止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=1` を設定してください
+- 案内を止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP=wsl-notice` を設定してください
 
 ### マーケットプレイス自動更新
 
@@ -132,7 +184,7 @@ Windows の Git Bash 上で Claude Code を使っていると、セッション�
 - 実行は 1 日 1 回に間引かれます。`claude` CLI が無い環境・オフラインでもセッション起動を妨げません（fail-silent）
 - 本体更新の登録 ID（`プラグイン名@marketplace名` 形式）は `claude plugin list` から拾うため、導入経路によるマーケットプレイス登録名の違いを吸収します
 - 反映は次回以降のセッション起動時です（Claude Code の仕様）
-- 止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE=1` を設定してください
+- 止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP=auto-update` を設定してください
 
 ### スキル実体ドリフト検査
 
@@ -142,7 +194,7 @@ Windows の Git Bash 上で Claude Code を使っていると、セッション�
 - スキル集合が一致し version が 1 種類なら無音です。同一 version の cache と marketplace checkout が並ぶのは通常構成です。version 差だけの 1 実体は上の更新通知に任せます
 - インストール実体を 1 つも見つけられないときは「検出不能」と報告し、セッションは止めません
 - 古い cache は自動削除しません。`claude plugin marketplace update`（引数なし）→ `claude plugin list` で登録 ID（`プラグイン名@marketplace名` 形式）を確認 → `claude plugin update <確認した ID>` → Claude Code の再起動、の順で追従し、**再起動の後に**通知の古い version ディレクトリだけを手動で削除してください（素の名前を渡すと `Plugin not found` で失敗します）。hook はセッション中ずっと起動時に読み込んだディスク実体を参照するため、再起動より前に削除すると稼働中セッションの hook が壊れます。稼働中の別セッションがロードしている version も削除しないでください。再起動しても既存の会話を再開すると古いスナップショットへ再接続されるため、新しい会話を開始してください。marketplace checkout は消さないでください
-- 通知を止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK=1` を設定してください
+- 通知を止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP=skill-drift-check` を設定してください
 
 ### レビュアー名簿ドリフト検査
 
@@ -153,7 +205,7 @@ Windows の Git Bash 上で Claude Code を使っていると、セッション�
 - 突き合わせが成立しない場合（ディレクトリを列挙できない・実体が 0 件・名簿を抽出できない等）は「一致」ではなく**判定不能**として報告します
 - 同じプラグインの版違いの写しが併存する環境では、最新版（版を読み取れないときは写し全体の和集合）を 1 つの判定へ畳みます。写しを独立に突き合わせると、名簿を正しく直したあとも古い写しが通知を出し続けるためです
 - 本検査が読むのは**同梱の既定値だけ**です。`FF_REVIEW_SUBAGENT_LOCK_TYPES` で名簿を上書きして実行時の取りこぼしを直しても判定は変わらないため、その場合は下の環境変数も併せて設定してください
-- 通知を止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK=1` を設定してください
+- 通知を止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP=review-roster-check` を設定してください
 
 ### 自動振り返り
 
@@ -166,7 +218,7 @@ Windows の Git Bash 上で Claude Code を使っていると、セッション�
 
 ### 工数の実測記録（wall-clock・指示の読み込みバイト）
 
-Issue の工数ブロック（`ff-effort`。単位は人時 `h`）の自己申告値と並べるための実測を、リポジトリ外の `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/` へ追記専用の TSV として記録する。`hooks/record-effort-wallclock.sh`（PreToolUse・`Bash`）はブランチ作成（`git checkout -b` / `git switch -c`）と `gh pr merge` を検出し、ブランチ名 `<type>/#<Issue番号>-<slug>` の番号とリポジトリをキーに開始 / 終了時刻を残す（ブランチ名を変数で組む形は記録されず、読み手がブランチの reflog から開始を補う）。`hooks/record-instruction-bytes.sh`（PreToolUse・`Read` / `Skill`）は `SKILL.md`・`references/*.md`・`docs/**/*.md` の読み込みバイトを残す。`/close-issue` がこれを `scripts/effort-report.sh --issue-metrics <Issue番号>` で読んで `effort_wallclock_actual` / `effort_instruction_bytes` として書き戻し、`scripts/effort-report.sh --format kv` が変更クラス（docs-only / 10 行以下 / それ以外）別の中央値・p75 を出す。どちらの hook もコマンドを止めず何も出力しない。記録できないとき（置き場を作れない・書けない）は黙って通り、書き戻しが `(unmeasured)` になる（0 とは区別する）。`FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS=1` で両方を無効化できる。
+Issue の工数ブロック（`ff-effort`。単位は人時 `h`）の自己申告値と並べるための実測を、リポジトリ外の `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/` へ追記専用の TSV として記録する。`hooks/record-effort-wallclock.sh`（PreToolUse・`Bash`）はブランチ作成（`git checkout -b` / `git switch -c`）と `gh pr merge` を検出し、ブランチ名 `<type>/#<Issue番号>-<slug>` の番号とリポジトリをキーに開始 / 終了時刻を残す（ブランチ名を変数で組む形は記録されず、読み手がブランチの reflog から開始を補う）。`hooks/record-instruction-bytes.sh`（PreToolUse・`Read` / `Skill`）は `SKILL.md`・`references/*.md`・`docs/**/*.md` の読み込みバイトを残す。`/close-issue` がこれを `scripts/effort-report.sh --issue-metrics <Issue番号>` で読んで `effort_wallclock_actual` / `effort_instruction_bytes` として書き戻し、`scripts/effort-report.sh --format kv` が変更クラス（docs-only / 10 行以下 / それ以外）別の中央値・p75 を出す。どちらの hook もコマンドを止めず何も出力しない。記録できないとき（置き場を作れない・書けない）は黙って通り、書き戻しが `(unmeasured)` になる（0 とは区別する）。`FF_DEV_TOOLKIT_SKIP=effort-metrics` で両方を無効化できる。
 ### 決定木 v0（経路の判定と葉の到達記録）
 
 「いつ何が走るか」を散文ではなく 1 ファイルの決定木データ `scripts/decision-tree/tree.tsv` で持つ。葉は同梱の全スキル（`skills/<名>/SKILL.md`）と全 hook（`hooks/<名>.sh`）で、各ノードは「問い 1 つ + 閉じた答えの集合 + `none`（ホスト判定へ）」を持つ。根だけが機械判定で、依頼の経路 **fast / full / none** を返す。葉の中身はこの版では書き直していない。
@@ -177,7 +229,7 @@ Issue の工数ブロック（`ff-effort`。単位は人時 `h`）の自己申�
 - `route.sh --check` が木の静的検査（実在しない葉・到達不能なノード・木に載っていないスキル / hook・深さ 5 以上・葉 56 以上・`none` の欠落・同じ規則キーの重複を赤にする）、`--leaves` が葉の一覧、`--walk <答え>...` が根からの辿りを出す
 - hook `hooks/decision-tree.sh` は `UserPromptSubmit` でルータを cwd に当てて根の答えをセッション記録へ置き（stdout 無出力）、`Stop` で到達した葉（根の答え・transcript に残る Skill 起動・自身）を Issue 番号と repo（cwd の `git rev-parse --path-format=absolute --git-common-dir`。工数の実測記録と同じ列）付きで `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/leaves.tsv` へ追記する（1 行 1 レコード・追記専用・同じセッションの同じ葉は 1 行）。Skill 起動として採るのは Skill ツールの `tool_use`（`"name":"Skill"` + `"input":{"skill":"…"}`）とスラッシュコマンド（`<command-name>/ff-dev-toolkit:<名></command-name>`）の 2 形だけで、本文に `"skill":"…"` の文字列があるだけでは採らない。どちらの痕跡も無い transcript は 0 件ではなく `(unmeasured)`。Issue 番号はブランチ名 `<type>/#<番号>-<slug>` から取る。記録が書けない・読めない・repo を引けないときは止めず、stderr に `(unmeasured)` を残す
 - 読み手は `bash scripts/effort-report.sh --unreached-leaves [--days N] [--metrics-dir DIR] [--repo-dir DIR]`（既定 14 日・カレントのリポジトリ）。repo 列が一致する行だけを採り、期間内に記録の無い葉を列挙する。記録が無い・読めないときは `(unmeasured)` と出す（0 件の到達にしない）。**既知の残差（v0）**: 列挙できるのは skill の葉と根の答えだけで、各 hook の発火と doc の葉の参照は記録の供給源が未配線のため、到達 0 ではなく `(unavailable)` 件数で出る（0 と区別する）
-- 止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP_DECISION_TREE=1` を設定してください。plugin hooks が発火しないホストでは `route.sh` を手で呼ぶ
+- 止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP=decision-tree` を設定してください。plugin hooks が発火しないホストでは `route.sh` を手で呼ぶ
 
 ### Bash ガード（PreToolUse）
 
@@ -191,7 +243,7 @@ Bash 呼び出しを実行前に止める。`grep -v` の除外やキー名抽�
 設定本文は読まず、拒否文に元コマンドやパスを再掲しない。
 静的判定のため、動的パス・別名・symlink・任意プログラムによる読取りは対象外。
 誤検知時だけ先頭の `FF_CREDENTIAL_OUTPUT_ACK=1` で免除でき、
-環境変数 `FF_DEV_TOOLKIT_SKIP_CREDENTIAL_OUTPUT_GUARD=1` で無効化できる。
+環境変数 `FF_DEV_TOOLKIT_SKIP=credential-output` で無効化できる。
 候補コマンドで scanner 不在・失敗・未完了なら判定不能として停止する。
 不正 JSON・jq 不在・ASDD hooks 無効・ホストでの未登録は保護できない。
 Claude Code の Bash 登録と grok の global hook 同期経路へ同じ実体を配布する。
@@ -205,57 +257,57 @@ Codex の Bash 相当ツールでの実発火は未実測。
 `--exec` / `-e` / `--shell-type none`・`-c` の無い起動・`$` を含まない本文・Git Bash 側で展開される `$` は止めない。
 ただし Git Bash 側の展開結果（`bash -c "$(cat s.sh)"` など）に `$` が含まれていれば WSL でもう一度展開され、これは静的に検出できない。
 誤検知時だけ先頭の `FF_WSL_SHELL_ACK=1` で免除でき、
-環境変数 `FF_DEV_TOOLKIT_SKIP_WSL_SHELL_GUARD=1` で無効化できる。
+環境変数 `FF_DEV_TOOLKIT_SKIP=wsl-shell` で無効化できる。
 候補コマンドで判定 lib の不在・失敗・引用符の未終端なら判定不能として停止する。
 `$(…)` の中の wsl・別名経由の起動・Codex の Bash 相当ツールでの実発火は対象外（未実測）。
 
 
 **未コミット変更ガード（`guard-checkout-restore.sh`）** — 未コミット変更のあるファイルへの `git checkout [--] <path>` / `git restore <path>` を検出し、変更消失の前に警告する。警告文は代替手段（`cp` バックアップ / `git stash push -- <file>` → `pop`）を案内する。ブランチ切り替え（`git checkout <branch>` / `git switch`）、clean・untracked なファイルへの復元、`git restore --staged`（worktree 非破壊）では発火しない。
 
-- 意図的に変更を破棄する場合はコマンド先頭に `FF_DISCARD_UNCOMMITTED=1` を付けて再実行する
+- 意図的に変更を破棄する場合はコマンド先頭に `FF_DISCARD_UNCOMMITTED_ACK=1` を付けて再実行する
 - 既知の限界: 複合コマンドで `cd` した先の相対パス・空白入りパス・`--pathspec-from-file` は判定できず素通しする（誤ブロックには倒れない）
-- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD=1`
+- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP=checkout`
 
 **PR フォローアップ宣言ガード（`guard-pr-followup.sh`）** — `gh pr create` / `gh pr edit` の PR 本文に「スコープ外」「別Issue」「別対応」「後で対応」「別途」「follow-up」「out of scope」の宣言マーカーがあるのに、Issue 参照（`#<数字>` または GitHub Issue URL）が無い場合に警告する。宣言だけ残して起票しない手戻りを機械的に検出するのが目的で、判定は共起ベースのため誤検出はありうる（だからブロックではなく抜け道付きの警告）。
 
 - 通し方: 先に `gh issue create` で起票して番号を本文へ書く／起票不要の正当な判断は本文に `<!-- no-followup: 理由 -->` を書く
 - 判定対象: コマンド文字列全体（heredoc・`--body "..."` を含む）と、hook 実行時点で読める `--body-file <path>` / `-F <path>` の内容
 - 既知の限界（判定できず素通しする渡し方）: `--body-file -`（stdin）・プロセス置換・同一コマンド内で生成する一時ファイル・`--fill`・インタラクティブ / web での本文入力
-- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1`
+- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP=pr-followup`
 
 **cwd ガード（`guard-background-cwd.sh`）** — linked worktree があるリポジトリで、先頭が相対パスの `cd` で始まる Bash を止める（どのツリーで走るかが直前の呼び出し次第で変わるため）。止めた理由文で、先頭を絶対パスの `cd` へ書き換えて再実行するよう案内する。それ以外の呼び出しには何も表示しない。
 
-- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1`
+- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP=background-cwd`
 - 絶対パス・コマンド置換（`cd "$(git rev-parse --show-toplevel)"`）・変数展開・チルダの `cd`、引数なしの `cd`、`cd -`、オプション付きの `cd` は止めない
 
 **工数実績未記入マージガード（`guard-effort-actual.sh`）** — `gh pr merge` が閉じようとしている Issue の本文に `ff-effort` ブロックが存在するのに `effort_ai_actual` が未記入のまま残っている場合、マージ前に停止する。`ff-effort` ブロック自体が無い Issue では発火しない。
 
 - 通し方: `/close-issue` で実績を書き戻してからマージする、またはコマンド先頭に環境代入 `FF_EFFORT_ACTUAL_ACK=1` を付けて再実行する
-- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD=1`
+- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP=effort-actual`
 - 既知の限界: heredoc・クォートの閉じていないセグメント・変数展開やコマンド置換で組み立てる `gh pr merge`、`gh` の認証切れ・オフラインなどでは判定できず素通しする（fail-open）
 
 **squash closing keyword ガード（`guard-merge-closing-keyword.sh`）** — 通常の `gh pr merge --squash` が `Refs` 対象の Issue を閉じる実効件名・本文を持つ場合、共有 checker で検出して停止する。非空の subject と明示 body（空文字も有効）を項目ごとに優先し、省略値は GitHub の SQUASH メッセージプレビューを読む。空 subject は gh が送信せず既定へ戻るため、安全な明示値としては扱わない。`finish.sh precheck` でも空 subject は拒否する。
 
 - 復旧は検査済みの非空 subject / body と同じ repo・PR・head を固定したコマンドで案内する。前段を含む呼び出し全体が未実行である点に注意する。
-- その merge だけを通すには直前へ `FF_MERGE_CLOSING_ACK=1`、全体の無効化は `FF_DEV_TOOLKIT_SKIP_MERGE_CLOSING_GUARD=1`。工数ガードの ACK とは独立する。
+- その merge だけを通すには直前へ `FF_MERGE_CLOSING_ACK=1`、全体の無効化は `FF_DEV_TOOLKIT_SKIP=merge-closing`。工数ガードの ACK とは独立する。
 - 依存は gh / jq / awk / Perl。Perl は gh の照会に上限を掛けるために使う（各照会 1 秒。gh の起動だけで約 1 秒かかる Windows の Git Bash では各照会 3 秒・最初の照会から 8 秒まで）。不在時は自動インストールせず、`systemMessage` と `additionalContext` で未検査を知らせて通す。照会は1呼び出し4回まで・全体の時間枠の中までで、以後の merge は未検査と通知する。 command / 実効message / body-file は8KiB、照会応答は64KiB、Refsは32件まで。復旧の置換は4巡までで、既知の抵触は停止を保ち、復旧できなければ手動precheckを案内する。各上限超過も理由付きで知らせる。
 - プレビューは取得時点の snapshot。queue（admin bypassなし）は message 指定を無視し、遅延 auto merge は将来の既定を保証できないため、いずれも理由付きで通す。`--disable-auto` / `--merge` / `--rebase` は対象外。取得不能（gh の失敗・時間枠・Perl 不在・不完全な応答）、queue、遅延 auto、stdin や先行生成の body-file は推測せず理由を知らせて通す。実行される gh pr merge で、先行する cwd の変更・未解決の変数・wrapper・global flag のために件名を検査できないときは停止する。説明文字列、heredoc、コメントの中の同じ綴りは実行ではないので止めない。書き直しは、先行の cd や未解決の値を含めない単独の gh pr merge。通す場合は同じ merge の直前の FF_MERGE_CLOSING_ACK=1。MCP merge は対象外。全ホストの実セッション発火を保証するものではない。
 
 **起票ラベル契約ガード（`guard-issue-labels.sh`）** — 素の `gh issue create` に種別・優先度のいずれかのラベルが付いていない場合に停止する。起票スキルの verify-then-skip 契約（実在確認のうえラベルを付与する手順）を直接の `gh issue create` で迂回するのを機械的に捕まえるのが目的。`follow-up` ラベルの欠落は起票が PR レビュー由来かどうかを機械的に判定できないため、`systemMessage` の案内のみに留める（停止しない）。
 
-- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1`（対象コマンド先頭の環境代入としても有効な抜け道）
+- 1 回だけ通すときは対象コマンドの先頭に環境代入 `FF_ISSUE_LABEL_ACK=1` を付ける。無効化は環境変数 `FF_DEV_TOOLKIT_SKIP=issue-label`
 - 既知の限界: `--label` を変数展開・コマンド置換で組み立てる形、`gh issue create` を経ない起票（API 直叩き・Web UI）では判定できず素通しする（fail-open）
 
 **委譲先の background ガード（`guard-long-gate-background.sh`）** — 委譲先のサブエージェントが `run_in_background: true` を**明示**したとき（コマンドを問わない）、および名簿の長時間ゲート（`run-all.sh` / `run-mutations.sh`）を Bash ツールの `timeout` 未指定・foreground 上限（既定 600000 ミリ秒）未満で起こしてホストに自動 background 化されるときに停止する。**名簿に縛られるのは後者だけ**である — 前者は構造化フィールド 1 つで判定でき所要時間の予測が要らないのに対し、後者は「このコマンドは上限を超えるか」の予測が要り、一般化すると `timeout` を書かない短いコマンドが全部止まるため。background へ回された委譲先は「完了通知を待つ」と言って停止し、親がナッジするまで再開しないため、待ち時間だけが失われる。**発火するのは委譲先（サブエージェント）の呼び出しだけ**で、オーケストレータ自身が意図的に background でゲートを回す運用は対象外（hook 入力の `agent_type` の有無で判別する）。発火と抜け道通過は `${TMPDIR}` 配下の session_id 別ログへ追記され、どの子が起こしたかの追跡と発生回数の計測に使える。
 
 - 通し方: `run_in_background` を外して Bash ツールの `timeout` に `600000` を明示し foreground で待つ、またはゲートを foreground 上限に収まる粒度へ分割する。それでも background で起こす必要がある場合は `FF_LONG_GATE_BACKGROUND_ACK=1` を付ける。**置き場はトリガごとに違う** — 名簿の自動 background 化は**ゲートを実行するセグメントの先頭**（`cd /repo && bash …/run-all.sh` なら `cd /repo && FF_LONG_GATE_BACKGROUND_ACK=1 bash …/run-all.sh`）、明示 `run_in_background` は**コマンドの先頭**（そちらには「ゲートのセグメント」に相当するものが無く、近似的なコマンド分割に抜け道の到達性を預けないため）
 - 要求する最小 timeout は環境変数 `FF_LONG_GATE_FOREGROUND_TIMEOUT_MS`（既定 600000）で変えられる
-- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD=1`
+- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP=long-gate-background`
 
 **sub-issues integer フィールドガード（`guard-sub-issue-id.sh`）** — `gh api` が `-f sub_issue_id=`（または同じ API の `-f after_id=` / `-f before_id=`）で integer フィールドを送ろうとしたときに停止する。`-f` は値を常に文字列で送るため、GitHub の sub-issues API は 422 で弾き、ループで回すと全件が同じエラーで落ちる。対象を `gh api -f` 全般へは広げない（GraphQL の `-f query=` や REST の `-f base=<branch>`、`per_page` は文字列として正しい）。
 
 - 通し方: `-F sub_issue_id=` に直す、または同梱の `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/link-sub-issues.sh" --repo OWNER/REPO <parent> <child>...` を使う。意図的に文字列で送る場合は対象コマンドの先頭に `FF_SUB_ISSUE_ID_ACK=1` を付ける
-- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1`
+- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP=sub-issue-id`
 - 既知の限界: コマンド位置に無い gh（echo の文字列）、変数展開で組み立てるフラグ名、heredoc 本文では判定できず素通しする（fail-open）
 
 **終了コード誤読ガード（`guard-exit-code.sh`）** — 実行しようとしている Bash コマンドが、測りたい処理の終了コードを運ばない形になっているときに停止する。検出する形は 5 つで、終了コードの判定は同梱の静的検出器 `tests/lib/exit-code-guard.sh` をそのまま再利用する。背景実行の待ちの上限と、command -v で見つからない timeout / gtimeout の分類は `tests/lib/wait-bounds.sh` に置く（この hook は判定規則を複製しない）。
@@ -272,7 +324,7 @@ Codex の Bash 相当ツールでの実発火は未実測。
 - `command -v` で見つからない `timeout` / `gtimeout` は実行前に止める。案内は perl の alarm。このコマンドに限って通すときは先頭に `FF_TIMEOUT_ACK=1` を付ける
 - パターンはあるのに検索パスの無い `rg`（`rg -n 'pat' -g '!node_modules'`）は実行前に止める（パターンの無い `rg` は使い方の誤りで即座に終わり、`command -v rg` は起動ではないので止めない）。ripgrep は検索パスを省くと、標準入力が端末でないとき cwd ではなく標準入力を検索するので、Bash ツール（標準入力が端末でなく EOF も来ない）では出力の無いまま timeout まで待ち続ける。案内は検索パスの明示（`rg … .`）か `</dev/null`。パイプの受け側（`cmd | rg …`）・標準入力のリダイレクト・`--files` / `--type-list` / `--version` は止めない。`$(…)` の中の `rg` も外の標準入力を受け継ぐので走査する。判定の正本は `tests/lib/rg-stdin-scan.sh`。このコマンドに限って通すときは先頭に並ぶ代入として `FF_RG_STDIN_ACK=1` を付ける。`rg` の起動語を含む呼び出しに限り、判定ヘルパの不在・走査の失敗は判定不能として止める
 - セミコロンで繋いだ一意なパイプの並びは、区間のどれかが非 0 なら非 0 で終わる書き換え候補にする。一意でない区間、関数、サブシェル、背景起動は書き換えず止める
-- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1`
+- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP=exit-code`
 - **このガードだけは判定を完了できないとき fail-closed**（判定不能である旨を出して止める）。対象は検出器の欠落・破損、heredoc 除去ヘルパの欠落・破損、走査 `awk` の失敗、`jq` フィルタの実行失敗、検出器出力の解釈不能、ASDD ゲートの検証不能（`.asdd/config.json` があるのに node が無い・設定を読めない。機能を無効にした場合は従来どおり無音で通る）。ただしその面は `$?` / `PIPESTATUS` / ゲート綴りを含む**候補コマンドに限る**ので、検出器が壊れても無関係な Bash 呼び出しは止まらない
 - 引用符の扱い: 検出器は**単一引用符**とコメントを散文として伏せる。二重引用符の中も区切り子・コマンド名は伏せるが、`$?` と `PIPESTATUS` は実際に展開されるため判定対象に残る（散文として書くなら単一引用符を使う）
 - 意図して赤にする形（正しく動く書き方でも止める。設計判断）: (1) ゲート直後の**引数なしの `exit` / `return`**（`bash …/run-all.sh > log 2>&1; exit` / 改行で分けた `exit` や `return` / `… || exit`）は伝播と見ない — ゲートがパイプ段や `&` の背後に在ると「直前のコマンド」がゲートでなくなり、伝播扱いにすると別の 5 形が無音になるため。(2) **`set -e` の到達は静的に追わない** — `set -e` 下の `bash …/run-all.sh > log 2>&1` ⏎ `後片付け`（`rm -f tmp` 等）は errexit で正しく止まる形だが赤にする（`pipefail` と同じ判断で、読み手が `set -e` の到達を追わなければ正しさが分からない形へは寄せない）。回避はどちらも同じで、ゲート直後で `rc=$?` と受け、後片付けや診断を挟んでから `exit $rc` で明示的に伝播させる（`FF_EXIT_CODE_ACK=1` の前置は、この書き換えができないときの最後の手段）
@@ -283,7 +335,7 @@ Codex の Bash 相当ツールでの実発火は未実測。
 - 入力書き換えに対応した Claude Code 環境で、**権限モードが bypassPermissions のときだけ**、未引用の名前付き変数（`$NAME` / `${NAME}`。一覧値を代入した変数の形を含む）を含む呼び出しの先頭へ `setopt SH_WORD_SPLIT; ` を付けた書き換え候補を返し、bash と同じ単語分割規則にそろえる（`for t in "a b" "c d"; do set -- $t; …` の `set -- $t` や `$(…)` の中の `$NAME` など）。書き換えた呼び出しには scalar の警告を出さない。ほかの権限モード（default / plan / acceptEdits / auto / dontAsk と、hook 入力に権限モードが無い場合）では前置しない — Claude Code は書き換え後の入力に権限ルールを当て、`;` で区切った各文に許可を求めるので、read-only の一覧に無い `setopt` を前置すると、承認なしで通っていた呼び出し（`ls -la $TMPDIR` など）が毎回の承認待ち（dontAsk / `claude -p` では拒否）に変わるため。判定は権限モードだけを見るので、許可ルールを足しても他のモードでは前置されない。位置引数（`$1`）だけを含む呼び出し（`f() { for w in $1; do …; done; }; f "a b c"`）は既存の scalar 検出が数えないので前置されない。別のガードの抜け道（`FF_*_ACK=1`）を先頭に持つ呼び出しは、前置すると抜け道が先頭の語でなくなるので前置せず従来の警告に留める（glob / equals の引用の書き換えは続ける）。入力書き換えに対応しないホスト（Codex / grok）は従来の警告のまま。外すときは先頭の `FF_ZSH_EXPANSION_ACK=1`
 
 - 引用・エスケープ・代入値・`[[ ]]`・case パターン・コメント・heredoc 本文は除外。`$(…)` / バッククォートのコマンドは走査する。`noglob` は equals 展開を止めないので除外しない
-- bash ホストでは発火しない。先頭の `FF_ZSH_EXPANSION_ACK=1` は呼び出し単位の免除、`FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1` は無効化。意図的な `=cmd` や `NO_EQUALS` 設定には免除を使う。既存の `FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1` は追加検出も含む hook 全体を無効化する
+- bash ホストでは発火しない。先頭の `FF_ZSH_EXPANSION_ACK=1` は呼び出し単位の免除、`FF_DEV_TOOLKIT_SKIP=zsh-expansion` は無効化。意図的な `=cmd` や `NO_EQUALS` 設定には免除を使う。`FF_DEV_TOOLKIT_SKIP=zsh-glob` は追加検出も含む hook 全体を無効化する（鍵 `zsh-glob` は `zsh-expansion` を包含する）
 - jq 不在・非 JSON は素通し。ヘルパ不在・走査失敗は判定不能を通知し、生のコマンドにも equals 候補がある場合だけ停止する。scalar-only は失敗時も警告に留める
 - 制約: 変数の型と値は不明で誤警告を含む。`echo X=$VAR` のような通常引数でも `名前=値` の語は代入と同様に除外する。`${=VAR}`・`${args[@]}`・`${VAR:h}` のような明示的な展開は警告対象外。引用された子シェルのプログラムと heredoc 内部は解析しない。deny への昇格は導入先の実測後に別途判断する
 
@@ -293,7 +345,7 @@ Codex の Bash 相当ツールでの実発火は未実測。
 - 発火するのは zsh ホストだけ（`CLAUDE_CODE_SHELL`、無ければ `SHELL` の basename が `zsh`）。bash ホスト（Linux の既定・Windows の Git Bash）では同じ記法が正しく動くので止めない
 - 一般のパス glob（`ls *.md`）は cwd の中身次第でマッチするので対象外（呼び出し文字列だけでは真陽性と断定できない）
 - 通し方: `=` の右側を引用する、または bash 前提の手順を `bash <<'EOF' … EOF` で bash に渡す。`nonomatch` を設定済みのシェルなど誤検知の場合は、コマンドの**先頭**へ環境代入 `FF_ZSH_GLOB_ACK=1` を付けて再実行する
-- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1`
+- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP=zsh-glob`
 - `jq` 不在・JSON でない入力は素通しする。候補コマンド（`=` の右に glob 文字を含む）でヘルパを読めない・走査が失敗する・引用や展開が閉じないまま終わる・ASDD 設定を検証できないときは理由付きで停止する（fail-closed。面は候補コマンドに限る）
 - 既知の限界: 未引用 `$VAR` が単語分割されない形・語頭の `=word`・`$name:修飾子` など、glob 以外の zsh 固有の展開は対象外。変数やコマンド置換で組み立てた語の中身は見えない。区切り語を引用しない heredoc（`<<EOF`）の本文に書いた `$(…)` の中のコマンドも、heredoc 本文をデータとして落とすため見えない
 
@@ -302,7 +354,7 @@ Codex の Bash 相当ツールでの実発火は未実測。
 - 判定の正本は同梱の共有ヘルパ `tests/lib/literal-write-scan.sh`。エスケープ済みの `\$NAME`、二重引用符のプログラム（シェルが先に展開する）、Perl 組み込み変数、`export` / 前置代入 / `set -a` 済みの名前、引数・PR 本文・コメントの中の perl / node / pwsh の綴りは止めない。`bash -c '…'` と `bash <<'EOF'` の中は入れ子として走査する（コマンド行の二重バックスラッシュだけは最上位のコマンドだけを読む）
 - バッククォート・バックスラッシュ・非 ASCII で構文エラーになる型は対象外（書き込み前に大きな音で落ちる。導入先の実測で誤検知を抑えられなかった）。ただしコマンド行の二重バックスラッシュは bash の値が変わることだけで止め、変わった値が後段で構文エラーになるか無音で誤った結果になるかは区別しない
 - 二重バックスラッシュの escape は、引用付き heredoc でインタプリタへ渡すプログラムの中と、コマンド行の引数（`-c` / `-e` の引数や `--body` の PR 本文も含む）に限って止める。バッククォートは PowerShell の二重引用符の中に限って止める。引用しない heredoc（bash 自身も 2 本を 1 本に畳む）・データ行きの heredoc（`cat > f <<'EOF'`）の本文・PowerShell の単一引用符の文字列と `@'…'@`・`-File` / `-EncodedCommand` は止めない
-- 通し方: 誤検知の場合（大文字始まりの Perl 変数を意図して書いた等）は、コマンドの**先頭**へ環境代入 `FF_LITERAL_WRITE_ACK=1` を付けて再実行する。無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD=1`
+- 通し方: 誤検知の場合（大文字始まりの Perl 変数を意図して書いた等）は、コマンドの**先頭**へ環境代入 `FF_LITERAL_WRITE_ACK=1` を付けて再実行する。無効化は環境変数 `FF_DEV_TOOLKIT_SKIP=literal-write`
 - `jq` 不在・JSON でない入力は素通しする。候補コマンドでヘルパを読めない・走査が失敗する・引用や heredoc が閉じないまま終わるときは理由付きで停止する（fail-closed。面は候補コマンドに限る）
 - 既知の限界: `$(…)` の中・`xargs` / `find -exec` の引数として起動する perl / node、ファイルや変数から読むプログラム、python（`os.environ[...]` は未定義なら `KeyError` で落ちる）は走査しない。コマンド行の二重バックスラッシュは最上位のコマンドだけを読み、ヒアドキュメントの本文・入れ子の `bash -c` / `bash <<'EOF'` の本文は読まない。`bash -c '…'` の本文の中の二重引用符や正規表現の括弧式（`[^"\\]`）のように、縮んでも結果が変わらない形も止めることがある（そのときは `FF_LITERAL_WRITE_ACK=1` で通す）
 

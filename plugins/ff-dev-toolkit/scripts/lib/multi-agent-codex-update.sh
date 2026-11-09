@@ -22,9 +22,9 @@
 # 判定材料が欠けた回は**黙って緑にしない**: 版を判定しなかったこととその理由を 1 行
 # 出し、CLI はそのまま回す（判定できないことはレビューを止める理由ではない）。
 # 更新が失敗した回も同じく、古い版で走ることを名指しして続ける。
-# 無効化は FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE=1（既存の FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE と
-# 同じ系統。あちらは marketplace の自動更新 hook 用で、ここでは共有しない —
-# プラグインの自動更新だけを止めたい利用者の codex まで止めないため）。
+# 無効化は FF_DEV_TOOLKIT_SKIP=codex-auto-update（鍵 auto-update と同じ系統。あちらは marketplace の
+# 自動更新 hook 用で、ここでは共有しない — プラグインの自動更新だけを止めたい利用者の codex まで
+# 止めないため）。鍵の名簿は scripts/lib/l4-declarations.tsv、判定は scripts/lib/l4-declarations.sh（ADR-087）。
 
 # **版は codex を起動せずに読む**。インストール実体のメタデータ（npm は
 # `<prefix>/lib/node_modules/@openai/codex/package.json` の version、Homebrew は
@@ -172,8 +172,12 @@ ensure_codex_cli_current() {
   plan_lists_cli codex-cli || return 0
   # 委譲するレーンの CLI は起動しないので、更新（グローバル install と最大 300 秒の待ち）もしない（Issue `#2118`）
   if task_is_delegated codex-cli; then return 0; fi
-  if [[ "${FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE:-}" == "1" ]]; then
-    echo "ℹ️  codex-cli version check skipped (FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE=1)." >&2
+  # L4 宣言の判定 lib は入口（multi-agent.sh）が開始時に読む（構成ファイルはコマンドとしての source を
+  # 持たない。ADR-075 決定 3）。入口を通さずこの構成ファイルだけを読んだ回と、lib を読めない配置では
+  # 止めない側（版の確認と更新は効いたまま）に倒す
+  declare -F ff_l4_skipped >/dev/null 2>&1 || ff_l4_skipped() { return 1; }
+  if ff_l4_skipped 'codex-auto-update' 'FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE'; then
+    echo "ℹ️  codex-cli version check skipped (FF_DEV_TOOLKIT_SKIP=codex-auto-update)." >&2
     return 0
   fi
   local installed required layout source prefix cmd after update_rc=0 state lock last=""

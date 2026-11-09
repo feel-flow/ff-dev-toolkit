@@ -53,10 +53,13 @@ asdd_hook_enabled hooks || exit 0
 #     不能）黙って exit 0。check-then-act の非アトミック競合と、書き込み不能
 #     環境での毎セッション再試行の両方を 1 つのゲートで防ぐ
 #
-# 無効化: 環境変数 FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE=1
+# 無効化: 環境変数 FF_DEV_TOOLKIT_SKIP=auto-update（鍵の名簿は scripts/lib/l4-declarations.tsv。
+#   旧名の別名だけは値が空でなければ効く — 名簿の legacy_value_rule=nonempty）
 # ゲートの上書き（テスト用）: FF_DEV_TOOLKIT_AUTO_UPDATE_STAMP=<base path>
 
-[ -n "${FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE:-}" ] && exit 0
+# L4 宣言（ADR-087）。lib を読めない配置では止めない側（自動更新は効いたまま）に倒し、stderr も汚さない
+{ [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
+if ff_l4_skipped 'auto-update' 'FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE' 'nonempty'; then exit 0; fi
 command -v claude >/dev/null 2>&1 || exit 0
 
 stamp="${FF_DEV_TOOLKIT_AUTO_UPDATE_STAMP:-$HOME/.claude/.ff-dev-toolkit-auto-update-stamp}"

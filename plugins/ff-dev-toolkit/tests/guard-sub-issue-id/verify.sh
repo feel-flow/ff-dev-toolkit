@@ -38,7 +38,7 @@ TARGET="$PLUGIN_ROOT/hooks/guard-sub-issue-id.sh"
 # 先頭で 1 回落とす。ケース固有の `NAME=v bash "$TARGET"` はこの後に代入として届く（Issue `#1808`）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-isolate_hook_env "FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD" "$TARGET"
+isolate_hook_env "FF_SUB_ISSUE_ID_ACK" "$TARGET"
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
 # shellcheck source=../lib/github-mcp-fixture.sh
@@ -170,7 +170,7 @@ case "$REASON" in
   *) bad "警告文に ACK 抜け道の案内が無い: [$REASON]" ;;
 esac
 case "$REASON" in
-  *FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1*) ok "警告文がガード無効化 env を案内する" ;;
+  *FF_DEV_TOOLKIT_SKIP=sub-issue-id*) ok "警告文がガード無効化 env を案内する" ;;
   *) bad "警告文に skip env の案内が無い: [$REASON]" ;;
 esac
 
@@ -191,8 +191,8 @@ run_hook 'gh issue create --title t --body b'
 assert_pass "gh issue create は対象外"
 run_hook 'FF_SUB_ISSUE_ID_ACK=1 gh api --method POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=1'
 assert_pass "コマンド先頭の FF_SUB_ISSUE_ID_ACK=1 で通る"
-run_hook 'gh api --method POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=1' "$TEST_TMP" 'FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1'
-assert_pass "FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1 で無効化できる"
+run_hook 'gh api --method POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=1' "$TEST_TMP" 'FF_DEV_TOOLKIT_SKIP=update-check,sub-issue-id'
+assert_pass "FF_DEV_TOOLKIT_SKIP=update-check,sub-issue-id（鍵 sub-issue-id）で無効化できる"
 run_hook 'echo FF_SUB_ISSUE_ID_ACK=1; gh api --method POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=1'
 assert_fire "ACK が別コマンドに居るだけでは無効（gh api の直前だけ）"
 
@@ -244,8 +244,8 @@ run_mcp mcp__github__sub_issue_write "$MCP_ADD" FF_SUB_ISSUE_ID_ACK=1
 ff_mcp_assert_message "抜け道: hook の環境変数 FF_SUB_ISSUE_ID_ACK=1 で通し、セッション全体に効く抜け道で通したことを毎回知らせる" "FF_SUB_ISSUE_ID_ACK=1"
 run_hook 'gh api --method POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=1' "$TEST_TMP" 'FF_SUB_ISSUE_ID_ACK=1'
 assert_fire "hook の環境変数 FF_SUB_ISSUE_ID_ACK=1 は Bash 経路を通さない（Bash 経路の抜け道はコマンド先頭の環境代入だけ）"
-run_mcp mcp__github__sub_issue_write "$MCP_ADD" FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1
-assert_pass "FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1 は MCP 経路も止める"
+run_mcp mcp__github__sub_issue_write "$MCP_ADD" FF_DEV_TOOLKIT_SKIP=sub-issue-id
+assert_pass "FF_DEV_TOOLKIT_SKIP=sub-issue-id は MCP 経路も止める"
 if NOGH_PATH="$(ff_path_without_gh "$TEST_TMP/nogh-bin" jq)"; then
   run_mcp mcp__github__sub_issue_write "$MCP_ADD" PATH="$NOGH_PATH"
   assert_fire "gh が PATH に無くても判定する（型は tool_input だけで決まり、gh を使わない）"
@@ -308,7 +308,7 @@ else
   bad "PATH 空の drain: exit=$RC out=[$OUT]（rc=141 なら hook が stdin を drain せずに exit している）"
 fi
 RC=0
-OUT="$(printf '%s' "$BIG_PAYLOAD" | FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1 PATH="/nonexistent" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
+OUT="$(printf '%s' "$BIG_PAYLOAD" | FF_DEV_TOOLKIT_SKIP=sub-issue-id PATH="/nonexistent" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
 if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
   ok "opt-out でも stdin を読み切ってから無出力 exit 0"
 else

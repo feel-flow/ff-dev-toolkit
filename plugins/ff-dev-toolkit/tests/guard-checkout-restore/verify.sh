@@ -16,7 +16,7 @@ TARGET="$PLUGIN_ROOT/hooks/guard-checkout-restore.sh"
 # 先頭で 1 回落とす。ケース固有の `NAME=v bash "$TARGET"` はこの後に代入として届く（Issue `#1808`）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-isolate_hook_env "FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD" "$TARGET"
+isolate_hook_env "FF_DEV_TOOLKIT_SKIP FF_DISCARD_UNCOMMITTED_ACK" "$TARGET"
 # ASDD ゲートが早期終了する経路でも stdin を読み切ることを測る共有ヘルパー
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
@@ -148,8 +148,8 @@ run_hook 'git restore -- --dash.txt'
 assert_fire "-- 後の - 始まりファイルも保護する"
 run_hook 'git checkout -- ambig.txt'
 assert_fire "-- 付きなら同名ブランチがあってもパス復元として deny"
-run_hook 'echo FF_DISCARD_UNCOMMITTED=1 && git restore dirty.txt'
-assert_fire "別セグメントの FF_DISCARD_UNCOMMITTED=1 文字列ではバイパスされない"
+run_hook 'echo FF_DISCARD_UNCOMMITTED_ACK=1 && git restore dirty.txt'
+assert_fire "別セグメントの FF_DISCARD_UNCOMMITTED_ACK=1 文字列ではバイパスされない"
 
 echo "guard-checkout-restore: 警告文の契約（代替手段とバイパスを利用者へ案内する）"
 run_hook 'git restore dirty.txt'
@@ -162,7 +162,7 @@ case "$REASON" in
   *) bad "警告文に cp バックアップ案内が無い: [$REASON]" ;;
 esac
 case "$REASON" in
-  *FF_DISCARD_UNCOMMITTED=1*) ok "警告文が意図的破棄のバイパスを案内する" ;;
+  *FF_DISCARD_UNCOMMITTED_ACK=1*) ok "警告文が意図的破棄のバイパスを案内する" ;;
   *) bad "警告文にバイパス案内が無い: [$REASON]" ;;
 esac
 case "$REASON" in
@@ -187,8 +187,8 @@ run_hook 'git restore --staged stagedfile.txt'
 assert_pass "git restore --staged 単独（worktree 非破壊）は素通し"
 run_hook 'git stash push -- dirty.txt'
 assert_pass "代替手段 git stash push 自体は素通し"
-run_hook 'FF_DISCARD_UNCOMMITTED=1 git checkout -- dirty.txt'
-assert_pass "FF_DISCARD_UNCOMMITTED=1 バイパスは素通し"
+run_hook 'FF_DISCARD_UNCOMMITTED_ACK=1 git checkout -- dirty.txt'
+assert_pass "FF_DISCARD_UNCOMMITTED_ACK=1 バイパスは素通し（無出力。旧名の注記も出さない）"
 run_hook 'git status && git diff -- dirty.txt'
 assert_pass "checkout/restore を含まない git は素通し"
 run_hook 'ls -la'
@@ -199,8 +199,14 @@ run_hook 'git checkout ambig.txt'
 assert_pass "dirty と同名のローカルブランチへの checkout（-- なし）は素通し"
 run_hook 'git checkout -- dirty.txt' "$TEST_TMP"
 assert_pass "git リポジトリ外の cwd は素通し（fail-open）"
-run_hook 'git checkout -- dirty.txt' "$REPO" 'FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD=1'
-assert_pass "FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD=1 で無効化できる"
+run_hook 'git checkout -- dirty.txt' "$REPO" 'FF_DEV_TOOLKIT_SKIP=checkout'
+assert_pass "FF_DEV_TOOLKIT_SKIP=checkout で無効化できる"
+run_hook 'git checkout -- dirty.txt' "$REPO" 'FF_DEV_TOOLKIT_SKIP=pr-followup,checkout'
+assert_pass "FF_DEV_TOOLKIT_SKIP の鍵リストの 2 つ目でも無効化できる"
+run_hook 'git checkout -- dirty.txt' "$REPO" 'FF_DEV_TOOLKIT_SKIP=checkout-guard'
+assert_fire "FF_DEV_TOOLKIT_SKIP の鍵の打ち間違い（checkout-guard）では止まったまま"
+run_hook 'git checkout -- dirty.txt' "$REPO" 'FF_DEV_TOOLKIT_SKIP=CHECKOUT'
+assert_fire "FF_DEV_TOOLKIT_SKIP の値が文法に合わない（大文字）と全体を未設定として扱い、止まったまま"
 
 echo "guard-checkout-restore: fail-open（自身の不具合でセッションを壊さない）"
 RC=0
@@ -232,9 +238,9 @@ else
   bad "PATH 空の drain: exit=$RC out=[$OUT]（rc=141 なら hook が stdin を drain せずに exit している）"
 fi
 RC=0
-OUT="$(printf '%s' "$BIG_PAYLOAD" | FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD=1 PATH="/nonexistent" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
+OUT="$(printf '%s' "$BIG_PAYLOAD" | FF_DEV_TOOLKIT_SKIP=checkout PATH="/nonexistent" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
 if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
-  ok "opt-out（FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD=1）でも stdin を読み切ってから無出力 exit 0"
+  ok "opt-out（FF_DEV_TOOLKIT_SKIP=checkout）でも stdin を読み切ってから無出力 exit 0"
 else
   bad "opt-out の drain: exit=$RC out=[$OUT]（rc=141 なら opt-out の早期 exit が read より前にある）"
 fi

@@ -18,7 +18,7 @@ PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="$PLUGIN_ROOT/hooks/guard-exit-code.sh"
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-isolate_hook_env "FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD" "$TARGET"
+isolate_hook_env "FF_DEV_TOOLKIT_SKIP" "$TARGET"
 RG_LIB="$PLUGIN_ROOT/tests/lib/rg-stdin-scan.sh"
 [ -f "$TARGET" ] || { echo "✗ guard-exit-code.sh が見つかりません: $TARGET" >&2; exit 1; }
 [ -f "$RG_LIB" ] || { echo "✗ rg-stdin-scan.sh が見つかりません: $RG_LIB" >&2; exit 1; }

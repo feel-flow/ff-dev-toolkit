@@ -19,7 +19,7 @@ captures.mkdir()
 data.mkdir()
 env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ['PATH'], HOME=str(tmp / 'home'),
            FF_DEV_TOOLKIT_ROOT=str(plugin), FF_DEV_TOOLKIT_PROJECT_ROOT=str(repo),
-           FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE='1', FF_REVIEW_ROUND_LIMIT='0',
+           FF_DEV_TOOLKIT_SKIP='codex-auto-update', FF_REVIEW_ROUND_LIMIT='0',
            MULTI_AGENT_AC_FIXTURE=str(tmp))
 
 

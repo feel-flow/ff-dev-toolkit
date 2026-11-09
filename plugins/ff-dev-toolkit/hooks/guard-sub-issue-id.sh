@@ -26,7 +26,7 @@
 #   - 対象コマンドの先頭に環境代入 `FF_SUB_ISSUE_ID_ACK=1` を付ける
 #     （文字列としてコマンド中に現れるだけでは無効。コマンド位置の `gh api`
 #     の直前に置いた場合だけ素通しする）
-#   - ガードごと止めるなら環境変数 `FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1`
+#   - ガードごと止めるなら環境変数 `FF_DEV_TOOLKIT_SKIP=sub-issue-id`
 #
 # 既知の限界（判定できず素通しする形）:
 #   - コマンド位置に無い gh（`echo 'gh api ... -f sub_issue_id=1'`）
@@ -56,7 +56,7 @@
 #   - 互換性: bash 3.2（stock macOS）互換。連想配列・readarray を使わない。
 #
 # 環境変数:
-#   FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1  このガードを無効化する
+#   FF_DEV_TOOLKIT_SKIP=sub-issue-id  このガードを無効化する（鍵の名簿は scripts/lib/l4-declarations.tsv）
 #   FF_SUB_ISSUE_ID_ACK=1  Bash 経路ではコマンド先頭の環境代入（その 1 回だけ）、GitHub MCP 経路では
 #                          hook の環境変数（セッション全体）として読む抜け道。hook の環境の値は
 #                          MCP 経路だけが読み、Bash 経路は通さない
@@ -82,7 +82,9 @@ if ! source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh"; then
 fi
 asdd_hook_enabled hooks || exit 0
 
-[ "${FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD:-0}" = "1" ] && exit 0
+# L4 宣言（ADR-087）。lib を読めない配置では止めない側（ガードは効いたまま）に倒し、stderr も汚さない
+{ [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
+if ff_l4_skipped 'sub-issue-id' 'FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD'; then exit 0; fi
 
 # ---- GitHub MCP 経路（sub_issue_write）--------------------------------------
 # 振り分け（tool_name の読み取り・判定表の照合）は共有ヘルパの ff_github_mcp_route_input。
@@ -115,7 +117,7 @@ guard_mcp_route() {
   1) \`${verdict}\` を JSON の数値（引用符なし）で渡す（MCP の整数型指定。sub_issue_id は Issue 番号ではなく Issue の ID）
   2) gh が使える環境なら、同梱の \`FF_DEV_TOOLKIT_ROOT=\"\${FF_DEV_TOOLKIT_ROOT}\" bash \"\${FF_DEV_TOOLKIT_ROOT}/scripts/link-sub-issues.sh\" --repo OWNER/REPO <parent> <child>...\` を使う（綴りが 1 箇所に固定され、失敗時は HTTP 本文を出す）
   3) 意図的に文字列で送る場合は、hook の環境変数 FF_SUB_ISSUE_ID_ACK=1 を設定してから再実行する（GitHub MCP の呼び出しにはコマンド先頭の環境代入を付けられないため。Claude Code を起動するシェルで export し、再起動する。その 1 回ではなくセッション全体の GitHub MCP 呼び出しに効くので、済んだら外して再起動する）
-このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1 を設定します。"
+このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=sub-issue-id を設定します（ほかの鍵と並べるときはカンマ区切り）。"
   jq -n --arg reason "$reason" \
     '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null
   exit 0
@@ -304,7 +306,7 @@ reason="⚠️ ff-dev-toolkit guard（gh api の -f は integer フィールド�
   1) \`-F ${FIRE_KEY}=\` に直す（型付き。integer / boolean / null を正しく送る）
   2) 同梱の \`FF_DEV_TOOLKIT_ROOT=\"\${FF_DEV_TOOLKIT_ROOT}\" bash \"\${FF_DEV_TOOLKIT_ROOT}/scripts/link-sub-issues.sh\" --repo OWNER/REPO <parent> <child>...\` を使う（綴りが 1 箇所に固定され、失敗時は HTTP 本文を出す）
   3) 意図的に文字列で送る場合は、対象コマンドの先頭へ環境代入を付けて再実行する: FF_SUB_ISSUE_ID_ACK=1 gh api ...
-このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1 を設定します。"
+このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=sub-issue-id を設定します（ほかの鍵と並べるときはカンマ区切り）。"
 
 jq -n --arg reason "$reason" \
   '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null

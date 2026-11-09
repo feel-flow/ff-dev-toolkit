@@ -33,7 +33,7 @@
 #      （「CLI はまだ 1 つも起動していません。」）で止まる。揃った入口の source は
 #      rc=0 で cli_available を定義する
 #
-# 空振り検出: 名簿の区間を消した入口では ma_sources_load が「名簿（1 件以上）が見つかりません」で赤、構成ファイルが 0 本の写しでは「名簿の構成ファイルがありません」で赤（どちらも本 suite の (A) / (E) 末尾で毎回実測する）。(C) の source 検査は、構成ファイルの関数の中へ `source x` を足した写しで赤になる（毎回実測する）。
+# 空振り検出: 名簿の区間を消した入口では ma_sources_load が「名簿（1 件以上）が見つかりません」で赤、構成ファイルが 0 本の写しでは「名簿の構成ファイルがありません」で赤（どちらも本 suite の (A) / (E) 末尾で毎回実測する）。(C) の source 検査は、構成ファイルの関数の中へ `source x` を足した写しと、`declare -F g || . x` のように `||` の右辺へ `.` を置いた写し、`[ -r x ] && . x` / `g; . x` / `then . x` / `else . x` の形の写しのどれでも赤になる（どれも毎回実測する。右辺の形は 2026-11-09 に構成ファイルへ入り込み、行頭だけを見る検査をすり抜けた）。関数の中で `[[ -s ]]` を先に確かめてから `if ! . "$1"; then` で helper を読む既存の形は数えない。
 # 空振り検出: 入口の「ファイルが無い」分岐を外した写しを与えると、「構成ファイルの不在: rc=2 と読み込み部の案内で止まらない」の 1 件だけが赤になる（2026-10-21 実測。成功 59。判定は rc=2 のまま、針「がありません」が外れ、次の分岐の「が 0 バイトです」になる。CLI は起動しない）。
 # 空振り検出: 入口の Windows 分岐（OSTYPE が msys / cygwin のときの ACL ライブラリの読み込み）を消した写しでは、「Windows: ACL ライブラリの不在」「Windows: ACL ライブラリが関数を定義しない」の 2 件が赤（読み込み部の案内で止まらず、出力先の準備まで進む）。Issue `#2478`。
 # 依存は bash 3.2・POSIX ユーティリティ・mktemp。一時領域が無いと (D) / (E) と空振りの実測が
@@ -121,9 +121,13 @@ for f in "${MA_SOURCES[@]}"; do
 done
 
 echo "== (C) 構成ファイルの形 =="
-# コマンドとしての source / . （行頭の空白の後。コメント行は除く）を持つか
+# コマンドとしての source / . （行頭の空白の後、または `||` / `&&` / `;` / `{` / then / do / else の後。コメント行は
+# 除く）を持つか。`declare -F f || . lib` のように、読めないときの代わりを右辺に繋いだ source も数える（bash 3.2 は
+# set -e の下で `.` が対象を見つけられないと `||` の中でもシェルを止める）。関数の中で先に `[[ -s ]]` を確かめて
+# から `if ! . "$1"; then` で helper を読む形（multi-agent-review-ac.sh の review_ac_load_helper）は既存の決めた
+# 形なので数えない（`if` / `!` / `(` の後まで広げると、その形と jq の `select(. != null)` まで赤になる）
 has_source_command() { # <file>。パイプの下流に grep -q を置かない（pipefail 下で一致が反転する）
-  awk '/^[[:space:]]*#/ { next } /^[[:space:]]*(source|\.)[[:space:]]/ { found = 1; exit } END { exit !found }' "$1"
+  awk '/^[[:space:]]*#/ { next } /(^|[;&|{]|(^|[[:space:]])(then|do|else))[[:space:]]*(source|\.)[[:space:]]/ { found = 1; exit } END { exit !found }' "$1"
 }
 _src_probe="$TMP/source-probe.sh"
 { printf '%s\n' 'f() {'; printf '  %s\n' 'source "$x"'; printf '%s\n' '}'; } > "$_src_probe"
@@ -132,6 +136,22 @@ if has_source_command "$_src_probe"; then
 else
   bad "空振りの実測: 関数の中の source を source 検査が見つけられない"
 fi
+_src_probe2="$TMP/source-probe-or.sh"
+{ printf '%s\n' 'f() {'; printf '  %s\n' 'declare -F g >/dev/null 2>&1 \' '    || . "$x" 2>/dev/null \' '    || g() { return 1; }'; printf '%s\n' '}'; } > "$_src_probe2"
+if has_source_command "$_src_probe2"; then
+  ok "空振りの実測: 関数の中で || の右辺へ . を置いた写しも source 検査が拒否する"
+else
+  bad "空振りの実測: || の右辺の . を source 検査が見つけられない"
+fi
+for _src_form in '[ -r "$x" ] && . "$x"' 'g; . "$x"' 'if true; then . "$x"; fi' 'if [ -r "$x" ]; then :; else . "$x"; fi'; do
+  _src_probe3="$TMP/source-probe-form.sh"
+  { printf '%s\n' 'f() {'; printf '  %s\n' "$_src_form"; printf '%s\n' '}'; } > "$_src_probe3"
+  if has_source_command "$_src_probe3"; then
+    ok "空振りの実測: ${_src_form} の形の source も source 検査が拒否する"
+  else
+    bad "空振りの実測: ${_src_form} の形の source を source 検査が見つけられない"
+  fi
+done
 for f in "${MA_SOURCES[@]:1}"; do
   name="${f##*/}"
   problems=""

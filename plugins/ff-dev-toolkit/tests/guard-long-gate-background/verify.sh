@@ -165,7 +165,7 @@ TARGET="$PLUGIN_ROOT/hooks/guard-long-gate-background.sh"
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
 # shellcheck source=../lib/crlf-jq-shim.sh
 . "$SCRIPT_DIR/../lib/crlf-jq-shim.sh"
-isolate_hook_env "FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD" "$TARGET"
+isolate_hook_env "FF_DEV_TOOLKIT_SKIP" "$TARGET"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 
 [ -f "$TARGET" ] || { echo "✗ guard-long-gate-background.sh が見つかりません: $TARGET" >&2; exit 1; }
@@ -574,8 +574,10 @@ if [ -n "$REASON" ] || { run_hook "$(payload "cd /repo && $GATE" general-purpose
     *) bad "(6f) deny 文面が「元のコマンドの先頭」のままです（別セグメントでは効かない）: [$REASON]" ;;
   esac
 fi
-run_hook "$(payload "$GATE" general-purpose true "")" FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD=1
+run_hook "$(payload "$GATE" general-purpose true "")" FF_DEV_TOOLKIT_SKIP=long-gate-background
 assert_silent "(6c) skip env でガードごと止まる"
+run_hook "$(payload "$GATE" general-purpose true "")" FF_DEV_TOOLKIT_SKIP=long-gate
+assert_deny "(6c) FF_DEV_TOOLKIT_SKIP の鍵の打ち間違い（long-gate）では止まったまま"
 
 echo "guard-long-gate-background: (7) deny 文面が行動を案内する"
 # **2 つのトリガの deny 本文は独立した 2 本のリテラルである。** 片方だけを測ると、
@@ -600,7 +602,7 @@ assert_reason_guides() { # <ラベル接頭辞>
     *) bad "(${tag}c) deny 文面に ACK 抜け道の案内がありません: [$REASON]" ;;
   esac
   case "$REASON" in
-    *FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD=1*) ok "(${tag}d) skip env を案内している" ;;
+    *FF_DEV_TOOLKIT_SKIP=long-gate-background*) ok "(${tag}d) skip env を案内している" ;;
     *) bad "(${tag}d) deny 文面に skip env の案内がありません: [$REASON]" ;;
   esac
   case "$REASON" in

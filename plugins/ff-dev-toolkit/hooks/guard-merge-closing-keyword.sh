@@ -18,7 +18,10 @@ input=""
 IFS= read -r -d '' input || true
 # Size bounds count bytes without changing the message bytes.
 export LC_ALL=C
-[ "${FF_DEV_TOOLKIT_SKIP_MERGE_CLOSING_GUARD:-0}" = 1 ] && exit 0
+# 宣言の判定は共通関数 scripts/lib/l4-declarations.sh（ADR-087）。読めないときは止めない側に倒す。
+# shellcheck source=../scripts/lib/l4-declarations.sh
+{ [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
+if ff_l4_skipped 'merge-closing' 'FF_DEV_TOOLKIT_SKIP_MERGE_CLOSING_GUARD'; then exit 0; fi
 case "$input" in *gh*|*'\u'*) ;; *) exit 0 ;; esac
 case "$input" in *merge*|*'\u'*) ;; *) exit 0 ;; esac
 # ASDD is decided before dependency diagnostics: a disabled optional hook stays silent.
@@ -659,7 +662,7 @@ done
 if [ -n "$MC_DENY" ]; then
   reason="$MC_DENY
 この呼び出し全体は未実行です。復旧commandのsubject/bodyを確認して再実行してください。
-迂回: 同じmergeの前置 FF_MERGE_CLOSING_ACK=1、全体無効化 FF_DEV_TOOLKIT_SKIP_MERGE_CLOSING_GUARD=1。
+迂回: 同じmergeの前置 FF_MERGE_CLOSING_ACK=1、全体無効化 FF_DEV_TOOLKIT_SKIP=merge-closing。
 ${MC_NOTES}"
   printf '%s' "$reason" | jq -Rs '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:.}}'
   exit 0
@@ -667,7 +670,7 @@ fi
 if [ -n "$MC_STOP_REASON" ]; then
   reason="$MC_STOP_REASON
 この呼び出し全体は未実行です。単独の gh pr merge（先行の cd、未解決の変数、wrapper、global flag を含めない形）へ書き直して再実行してください。
-迂回: 同じmergeの前置 FF_MERGE_CLOSING_ACK=1、全体無効化 FF_DEV_TOOLKIT_SKIP_MERGE_CLOSING_GUARD=1。
+迂回: 同じmergeの前置 FF_MERGE_CLOSING_ACK=1、全体無効化 FF_DEV_TOOLKIT_SKIP=merge-closing。
 ${MC_NOTES}"
   printf '%s' "$reason" | jq -Rs '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:.}}'
   exit 0

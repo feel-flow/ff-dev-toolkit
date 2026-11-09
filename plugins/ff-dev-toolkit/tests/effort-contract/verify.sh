@@ -86,6 +86,14 @@ TESTS_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 PLUGIN_ROOT="$(cd "$TESTS_DIR/.." && pwd -P)"
 DEFAULT_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd -P)"
 ROOT="${FF_DOCS_REPO_ROOT:-$DEFAULT_ROOT}"
+# L4 宣言（ADR-087）をホストから引き継がない: 素の FF_DEV_TOOLKIT_SKIP と名簿の旧名（内部の別名）を落とす。
+# 旧名は名簿から読み、この suite には書かない（旧名のケースは tests/l4-declarations が持つ）
+unset FF_DEV_TOOLKIT_SKIP
+if [ -r "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv" ]; then
+  while IFS=$'\t' read -r _l4_k _l4_kind _l4_owner _l4_covers _l4_legacy _l4_rest || [ -n "$_l4_k" ]; do
+    case "$_l4_legacy" in FF_[A-Z0-9_]*) unset "$_l4_legacy" ;; esac
+  done < "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv"
+fi
 
 FIX="$SCRIPT_DIR/fixtures"
 CREATE="$PLUGIN_ROOT/skills/create-issue/SKILL.md"
@@ -1118,7 +1126,7 @@ _run_hook "$WC_HOOK" "$(_bash_payload "$(printf '%s\n' "cat > note.md <<'EOF'" "
 _run_hook "$WC_HOOK" "$(_bash_payload "git checkout -b spike-no-issue" "$REPO_A")" FF_DEV_TOOLKIT_STATE_DIR="$HSTATE"
 _run_hook "$WC_HOOK" "$(_bash_payload "git checkout -b chore/2026-09-23-cleanup" "$REPO_A")" FF_DEV_TOOLKIT_STATE_DIR="$HSTATE"
 _run_hook "$WC_HOOK" "$(_bash_payload "echo git checkout -b fix/#10-x" "$REPO_A")" FF_DEV_TOOLKIT_STATE_DIR="$HSTATE"
-_run_hook "$WC_HOOK" "$(_bash_payload "git checkout -b fix/#11-x" "$REPO_A")" FF_DEV_TOOLKIT_STATE_DIR="$HSTATE" FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS=1
+_run_hook "$WC_HOOK" "$(_bash_payload "git checkout -b fix/#11-x" "$REPO_A")" FF_DEV_TOOLKIT_STATE_DIR="$HSTATE" FF_DEV_TOOLKIT_SKIP=effort-metrics
 _run_hook "$WC_HOOK" "$(_bash_payload "git checkout -b fix/#12-x" "$MTMP/not-git")" FF_DEV_TOOLKIT_STATE_DIR="$HSTATE"
 _after="$(wc -l < "$HSTATE/metrics/wallclock.tsv" | tr -d ' ')"
 [ "$_before" = "$_after" ] && ok "14c: heredoc 本文・番号の無いブランチ・# の無い日付入りブランチ・echo の文字列・opt-out・Git 管理外の cwd では記録しない" \
@@ -1205,7 +1213,7 @@ if [ -f "$GM_REC" ]; then
   _gm --seconds 90 --status pass --mode fast >/dev/null
   _gm --seconds 1230 --status fail --mode full >/dev/null
   _gm --seconds abc --status pass --mode fast >/dev/null
-  FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS=1 bash "$GM_REC" --repo-dir "$REPO_G" --metrics-dir "$GSTATE" --seconds 5 >/dev/null 2>&1
+  FF_DEV_TOOLKIT_SKIP=update-check,effort-metrics bash "$GM_REC" --repo-dir "$REPO_G" --metrics-dir "$GSTATE" --seconds 5 >/dev/null 2>&1
   bash "$GM_REC" --repo-dir "$MTMP/not-git" --metrics-dir "$GSTATE" --seconds 5 >/dev/null 2>&1
   [ "$(_gm_rows)" = "2" ] && ok "14i: Issue 番号付きブランチで秒が数値の 2 回だけ記録（abc・opt-out・Git 管理外は書かない）" \
     || bad "14i: 記録行数が期待と違う: $(_gm_rows)（期待 2）: $(tr '\n\t' '; ' < "$GSTATE/gate.tsv" 2>/dev/null)"

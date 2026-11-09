@@ -37,6 +37,13 @@ TARGET="$PLUGIN_ROOT/hooks/check-skill-drift.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 
 [ -f "$TARGET" ] || { echo "✗ hooks/check-skill-drift.sh が見つかりません: $TARGET" >&2; exit 1; }
+# L4 宣言（ADR-087）の旧名（内部の別名）をホストから引き継がない。旧名は名簿から読み、この suite には
+# 書かない（旧名のケースは tests/l4-declarations が持つ）。素の FF_DEV_TOOLKIT_SKIP は run_hook が落とす
+if [ -r "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv" ]; then
+  while IFS=$'\t' read -r _l4_k _l4_kind _l4_owner _l4_covers _l4_legacy _l4_rest || [ -n "$_l4_k" ]; do
+    case "$_l4_legacy" in FF_[A-Z0-9_]*) unset "$_l4_legacy" ;; esac
+  done < "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv"
+fi
 command -v jq >/dev/null 2>&1 || { echo "✗ jq が必要です（通知 JSON の構文検証に使用）" >&2; exit 1; }
 
 # rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
@@ -94,7 +101,7 @@ run_hook() {
   # 明示 env を載せる。
   RC=0
   OUT="$(env -u CLAUDE_PLUGIN_ROOT -u CLAUDE_CONFIG_DIR \
-    -u FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK \
+    -u FF_DEV_TOOLKIT_SKIP \
     -u FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT \
     -u FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME \
     HOME="$TMP/fake-home" \
@@ -171,9 +178,11 @@ assert_update_guidance() {
 }
 
 FIX="$TMP/plugin"
-mkdir -p "$FIX/hooks" "$FIX/.claude-plugin"
+mkdir -p "$FIX/hooks" "$FIX/scripts/lib" "$FIX/.claude-plugin"
 cp "$TARGET" "$FIX/hooks/check-skill-drift.sh"
 cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$FIX/hooks/asdd-hook-gate.sh"
+# L4 宣言の判定 lib と名簿（鍵 skill-drift-check で止める経路を本番と同じ配置で通す。ADR-087）
+cp "$PLUGIN_ROOT/scripts/lib/l4-declarations.sh" "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv" "$FIX/scripts/lib/"
 printf '{\n  "name": "ff-dev-toolkit",\n  "version": "0.40.0"\n}\n' > "$FIX/.claude-plugin/plugin.json"
 HOOK="$FIX/hooks/check-skill-drift.sh"
 chmod +x "$HOOK"
@@ -384,13 +393,22 @@ CLAUDE="$TMP/claude-skip"
 make_plugin "$REPO/plugins/ff-dev-toolkit" "0.40.0" alpha extra-skill
 make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.28.0" "0.28.0" alpha
 run_hook \
-  FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK=1 \
+  FF_DEV_TOOLKIT_SKIP=update-check,skill-drift-check \
   FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
   FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
 if [ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ]; then
-  ok "オプトアウト: 無出力 + exit 0"
+  ok "オプトアウト（FF_DEV_TOOLKIT_SKIP=update-check,skill-drift-check）: 無出力 + exit 0"
 else
   bad "オプトアウト: exit=$RC output=[$OUT]"
+fi
+# 同じ fixture で宣言が無ければ通知が出る（オプトアウトの検査が空振りしていないことの対照）
+run_hook \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
+if [ "$RC" -eq 0 ] && [ -n "$OUT" ]; then
+  ok "オプトアウトの対照: 宣言が無ければ同じ fixture で通知が出る"
+else
+  bad "オプトアウトの対照: 宣言なしでも無出力（fixture が通知を起こしていない）: exit=$RC"
 fi
 
 # ---- 6. CLAUDE_PLUGIN_ROOT もインストール実体に数える --------------------------

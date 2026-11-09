@@ -22,7 +22,8 @@
 # A を「抜け道付き deny」にするのは、止めない警告の出口が無いため（PreToolUse の
 # `additionalContext` はエージェントへ届くが、Claude Code の CLI と Remote Control の画面にも
 # 表示される。Issue `#2614`。既存 3 ガードと同じ判断）。抜け道は deny の
-# 文面自体に案内する。B が systemMessage なのは、止めるコストのほうが大きい側
+# 文面自体に案内する。例外は ACK の旧名で通した回の 1 行の注記だけで、旧名を使った回にしか出ず、
+# 別名とともに 1.1.0 で消える（ADR-087 決定 5）。B が systemMessage なのは、止めるコストのほうが大きい側
 # （利用者向け表示チャネルでエージェントのコンテキストには入らない、という制約を
 # 承知のうえで表示のみに留める）。
 #
@@ -93,9 +94,9 @@
 # （照会失敗・空・上限到達）・正本を読めない・tool_input を読めない（method / owner / repo の欠落、
 # labels が文字列の配列でない、カンマや改行を含むラベル名）・判定表にないツール名・jq 不在のときに、
 # 止めずに通して理由を systemMessage（利用者）と additionalContext（エージェントの文脈）に出すこと。
-# MCP の呼び出しにはコマンド先頭の環境代入を付けられないので、deny 文の抜け道は gh での 1 回分と、
-# hook の環境の FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1（ガードの無効化そのもの。セッションの間
-# Bash 経路も止まる）を案内する。
+# MCP の呼び出しにはコマンド先頭の環境代入を付けられないので、deny 文の抜け道は gh での 1 回分
+# （FF_ISSUE_LABEL_ACK=1 の前置）と、hook の環境の FF_DEV_TOOLKIT_SKIP=issue-label（ガードの無効化
+# そのもの。セッションの間 Bash 経路も止まる）を案内する。
 #
 # 設計原則:
 #   - fail-open: 全 Bash 呼び出しに割り込むため、解析不能・jq/gh 不在・抽出失敗では
@@ -104,9 +105,12 @@
 #   - 互換性: bash 3.2（stock macOS）互換。連想配列・readarray・=~ は使わない
 #
 # 環境変数:
-#   FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1  このガードを無効化する。対象コマンド先頭の
-#                                            環境代入としても効く（案内する抜け道）。hook の環境に
-#                                            置くと Bash 経路・GitHub MCP 経路の両方が止まる
+#   FF_DEV_TOOLKIT_SKIP=issue-label  このガードを無効化する（鍵の名簿は scripts/lib/l4-declarations.tsv）。
+#                                    hook の環境に置くと Bash 経路・GitHub MCP 経路の両方が止まる
+#   FF_ISSUE_LABEL_ACK=1             対象コマンド（gh issue create のセグメント）先頭の環境代入で、
+#                                    その 1 回だけ通す（案内する抜け道）。前置する旧名（同じ鍵の SKIP の
+#                                    旧名。内部の別名）も同じ置き場所で受け、受けた回は additionalContext で
+#                                    新しい名前を 1 行示す（ADR-087）
 
 # fail-open のため set -e / set -u は使わない。
 
@@ -129,7 +133,12 @@ if ! source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh"; then
 fi
 asdd_hook_enabled hooks || exit 0
 
-[ "${FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD:-0}" = "1" ] && exit 0
+# 宣言の判定は共通関数 scripts/lib/l4-declarations.sh（ADR-087）。読めないときは止めない側に倒す。
+# hook の環境の宣言はセッションの間 Bash 経路・GitHub MCP 経路の両方を止める（1 回分の前置は下の
+# scan_segment が読む FF_ISSUE_LABEL_ACK）。
+# shellcheck source=../scripts/lib/l4-declarations.sh
+{ [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
+if ff_l4_skipped 'issue-label' 'FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD'; then exit 0; fi
 
 # ---- GitHub MCP 経路（issue_write の method: create）---------------------------
 # MCP の呼び出しにはコマンド文字列が無い。tool_input の owner / repo / labels を同じ意味の
@@ -295,15 +304,18 @@ esac
 GH_FOUND=0
 GH_TOKS=()
 INLINE_OVERRIDE=0
+# 1 回分の前置を旧名（内部の別名）で受けた回は 1（通す回に新しい名前を 1 行示す）
+INLINE_OVERRIDE_LEGACY=0
 
 scan_segment() {
   local toks=("$@")
-  local n=${#toks[@]} i=0 t seg_override=0
+  local n=${#toks[@]} i=0 t seg_override=0 seg_legacy=0
   while [ "$i" -lt "$n" ]; do
     t="$(strip_quotes "${toks[$i]}")"
     case "$t" in
-      FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1)
+      FF_ISSUE_LABEL_ACK=1 | FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1)
         seg_override=1
+        [ "$t" = "FF_ISSUE_LABEL_ACK=1" ] || seg_legacy=1
         i=$((i + 1))
         ;;
       [A-Za-z_]*=*) i=$((i + 1)) ;;
@@ -321,6 +333,7 @@ scan_segment() {
   [ "$(strip_quotes "${toks[$((i + 2))]}")" = "create" ] || return 0
   GH_FOUND=1
   INLINE_OVERRIDE="$seg_override"
+  INLINE_OVERRIDE_LEGACY="$seg_legacy"
   GH_TOKS=("${toks[@]:$i}")
   return 0
 }
@@ -438,7 +451,13 @@ EOF
 
 [ "$GH_FOUND" -eq 1 ] || exit 0
 # 案内した抜け道（対象コマンド先頭の環境代入）を明示的に使った起票は止めない
-[ "$INLINE_OVERRIDE" -eq 1 ] && exit 0
+if [ "$INLINE_OVERRIDE" -eq 1 ]; then
+  if [ "$INLINE_OVERRIDE_LEGACY" -eq 1 ]; then
+    ff_label_note="ℹ️ ff-dev-toolkit guard（起票ラベル契約）: 旧名 FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1 の前置を読みました。1 回分だけ通す新しい名前は FF_ISSUE_LABEL_ACK=1 です（旧名は ff-dev-toolkit 1.1.0 で読まなくなります）。"
+    jq -n --arg m "$ff_label_note" '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: $m}}' 2>/dev/null
+  fi
+  exit 0
+fi
 
 # ---- 3) `--label` の値と `--repo` を集める -----------------------------------
 given_labels=""
@@ -868,12 +887,12 @@ add_missing() { missing="${missing:+$missing / }$1"; }
 if [ "$GUARD_ROUTE" = "mcp" ]; then
   label_target="GitHub MCP の issue_write（method: create）に渡す labels "
   add_line="2) 上の系統を labels へ足す（対象リポジトリで実在を確認済みの例を上に添えています）"
-  skip_line="3) 意図的にラベル無しで起票する場合は、gh で FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1 gh issue create ... を実行する（その 1 回だけ通る）。gh を使えないなら hook の環境変数 FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1 を設定して再起動してから再実行する（GitHub MCP の呼び出しにはコマンド先頭の環境代入を付けられないため。この変数はガードの無効化そのもので、セッションの間 Bash 経路の gh issue create も含めて止まるので、済んだら外して再起動する）"
+  skip_line="3) 意図的にラベル無しで起票する場合は、gh で FF_ISSUE_LABEL_ACK=1 gh issue create ... を実行する（その 1 回だけ通る）。gh を使えないなら hook の環境変数 FF_DEV_TOOLKIT_SKIP=issue-label を設定して再起動してから再実行する（GitHub MCP の呼び出しにはコマンド先頭の環境代入を付けられないため。この変数はガードの無効化そのもので、セッションの間 Bash 経路の gh issue create も含めて止まるので、済んだら外して再起動する）"
   followup_hint="labels に ${FOLLOWUP_NAME} も足してください"
 else
   label_target="gh issue create に付ける --label "
   add_line="2) 上の系統を --label で足す（対象リポジトリで実在を確認済みの例を上に添えています）"
-  skip_line="3) 意図的にラベル無しで起票する場合は FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1 を先頭に置いて再実行する"
+  skip_line="3) 意図的にラベル無しで起票する場合は FF_ISSUE_LABEL_ACK=1 を先頭に置いて再実行する（その 1 回だけ通る）"
   followup_hint="--label ${FOLLOWUP_NAME} も付けてください"
 fi
 
@@ -883,7 +902,7 @@ if [ -n "$missing" ]; then
   1) 起票スキル経由にする（PR レビュー・実装から派生した発見なら /out-of-scope-issue、着手前の起票なら /create-issue。どちらも実在確認のうえラベルを付けます）
   ${add_line}
   ${skip_line}
-このガード自体を止める場合も環境変数 FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1 を設定します。"
+このガード自体を止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=issue-label を設定します。"
   jq -n --arg reason "$reason" \
     '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null
   exit 0

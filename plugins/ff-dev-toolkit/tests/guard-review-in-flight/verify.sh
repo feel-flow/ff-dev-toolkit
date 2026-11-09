@@ -10,7 +10,7 @@
 # 配布物 hooks/guard-review-in-flight.sh を stdin JSON で直接駆動し、受け入れ条件を
 # 固定する。
 #   A) 走行中ロック: `.review-results/.review-in-flight` があり PID 生存中は編集系ツールと
-#      git 書き込みコマンドを deny / FF_REVIEW_LOCK_OVERRIDE=1 で通る / ロック無しは無音 /
+#      git 書き込みコマンドを deny / FF_REVIEW_LOCK_ACK=1 で通る / ロック無しは無音 /
 #      stale PID は警告のみ（deny しない）/ 上限より古いロックは PID 生存でも警告のみ /
 #      heredoc 本文・別リポジトリの `git -C`・read-only な git は誤爆しない
 #   K) Bash 経由の作業ツリー書き込み（Issue `#1710`。判定は tests/lib/review-write-scan.sh）:
@@ -174,7 +174,7 @@
 #   Issue `#1935`（別 worktree に置かれたレーンの照合）: 別 worktree の置き場を読まない → 3。
 #   置き場のレーンを対象ツリーと照合せずに数える → 2。対象ツリーの集合を cwd のツリーに戻す → 13。
 # 空振り検出: 走査の針が当たらない入力（本文が空・コメントだけ / 本文全体の字句解析の失敗）を「書き込み無し」として通す変異（tests/lib/review-write-scan.sh の ws_judge_file_program の ws_fail の前に return 1 を置く）を入れると (o3) の「コメントだけの本文」「空の本文」「引用符が閉じない本文」が赤になる（2026-09-27 実測。字句解析の取りこぼしと区別できない入力を緑へ倒さない）。
-# 空振り検出: ホスト環境へ解除変数（FF_REVIEW_LOCK_OVERRIDE=1 / FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD=1）を置いたまま先頭の isolate_hook_env を外すと 238 件が赤、分離ライブラリの unset を外しても 238 件が赤（2026-09-28 実測、bundle `#1808`）。同じホスト環境でガード本体の最終 emit_deny の前に exit 0 を置く変異は 228 件赤 — 分離が本物の deny 退行を隠さない。
+# 空振り検出: ホスト環境へ解除変数（走行中ロックの ACK と hook 全体の SKIP。この実測は改名前の名前で行った）を置いたまま先頭の isolate_hook_env を外すと 238 件が赤、分離ライブラリの unset を外しても 238 件が赤（2026-09-28 実測、bundle `#1808`）。同じホスト環境でガード本体の最終 emit_deny の前に exit 0 を置く変異は 228 件赤 — 分離が本物の deny 退行を隠さない。
 # 空振り検出: (p) 節と (n20)（Issue `#2271`。2026-10-26 に WSL で実測、変異なしは 599 件緑）。hooks.json の PreToolUse から onFailure: block を消す → 1 件赤。PreToolUse の timeout を 10 へ戻す → 1 件赤。SubagentStop へ onFailure を足す → 1 件赤。hook の `trap ff_on_exit EXIT` を外す → (p) の exit 2 / exit 3 と (n) 節の巡回の記録が赤になり suite が (n) 節で止まる（計 24 件）。巡回の後始末の配線（ROUND_FINISH_ARMED=1）を外す → (n) 節で 20 件赤のうえ停止。差し込みの錨（ASDD ゲートの注記行）を書き換える → 2 件赤（錨が見つからない回を緑へ倒さない）。異常終了の告知（判定不能の systemMessage）を消す → 3 件赤（黙って通す形を緑へ倒さない）。異常終了の回の巡の記録（trap 内の review_round_commit）を外す → (n20) の 1 件赤。
 set -euo pipefail
 
@@ -185,7 +185,7 @@ TARGET="$PLUGIN_ROOT/hooks/guard-review-in-flight.sh"
 # 先頭で 1 回落とす。ケース固有の `NAME=v bash "$TARGET"` はこの後に代入として届く（Issue `#1808`）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-isolate_hook_env "FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD FF_REVIEW_LOCK_OVERRIDE" "$TARGET"
+isolate_hook_env "FF_DEV_TOOLKIT_SKIP FF_REVIEW_LOCK_ACK" "$TARGET"
 # ASDD ゲートが早期終了する経路でも stdin を読み切ることを測る共有ヘルパー
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
@@ -435,7 +435,7 @@ case "$REASON" in
   *) bad "(a) 拒否理由に経過時間が無い: [$REASON]" ;;
 esac
 case "$REASON" in
-  *FF_REVIEW_LOCK_OVERRIDE*) ok "(a) 拒否理由が解除手段を案内する" ;;
+  *FF_REVIEW_LOCK_ACK*) ok "(a) 拒否理由が解除手段を案内する" ;;
   *) bad "(a) 拒否理由に解除手段が無い: [$REASON]" ;;
 esac
 
@@ -480,11 +480,15 @@ assert_silent "git を含まないコマンドは無音"
 run_hook "$(bash_json 'echo git commit -m x')"
 assert_silent "コマンド位置に無い git（echo git commit）は無音"
 
-echo "guard-review-in-flight: (b) FF_REVIEW_LOCK_OVERRIDE=1 で通る"
-run_hook "$(edit_json)" 'FF_REVIEW_LOCK_OVERRIDE=1'
-assert_silent "(b) FF_REVIEW_LOCK_OVERRIDE=1 なら deny しない"
-run_hook "$(edit_json)" 'FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD=1'
+echo "guard-review-in-flight: (b) FF_REVIEW_LOCK_ACK=1 で通る"
+run_hook "$(edit_json)" 'FF_REVIEW_LOCK_ACK=1'
+assert_silent "(b) FF_REVIEW_LOCK_ACK=1 なら deny しない"
+run_hook "$(edit_json)" 'FF_DEV_TOOLKIT_SKIP=review-in-flight'
 assert_silent "hook 全体の opt-out でも deny しない"
+run_hook "$(edit_json)" 'FF_DEV_TOOLKIT_SKIP=review-inflight'
+assert_deny "FF_DEV_TOOLKIT_SKIP の鍵の打ち間違い（review-inflight）では deny のまま"
+run_hook "$(edit_json)" 'FF_REVIEW_LOCK_ACK=0'
+assert_deny "FF_REVIEW_LOCK_ACK=0 は解除にならない（値 1 だけが効く）"
 
 echo "guard-review-in-flight: (c) ロック無しで通る"
 clear_lock
@@ -567,9 +571,9 @@ run_hook "$(bash_json 'git restore src/app.txt')"
 assert_deny "(d5) 素の git restore は deny"
 
 echo "guard-review-in-flight: (d6) Bash はコマンド先頭の環境代入でも解除できる"
-run_hook "$(bash_json 'FF_REVIEW_LOCK_OVERRIDE=1 git commit -m x')"
-assert_silent "(d6) 対象 git コマンド先頭の FF_REVIEW_LOCK_OVERRIDE=1 で通る"
-run_hook "$(bash_json 'echo FF_REVIEW_LOCK_OVERRIDE=1 && git commit -m x')"
+run_hook "$(bash_json 'FF_REVIEW_LOCK_ACK=1 git commit -m x')"
+assert_silent "(d6) 対象 git コマンド先頭の FF_REVIEW_LOCK_ACK=1 で通る"
+run_hook "$(bash_json 'echo FF_REVIEW_LOCK_ACK=1 && git commit -m x')"
 assert_deny "(d6) 別セグメントに現れるだけの解除指定は効かない"
 clear_lock
 
@@ -688,9 +692,9 @@ run_hook "$(bash_json 'git commit -m "wip"')"
 assert_deny "(h) Bash の git commit もレーンで deny される"
 run_hook "$(bash_json 'git status --porcelain')"
 assert_silent "(h) read-only な git はレーンがあっても無音（既存の線引きを変えない）"
-run_hook "$(edit_json)" 'FF_REVIEW_LOCK_OVERRIDE=1'
-assert_silent "(h) FF_REVIEW_LOCK_OVERRIDE=1 はレーンにも効く（抜け道が 1 組で済む）"
-run_hook "$(edit_json)" 'FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD=1'
+run_hook "$(edit_json)" 'FF_REVIEW_LOCK_ACK=1'
+assert_silent "(h) FF_REVIEW_LOCK_ACK=1 はレーンにも効く（抜け道が 1 組で済む）"
+run_hook "$(edit_json)" 'FF_DEV_TOOLKIT_SKIP=review-in-flight'
 assert_silent "(h) hook 全体の opt-out もレーンに効く"
 
 echo "guard-review-in-flight: (h2) 一部のレビュアーの終端では凍結が解けない"
@@ -1898,11 +1902,11 @@ else
 
   # 利用者向け opt-out（他の SessionStart hook と同じ形）。
   ROSTER_HOOK_OUT="$(printf '{}' | env \
-    FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK=1 \
+    FF_DEV_TOOLKIT_SKIP=review-roster-check \
     FF_DEV_TOOLKIT_ROSTER_DRIFT_CLAUDE_HOME="$ROSTER_HOME-both" \
     FF_DEV_TOOLKIT_ROSTER_DRIFT_HOOK="$TARGET" \
     bash "$ROSTER_HOOK" 2>&1)" && ROSTER_HOOK_RC=0 || ROSTER_HOOK_RC=$?
-  roster_expect_silent "FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK=1 で無音になる"
+  roster_expect_silent "FF_DEV_TOOLKIT_SKIP=review-roster-check で無音になる"
 fi
 
 echo "guard-review-in-flight: (k) Bash 経由の作業ツリー書き込み"
@@ -1948,7 +1952,7 @@ case "$REASON" in
   *) bad "(k) 理由文にロック削除の案内が無い: [$REASON]" ;;
 esac
 case "$REASON" in
-  *'FF_REVIEW_LOCK_OVERRIDE=1 tee'*) ok "(k) 抜け道の案内が git 以外のコマンドにも及ぶ" ;;
+  *'FF_REVIEW_LOCK_ACK=1 tee'*) ok "(k) 抜け道の案内が git 以外のコマンドにも及ぶ" ;;
   *) bad "(k) 抜け道の案内が git 限定のまま: [$REASON]" ;;
 esac
 k_deny "$K_POS_2" "事故形: Path.write_text を持つ heredoc プログラム"
@@ -2074,7 +2078,7 @@ k_deny "$K_POS_MULTI" "改行を含むインライン本文（引用符が行を
 k_deny "bash -c 'cd /tmp'; touch README.md" "子シェルの cd は親へ漏れない"
 k_deny "( cd /tmp ); touch README.md" "サブシェルの cd は親へ漏れない"
 k_deny "D=\"\$(mktemp -d ./draft.XXXXXX)\"; tee \"\$D/x\"" "mktemp のテンプレートが cwd 配下なら一時領域扱いにしない"
-k_deny "FF_REVIEW_LOCK_OVERRIDE=1 true; echo x > README.md" "前区間の override は次の区間へ引き継がない"
+k_deny "FF_REVIEW_LOCK_ACK=1 true; echo x > README.md" "前区間の override は次の区間へ引き継がない"
 k_deny "echo hi>src/app.txt" "語に密着したリダイレクト"
 k_deny "echo x >| src/app.txt" ">| リダイレクト"
 k_deny "RESULT=\$(python3 patch.py)" "代入値のコマンド置換の本文を走査する"
@@ -2112,8 +2116,8 @@ k_deny 'echo x >"README.md"' "引用符付きの密着リダイレクト"
 k_deny "python3 -c 'open(\"$TEST_OUT/d\",\"w\"); open(\"README.md\",\"w\")'" "最初の書き込み先がツリー外でも後続のツリー内書き込みで止める（同一行）"
 K_POS_TWO="$(printf 'python3 - <<%sPY%s\nopen("%s/d","w")\nopen("README.md","w")\nPY\n' "'" "'" "$TEST_OUT")"
 k_deny "$K_POS_TWO" "最初の書き込み先がツリー外でも後続のツリー内書き込みで止める（別行）"
-k_deny "FF_REVIEW_LOCK_OVERRIDE=1 touch README.md; rm src/app.txt" "override 付き区間の後ろの override 無し書き込みは止める"
-k_deny "FF_REVIEW_LOCK_OVERRIDE=1 tee README.md; touch src/app.txt" "override 付き区間で走査を打ち切らない"
+k_deny "FF_REVIEW_LOCK_ACK=1 touch README.md; rm src/app.txt" "override 付き区間の後ろの override 無し書き込みは止める"
+k_deny "FF_REVIEW_LOCK_ACK=1 tee README.md; touch src/app.txt" "override 付き区間で走査を打ち切らない"
 k_deny "printf x | cd /tmp; touch README.md" "パイプ内の cd は親へ漏れない"
 k_deny "cd /tmp & touch README.md" "background の cd は親へ漏れない"
 k_deny "false && cd /tmp; touch README.md" "条件付き（&&）の cd は基準不明にする（deny 側）"
@@ -2131,13 +2135,13 @@ esac
 k_silent "tee $TEST_OUT/draft.md" "ツリー外への tee（下書き）"
 k_silent "node -e 'require(\"fs\").writeFileSync(\"$TEST_OUT/d\",\"x\")'" "マーカーの対象引数（\"fs\" ではなく書き込み先）で判定する"
 k_silent "python3 -c 'open(\"$TEST_OUT/a\",\"w\"); open(\"$TEST_OUT/b\",\"w\")'" "複数の書き込み先がすべてツリー外なら通す"
-k_silent "FF_REVIEW_LOCK_OVERRIDE=1 tee README.md; FF_REVIEW_LOCK_OVERRIDE=1 touch src/app.txt" "全区間に override が付いていれば通す"
+k_silent "FF_REVIEW_LOCK_ACK=1 tee README.md; FF_REVIEW_LOCK_ACK=1 touch src/app.txt" "全区間に override が付いていれば通す"
 k_silent "tee $TEST_OUT/x >/dev/null" "ツリー外への tee + >/dev/null（リダイレクト語を引数と誤認しない）"
 k_silent "tee $TEST_OUT/x < README.md" "ツリー外への tee + < README.md（入力リダイレクトを対象と誤認しない）"
 k_silent "rm -rf /tmp/x 2>/dev/null" "ツリー外の rm + 2>/dev/null"
 k_silent "mkdir -p $TEST_OUT/a 2>/dev/null" "ツリー外の mkdir + 2>/dev/null"
 k_silent "cp README.md $TEST_OUT/ 2>&1" "ツリー外への cp + 2>&1"
-k_silent "FF_REVIEW_LOCK_OVERRIDE=1 echo x > README.md" "リダイレクトでも区間先頭の override が効く"
+k_silent "FF_REVIEW_LOCK_ACK=1 echo x > README.md" "リダイレクトでも区間先頭の override が効く"
 k_silent "D=\$(mktemp -d) && echo x > \$D/a.md" "引用符なしの mktemp -d 代入"
 k_silent "D=\$(mktemp) && echo x > \$D" "引用符なしの mktemp 代入（ファイル）"
 k_silent "python3 -c 'open(\"$TEST_OUT/draft.md\",\"w\").write(\"x\")'" "マーカー行の書き込み先リテラルがツリー外"
@@ -2190,10 +2194,10 @@ k_silent "npm test" "ビルド・テストツールは対象外"
 k_silent "curl -s https://example.com" "-o の無い curl"
 k_silent "python3 --version" "バージョン表示だけのインタプリタ"
 k_silent "echo 'a > b'" "引用文字列の中の >"
-k_silent "echo FF_REVIEW_LOCK_OVERRIDE=1 && tee $TEST_OUT/x" "抜け道の綴りをデータとして出すだけ"
-k_silent "FF_REVIEW_LOCK_OVERRIDE=1 tee README.md" "区間先頭の FF_REVIEW_LOCK_OVERRIDE=1 で通る（git 以外にも効く）"
-run_hook "$(bash_json_at "tee README.md" "$REPO")" 'FF_REVIEW_LOCK_OVERRIDE=1'
-assert_silent "(k) セッション環境の FF_REVIEW_LOCK_OVERRIDE=1 で通る"
+k_silent "echo FF_REVIEW_LOCK_ACK=1 && tee $TEST_OUT/x" "抜け道の綴りをデータとして出すだけ"
+k_silent "FF_REVIEW_LOCK_ACK=1 tee README.md" "区間先頭の FF_REVIEW_LOCK_ACK=1 で通る（git 以外にも効く）"
+run_hook "$(bash_json_at "tee README.md" "$REPO")" 'FF_REVIEW_LOCK_ACK=1'
+assert_silent "(k) セッション環境の FF_REVIEW_LOCK_ACK=1 で通る"
 # マーカー走査の grep が失敗する回（seam）は「マーカー無し」ではなく判定不能 → deny
 run_hook "$(bash_json_at "$K_POS_1" "$REPO")" 'FF_WRITE_SCAN_GREP=/nonexistent/grep'
 assert_deny "(k) マーカー走査の grep が失敗すると判定不能として deny（マーカー無しに畳まない）"
@@ -2203,7 +2207,7 @@ case "$REASON" in
 esac
 run_hook "$(bash_json_at "tee $TEST_OUT/x" "$REPO")" 'FF_WRITE_SCAN_GREP=/nonexistent/grep'
 assert_silent "(k) grep 失敗でもマーカー走査に到達しないコマンドは影響を受けない"
-run_hook "$(bash_json_at "echo x > README.md" "$REPO")" 'FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD=1'
+run_hook "$(bash_json_at "echo x > README.md" "$REPO")" 'FF_DEV_TOOLKIT_SKIP=review-in-flight'
 assert_silent "(k) opt-out で無音"
 # cwd がリポジトリへの symlink でも物理パスで判定する
 ln -s "$REPO" "$TEST_TMP/repo-link"
@@ -2854,8 +2858,8 @@ printf '#!/bin/sh\necho x > README.md\n' > "$O_DIR/writer.sh"
 chmod +x "$O_DIR/writer.sh"
 o_deny "$O_DIR/writer.sh" "(o5) テキストのスクリプトの直接実行は従来どおり本文で判定する"
 o_silent "bash -n $O_DIR/writer.sh" "(o5) bash -n（構文検査のみ）は書き込みを持つ本文でも実行しないので通す"
-o_silent "FF_REVIEW_LOCK_OVERRIDE=1 bash $O_DIR/writer.sh" "(o5) 区間先頭の override は本文の走査（入れ子の区間）で消えない"
-o_deny "bash $O_DIR/writer.sh; FF_REVIEW_LOCK_OVERRIDE=1 true" "(o5) override の無い区間の本文の書き込みは止める"
+o_silent "FF_REVIEW_LOCK_ACK=1 bash $O_DIR/writer.sh" "(o5) 区間先頭の override は本文の走査（入れ子の区間）で消えない"
+o_deny "bash $O_DIR/writer.sh; FF_REVIEW_LOCK_ACK=1 true" "(o5) override の無い区間の本文の書き込みは止める"
 o_deny "command -p bash $O_DIR/writer.sh" "(o5) command -p の後ろのインタプリタも走査する"
 o_deny "timeout 60 bash $O_DIR/writer.sh" "(o5) timeout <秒> の後ろのインタプリタも走査する"
 o_deny "env -u HOME bash $O_DIR/writer.sh" "(o5) env -u NAME の後ろのインタプリタも走査する"
@@ -2865,7 +2869,7 @@ o_deny "bash $O_DIR/writer.sh -n" "(o5) スクリプトより後ろの -n はス
 o_deny "/bin/rm README.md" "(o5) 絶対パスの書き込みコマンド（/bin/rm）は argv で判定して止める"
 o_deny "/bin/cp $O_DIR/writer.sh README.md" "(o5) 絶対パスの /bin/cp の書き込み先がツリー内なら止める"
 # deny 文が案内する復旧手順 1)（rm -- ロック / rm -rf -- レーン置き場）と 2)（区間先頭の
-# FF_REVIEW_LOCK_OVERRIDE=1）を、文面から取り出してそのまま流す（文面と実挙動の一致）
+# FF_REVIEW_LOCK_ACK=1）を、文面から取り出してそのまま流す（文面と実挙動の一致）
 run_hook "$(agent_json pr-review-toolkit:code-reviewer Agent tu-o5)"
 o_deny "echo x > README.md" "(o5) 前提: ロック + レーンで書き込みを止める"
 O_RM_LOCK="$(printf '%s\n' "$REASON" | sed -n 's/^.*→ \(rm -- .*\)$/\1/p' | head -n 1)"
@@ -2873,7 +2877,7 @@ O_RM_LANE="$(printf '%s\n' "$REASON" | sed -n 's/^.*→ \(rm -rf -- .*\)$/\1/p' 
 if [ -n "$O_RM_LOCK" ] && [ -n "$O_RM_LANE" ]; then
   o_silent "$O_RM_LOCK" "(o5) 案内 1) のロック削除コマンドがそのまま通る"
   o_silent "$O_RM_LANE" "(o5) 案内 1) のレーン削除コマンドがそのまま通る"
-  o_silent "FF_REVIEW_LOCK_OVERRIDE=1 $O_RM_LANE" "(o5) 案内 2) の override を前置したレーン削除がそのまま通る"
+  o_silent "FF_REVIEW_LOCK_ACK=1 $O_RM_LANE" "(o5) 案内 2) の override を前置したレーン削除がそのまま通る"
   o_silent "/bin/$O_RM_LANE" "(o5) 絶対パスの rm で案内 1) を打っても通る"
 else
   bad "(o5) deny 文から復旧手順を取り出せない: lock=[$O_RM_LOCK] lane=[$O_RM_LANE]"

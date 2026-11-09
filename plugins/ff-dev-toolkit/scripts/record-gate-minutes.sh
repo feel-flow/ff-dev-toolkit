@@ -31,7 +31,8 @@
 #   取る（読み方の正本は scripts/lib/branch-issue.sh）。
 #
 # 記録しない形（exit 0・無出力 = fail-soft。ゲートの結果を変えない）:
-#   - FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS=1（wall-clock / 読み込みバイトの hook と同じ opt-out）
+#   - FF_DEV_TOOLKIT_SKIP=effort-metrics（wall-clock / 読み込みバイトの hook と同じ opt-out。鍵の名簿は
+#     scripts/lib/l4-declarations.tsv）
 #   - ブランチ名から Issue 番号が取れない（統合ブランチ・detached HEAD・番号の無いブランチ。
 #     `chore/2026-09-23-cleanup` の日付を Issue 番号として記録しない）
 #   - repo を引けない（git 管理外）・秒が整数でない
@@ -72,7 +73,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ "${FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS:-0}" = "1" ] && exit 0
+# L4 宣言（ADR-087）。lib の場所は自分の置き場から組み込みの展開だけで作る（サブプロセスを足さない）。
+# lib を読めない配置では止めない側（記録は効いたまま）に倒し、stderr も汚さない
+case "${BASH_SOURCE[0]}" in */*) ff_rgm_dir="${BASH_SOURCE[0]%/*}" ;; *) ff_rgm_dir="." ;; esac
+{ [ -r "${ff_rgm_dir}/lib/l4-declarations.sh" ] && . "${ff_rgm_dir}/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
+if ff_l4_skipped 'effort-metrics' 'FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS'; then exit 0; fi
 
 case "$SECONDS_ARG" in
   '' | *[!0-9]*) exit 0 ;;

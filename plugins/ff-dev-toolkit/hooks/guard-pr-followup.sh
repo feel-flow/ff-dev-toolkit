@@ -68,7 +68,8 @@
 #     無ければ全文フォールバックで動く。
 #
 # 環境変数:
-#   FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1  このガードを無効化する（Draft PR の検出も含む）
+#   FF_DEV_TOOLKIT_SKIP=pr-followup  このガードを無効化する（Draft PR の検出も含む。鍵の名簿は
+#                                    scripts/lib/l4-declarations.tsv）
 #   FF_PR_DRAFT_ACK=1（コマンド先頭の環境代入）  Draft PR の検出だけをその 1 回通す
 #     （GitHub MCP 経路では hook の環境変数として読み、セッション全体の GitHub MCP 呼び出しに効く。
 #     hook の環境の値は MCP 経路だけが読み、Bash 経路は通さない）
@@ -94,7 +95,9 @@ if ! source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh"; then
 fi
 asdd_hook_enabled hooks || exit 0
 
-[ "${FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD:-0}" = "1" ] && exit 0
+# L4 宣言（ADR-087）。lib を読めない配置では止めない側（ガードは効いたまま）に倒し、stderr も汚さない
+{ [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
+if ff_l4_skipped 'pr-followup' 'FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD'; then exit 0; fi
 
 # Draft PR の deny（Bash 経路と GitHub MCP 経路で共有。違うのは対象の表示と 2 つの選択肢だけ）。
 deny_draft() { # <対象の表示> <選択肢 1> <選択肢 2>
@@ -104,7 +107,7 @@ deny_draft() { # <対象の表示> <選択肢 1> <選択肢 2>
   1) ${2}
   2) ${3}
 既に Draft の PR は gh pr ready <番号> で通常 PR へ戻せます。入口文書（CLAUDE.md / AGENTS.md）に Draft の指示が残っていないかは /workflow-doctor の検査 8 で確かめられます。
-このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1 を設定します（フォローアップ宣言の検出も止まります）。"
+このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=pr-followup を設定します（フォローアップ宣言の検出も止まります。ほかの鍵と並べるときはカンマ区切り）。"
   jq -n --arg reason "$reason" \
     '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null
   exit 0
@@ -140,7 +143,7 @@ judge_followup_text() { # <判定対象テキスト>
   1) 先に gh issue create で起票し、発行された Issue 番号（#NNN）を PR 本文に記載する
   2) 起票不要と判断した場合は、本文に <!-- no-followup: 理由 --> を追記する（理由は必須）
   3) 宣言自体が不要なら本文から外す
-このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1 を設定します。"
+このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=pr-followup を設定します（ほかの鍵と並べるときはカンマ区切り）。"
 
   jq -n --arg reason "$reason" \
     '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null

@@ -421,6 +421,12 @@ if [[ ! -f "$ADAPTER_COMMON" ]]; then
 fi
 # shellcheck source=adapters/adapter-common.sh
 source "$ADAPTER_COMMON"
+# L4 宣言の判定 lib（ADR-087）。構成ファイル multi-agent-codex-update.sh の ensure_codex_cli_current が
+# ff_l4_skipped を呼ぶ。読めない配置では止めない側（版の確認と更新は効いたまま）に倒す。読む前に
+# [ -r ] で確かめる — macOS の bash 3.2 は set -e の下で `.` が対象を見つけられないと、`||` の中でも
+# シェルを止める（下の構成ファイルの読み込み部の注記と同じ事情）
+# shellcheck source=lib/l4-declarations.sh
+{ [ -r "${SCRIPT_DIR}/lib/l4-declarations.sh" ] && . "${SCRIPT_DIR}/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
 
 # ── All known CLI names ──
 # ↑ この見出し行は tests/lib/cli-registry-parser.sh が完全一致で registry 境界の開始に

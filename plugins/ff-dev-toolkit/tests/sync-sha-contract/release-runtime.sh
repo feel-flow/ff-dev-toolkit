@@ -960,7 +960,7 @@ run_orch
 if [[ "$RC" -eq 1 ]] && has "NG: [prepare]"; then
   printf '%s\n' '- 利用者が足した行' >>"$SSOT/oss/ff-dev-toolkit/CHANGELOG.md"
   run_orch
-  if [[ "$RC" -eq 1 ]] && has "自動では戻さない" && has "FF_DISCARD_UNCOMMITTED=1" && grep -q '^- 利用者が足した行$' "$SSOT/oss/ff-dev-toolkit/CHANGELOG.md"; then
+  if [[ "$RC" -eq 1 ]] && has "自動では戻さない" && has "FF_DISCARD_UNCOMMITTED_ACK=1" && grep -q '^- 利用者が足した行$' "$SSOT/oss/ff-dev-toolkit/CHANGELOG.md"; then
     ok "書きかけの後に利用者が触った回は戻さずに止まり、手で戻す手順を出す（利用者の編集は残る）"
   else
     bad "利用者の編集を戻した、または止まらない (rc=$RC)"; dump

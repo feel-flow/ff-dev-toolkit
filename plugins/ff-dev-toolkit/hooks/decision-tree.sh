@@ -31,7 +31,8 @@
 # 入らないので、観測点は hook ログだけになる）。
 #
 # 環境変数:
-#   FF_DEV_TOOLKIT_SKIP_DECISION_TREE=1  この hook を無効化する（ルータも記録も走らない）
+#   FF_DEV_TOOLKIT_SKIP=decision-tree    この hook を無効化する（ルータも記録も走らない。鍵の名簿は
+#                                        scripts/lib/l4-declarations.tsv、判定は scripts/lib/l4-declarations.sh）
 #   FF_DEV_TOOLKIT_STATE_DIR             記録の置き場の親（既定 $HOME/.config/ff-dev-toolkit）
 #   FF_JEV_MODE / FF_JEV_POINTS          ルータへそのまま渡る（scripts/decision-tree/route.sh のヘッダ）
 #
@@ -84,7 +85,9 @@ if ! source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh"; then
 fi
 asdd_hook_enabled hooks || exit 0
 
-[ "${FF_DEV_TOOLKIT_SKIP_DECISION_TREE:-0}" = "1" ] && exit 0
+# L4 宣言（ADR-087）。lib を読めない配置では止めない側（hook は効いたまま）に倒し、stderr も汚さない
+{ [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
+if ff_l4_skipped 'decision-tree' 'FF_DEV_TOOLKIT_SKIP_DECISION_TREE'; then exit 0; fi
 [ -n "$input" ] || exit 0
 
 unmeasured() { echo "decision-tree: (unmeasured) $1" >&2; exit 0; }

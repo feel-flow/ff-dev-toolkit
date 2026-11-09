@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="$ROOT/hooks/guard-credential-output.sh"
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-isolate_hook_env "FF_DEV_TOOLKIT_SKIP_CREDENTIAL_OUTPUT_GUARD" "$TARGET"
+isolate_hook_env "FF_DEV_TOOLKIT_SKIP" "$TARGET"
 unset FF_CREDENTIAL_OUTPUT_ACK
 command -v jq >/dev/null || { echo 'jq required' >&2; exit 1; }
 for file in "$TARGET" "$ROOT/tests/lib/credential-output-scan.awk" "$ROOT/hooks/hooks.json"; do
@@ -117,7 +117,7 @@ printf '%s' "$OUT" | jq -e '.hookSpecificOutput.permissionDecisionReason | conta
 deny_expected 'cat ~/.npmrc; echo CANARY_SECRET_2325'
 case "$OUT" in *CANARY_SECRET_2325*|*'cat ~/.npmrc'*|*'cut -d='*) exit 1 ;; esac
 printf '%s' "$OUT" | jq -e '.hookSpecificOutput.permissionDecisionReason | contains("npm config get registry")' >/dev/null
-OUT="$(payload 'cat ~/.npmrc' | FF_DEV_TOOLKIT_SKIP_CREDENTIAL_OUTPUT_GUARD=1 bash "$TARGET")"
+OUT="$(payload 'cat ~/.npmrc' | FF_DEV_TOOLKIT_SKIP=credential-output bash "$TARGET")"
 [ -z "$OUT" ]
 OUT="$(printf 'not JSON .npmrc' | bash "$TARGET")"; [ -z "$OUT" ]
 OUT="$(jq -nc '{tool_name:"Read",tool_input:{command:"cat ~/.npmrc"}}' | bash "$TARGET")"; [ -z "$OUT" ]
@@ -126,7 +126,7 @@ PASS=$((PASS+3))
 # Every early exit drains a payload larger than a pipe buffer.
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
 big="$(ff_asdd_big_payload "$(payload 'cat ~/.npmrc')")"
-ff_asdd_drain_probe "$TARGET" "$big" "$tmp" FF_DEV_TOOLKIT_SKIP_CREDENTIAL_OUTPUT_GUARD=1
+ff_asdd_drain_probe "$TARGET" "$big" "$tmp" FF_DEV_TOOLKIT_SKIP=credential-output
 [ "$FF_ASDD_DRAIN_RC" -eq 0 ] && [ -z "$FF_ASDD_DRAIN_OUT" ]
 mkdir -p "$tmp/no-jq"
 ff_asdd_drain_probe "$TARGET" "$big" "$tmp" PATH="$tmp/no-jq"

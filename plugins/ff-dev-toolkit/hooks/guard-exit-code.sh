@@ -142,7 +142,7 @@
 # 抜け道は deny の本文で必ず案内する（案内の無い deny は詰まりになる）:
 #   - **コマンドの先頭**に環境代入 `FF_EXIT_CODE_ACK=1` を付ける（先頭に限る。
 #     文字列としてコマンド中に現れるだけでは無効）
-#   - ガードごと止めるなら環境変数 `FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1`
+#   - ガードごと止めるなら環境変数 `FF_DEV_TOOLKIT_SKIP=exit-code`
 #
 # ## 既知の限界（取りこぼす形。fail-open 側）
 #
@@ -183,7 +183,7 @@
 #   - 互換性: bash 3.2（stock macOS）互換。連想配列・readarray・=~ は使わない
 #
 # 環境変数:
-#   FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1  このガードを無効化する
+#   FF_DEV_TOOLKIT_SKIP=exit-code  このガードを無効化する
 #   FF_EXIT_CODE_GUARD_GATES  導入先の追加ゲート。改行区切りの literal command prefix。
 #     hook プロセスの環境に export する。形式と照合契約は検出器ヘッダが正本。
 
@@ -216,7 +216,10 @@ case "$asdd_rc" in
 esac
 
 # opt-out も stdin を読み切ってから抜ける。
-[ "${FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD:-0}" = "1" ] && exit 0
+# 宣言の判定は共通関数 scripts/lib/l4-declarations.sh（ADR-087）。読めないときは止めない側に倒す。
+# shellcheck source=../scripts/lib/l4-declarations.sh
+{ [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
+if ff_l4_skipped 'exit-code' 'FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD'; then exit 0; fi
 
 # 検出器のゲート名簿の綴り（検出器の is_named_gate と一致させること。上記「名簿の綴りだけは
 # 複製している」を参照。verify.sh が静的に照合する）。
@@ -353,7 +356,7 @@ deny_unavailable() { # <理由>
 次のいずれかで進めてください:
   1) 判定できる状態に戻す（検出器が読めない・awk / jq が壊れている場合はその環境を直す。配布物が壊れているならプラグインを再インストールする）
   2) このコマンドに限って通す: コマンドの**先頭**へ環境代入 FF_EXIT_CODE_ACK=1 を付けて再実行する
-  3) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1 を設定する" \
+  3) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP=exit-code を設定する" \
     exit-code-guard-unavailable tests/lib/exit-code-guard.sh \
     "終了コードの扱いを検査する対象の判定を完了できないため、判定不能として止めた" \
     "判定できる状態に戻す（プラグインを再インストールする）。このコマンドに限って通すなら先頭へ FF_EXIT_CODE_ACK=1 を付けて再実行する"
@@ -462,7 +465,7 @@ rg_unavailable() { # <理由>
 次のいずれかで進めてください:
   1) rg に検索パスを明示する（rg <パターン> .）か、標準入力を閉じる（rg <パターン> </dev/null）
   2) このコマンドに限って通す: コマンドの**先頭**へ環境代入 FF_RG_STDIN_ACK=1 を付けて再実行する
-  3) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1 を設定する" \
+  3) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP=exit-code を設定する" \
     rg-stdin-unavailable tests/lib/rg-stdin-scan.sh \
     "rg の検索パスの有無を判定できないため、判定不能として止めた" \
     "rg に検索パスを明示する（rg <パターン> .）か標準入力を閉じる（rg <パターン> </dev/null）。このコマンドに限って通すなら先頭へ FF_RG_STDIN_ACK=1 を付けて再実行する"
@@ -714,7 +717,7 @@ ${fix}
 判定の正本は ${DETECTOR_SHOWN} で、この hook は判定を持ちません（走査面だけを足しています）。
 どうしてもこの形で実行する必要がある場合:
   1) このコマンドに限って通す: コマンドの**先頭**へ環境代入 FF_EXIT_CODE_ACK=1 を付けて再実行する
-  2) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1 を設定する"
+  2) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP=exit-code を設定する"
 
 deny "$reason" exit-code-misread tests/lib/exit-code-guard.sh \
   "終了コードの誤読・握り潰しの形（検出タグ ${first_tag}）を検出した" \

@@ -12,10 +12,19 @@
 # ff_commit_identity_check <repo>
 #   0  通してよい（合成 identity ではない / identity が未設定で git 自身が止める / 判定省略）
 #   1  合成 identity（stderr に復旧手順）
-#   FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 で判定を省く（PreToolUse ガードと同じ変数）
+#   FF_DEV_TOOLKIT_SKIP=commit-identity で判定を省く（PreToolUse ガードと同じ鍵。鍵の名簿は
+#   l4-declarations.tsv、判定は同じ置き場の l4-declarations.sh。ADR-087）
+#
+# 判定の lib は、呼び出し側が既に読んでいれば読み直さない。読めない配置（この lib だけを写した
+# fixture など）では止めない側（判定は効いたまま）に倒し、stderr も汚さない。読む前に [ -r ] で
+# 確かめる — macOS の bash 3.2 は set -e の下で `.` が対象を見つけられないと、`||` の中でもシェルを
+# 止める（呼び出し側が set -e でも落ちないように）。
+declare -F ff_l4_skipped >/dev/null 2>&1 \
+  || { [ -r "${BASH_SOURCE[0]%/*}/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/l4-declarations.sh"; } 2>/dev/null \
+  || ff_l4_skipped() { return 1; }
 ff_commit_identity_check() {
   local repo="${1:-.}" name email
-  [ "${FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD:-}" = "1" ] && return 0
+  if ff_l4_skipped 'commit-identity' 'FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD'; then return 0; fi
   name="$(git -C "$repo" config --get user.name 2>/dev/null || true)"
   email="$(git -C "$repo" config --get user.email 2>/dev/null || true)"
   case "$email" in
@@ -26,7 +35,7 @@ ff_commit_identity_check() {
     echo "✗ 実効の git identity が検査用の合成 identity です（user.name=${name:-（空）} / user.email=${email:-（空）}、対象: ${repo}）。"
     echo "  このままコミットすると履歴に fixture 名義が残ります。次のいずれかで再実行してください:"
     echo "  1) 漏れた値を消す: git -C '${repo}' config --local --unset user.name; git -C '${repo}' config --local --unset user.email"
-    echo "  2) 意図的に合成 identity で進める場合だけ FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 を付けて再実行する"
+    echo "  2) 意図的に合成 identity で進める場合だけ FF_DEV_TOOLKIT_SKIP=commit-identity を付けて再実行する"
   } >&2
   return 1
 }

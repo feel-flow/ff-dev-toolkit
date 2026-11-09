@@ -36,12 +36,12 @@ ff_wsl_notice_due() { # <記録ファイル> <現在の epoch 秒> <ttl 秒>
 # SessionStart の systemMessage（利用者へそのまま表示する）。JSON の文字列へそのまま埋め込むので、
 # " と \ と制御文字を含めない（suite が検査する）。
 ff_wsl_notice_system_message() {
-  printf '%s' 'ℹ️ ff-dev-toolkit: このセッションは Windows の Git Bash 上で動いています。Git Bash ではプロセスの起動が遅く hook の所要時間が長くなり、symlink やパス表記の違いで一部の検査が成立しません。WSL の中で claude を起動して使うことをおすすめします（この案内は 1 日 1 回）。WSL では Windows 側の PATH が混ざって判定が揺れることがあり、/etc/wsl.conf の [interop] に appendWindowsPath=false を書くと外せます。止めるには環境変数 FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=1 を設定してください。'
+  printf '%s' 'ℹ️ ff-dev-toolkit: このセッションは Windows の Git Bash 上で動いています。Git Bash ではプロセスの起動が遅く hook の所要時間が長くなり、symlink やパス表記の違いで一部の検査が成立しません。WSL の中で claude を起動して使うことをおすすめします（この案内は 1 日 1 回）。WSL では Windows 側の PATH が混ざって判定が揺れることがあり、/etc/wsl.conf の [interop] に appendWindowsPath=false を書くと外せます。止めるには環境変数 FF_DEV_TOOLKIT_SKIP=wsl-notice を設定してください（ほかの鍵と並べるときはカンマ区切り）。'
 }
 
 # SessionStart の additionalContext（Claude への注入）。同じく " と \ と制御文字を含めない。
 ff_wsl_notice_context() {
-  printf '%s' 'このセッションは Windows の Git Bash（MSYS）上で動いている。ff-dev-toolkit の hook はプロセス起動の遅さで所要時間が延び、symlink やパス表記（C:/… と /c/…）の違いで一部の検査が成立しない。利用者が WSL への切り替えを望んだら次を案内すること: (1) WSL（Ubuntu など）を導入する (2) リポジトリを WSL のファイルシステム（ホームディレクトリ配下）へ clone し直す。/mnt/c 配下のまま使うとファイル操作が遅い (3) WSL の中に Node.js と Claude Code を入れ、その中で claude を起動する。WSL の PATH には既定で Windows 側の PATH が足されるため、Windows 版の CLI（codex など）が見えて判定が揺れることがある。外すには /etc/wsl.conf の [interop] に appendWindowsPath=false を書いて WSL を再起動する。案内を止めたい場合は環境変数 FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=1 を設定する。'
+  printf '%s' 'このセッションは Windows の Git Bash（MSYS）上で動いている。ff-dev-toolkit の hook はプロセス起動の遅さで所要時間が延び、symlink やパス表記（C:/… と /c/…）の違いで一部の検査が成立しない。利用者が WSL への切り替えを望んだら次を案内すること: (1) WSL（Ubuntu など）を導入する (2) リポジトリを WSL のファイルシステム（ホームディレクトリ配下）へ clone し直す。/mnt/c 配下のまま使うとファイル操作が遅い (3) WSL の中に Node.js と Claude Code を入れ、その中で claude を起動する。WSL の PATH には既定で Windows 側の PATH が足されるため、Windows 版の CLI（codex など）が見えて判定が揺れることがある。外すには /etc/wsl.conf の [interop] に appendWindowsPath=false を書いて WSL を再起動する。案内を止めたい場合は環境変数 FF_DEV_TOOLKIT_SKIP=wsl-notice を設定する（ほかの鍵と並べるときはカンマ区切り）。'
 }
 
 # 全件ゲートの冒頭案内。<ostype> が msys / cygwin のときだけ stderr へ出し、実行は止めない。

@@ -829,7 +829,7 @@ fi
 # resolver の 4 経路だけでは hook 本体を `exit 0` にしても緑のまま（2 回転のクロスモデル
 # レビューで指摘）。合成 identity の一時リポジトリへ実物の hook を stdin JSON で当て、
 # (a) 素の commit は deny、(b) git オプション区間の `-c user.*=` は allow、(c) `-m` 本文中の
-# 同じ文字列は deny、(d) 本文中の `; FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1` は deny、(e) heredoc 本文に deny の案内文を
+# 同じ文字列は deny、(d) 本文中の `; FF_DEV_TOOLKIT_SKIP=commit-identity` は deny、(e) heredoc 本文に deny の案内文を
 # 引用した `commit -F -` は deny、(f) 先頭の環境代入は allow、(g) 先行する別コマンドの文字列
 # では免除しない、(h) `git -C dir commit` / `git -c k=v commit` も検出する、(i) 引数全体を引用した
 # `-c "user.email=…"` も上書きとして読む（cwd が実 identity でも合成値なら deny）、(j) 単独 `&` と
@@ -849,12 +849,23 @@ else
   ff_git_fixture_init "$GI_FX" || bad "guard-commit-identity: fixture の初期化に失敗"
   GI_OK="$TMP/gi-real"
   ff_git_fixture_init "$GI_OK" "Real Person" "real@example.com" || bad "guard-commit-identity: 実 identity fixture の初期化に失敗"
+  # L4 宣言（ADR-087）をホストから引き継がない: 素の FF_DEV_TOOLKIT_SKIP は gi_decide が落とし、名簿の旧名
+  # （内部の別名）はここで落とす。旧名は名簿から読み、この suite には書かない（旧名のケースは
+  # tests/l4-declarations が持つ）
+  GI_L4_TSV="$SCRIPT_DIR/../../scripts/lib/l4-declarations.tsv"
+  if [ -r "$GI_L4_TSV" ]; then
+    while IFS=$'\t' read -r _l4_k _l4_kind _l4_owner _l4_covers _l4_legacy _l4_rest || [ -n "$_l4_k" ]; do
+      case "$_l4_legacy" in FF_[A-Z0-9_]*) unset "$_l4_legacy" ;; esac
+    done < "$GI_L4_TSV"
+  else
+    bad "guard-commit-identity: L4 宣言の名簿を読めない: ${GI_L4_TSV}"
+  fi
   # $1: コマンド文字列 / $2: hook JSON の cwd（既定は合成 identity の fixture）
   # → stdout に deny / allow（deny 以外の出力形は判定不能として "other"）
   gi_decide() {
     local out
     out="$(jq -nc --arg c "$1" --arg w "${2:-$GI_FX}" '{tool_name:"Bash",tool_input:{command:$c},cwd:$w}' \
-      | env -u FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD -u GIT_DIR -u GIT_WORK_TREE GIT_CEILING_DIRECTORIES="$TMP" bash "$GI_HOOK" 2>/dev/null)"
+      | env -u FF_DEV_TOOLKIT_SKIP -u GIT_DIR -u GIT_WORK_TREE GIT_CEILING_DIRECTORIES="$TMP" bash "$GI_HOOK" 2>/dev/null)"
     if [ -z "$out" ]; then printf 'allow'; return 0; fi
     printf '%s' "$out" | jq -r 'if .hookSpecificOutput.permissionDecision == "deny" then "deny" else "other" end' 2>/dev/null || printf 'other'
   }
@@ -865,9 +876,42 @@ else
   gi_case deny  "合成 identity の素の commit は止める" 'git commit -m "feat: x"'
   gi_case deny  "合成 identity の push は止める" 'git push origin develop'
   gi_case allow "git オプション区間の -c user.*= は意図した上書きとして通す" 'git -c user.name=A -c user.email=a@b.c commit -m x'
-  gi_case allow "先頭の環境代入 FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 は通す" 'FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 git commit -m x'
+  gi_case allow "先頭の環境代入 FF_DEV_TOOLKIT_SKIP=commit-identity は通す" 'FF_DEV_TOOLKIT_SKIP=commit-identity git commit -m x'
+  gi_case allow "鍵を並べた先頭の環境代入（引用付き）も通す" "FF_DEV_TOOLKIT_SKIP='update-check,commit-identity' git commit -m x"
+  gi_case deny  "鍵の打ち間違い（commit-identiy）では通さない" 'FF_DEV_TOOLKIT_SKIP=commit-identiy git commit -m x'
+  gi_case deny  "値の文法違反（大文字・_ 区切り）は未設定として扱い通さない" 'FF_DEV_TOOLKIT_SKIP=COMMIT_IDENTITY git commit -m x'
+  gi_case deny  "空白入り引用値の先頭の環境代入が付いても止める（値を空白で割ってサブコマンドを見失わない）" "FOO='a b' git commit -m x"
+  gi_case deny  "空白入り引用値の SKIP（文法違反）が付いても止める" "FF_DEV_TOOLKIT_SKIP='x y' git commit -m x"
+  gi_case deny  "二重引用の空白入り値の先頭の環境代入が付いても止める" 'FOO="a b" BAR=1 git commit -m x'
+  gi_case allow "空白入り引用値の環境代入の後ろの SKIP も同じ単純コマンドの宣言として通す" "FOO='a b' FF_DEV_TOOLKIT_SKIP=commit-identity git commit -m x"
+  gi_case deny  "エスケープした単引用符を含む値の先頭の環境代入が付いても止める" "MSG=don\\'t git commit -m x"
+  gi_case deny  "二重引用の中のエスケープした二重引用符を含む値が付いても止める" "A=\"x\\\"y\" git commit -m \"a b\""
+  gi_case deny  "\$'…' の値（中にエスケープした単引用符）が付いても止める" "A=\$'it\\'s' git commit -m x"
+  gi_case deny  "エスケープした単引用符を含む値が付いた push も止める" "MSG=don\\'t git push"
+  gi_case allow "エスケープした引用符を含む値の後ろの SKIP も同じ単純コマンドの宣言として通す" "MSG=don\\'t FF_DEV_TOOLKIT_SKIP=commit-identity git commit -m x"
+  gi_case deny  "-c の値にエスケープした単引用符があっても止める（名前だけの上書き）" "git -c user.name=O\\'Brien commit -m x"
+  gi_case deny  "-c の値にエスケープした単引用符がある push も止める" "git -c core.x=it\\'s push"
+  gi_case deny  "-c の二重引用の値にエスケープした二重引用符があっても止める" "git -c user.name=\"O\\\"B\" commit -m x"
+  gi_case deny  "-c の \$'…' の値があっても止める" "git -c core.x=\$'a\\'b' commit -m x"
+  gi_case deny  "-c の値のバックスラッシュ空白も 1 語として読み、名前だけの上書きは止める" "git -c user.name=Jane\\ Doe commit -m x"
+  gi_case allow "-c の値にエスケープした単引用符があっても、名前と email の両方の上書きは通す" "git -c user.name=O\\'Brien -c user.email=real@corp.example commit -m x"
+  # `$` を単独の文字として読むと、最長一致が `$` + `'…'` の読み方を選び、後ろの `'` まで代入が伸びて git を飲み込む
+  gi_case deny  "\$'…' の値の後ろに引用付きの -m があっても止める（代入が後ろの引用符まで伸びない）" "MSG=\$'it\\'s' git commit -m 'fix x'"
+  gi_case deny  "\$'\\'' の値の後ろに -c と引用付きの -m があっても止める" "A=\$'\\'' git -c core.x=1 commit -m 'msg x' --allow-empty"
+  gi_case deny  "-c の \$'\\'' の値の後ろに引用付きの -m があっても止める" "git -c core.x=\$'\\'' commit -m 'a b'"
+  gi_case deny  "\$\"…\" の値の後ろに引用付きの -m があっても止める" "A=\$\"loc\" git commit -m 'a b'"
+  gi_case deny  "\$HOME の値の後ろに引用付きの -m があっても止める" "A=\$HOME git commit -m 'a b'"
+  gi_case allow "\$'…' の値の後ろの SKIP も同じ単純コマンドの宣言として通す" "MSG=\$'it\\'s' FF_DEV_TOOLKIT_SKIP=commit-identity git commit -m 'a b'"
+  # `$` の後のエスケープ（`$\x`）を読まないと、照合が途中で止まって区間ごと判定から漏れる
+  gi_case deny  "\$ の後にエスケープが続く値（\$\\x）が付いても止める" "A=\$\\x git commit -m x"
+  gi_case deny  "\$ の後にエスケープした単引用符が続く値が付いても止める" "A=\$\\' git commit -m x"
+  gi_case deny  "-c の値の \$ の後にエスケープが続いても止める" "git -c core.x=\$\\x commit -m x"
+  # 文法の外の値（値の中の空白で語が切れる \$(…) / \${…}）でも、区間の中の語 git から読んで止める側に倒す
+  gi_case deny  "\$(…) の値の中に空白があっても止める" "A=\$(echo a b) git commit -m x"
+  gi_case deny  "\${…} の値の中に空白があっても止める" "A=\${x:-a b} git commit -m x"
+  gi_case allow "文法の外の値の後ろの git が commit / push でなければ通す" "A=\$(echo a b) git status"
   gi_case deny  "-m 本文中の -c user.email= では免除しない" 'git commit -m "docs: explain -c user.email= override"'
-  gi_case deny  "-m 本文中の ; FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 では免除しない" 'git commit -m "docs: explain ; FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 bypass"'
+  gi_case deny  "-m 本文中の ; FF_DEV_TOOLKIT_SKIP=commit-identity では免除しない" 'git commit -m "docs: explain ; FF_DEV_TOOLKIT_SKIP=commit-identity bypass"'
   gi_case deny  "heredoc 本文に deny の案内文を引用しても免除しない" 'git commit -F - <<EOF
 knowledge: x
 
@@ -877,7 +921,7 @@ EOF'
   # 3 回転目（codex-cli）: 検出と免除の区間不一致。先行する別コマンドの文字列で免除が成立しない /
   # `git -C dir commit` `git -c k=v commit` の形も検出する / `-c user.*=` 免除はその単純コマンド自身にだけ効く
   gi_case deny  "先行する別コマンド中の -c user.email= では免除しない" 'echo " -c user.email=a@b.c"; git commit -m x'
-  gi_case deny  "先行する別コマンドの環境代入では免除しない" 'FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 true; git commit -m x'
+  gi_case deny  "先行する別コマンドの環境代入では免除しない" 'FF_DEV_TOOLKIT_SKIP=commit-identity true; git commit -m x'
   gi_case deny  "git -C <dir> commit の形も検出する" "$(printf 'git -C %q commit -m x' "$GI_FX")"
   gi_case deny  "git -c 別キー commit は免除にならない" 'git -c commit.gpgsign=false commit -m x'
   gi_case allow "&& で繋いだ 2 本目の git -c user.*= commit は通す" 'git add -A && git -c user.name=A -c user.email=a@b.c commit -m x'

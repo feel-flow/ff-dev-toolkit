@@ -5,7 +5,7 @@
 # 入力書き換えに対応した Claude Code 環境で permission_mode が bypassPermissions のときだけ、guard-zsh-glob.sh が scalar / scalar-list の呼び出しの先頭へ
 # `setopt SH_WORD_SPLIT; ` を付けて通す（Issue `#2491`）。最初の文がその setopt の呼び出しは scalar を対象にしない。
 # heredoc 本文と引用された子シェルのプログラムは対象外。
-# FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1 で無効化。
+# FF_DEV_TOOLKIT_SKIP=zsh-expansion（または covers で zsh-glob）で無効化。
 # 呼び出し先頭の FF_ZSH_EXPANSION_ACK=1 / FF_ZSH_GLOB_ACK=1 は今回だけ両方を免除する。
 # 出口は入力の hook_event_name で切り替える。PreToolUse は equals を deny、scalar を
 # systemMessage（利用者の画面だけに出てエージェントへ届かない）で返す。PostToolUse は
@@ -17,7 +17,11 @@
 # この接頭辞で両者を分け、検出の警告だけを同じセッションで 1 回に絞る（Issue `#2616`）。
 input=""
 IFS= read -r -d '' input || true
-[ "${FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD:-0}" != 1 ] || exit 0
+# 宣言の判定は共通関数 scripts/lib/l4-declarations.sh（ADR-087）。読めないときは止めない側に倒す
+# （zsh-glob の宣言も covers でここを止める）。
+# shellcheck source=../../scripts/lib/l4-declarations.sh
+{ [ -r "${BASH_SOURCE[0]%/*}/../../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
+if ff_l4_skipped 'zsh-expansion' 'FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD'; then exit 0; fi
 host_shell="${CLAUDE_CODE_SHELL:-${SHELL:-}}"
 case "${host_shell##*/}" in zsh | zsh-*) ;; *) exit 0 ;; esac
 case "$input" in *'='* | *'$'*) ;; *) exit 0 ;; esac
@@ -41,7 +45,7 @@ warn() {
   exit 0
 }
 deny() {
-  local message="$1 コマンドの先頭へ FF_ZSH_EXPANSION_ACK=1 を付けると今回だけ通せます。無効化: FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1。"
+  local message="$1 コマンドの先頭へ FF_ZSH_EXPANSION_ACK=1 を付けると今回だけ通せます。無効化: FF_DEV_TOOLKIT_SKIP=zsh-expansion。"
   jq -n --arg m "$message" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $m}}' && exit 0
   printf '%s\n' "$message" >&2
   exit 2

@@ -27,7 +27,7 @@ TARGET="$PLUGIN_ROOT/hooks/guard-pr-followup.sh"
 # 先頭で 1 回落とす。ケース固有の `NAME=v bash "$TARGET"` はこの後に代入として届く（Issue `#1808`）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-isolate_hook_env "FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD" "$TARGET"
+isolate_hook_env "FF_PR_DRAFT_ACK" "$TARGET"
 # ASDD ゲートが早期終了する経路でも stdin を読み切ることを測る共有ヘルパー
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
@@ -211,8 +211,8 @@ run_hook 'gh issue create --title t --body "スコープ外"'
 assert_pass "gh issue create は対象外"
 run_hook "echo 'gh pr create --body スコープ外 --title t'"
 assert_pass "コマンド位置に無い gh（echo の文字列）は素通し"
-run_hook "gh pr create --title t --body \"$BODY_MARKER\"" "$TEST_TMP" 'FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1'
-assert_pass "FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1 で無効化できる"
+run_hook "gh pr create --title t --body \"$BODY_MARKER\"" "$TEST_TMP" 'FF_DEV_TOOLKIT_SKIP=update-check,pr-followup'
+assert_pass "FF_DEV_TOOLKIT_SKIP=update-check,pr-followup（鍵 pr-followup）で無効化できる"
 
 echo "guard-pr-followup: Draft PR（作成・Draft への戻し）"
 run_hook "gh pr create --draft --base develop --title t --body \"$BODY_PLAIN\""
@@ -245,10 +245,10 @@ run_hook 'env FF_PR_DRAFT_ACK=1 gh pr create --draft --fill'
 assert_pass "env ラッパーの環境代入 FF_PR_DRAFT_ACK=1 は抜け道として通す"
 run_hook "echo 'gh pr create --draft --fill'"
 assert_pass "コマンド位置に無い Draft（echo の文字列）は素通し"
-run_hook 'gh pr create --fill' "$TEST_TMP" 'FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1'
+run_hook 'gh pr create --fill' "$TEST_TMP" 'FF_DEV_TOOLKIT_SKIP=pr-followup'
 assert_pass "（対照）無効化した状態の通常 PR は素通し"
-run_hook 'gh pr create --draft --fill' "$TEST_TMP" 'FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1'
-assert_pass "FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1 は Draft の検出も止める"
+run_hook 'gh pr create --draft --fill' "$TEST_TMP" 'FF_DEV_TOOLKIT_SKIP=pr-followup'
+assert_pass "FF_DEV_TOOLKIT_SKIP=pr-followup は Draft の検出も止める"
 
 echo "guard-pr-followup: GitHub MCP 経路（create_pull_request / update_pull_request）"
 # 実測したツール名（GitHub 公式リモート MCP の tools/list）を 2 つのサーバー名の形で駆動する。
@@ -300,8 +300,8 @@ else
 fi
 run_hook 'gh pr create --draft --fill' "$TEST_TMP" 'FF_PR_DRAFT_ACK=1'
 assert_fire "hook の環境変数 FF_PR_DRAFT_ACK=1 は Bash 経路を通さない（Bash 経路の抜け道はコマンド先頭の環境代入だけ）"
-run_mcp mcp__github__create_pull_request "$(mcp_pr_input '{"draft":true}')" FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1
-assert_pass "FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1 は MCP 経路も止める"
+run_mcp mcp__github__create_pull_request "$(mcp_pr_input '{"draft":true}')" FF_DEV_TOOLKIT_SKIP=pr-followup
+assert_pass "FF_DEV_TOOLKIT_SKIP=pr-followup は MCP 経路も止める"
 if NOGH_PATH="$(ff_path_without_gh "$TEST_TMP/nogh-bin" jq grep sed)"; then
   run_mcp mcp__github__create_pull_request "$(mcp_pr_input '{"draft":true}')" PATH="$NOGH_PATH"
   assert_fire "gh が PATH に無くても Draft を判定する（tool_input だけで決まり、gh を使わない）"
@@ -367,9 +367,9 @@ else
   bad "PATH 空の drain: exit=$RC out=[$OUT]（rc=141 なら hook が stdin を drain せずに exit している）"
 fi
 RC=0
-OUT="$(printf '%s' "$BIG_PAYLOAD" | FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1 PATH="/nonexistent" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
+OUT="$(printf '%s' "$BIG_PAYLOAD" | FF_DEV_TOOLKIT_SKIP=pr-followup PATH="/nonexistent" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
 if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
-  ok "opt-out（FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1）でも stdin を読み切ってから無出力 exit 0"
+  ok "opt-out（FF_DEV_TOOLKIT_SKIP=pr-followup）でも stdin を読み切ってから無出力 exit 0"
 else
   bad "opt-out の drain: exit=$RC out=[$OUT]（rc=141 なら opt-out の早期 exit が read より前にある）"
 fi

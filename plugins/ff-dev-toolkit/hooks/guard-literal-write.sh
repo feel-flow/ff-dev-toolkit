@@ -61,13 +61,13 @@
 #     `FF_LITERAL_WRITE_ACK=1` にする（前に別の環境代入・文があると無効。guard-exit-code.sh の
 #     ACK と同じ単位 — Bash ツールの 1 呼び出し）。Perl 変数を意図して書いた場合
 #     （`$Config` など大文字始まりの Perl 変数）や、呼び出しの外で export 済みの名前の誤検知用
-#   - ガードごと止める: 環境変数 `FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD=1`
+#   - ガードごと止める: 環境変数 `FF_DEV_TOOLKIT_SKIP=literal-write`
 #
 # 既知の限界（素通しする形）は判定ヘルパの冒頭にまとめてある。
 #
 # 互換性: bash 3.2（stock macOS）。連想配列・readarray を使わない。
 # 環境変数:
-#   FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD=1  このガードを無効化する
+#   FF_DEV_TOOLKIT_SKIP=literal-write  このガードを無効化する
 
 # fail-open の面を持つため set -e / set -u は使わない。
 
@@ -90,7 +90,10 @@ case "$asdd_rc" in
   *) asdd_unverifiable=1 ;;
 esac
 
-[ "${FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD:-0}" = "1" ] && exit 0
+# 宣言の判定は共通関数 scripts/lib/l4-declarations.sh（ADR-087）。読めないときは止めない側に倒す。
+# shellcheck source=../scripts/lib/l4-declarations.sh
+{ [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
+if ff_l4_skipped 'literal-write' 'FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD'; then exit 0; fi
 
 # ---- 安価な前置フィルタ（候補でなければ何も読まずに抜ける） -------------------------
 # 候補: perl の綴りと `$` の両方がある（述語 A・B の perl 側）、または node の綴りと
@@ -169,7 +172,7 @@ deny_unavailable() { # <理由>
   1) ff-dev-toolkit を更新・再インストールしてヘルパを復旧する
   2) ファイル本文は Write / Edit ツールで直接書く（シェルを経由しない）
   3) このコマンドに限って通す: コマンドの**先頭**へ環境代入 FF_LITERAL_WRITE_ACK=1 を付けて再実行する
-  4) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD=1 を設定する" \
+  4) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP=literal-write を設定する" \
     literal-write-unavailable tests/lib/literal-write-scan.sh \
     "判定ヘルパで走査を完了できないため、候補コマンドを判定不能として止めた" \
     "ff-dev-toolkit を更新・再インストールしてヘルパを復旧する（このコマンドに限って通すなら先頭へ FF_LITERAL_WRITE_ACK=1 を付けて再実行する）"
@@ -323,7 +326,7 @@ deny "⚠️ ff-dev-toolkit guard（literal-write: 書き込む本文がシェ�
 次のいずれかで書き直してください:
   - ファイル本文は Write / Edit ツールで直接書く（シェルも別言語のリテラルも経由しない。最も確実）${advice}
 誤検知の場合（大文字始まりの Perl 変数を意図して書いた・呼び出しの外で export 済み・バックスラッシュ / バッククォートの解釈を承知のうえで書いた等）は、コマンドの**先頭**へ環境代入を付けて再実行します: FF_LITERAL_WRITE_ACK=1 <コマンド>
-このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD=1 を設定します。判定の正本は ${HELPER_DIR_SHOWN}/literal-write-scan.sh です。" \
+このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=literal-write を設定します。判定の正本は ${HELPER_DIR_SHOWN}/literal-write-scan.sh です。" \
   literal-write tests/lib/literal-write-scan.sh \
   "書き込む本文・値がシェルや別言語の解釈で無音に変わる形を検出した" \
   "ファイル本文は Write / Edit ツールで直接書く（誤検知ならコマンドの先頭へ FF_LITERAL_WRITE_ACK=1 を付けて再実行する）"

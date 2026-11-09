@@ -2,7 +2,7 @@
 # 停止文の共通形（scripts/lib/stop-block.sh。ADR-084 決定 6 / Issue `#2712`）の契約検査。
 # 空振り検出: stop-block.sh が無い・読めない・0 バイトのとき、関数 ff_stop_block を定義しないとき、採用名簿と実体（ff_stop_block を層の語で呼ぶ配布物）の集合が一致しないとき（名簿の縮小・実体の 0 件を含む）、hook の deny 出力が JSON でない・deny でない・理由が空のときは「形に合う」と数えず検査不成立の赤にする。写しで測った: lib の不在 / 読めない / 0 バイト / 関数なしはいずれも冒頭で rc 1、名簿から 1 行消す・guard-literal-write.sh / run-all.sh の呼び出しを消すと R1 が赤、guard-exit-code.sh の deny を `{}` にすると E2・E5 が赤（2026-11-08 macOS / Bash 3.2.57 実測）。
 # 変異検出: run-bash-hooks.sh の未実行の注記を理由文の先頭から外すと E4、guard-literal-write.sh の停止文を理由文の前へ置くと E1・E5 が赤（2026-11-08 macOS / Bash 3.2.57 実測）。
-# 空振り検出: 写しで測った（2026-11-08 macOS / Bash 3.2.57）: guard-review-in-flight.sh の先頭文の `）: ` から空白を消すと E6 の 2 件、Edit の次の一手へ FF_REVIEW_LOCK_OVERRIDE=1 を戻すと E6（Edit）、集約 jq の sort_by を外すと E4b、guard-literal-write.sh の lib の source をサブシェルの外へ戻すと E7（guard-literal-write.sh）が赤。走行中ロックの fixture を作れない回は E6 を検査不成立の赤にする。
+# 空振り検出: 写しで測った（2026-11-08 macOS / Bash 3.2.57）: guard-review-in-flight.sh の先頭文の `）: ` から空白を消すと E6 の 2 件、Edit の次の一手へ走行中ロックの ACK の前置（この実測は改名前の名前で行った）を戻すと E6（Edit）、集約 jq の sort_by を外すと E4b、guard-literal-write.sh の lib の source をサブシェルの外へ戻すと E7（guard-literal-write.sh）が赤。走行中ロックの fixture を作れない回は E6 を検査不成立の赤にする。
 #
 # 検査:
 #   U. 単体: 正確な 3 行（AC の文字列そのもの）・語彙外の層 / 空欄 / 改行入りの欄 / kebab-case でない rule-id は
@@ -13,7 +13,7 @@
 #      あり、最後の 3 行が形に合う / 停止文を持たない採用外の hook の deny が混ざっても最後の 3 行は停止文（E4b）/
 #      stop-block.sh を消した写し（E5）・先頭で exit する写し（E7）では各 hook が stop-block-unavailable の 3 行で deny する /
 #      走行中ロックの fixture で Edit と Bash を止めた review-in-flight の deny は先頭文 `…作業ツリー編集の抑止）: ` を保ち、
-#      次の一手は Bash だけが FF_REVIEW_LOCK_OVERRIDE=1 を含む（E6）
+#      次の一手は Bash だけが FF_REVIEW_LOCK_ACK=1 を含む（E6）
 #
 # ゲート側の採用（release-skip-profile.sh --check・run-all.sh の必須 skip・リリースの stop()）は既存 suite に
 # 1 件ずつ置く（skip-line-contract / tests/run-all/cases/startup-guards.sh / sync-sha-contract/release-runtime.sh）。
@@ -31,9 +31,25 @@ ok() { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
 # 利用者の opt-out / ACK と、書き換え経路へ入る Claude Code の環境を引き継がない（deny を書き換えへ逃がさない）。
-for _v in $(env | sed -n 's/^\(FF_DEV_TOOLKIT_SKIP_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$_v"; done
-unset FF_EXIT_CODE_ACK FF_LITERAL_WRITE_ACK FF_REVIEW_LOCK_OVERRIDE FF_REVIEW_ROUND_ACK FF_RG_STDIN_ACK \
-  FF_TIMEOUT_ACK FF_UNBOUNDED_WAIT_ACK CLAUDECODE CLAUDE_PROJECT_DIR GROK_PLUGIN_ROOT FF_BASH_HOOKS_NOTICE_LOG \
+# 接頭辞の後ろの `_` を必須にしない（素の FF_DEV_TOOLKIT_SKIP=<鍵>[,<鍵>…] も落とす）。
+for _v in $(env | sed -n 's/^\(FF_DEV_TOOLKIT_SKIP[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$_v"; done
+# L4 宣言の既定の unset（SKIP の 1 変数と、名簿 scripts/lib/l4-declarations.tsv の kind=ack の全件）。
+# 名簿との一致は tests/l4-declarations が印の間の名前で照合する（印と並びを崩さない）。
+# l4-default-unset:begin
+unset FF_DEV_TOOLKIT_SKIP \
+  FF_CREDENTIAL_OUTPUT_ACK FF_DISCARD_UNCOMMITTED_ACK FF_EFFORT_ACTUAL_ACK FF_EXIT_CODE_ACK \
+  FF_ISSUE_LABEL_ACK FF_LITERAL_WRITE_ACK FF_LONG_GATE_BACKGROUND_ACK FF_MERGE_CLOSING_ACK \
+  FF_PR_DRAFT_ACK FF_REVIEW_LOCK_ACK FF_REVIEW_ROUND_ACK FF_RG_STDIN_ACK FF_SHELL_SAVE_ACK \
+  FF_SUB_ISSUE_ID_ACK FF_TIMEOUT_ACK FF_UNBOUNDED_WAIT_ACK FF_WSL_SHELL_ACK FF_ZSH_EXPANSION_ACK \
+  FF_ZSH_GLOB_ACK 2>/dev/null || true
+# l4-default-unset:end
+# 名簿の legacy 列（内部の別名）も落とす。名前は名簿から読む（旧名をこの suite に複製しない）。
+if [ -r "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv" ]; then
+  while IFS=$'\t' read -r _k _kind _owner _covers _legacy _rest || [ -n "$_k" ]; do
+    case "$_legacy" in FF_[A-Z0-9_]*) unset "$_legacy" 2>/dev/null || true ;; esac
+  done < "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv"
+fi
+unset CLAUDECODE CLAUDE_PROJECT_DIR GROK_PLUGIN_ROOT FF_BASH_HOOKS_NOTICE_LOG \
   ff_bash_hooks_revalidated FF_EXIT_CODE_GUARD_GATES FF_JEV_MODE 2>/dev/null || true
 # 巡回カウンタは E6 の主題（走行中ロック）と直交するので無効にする（ホストの値を引き継がない）。
 export FF_REVIEW_ROUND_LIMIT=0
@@ -311,7 +327,7 @@ done
 
 # 走行中ロック（.review-results/.review-in-flight に生存 PID）を置いた fixture で、通常の review-in-flight の deny を
 # Edit と Bash の 2 入力で起こす。先頭文は `…作業ツリー編集の抑止）: ` で始まり、末尾 3 行は review-in-flight の
-# 停止文。次の一手は、その呼び出しが実際に通せる形だけを案内する（Bash だけが FF_REVIEW_LOCK_OVERRIDE=1 を持つ）
+# 停止文。次の一手は、その呼び出しが実際に通せる形だけを案内する（Bash だけが FF_REVIEW_LOCK_ACK=1 を持つ）
 RIF_REPO="$WORK/rif-repo"
 RIF_HEAD='⚠️ ff-dev-toolkit guard（レビュー走行中・作業ツリー編集の抑止）: '
 if ff_git_fixture_init "$RIF_REPO" "stop-block-contract" "stop-block@example.invalid" \
@@ -327,16 +343,16 @@ if ff_git_fixture_init "$RIF_REPO" "stop-block-contract" "stop-block@example.inv
   if run_deny "$PLUGIN_ROOT/hooks/guard-review-in-flight.sh" "$rif_edit" \
     && head_is "$REASON" "$RIF_HEAD" \
     && tail_is_block "$REASON" ガード '止めた規則: review-in-flight（tests/lib/review-in-flight-judge.sh）' && single_next "$REASON" \
-    && case "$(printf '%s\n' "$REASON" | tail -n 1)" in *FF_REVIEW_LOCK_OVERRIDE=1*) false ;; *) true ;; esac; then
-    ok "E6: 走行中ロックで Edit を止めた deny は先頭文（…編集の抑止）: ）を保ち、末尾 3 行が review-in-flight の停止文で、次の一手に FF_REVIEW_LOCK_OVERRIDE=1 を含まない"
+    && case "$(printf '%s\n' "$REASON" | tail -n 1)" in *FF_REVIEW_LOCK_ACK=1*) false ;; *) true ;; esac; then
+    ok "E6: 走行中ロックで Edit を止めた deny は先頭文（…編集の抑止）: ）を保ち、末尾 3 行が review-in-flight の停止文で、次の一手に FF_REVIEW_LOCK_ACK=1 を含まない"
   else
     bad "E6: 走行中ロックで Edit を止めた deny の形が違う（先頭文・規則・次の一手）: [$REASON]"
   fi
   if run_deny "$PLUGIN_ROOT/hooks/guard-review-in-flight.sh" "$rif_bash" \
     && head_is "$REASON" "$RIF_HEAD" \
-    && tail_is_block "$REASON" ガード '止めた規則: review-in-flight（tests/lib/review-in-flight-judge.sh）' 'FF_REVIEW_LOCK_OVERRIDE=1' \
+    && tail_is_block "$REASON" ガード '止めた規則: review-in-flight（tests/lib/review-in-flight-judge.sh）' 'FF_REVIEW_LOCK_ACK=1' \
     && single_next "$REASON"; then
-    ok "E6: 走行中ロックで Bash（git commit）を止めた deny は先頭文を保ち、末尾 3 行が review-in-flight の停止文で、次の一手に FF_REVIEW_LOCK_OVERRIDE=1 を含む"
+    ok "E6: 走行中ロックで Bash（git commit）を止めた deny は先頭文を保ち、末尾 3 行が review-in-flight の停止文で、次の一手に FF_REVIEW_LOCK_ACK=1 を含む"
   else
     bad "E6: 走行中ロックで Bash を止めた deny の形が違う（先頭文・規則・次の一手）: [$REASON]"
   fi

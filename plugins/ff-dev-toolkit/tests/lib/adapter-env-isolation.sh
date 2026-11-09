@@ -43,10 +43,10 @@
 #     `"$HELPER_DIR/x.sh"` もファイル名で辿る）から
 #     _?(FF|CLAUDE)_[A-Z0-9_]+ を動的抽出して ISOLATE_ENV を組み、**現在のシェルで
 #     unset する**（build + unset_isolated_vars を 1 回で行う）。hook は解除変数
-#     （FF_DEV_TOOLKIT_SKIP_*_GUARD / FF_REVIEW_LOCK_OVERRIDE / FF_*_ACK）と
+#     （FF_DEV_TOOLKIT_SKIP / FF_*_ACK と、名簿 scripts/lib/l4-declarations.tsv の旧名）と
 #     テストシーム（FF_HEREDOC_AWK / FF_LEX_AWK / FF_WRITE_SCAN_* 等）を環境から読む
 #     ので、ホストに 1 つでも残っていると「deny される」前提の針が黙って崩れる
-#     （実測: FF_REVIEW_LOCK_OVERRIDE=1 で guard-review-in-flight が 229 件赤）。
+#     （実測: 走行中ロックの ACK（改名前の名前）を 1 にすると guard-review-in-flight が 229 件赤）。
 #     **呼ぶ場所は suite の先頭で 1 回**（unset_isolated_vars と同じ理由。ケース固有の
 #     `NAME=v bash "$TARGET"` / `env NAME=v ...` はその後に代入として届く）。
 #     SENTINEL は HOOK 自身の解除変数を渡す（抽出が空振りしたら fail-closed で止まる）。
@@ -357,6 +357,24 @@ isolate_hook_env() {
         echo "✗ isolate_hook_env: 分離名簿にセンチネル ${s} がありません。hook の改名か抽出の空振り。ホストからの分離を保証できないため続行しない" >&2
         exit 1 ;;
     esac
+  done
+  # L4 宣言の既定の unset。抽出は hook の参照閉包に字句で現れる名前だけを拾うので、素の
+  # FF_DEV_TOOLKIT_SKIP（共通関数 scripts/lib/l4-declarations.sh が読む 1 変数）と、閉包の外の
+  # hook が読む ACK は抽出に頼らず常に落とす。並びは名簿 scripts/lib/l4-declarations.tsv の
+  # kind=ack の全件で、一致は tests/l4-declarations が印の間の名前で照合する。センチネルの照合
+  # より後に足す（既定の名前で抽出の空振りを隠さない）。
+  # l4-default-unset:begin
+  local ff_l4_default_unset="FF_DEV_TOOLKIT_SKIP
+    FF_CREDENTIAL_OUTPUT_ACK FF_DISCARD_UNCOMMITTED_ACK FF_EFFORT_ACTUAL_ACK FF_EXIT_CODE_ACK
+    FF_ISSUE_LABEL_ACK FF_LITERAL_WRITE_ACK FF_LONG_GATE_BACKGROUND_ACK FF_MERGE_CLOSING_ACK
+    FF_PR_DRAFT_ACK FF_REVIEW_LOCK_ACK FF_REVIEW_ROUND_ACK FF_RG_STDIN_ACK FF_SHELL_SAVE_ACK
+    FF_SUB_ISSUE_ID_ACK FF_TIMEOUT_ACK FF_UNBOUNDED_WAIT_ACK FF_WSL_SHELL_ACK FF_ZSH_EXPANSION_ACK
+    FF_ZSH_GLOB_ACK"
+  # l4-default-unset:end
+  for var in $ff_l4_default_unset; do
+    case "$seen" in *" $var "*) continue ;; esac
+    seen="${seen}${var} "
+    ISOLATE_ENV+=(-u "$var")
   done
   unset_isolated_vars
 }

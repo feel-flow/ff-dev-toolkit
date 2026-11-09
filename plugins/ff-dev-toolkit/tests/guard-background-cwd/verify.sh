@@ -49,7 +49,7 @@ TARGET="$PLUGIN_ROOT/hooks/guard-background-cwd.sh"
 # 先頭で 1 回落とす。ケース固有の `NAME=v bash "$TARGET"` はこの後に代入として届く（Issue `#1808`）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-isolate_hook_env "FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD" "$TARGET"
+isolate_hook_env "FF_DEV_TOOLKIT_SKIP" "$TARGET"
 # ASDD ゲートが早期終了する経路でも stdin を読み切ることを測る共有ヘルパー
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
@@ -369,7 +369,7 @@ if [ "$WT_READY" -eq 1 ]; then
     *) bad "相対 cd: reason に repo root からの絶対パスの案内が無い: [$REASON]" ;;
   esac
   case "$REASON" in
-    *"FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1 を付けて再実行"*)
+    *"FF_DEV_TOOLKIT_SKIP=background-cwd を付けて再実行"*)
       bad "相対 cd: reason が opt-out の前置を再実行の手段として案内している（前置では効かない）: [$REASON]" ;;
     *"コマンドの前置では効きません"*) ok "相対 cd: reason は opt-out を利用者の設定として述べ、前置では効かないと明記する" ;;
     *) bad "相対 cd: reason に opt-out の扱い（前置では効かない）の明記が無い: [$REASON]" ;;
@@ -518,8 +518,8 @@ fi
 
 echo "guard-background-cwd: 対象外と opt-out"
 if [ "$WT_READY" -eq 1 ]; then
-  run_hook 'cd docs/notes && npm test' "$WTMAIN" false 'FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1'
-  assert_silent "FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1 で deny も含めて無効化できる"
+  run_hook 'cd docs/notes && npm test' "$WTMAIN" false 'FF_DEV_TOOLKIT_SKIP=background-cwd'
+  assert_silent "FF_DEV_TOOLKIT_SKIP=background-cwd で deny も含めて無効化できる"
 fi
 RC=0
 OUT="$(jq -n --arg d "$WTMAIN" '{tool_name: "Read", tool_input: {command: "cd docs && npm test", run_in_background: true}, cwd: $d}' | bash "$TARGET" 2>/dev/null)" || RC=$?
@@ -562,9 +562,9 @@ else
 fi
 
 RC=0
-OUT="$(printf '%s' "$BIG_PAYLOAD" | FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1 PATH="/nonexistent" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
+OUT="$(printf '%s' "$BIG_PAYLOAD" | FF_DEV_TOOLKIT_SKIP=background-cwd PATH="/nonexistent" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
 if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
-  ok "AC3: opt-out（SKIP=1）でも stdin を読み切ってから無出力 exit 0"
+  ok "AC3: opt-out（FF_DEV_TOOLKIT_SKIP=background-cwd）でも stdin を読み切ってから無出力 exit 0"
 else
   bad "AC3: opt-out の drain: exit=$RC out=[$OUT]（rc=141 なら opt-out の早期 exit が read より前にある）"
 fi

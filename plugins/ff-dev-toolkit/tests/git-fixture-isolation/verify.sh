@@ -511,6 +511,7 @@ guard-checkout-restore/verify.sh
 guard-review-in-flight/lane-private-cases.sh
 guard-review-in-flight/verify.sh
 knowledge-delivery/verify.sh
+l4-declarations/fixtures/lib.sh
 markdownlint-selftest/verify.sh
 mbcs-guard-failclosed/verify.sh
 merge-cleanup/agent-branches.sh

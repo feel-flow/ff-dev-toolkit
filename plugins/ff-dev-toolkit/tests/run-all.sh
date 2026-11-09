@@ -772,7 +772,7 @@ else
     "$SCRIPT_DIR/guard-effort-actual/verify.sh"
     # PreToolUse（Edit/Write/MultiEdit/NotebookEdit/Bash/Agent）のレビュー走行中ロック +
     # 起動時 dirty ガード（hooks/guard-review-in-flight.sh）。ロック生存中の編集・git 書き込みの
-    # deny、FF_REVIEW_LOCK_OVERRIDE での解除、ロック不在・stale PID の非 deny、
+    # deny、FF_REVIEW_LOCK_ACK での解除、ロック不在・stale PID の非 deny、
     # pr-review-toolkit エージェント起動時の dirty 確認（ask）と clean / ignored のみの非発火を
     # stdin JSON fixture で固定する。orchestrator 側のロック 3 経路は
     # multi-agent-revision-guard が実走で見る。
@@ -1108,6 +1108,12 @@ else
     # 停止文の共通形（末尾 3 行: 止めた層 / 止めた規則 / 次の一手）の lib・採用名簿・hook の deny（Issue `#2712`）。
     # skip 経路なし（jq は必須ツール）。read-only・外部ネットワークなし（〜数秒）。
     "$SCRIPT_DIR/stop-block-contract/verify.sh"
+    # L4 宣言（SKIP / ACK）の名簿 scripts/lib/l4-declarations.tsv と、呼び出しの鍵・旧名、PUBLIC-SURFACE 4-3、
+    # oss README の鍵の表、配布実行物の ACK の型、旧名の残存、別名の期限、試験の隔離の既定の unset、
+    # 共通関数の終了コードと子プロセスを起こさないこと（ADR-087）。skip 経路なし（jq / git は必須）。
+    # selftest は合成 root への変異注入で各検査の検出力を測る（高速モードでは除外）。
+    "$SCRIPT_DIR/l4-declarations/verify.sh"
+    "$SCRIPT_DIR/l4-declarations-selftest/verify.sh"
     # 毎 sync リリース運用ゲート scripts/check-release-required.sh の検出力実測
     # （Issue #552）。live 状態は検査しない — 「実変更 + [Unreleased] 非空 + version
     # 据え置き」は開発中の PR では正常で、live 検査を常時ゲートに入れると通常開発が
@@ -1657,6 +1663,9 @@ REQUIRED_SUITES=(
   # 層で、一時領域不足で skip すると「対策済みの観測を未対策として実装判断へ混ぜる」退行が黙って戻る。
   knowledge-lookup
   ace-pending
+  # L4 宣言の名簿（scripts/lib/l4-declarations.tsv）と、実装・公開文書・試験の隔離の一致を見る唯一の
+  # suite（ADR-087）。skip 経路は持たないが、生えても黙って消えないよう yes を宣言して載せる。
+  l4-declarations
 )
 
 # ── 「空振り検出」宣言を免除する既存 suite の名簿（縮める方向にしか動かさない）────

@@ -32,7 +32,8 @@
 #     `[[ … ]]` / `(( … ))` の中の `>` は比較演算子
 #   - 実行形式（Mach-O / ELF）の直接実行は本文を読まない（PATH から引いた同名コマンドと同じ扱い）。
 #     `bash -n`（構文検査）は実行しないので本文を読まない
-#   - 区間先頭の `FF_REVIEW_LOCK_OVERRIDE=1` は、その区間の入れ子の走査（本文の区間）で消えない
+#   - 区間先頭の `FF_REVIEW_LOCK_ACK=1` は、その区間の入れ子の走査（本文の区間）で消えない
+#     （旧名（内部の別名）も同じ置き場所で受け、WRITE_OVERRIDE_LEGACY で hook へ返す。ADR-087）
 #   - gitignore 済みのパスは**ツリー内でも止めない**。結果の破棄を決めるリビジョン指紋
 #     （scripts/adapters/adapter-common.sh の capture_repo_snapshot）は
 #     `git status --porcelain` / `git diff HEAD` / `git diff --cached` /
@@ -80,7 +81,8 @@
 # 公開関数（hook が呼ぶ）:
 #   ff_write_scan_init <ROOT_PHYS> <CWD_PHYS> <OUTPUT_DIR_NAME> [凍結対象ツリー（物理パス。改行区切り）]
 #   ff_write_scan <生コマンド> <HEREDOC_STATE: ok|unterminated|unavailable> <HEREDOC_CODE> <HEREDOC_BODIES>
-#     0 = 止める対象（WRITE_REASON に理由、WRITE_OVERRIDE に区間先頭の FF_REVIEW_LOCK_OVERRIDE=1 の有無）
+#     0 = 止める対象（WRITE_REASON に理由、WRITE_OVERRIDE に区間先頭の FF_REVIEW_LOCK_ACK=1 の有無、
+#         WRITE_OVERRIDE_LEGACY に通した区間のどれかが旧名で解除していたか）
 #     1 = 止めない
 #     HEREDOC_STATE が unavailable（hook が heredoc ヘルパを読めない）なら判定不能として止める。
 #     それ以外は生コマンドから字句解析し直す（コメント中の `<<` を opener と誤認しない）
@@ -96,6 +98,7 @@
 WRITE_HIT=0
 WRITE_REASON=""
 WRITE_OVERRIDE=0
+WRITE_OVERRIDE_LEGACY=0
 # 同じコマンドの heredoc が作るスクリプト（0=未記録 / 1=1 件 / 2=複数で使わない）
 WS_HEREDOC_N=0
 WS_HEREDOC_TARGET=""
@@ -157,6 +160,7 @@ EOF
   WRITE_HIT=0
   WRITE_REASON=""
   WRITE_OVERRIDE=0
+  WRITE_OVERRIDE_LEGACY=0
   VAR_TABLE=""
   WS_SUB_DEPTH=0
 }
@@ -1253,24 +1257,29 @@ ws_is_binary() { # <file>
 }
 
 # ---- 1 区間 ----------------------------------------------------------------------------
-# <区間> <深さ> → 0 = hit。WRITE_OVERRIDE に**この区間の**先頭の FF_REVIEW_LOCK_OVERRIDE=1 の有無を返す。
+# <区間> <深さ> → 0 = hit。WRITE_OVERRIDE に**この区間の**先頭の FF_REVIEW_LOCK_ACK=1 の有無を返す
+# （WRITE_OVERRIDE_LEGACY に、その解除が旧名だったか）。
 # 区間の走査は入れ子（インタプリタの本文・`$(…)`）の区間を再帰的に走査するので、入れ子の区間が
 # 書いた WRITE_OVERRIDE（入れ子の区間には override が無い = 0）で外側の区間の override が上書き
 # される。そのため override の決定は区間ごとの退避・復元で持つ（上書きされたままだと、
-# `FF_REVIEW_LOCK_OVERRIDE=1 bash x.sh` の override が本文の走査で消え、案内どおりに前置しても
+# `FF_REVIEW_LOCK_ACK=1 bash x.sh` の override が本文の走査で消え、案内どおりに前置しても
 # 通らない。OBS-183 の「override も効かず」の実体）。
 WS_SEG_OVR=0
+WS_SEG_OVR_LEGACY=0
 scan_segment() {
-  local saved="$WS_SEG_OVR" rc
+  local saved="$WS_SEG_OVR" saved_legacy="$WS_SEG_OVR_LEGACY" rc
   WS_SEG_OVR=0
+  WS_SEG_OVR_LEGACY=0
   ws_scan_segment_body "$@"
   rc=$?
   WRITE_OVERRIDE="$WS_SEG_OVR"
+  WRITE_OVERRIDE_LEGACY="$WS_SEG_OVR_LEGACY"
   WS_SEG_OVR="$saved"
+  WS_SEG_OVR_LEGACY="$saved_legacy"
   return $rc
 }
 ws_scan_segment_body() {
-  local seg="$1" depth="$2" toks n i tok t target inq hb head seg_override=0 a body lexed wrap="" lrc ws_hcount ws_ht ws_hi ws_producer="" ws_ops=0 ws_j=0 ws_heredoc_at=-1 ws_stdin_after=0 ws_k=0
+  local seg="$1" depth="$2" toks n i tok t target inq hb head seg_override=0 seg_override_legacy=0 a body lexed wrap="" lrc ws_hcount ws_ht ws_hi ws_producer="" ws_ops=0 ws_j=0 ws_heredoc_at=-1 ws_stdin_after=0 ws_k=0
   # 語分割は引用符を保つ（`'s/a b/c d/'` を 1 語のまま扱う。Issue `#1868`）。引用符の外の
   # リダイレクト演算子は独立した語として切り出されるので、`hi>f` / `2>/dev/null` も同じ形で読める。
   # 字句解析に失敗した区間（引用符が閉じない）は断片を書き込み先として名指ししないよう、
@@ -1338,7 +1347,7 @@ EOF
         done
         ;;
       *')') i=$((i + 1)) ;; # case のパターン（`x)`）
-      FF_REVIEW_LOCK_OVERRIDE=1) seg_override=1; i=$((i + 1)) ;;
+      FF_REVIEW_LOCK_ACK=1 | FF_REVIEW_LOCK_OVERRIDE=1) seg_override=1; [ "${toks[$i]}" = FF_REVIEW_LOCK_ACK=1 ] || seg_override_legacy=1; i=$((i + 1)) ;;
       [A-Za-z_]*=*) i=$((i + 1)) ;;
       -*)
         [ -n "$wrap" ] || break
@@ -1365,6 +1374,8 @@ EOF
   done
   WRITE_OVERRIDE="$seg_override"
   WS_SEG_OVR="$seg_override"
+  WRITE_OVERRIDE_LEGACY="$seg_override_legacy"
+  WS_SEG_OVR_LEGACY="$seg_override_legacy"
   # 同じコマンドの heredoc が 1 つだけで、cat（ファイル引数なし）または tee が標準出力へ
   # 書いているときだけ、そのリダイレクト先を「これから作るスクリプト」として覚える。
   # printf のように heredoc を読まないコマンドへは載せない。入れ子では外側の記録を上書きしない。
@@ -1917,7 +1928,7 @@ ws_scan_code() { # <heredoc 除去後の本文> <深さ> → 0 = hit
     esac
     return 0
   fi
-  local kind base_before vars_before override_hit=0 prev_base="$WRITE_BASE" prev_vars="$VAR_TABLE"
+  local kind base_before vars_before override_hit=0 override_legacy_hit=0 prev_base="$WRITE_BASE" prev_vars="$VAR_TABLE"
   segs="$(ws_split_segments "$code")" || { ws_fail "区間分割（awk）が失敗"; return 0; }
   case "$code" in
     *[![:space:]]*) [ -n "$segs" ] || { ws_fail "区間分割（awk）が区間を返さない"; return 0; } ;;
@@ -1952,6 +1963,7 @@ ws_scan_code() { # <heredoc 除去後の本文> <深さ> → 0 = hit
         # override の無い書き込みが後ろにあれば止める
         if [ "${WRITE_OVERRIDE:-0}" -eq 1 ]; then
           override_hit=1
+          [ "${WRITE_OVERRIDE_LEGACY:-0}" -eq 1 ] && override_legacy_hit=1
           WRITE_HIT=0
           WRITE_REASON=""
         else
@@ -1985,7 +1997,8 @@ EOF
   if [ "$rc" -ne 0 ] && [ "$override_hit" -eq 1 ]; then
     WRITE_HIT=1
     WRITE_OVERRIDE=1
-    WRITE_REASON="override 付きの書き込み（区間先頭の FF_REVIEW_LOCK_OVERRIDE=1）"
+    WRITE_OVERRIDE_LEGACY="$override_legacy_hit"
+    WRITE_REASON="override 付きの書き込み（区間先頭の FF_REVIEW_LOCK_ACK=1）"
     return 0
   fi
   return $rc
@@ -1994,6 +2007,7 @@ ff_write_scan() { # <生コマンド> <HEREDOC_STATE> <HEREDOC_CODE> <HEREDOC_BO
   WRITE_HIT=0
   WRITE_REASON=""
   WRITE_OVERRIDE=0
+  WRITE_OVERRIDE_LEGACY=0
   HEREDOC_STATE="$2"
   HEREDOC_CODE="$3"
   HEREDOC_BODIES="$4"

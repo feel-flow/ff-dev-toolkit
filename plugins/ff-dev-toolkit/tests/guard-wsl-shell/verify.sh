@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="$ROOT/hooks/guard-wsl-shell.sh"
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-isolate_hook_env "FF_DEV_TOOLKIT_SKIP_WSL_SHELL_GUARD" "$TARGET"
+isolate_hook_env "FF_DEV_TOOLKIT_SKIP" "$TARGET"
 unset FF_WSL_SHELL_ACK
 command -v jq >/dev/null || { echo 'jq required' >&2; exit 1; }
 for file in "$TARGET" "$ROOT/tests/lib/wsl-shell-scan.sh" "$ROOT/tests/lib/review-shell-lex.sh" "$ROOT/hooks/hooks.json"; do
@@ -129,7 +129,7 @@ is_deny || fail 'Cygwin で止めない'
 PASS=$((PASS+1))
 
 # 抜け道と対象外の入力
-OUT="$(payload "wsl -- bash -c 'echo \$x'" | env OSTYPE=msys FF_DEV_TOOLKIT_SKIP_WSL_SHELL_GUARD=1 bash "$TARGET")"
+OUT="$(payload "wsl -- bash -c 'echo \$x'" | env OSTYPE=msys FF_DEV_TOOLKIT_SKIP=wsl-shell bash "$TARGET")"
 [ -z "$OUT" ] || fail 'SKIP 変数でガードが止まらない'
 OUT="$(printf 'not JSON wsl $x' | env OSTYPE=msys bash "$TARGET")"; [ -z "$OUT" ] || fail '不正 JSON を止めた'
 OUT="$(jq -nc '{tool_name:"Read",tool_input:{command:"wsl -- bash -c '"'"'$x'"'"'"}}' | env OSTYPE=msys bash "$TARGET")"
@@ -139,7 +139,7 @@ PASS=$((PASS+3))
 # 早期 return はすべてパイプ容量より大きい入力を読み切る（ACE-1331-1）
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
 big="$(ff_asdd_big_payload "$(payload "wsl -- bash -c 'echo \$x'")")"
-ff_asdd_drain_probe "$TARGET" "$big" "$tmp" OSTYPE=msys FF_DEV_TOOLKIT_SKIP_WSL_SHELL_GUARD=1
+ff_asdd_drain_probe "$TARGET" "$big" "$tmp" OSTYPE=msys FF_DEV_TOOLKIT_SKIP=wsl-shell
 [ "$FF_ASDD_DRAIN_RC" -eq 0 ] && [ -z "$FF_ASDD_DRAIN_OUT" ] || fail 'SKIP 時に入力を読み切らない'
 ff_asdd_drain_probe "$TARGET" "$big" "$tmp" OSTYPE=linux-gnu
 [ "$FF_ASDD_DRAIN_RC" -eq 0 ] && [ -z "$FF_ASDD_DRAIN_OUT" ] || fail '非 MSYS で入力を読み切らない'

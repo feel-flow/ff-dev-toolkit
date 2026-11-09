@@ -38,14 +38,17 @@
 # ## 抜け道
 #
 #   - この呼び出しだけ通す: コマンドの先頭の語を環境代入 `FF_WSL_SHELL_ACK=1` にする
-#   - ガードごと止める: 環境変数 `FF_DEV_TOOLKIT_SKIP_WSL_SHELL_GUARD=1`
+#   - ガードごと止める: 環境変数 `FF_DEV_TOOLKIT_SKIP=wsl-shell`
 #
 # stdin は早期 return より前に読み切る（ACE-1331-1）。
 
 input=""
 IFS= read -r -d '' input || true
 case "${OSTYPE:-}" in msys* | cygwin*) ;; *) exit 0 ;; esac
-[ "${FF_DEV_TOOLKIT_SKIP_WSL_SHELL_GUARD:-0}" = 1 ] && exit 0
+# 宣言の判定は共通関数 scripts/lib/l4-declarations.sh（ADR-087）。読めないときは止めない側に倒す。
+# shellcheck source=../scripts/lib/l4-declarations.sh
+{ [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
+if ff_l4_skipped 'wsl-shell' 'FF_DEV_TOOLKIT_SKIP_WSL_SHELL_GUARD'; then exit 0; fi
 case "$input" in *[wW][sS][lL]*) ;; *) exit 0 ;; esac
 case "$input" in *'$'*) ;; *) exit 0 ;; esac
 if ! source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh"; then
@@ -65,7 +68,7 @@ wsl.exe は --exec を付けない限り引数を連結して WSL 側の既定�
   - wsl.exe --exec sh -c '<スクリプト>' sh <引数>（--exec はシェルを介さず argv をそのまま渡す。値は \$1 で受ける）
   - スクリプトをファイルへ書き、wsl.exe -- bash /mnt/c/…/script.sh で起動する
 誤検知の場合だけ、コマンド先頭に FF_WSL_SHELL_ACK=1 を付けられます。
-ガード全体の無効化: FF_DEV_TOOLKIT_SKIP_WSL_SHELL_GUARD=1。"
+ガード全体の無効化: FF_DEV_TOOLKIT_SKIP=wsl-shell。"
   out="$(jq -nc --arg r "$reason" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null)" || {
     printf '%s\n' "$reason" >&2
     exit 2

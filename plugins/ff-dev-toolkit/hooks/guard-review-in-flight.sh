@@ -183,11 +183,14 @@
 #   - 互換性: bash 3.2（stock macOS）互換。連想配列・readarray・=~ は使わない
 #
 # 環境変数:
-#   FF_REVIEW_LOCK_OVERRIDE=1                     A（走行中ロック）と C（レーン）の deny を解除する。
+#   FF_REVIEW_LOCK_ACK=1                          A（走行中ロック）と C（レーン）の deny を解除する。
 #                                                 Bash ツール
 #                                                 なら対象コマンド（区間）先頭の環境代入としても効く
-#                                                 （`FF_REVIEW_LOCK_OVERRIDE=1 git commit ...` /
-#                                                 `FF_REVIEW_LOCK_OVERRIDE=1 tee notes.md`）。
+#                                                 （`FF_REVIEW_LOCK_ACK=1 git commit ...` /
+#                                                 `FF_REVIEW_LOCK_ACK=1 tee notes.md`）。
+#                                                 旧名（内部の別名。名簿 scripts/lib/l4-declarations.tsv
+#                                                 の legacy 列）も同じ 2 つの置き場所で受け、受けた回は
+#                                                 additionalContext で新しい名前を 1 行示す（ADR-087）。
 #                                                 Edit / Write などの編集系ツールにはコマンド行が
 #                                                 無く、hook はセッションの環境変数を継承するだけ
 #                                                 なので、そちらは再起動なしには変えられない
@@ -209,7 +212,7 @@
 #                                                 起動を deny する。判定の正本は tests/lib/review-round-counter.sh
 #   FF_REVIEW_ROUND_ACK=1                         D の 1 回限りの通過口。Bash は起動コマンドの区間先頭の
 #                                                 環境代入、Agent は prompt の行頭の単独行（セッション環境は読まない）
-#   FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD=1  この hook 全体を無効化する。`claude -p` /
+#   FF_DEV_TOOLKIT_SKIP=review-in-flight           この hook 全体を無効化する。`claude -p` /
 #                                                 background / subagent など非対話実行では
 #                                                 permissionDecision "ask" が block 相当になるため、
 #                                                 レビュー起動を自動化する場面ではこれを設定する
@@ -277,7 +280,10 @@ if ! source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh"; then
 fi
 asdd_hook_enabled hooks || exit 0
 
-[ "${FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD:-0}" = "1" ] && exit 0
+# 宣言の判定は共通関数 scripts/lib/l4-declarations.sh（ADR-087）。読めないときは止めない側に倒す。
+# shellcheck source=../scripts/lib/l4-declarations.sh
+{ [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
+if ff_l4_skipped 'review-in-flight' 'FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD'; then exit 0; fi
 
 command -v jq >/dev/null 2>&1 || exit 0
 
@@ -348,6 +354,14 @@ emit_message() { # <text>
   review_round_commit
   ROUND_NOTE_DONE=1
   jq -n --arg m "$1" --arg rn "$ROUND_NOTE" '{systemMessage: (if $rn == "" then $m else ($rn + "\n" + $m) end)}' 2>/dev/null
+  exit 0
+}
+
+# 止めずに通し、エージェントの文脈へ 1 行を返す（ACK を旧名で受けた回の通知。後始末は emit_message と同じ）。
+emit_context() { # <text>
+  review_round_commit
+  ROUND_NOTE_DONE=1
+  jq -n --arg m "$1" --arg rn "$ROUND_NOTE" '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: $m}} + (if $rn == "" then {} else {systemMessage: $rn} end)' 2>/dev/null
   exit 0
 }
 
@@ -610,6 +624,8 @@ case "$tool" in
     # 分割過多は「git がコマンド位置に来ず非発火」に倒れるだけで誤ブロックにならない。
     is_write_git=0
     cmd_override=0
+    # 解除を旧名（内部の別名）で受けた回は 1（通す回に新しい名前を 1 行示す）
+    cmd_override_legacy=0
     segments="$(printf '%s\n' "$code_only" | awk '{ gsub(/&&|\|\||;|\|/, "\n"); print }')"
     [ "$has_git" -eq 1 ] || segments=""
     # 先行区間の `cd <dir>`（`cd <worktree> && git commit`）は後続の git の対象ツリーを動かす。
@@ -674,12 +690,14 @@ case "$tool" in
       n=${#toks[@]}
       i=0
       seg_override=0
+      seg_override_legacy=0
       while [ "$i" -lt "$n" ]; do
         case "${toks[$i]}" in
           # 対象 git コマンド先頭の環境代入としての解除（guard-checkout-restore.sh の
-          # FF_DISCARD_UNCOMMITTED と同じ形。Bash ツールで実際に効く唯一の指定方法）
-          FF_REVIEW_LOCK_OVERRIDE=1)
+          # FF_DISCARD_UNCOMMITTED_ACK と同じ形。Bash ツールで実際に効く唯一の指定方法）
+          FF_REVIEW_LOCK_ACK=1 | FF_REVIEW_LOCK_OVERRIDE=1)
             seg_override=1
+            [ "${toks[$i]}" = "FF_REVIEW_LOCK_ACK=1" ] || seg_override_legacy=1
             i=$((i + 1))
             ;;
           [A-Za-z_]*=*) i=$((i + 1)) ;;
@@ -793,6 +811,7 @@ case "$tool" in
       esac
       is_write_git=1
       [ "$seg_override" -eq 1 ] && cmd_override=1
+      [ "$seg_override_legacy" -eq 1 ] && cmd_override_legacy=1
       break
     done <<EOF
 $segments
@@ -818,6 +837,7 @@ EOF
       if [ "$write_scan_rc" -eq 0 ]; then
         is_write_bash=1
         [ "${WRITE_OVERRIDE:-0}" -eq 1 ] && cmd_override=1
+        [ "${WRITE_OVERRIDE_LEGACY:-0}" -eq 1 ] && cmd_override_legacy=1
         write_note="このコマンドは${WRITE_REASON}。判定できない書き込みは deny 側へ倒します。
 下書き・一時出力は作業ツリーの外（scratchpad や \`mktemp -d\` の一時ディレクトリ）へ書いてください。レビュー出力先 ${ROOT}/${OUTPUT_DIR_NAME}/ への書き込みは止めません。
 "
@@ -854,8 +874,16 @@ if [ "$lock_live" -ne 1 ] && [ "$LANE_LIVE" -eq 0 ] && [ -n "$guard_notes" ]; th
   emit_message "${guard_notes}このコマンドはブロックしません。"
 fi
 
-[ "${FF_REVIEW_LOCK_OVERRIDE:-0}" = "1" ] && exit 0
-[ "${cmd_override:-0}" = "1" ] && exit 0
+# 旧名（内部の別名）は同じ置き場所で受け、通す回に新しい名前を 1 行示す（ADR-087）
+ff_lock_legacy_note="ℹ️ ff-dev-toolkit guard（レビュー走行中）: 旧名 FF_REVIEW_LOCK_OVERRIDE=1 を読みました。新しい名前は FF_REVIEW_LOCK_ACK=1 です（旧名は ff-dev-toolkit 1.1.0 で読まなくなります）。"
+if [ "${FF_REVIEW_LOCK_ACK:-0}" = "1" ] || [ "${FF_REVIEW_LOCK_OVERRIDE:-0}" = "1" ]; then
+  [ "${FF_REVIEW_LOCK_ACK:-0}" = "1" ] || emit_context "$ff_lock_legacy_note"
+  exit 0
+fi
+if [ "${cmd_override:-0}" = "1" ]; then
+  [ "${cmd_override_legacy:-0}" = "1" ] && emit_context "$ff_lock_legacy_note"
+  exit 0
+fi
 
 elapsed="不明"
 [ -n "$lock_elapsed_seconds" ] && elapsed="${lock_elapsed_seconds} 秒"
@@ -899,9 +927,9 @@ case "${WRITE_REASON:-}${write_note:-}" in
     ;;
 esac
 # 停止文の次の一手は、その呼び出しが実際に通せる形だけを案内する（ACE-2615-2）。コマンド先頭の
-# FF_REVIEW_LOCK_OVERRIDE=1 が効くのは Bash だけで、編集系ツールはロック・レーンを消すしかない。
+# FF_REVIEW_LOCK_ACK=1 が効くのは Bash だけで、編集系ツールはロック・レーンを消すしかない。
 if [ "$tool" = "Bash" ]; then
-  review_next="完了通知が出るまで待つ。続行するなら対象のコマンド（区間）の先頭へ FF_REVIEW_LOCK_OVERRIDE=1 を付けて再実行するか、理由文の 1) でロック・レーンを消す"
+  review_next="完了通知が出るまで待つ。続行するなら対象のコマンド（区間）の先頭へ FF_REVIEW_LOCK_ACK=1 を付けて再実行するか、理由文の 1) でロック・レーンを消す"
 else
   review_next="完了通知が出るまで待つ。続行するなら理由文の 1) でロック・レーンを消す（${tool:-編集系ツール} にはコマンド先頭の解除指定を付けられない）"
 fi
@@ -914,11 +942,11 @@ emit_deny "⚠️ ff-dev-toolkit guard（レビュー走行中・作業ツリー
      対応づけ済みで ${LANE_MAX_AGE} 秒・未対応づけで ${LANE_PENDING_MAX_AGE} 秒を過ぎると
      走査時に自動で回収されるので、放置しても凍結は永続しません）
   2) Bash ツールで実行するコマンドに限り、対象のコマンド（区間）の先頭に環境代入を付ける
-     → FF_REVIEW_LOCK_OVERRIDE=1 git ... / FF_REVIEW_LOCK_OVERRIDE=1 tee ...
+     → FF_REVIEW_LOCK_ACK=1 git ... / FF_REVIEW_LOCK_ACK=1 tee ...
      Edit / Write などの編集系ツールにはコマンド行が無く、hook はセッションの環境変数を
      継承するだけなので、この変数はセッションを再起動せずには変えられません。編集系を
      通したいときは 1) を使ってください。
-このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD=1 を設定します
+このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=review-in-flight を設定します
 （同じくセッション環境。非対話実行での opt-out はこちら）。" \
   review-in-flight tests/lib/review-in-flight-judge.sh \
   "レビューの走行中に作業ツリーを動かす操作を検出した" "$review_next"

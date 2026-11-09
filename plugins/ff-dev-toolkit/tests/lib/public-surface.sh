@@ -60,7 +60,16 @@ ff_surface_env_contract() {
   ff_surface_tokens "$(ff_surface_section "$1" '^### 4-1\.' '^### ')" '`FF_[A-Z0-9_]+`' 's/`//g'
 }
 ff_surface_env_internal() {
-  ff_surface_tokens "$(ff_surface_section "$1" '^### 4-2\.' '^## ')" '`FF_[A-Z0-9_]+`' 's/`//g'
+  # 4-2 の小節は `####`。次の `###`（4-3）か `##` で止める（4-3 の旧名の列を内部へ数えない）。
+  ff_surface_tokens "$(ff_surface_section "$1" '^### 4-2\.' '^##(#)? ')" '`FF_[A-Z0-9_]+`' 's/`//g'
+}
+
+# 4-3: L4 宣言の鍵（契約）。表のデータ行の**先頭セル**だけを採る（担当する実体・包含・旧名の列にも
+# backtick token があるため）。鍵の正本は scripts/lib/l4-declarations.tsv で、4-3 との一致は
+# tests/l4-declarations が見る。
+ff_surface_l4_keys() {
+  ff_surface_section "$1" '^### 4-3\.' '^##(#)? ' \
+    | { grep -oE '^\| `[a-z0-9]+(-[a-z0-9]+)*`' || true; } | sed -E 's/^\| `//; s/`$//' | LC_ALL=C sort -u
 }
 
 # 公開面 5: FF_ で始まらない環境変数。
@@ -94,4 +103,37 @@ ff_surface_contract_tokens() {
   ff_surface_paths "$doc" | sed 's#^#path:#'
   ff_surface_env_contract "$doc" | sed 's#^#env:#'
   ff_surface_nonff_contract "$doc" | sed 's#^#env:#'
+  ff_surface_l4_keys "$doc" | sed 's#^#skip:#'
+}
+
+# 契約トークン（種別の接頭辞付き）を、breaking 断片の本文で探す語へ写す。
+# hook の三つ組は実体（hooks/<名>）を、ほかは接頭辞を外した名前をそのまま探す。
+ff_surface_token_needle() {
+  case "$1" in
+    hook:*) printf '%s\n' "${1##* :: }" ;;
+    *:*) printf '%s\n' "${1#*:}" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+# 語がファイル群のどれかに、前後を [A-Za-z0-9_-] 以外（行頭・行末を含む）で区切って現れるか。
+# $1=語 $2...=ファイル。rc 0: 現れる / 1: 現れない（ファイルが 0 件なら 1。stdin は読まない）。
+ff_surface_names_token() {
+  local needle="$1"
+  shift
+  [ "$#" -gt 0 ] || return 1
+  awk -v n="$needle" '
+    function sep(c) { return c == "" || c !~ /[A-Za-z0-9_-]/ }
+    {
+      p = 0
+      while ((i = index(substr($0, p + 1), n)) > 0) {
+        pos = p + i
+        pre = (pos > 1) ? substr($0, pos - 1, 1) : ""
+        post = substr($0, pos + length(n), 1)
+        if (sep(pre) && sep(post)) { found = 1; exit }
+        p = pos
+      }
+    }
+    END { exit found ? 0 : 1 }
+  ' "$@"
 }

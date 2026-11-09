@@ -160,7 +160,7 @@ run_gate() {
   set +e
   # run_isolated は全 suite のために FF_MULTI_AGENT_LOAD_PER_CORE=0（判定停止）を置くので、
   # ここだけ env -u で外して既定係数の挙動を見る（ケース固有の代入はその後に効く）。
-  run_isolated PATH="$STUB:/usr/bin:/bin" FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE=1 \
+  run_isolated PATH="$STUB:/usr/bin:/bin" FF_DEV_TOOLKIT_SKIP=codex-auto-update \
     /usr/bin/env -u FF_MULTI_AGENT_LOAD_PER_CORE ${envs[@]+"${envs[@]}"} \
     bash "$script" --task review --cli codex-cli --base develop --timeout 60 ${args[@]+"${args[@]}"} \
     >"$TMP/${label}.out" 2>"$TMP/${label}.err"

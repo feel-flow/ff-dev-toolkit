@@ -91,7 +91,7 @@
 #     効く単位は Bash ツールの 1 呼び出しで、先頭に置けば改行で続く文にも効く（guard-exit-code.sh
 #     の ACK と同じ単位。意図の表明であって文単位の許可ではない）。
 #     `setopt nonomatch` 済みのシェルや、その名前のファイルが実在する場合の誤検知用
-#   - ガードごと止める: 環境変数 `FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1`
+#   - ガードごと止める: 環境変数 `FF_DEV_TOOLKIT_SKIP=zsh-glob`（covers で zsh-expansion も止まる）
 #
 # ## 既知の限界（素通しする形）
 #
@@ -105,7 +105,9 @@
 #
 # 互換性: bash 3.2（stock macOS）。連想配列・readarray を使わない。
 # 環境変数:
-#   FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1  追加の equals/scalar 検出も含む全体を無効化する
+#   FF_DEV_TOOLKIT_SKIP=zsh-glob       追加の equals/scalar 検出も含む全体を無効化する（鍵の名簿は
+#                                      scripts/lib/l4-declarations.tsv）
+#   FF_DEV_TOOLKIT_SKIP=zsh-expansion  equals/scalar の検出だけを無効化する
 
 # fail-open の面を持つため set -e / set -u は使わない。
 
@@ -131,7 +133,14 @@ case "$asdd_rc" in
   *) asdd_unverifiable=1 ;;
 esac
 
-[ "${FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD:-0}" = "1" ] && exit 0
+# 宣言の判定は共通関数 scripts/lib/l4-declarations.sh（ADR-087）。読めないときは止めない側に倒す。
+# zsh-glob の宣言は covers で zsh-expansion も止める（名簿 scripts/lib/l4-declarations.tsv）。
+# shellcheck source=../scripts/lib/l4-declarations.sh
+{ [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
+if ff_l4_skipped 'zsh-glob' 'FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD'; then exit 0; fi
+# equals / scalar の検出（zsh-expansion）の宣言は 3 か所（PostToolUse・PreToolUse・書き換え）で使うので 1 回だけ判定する
+ff_zsh_exp_skipped=0
+if ff_l4_skipped 'zsh-expansion' 'FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD'; then ff_zsh_exp_skipped=1; fi
 
 # ---- ホスト判定（zsh のときだけ） -----------------------------------------------
 host_shell="${CLAUDE_CODE_SHELL:-${SHELL:-}}"
@@ -210,7 +219,7 @@ case "$input" in
   *'"PostToolUse"'*)
     if command -v jq >/dev/null 2>&1 \
       && [ "$(printf '%s' "$input" | jq -r '.hook_event_name // empty' 2>/dev/null)" = PostToolUse ]; then
-      [ "${FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD:-0}" = 1 ] && exit 0
+      [ "$ff_zsh_exp_skipped" = 1 ] && exit 0
       if [ -r "$expansion_helper" ]; then
         post_out="$(printf '%s' "$input" | bash "$expansion_helper" 2>/dev/null)" || true
         if [ -n "$post_out" ]; then
@@ -232,7 +241,7 @@ case "$input" in
     fi
     ;;
 esac
-if [ "${FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD:-0}" = 1 ]; then
+if [ "$ff_zsh_exp_skipped" = 1 ]; then
   :
 elif [ -r "$expansion_helper" ]; then
   expansion_rc=0
@@ -252,7 +261,7 @@ else
   missing_cmd="${missing_cmd//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
   case "$missing_cmd" in
     =?* | *' ='?* | *$'\t='?* | *$'\n='?*)
-      missing_reason='zsh 展開ガード: 判定不能（helper 不在）。ff-dev-toolkit を更新・復旧するか FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1 で無効化してください。'
+      missing_reason='zsh 展開ガード: 判定不能（helper 不在）。ff-dev-toolkit を更新・復旧するか FF_DEV_TOOLKIT_SKIP=zsh-expansion で無効化してください。'
       jq -n --arg m "$missing_reason" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $m}}' || { printf '%s\n' "$missing_reason" >&2; exit 2; }
       exit 0 ;;
   esac
@@ -326,7 +335,7 @@ deny_unavailable() { # <理由>
   1) ff-dev-toolkit を更新・再インストールしてヘルパを復旧する
   2) = の右側を引用した形（例: --include=\"*.md\"）、クエリ文字列の形は語全体を引用した形（例: \"repos/o/r/contents/a.md?ref=main\"）で書き直して再実行する
   3) このコマンドに限って通す: コマンドの**先頭**へ環境代入 FF_ZSH_GLOB_ACK=1 を付けて再実行する
-  4) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1 を設定する"
+  4) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP=zsh-glob を設定する"
 }
 
 tab='	'
@@ -377,7 +386,7 @@ try_rewrite() {
   eq_on=0
   split_on=0
   # equals / scalar の検出を止めている回（無効化・ACK）は、equals の語にも単語分割にも触れない。
-  if [ "${FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD:-0}" != 1 ] && [ "$ack_probe" = "${ack_probe#FF_ZSH_EXPANSION_ACK=1}" ]; then
+  if [ "$ff_zsh_exp_skipped" != 1 ] && [ "$ack_probe" = "${ack_probe#FF_ZSH_EXPANSION_ACK=1}" ]; then
     eq_on=1
     exp_hits="$(ff_zsh_expansion_scan "$stripped")" || return 1
     # 未引用の名前付き変数（scalar。一覧値の scalar-list を含む）を含む呼び出しは、先頭へ setopt SH_WORD_SPLIT を
@@ -605,4 +614,4 @@ deny "⚠️ ff-dev-toolkit guard（zsh-nomatch-glob: 未引用 glob の NOMATCH
   1) = の右側を引用する（上の書き換え案。例: --include=\"*.md\"。クエリ文字列の形は語全体を引用する: \"repos/o/r/contents/a.md?ref=main\"）
   2) bash 前提の複数行の手順は、bash <<'EOF' … EOF で bash に渡す
   3) 誤検知の場合（nonomatch を設定済み・その名前のファイルが実在する等）は、コマンドの**先頭**へ環境代入を付けて再実行する: FF_ZSH_GLOB_ACK=1 <コマンド>
-このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1 を設定します。判定の正本は ${HELPER_DIR_SHOWN}/zsh-glob-nomatch.sh です。"
+このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=zsh-glob を設定します。判定の正本は ${HELPER_DIR_SHOWN}/zsh-glob-nomatch.sh です。"

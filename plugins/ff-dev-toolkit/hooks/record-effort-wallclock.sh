@@ -37,7 +37,8 @@
 #   - 互換性: bash 3.2（stock macOS）互換
 #
 # 環境変数:
-#   FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS=1  この hook と record-instruction-bytes.sh を無効化する
+#   FF_DEV_TOOLKIT_SKIP=effort-metrics    この hook と record-instruction-bytes.sh・scripts/record-gate-minutes.sh を
+#                                         無効化する（鍵の名簿は scripts/lib/l4-declarations.tsv）
 #   FF_DEV_TOOLKIT_STATE_DIR              記録置き場の親（既定 $HOME/.config/ff-dev-toolkit）
 
 # fail-soft のため set -e / set -u は使わない。
@@ -52,7 +53,9 @@ if ! source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh"; then
 fi
 asdd_hook_enabled hooks || exit 0
 
-[ "${FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS:-0}" = "1" ] && exit 0
+# L4 宣言（ADR-087）。lib を読めない配置では止めない側（記録は効いたまま）に倒し、stderr も汚さない
+{ [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
+if ff_l4_skipped 'effort-metrics' 'FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS'; then exit 0; fi
 
 # 安価な前置フィルタ（jq を起動せずに非該当を落とす）
 case "$input" in

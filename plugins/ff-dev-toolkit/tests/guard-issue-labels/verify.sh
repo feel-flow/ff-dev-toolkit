@@ -46,7 +46,7 @@ TARGET="$PLUGIN_ROOT/hooks/guard-issue-labels.sh"
 # 先頭で 1 回落とす。ケース固有の `NAME=v bash "$TARGET"` はこの後に代入として届く（Issue `#1808`）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-isolate_hook_env "FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD" "$TARGET"
+isolate_hook_env "FF_DEV_TOOLKIT_SKIP FF_ISSUE_LABEL_ACK" "$TARGET"
 # ASDD ゲートが早期終了する経路でも stdin を読み切ることを測る共有ヘルパー
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
@@ -173,7 +173,11 @@ case "$MISSING_LINE" in
   *) bad "AC1: 欠落系統に優先度が無い: [$MISSING_LINE]" ;;
 esac
 case "$REASON" in
-  *FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1*) ok "AC1: 同じ文面で抜け道（環境変数）を案内する" ;;
+  *FF_ISSUE_LABEL_ACK=1*) ok "AC1: 同じ文面で 1 回分の抜け道（FF_ISSUE_LABEL_ACK=1 の前置）を案内する" ;;
+  *) bad "AC1: 1 回分の抜け道の案内が無い: [$REASON]" ;;
+esac
+case "$REASON" in
+  *FF_DEV_TOOLKIT_SKIP=issue-label*) ok "AC1: 同じ文面でガードの無効化（FF_DEV_TOOLKIT_SKIP=issue-label）を案内する" ;;
   *) bad "AC1: 抜け道の案内が無い: [$REASON]" ;;
 esac
 case "$REASON" in
@@ -258,10 +262,16 @@ assert_message_only '--body "a && b" の && は分割点にしない'
 run_hook 'gh issue list --label bug | head -1; gh issue create --title t'
 assert_deny "対: 引用符の外の ; と | は分割点のまま（後続セグメントの起票を検出する）"
 
-run_hook 'FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1 gh issue create --title t'
-assert_silent "AC4: 案内した抜け道を前置した起票は停止しない"
-run_hook 'gh issue create --title t' "$TARGET" 'FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1'
-assert_silent "AC4: 環境変数としての抜け道でも停止しない"
+run_hook 'FF_ISSUE_LABEL_ACK=1 gh issue create --title t'
+assert_silent "AC4: 案内した抜け道（FF_ISSUE_LABEL_ACK=1）を前置した起票は停止しない（旧名の注記も出さない）"
+run_hook 'echo FF_ISSUE_LABEL_ACK=1; gh issue create --title t'
+assert_deny "AC4: 別セグメントに現れるだけの FF_ISSUE_LABEL_ACK=1 では通らない"
+run_hook 'gh issue create --title t' "$TARGET" 'FF_DEV_TOOLKIT_SKIP=issue-label'
+assert_silent "AC4: hook の環境の FF_DEV_TOOLKIT_SKIP=issue-label でも停止しない"
+run_hook 'gh issue create --title t' "$TARGET" 'FF_DEV_TOOLKIT_SKIP=issue-labels'
+assert_deny "AC4: FF_DEV_TOOLKIT_SKIP の鍵の打ち間違い（issue-labels）では止まったまま"
+run_hook 'FF_DEV_TOOLKIT_SKIP=issue-label gh issue create --title t'
+assert_deny "AC4: SKIP の宣言をコマンドへ前置しても 1 回分の抜け道にはならない（1 回分は FF_ISSUE_LABEL_ACK=1）"
 
 echo "guard-issue-labels: AC5 ラベル一覧を信用できないときは停止しない"
 run_hook 'gh issue create --title t' "$TARGET" 'FF_STUB_LABELS_MODE=fail'
@@ -440,7 +450,7 @@ else
   bad "AC7: PATH 空の drain: exit=$RC out=[$OUT]（rc=141 なら hook が stdin を drain せずに exit している）"
 fi
 RC=0
-OUT="$(printf '%s' "$BIG_PAYLOAD" | FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1 PATH="/nonexistent" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
+OUT="$(printf '%s' "$BIG_PAYLOAD" | FF_DEV_TOOLKIT_SKIP=issue-label PATH="/nonexistent" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
 if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
   ok "AC7: opt-out でも stdin を読み切ってから無出力 exit 0"
 else
@@ -474,7 +484,7 @@ case "${REASON%%$'\n'*}" in
   *) bad "AC2: deny 文の 1 行目が MCP 経路の形でない: [${REASON%%$'\n'*}]" ;;
 esac
 case "$REASON" in
-  *'labels へ足す'*'hook の環境変数 FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1'*) ok "AC2: 抜け道は同じ変数名を hook の環境変数として案内する（コマンド先頭の環境代入は MCP では付けられない）" ;;
+  *'labels へ足す'*'FF_ISSUE_LABEL_ACK=1 gh issue create'*'hook の環境変数 FF_DEV_TOOLKIT_SKIP=issue-label'*) ok "AC2: 抜け道は gh での 1 回分（FF_ISSUE_LABEL_ACK=1）と hook の環境変数（FF_DEV_TOOLKIT_SKIP=issue-label）を案内する（コマンド先頭の環境代入は MCP では付けられない）" ;;
   *) bad "AC2: MCP 経路の抜け道の案内が無い: [$REASON]" ;;
 esac
 run_hook 'gh issue create --title t --label bug'
@@ -503,8 +513,8 @@ run_mcp mcp__github__issue_write "$(mcp_issue_input '["good first issue","priori
 assert_deny "空白を含むラベル名も 1 つの名前として読む（デフォルトの非種別ラベルは種別を充足しない）"
 run_mcp mcp__github__issue_write '{"method":"update","owner":"acme","repo":"widgets","issue_number":3,"labels":[]}'
 assert_silent "method: update（既存 Issue の更新）は起票ではないので無音"
-run_mcp mcp__github__issue_write "$(mcp_issue_input '["bug"]')" FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1
-assert_silent "抜け道: hook の環境変数 FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1 で通る"
+run_mcp mcp__github__issue_write "$(mcp_issue_input '["bug"]')" FF_DEV_TOOLKIT_SKIP=issue-label
+assert_silent "抜け道: hook の環境変数 FF_DEV_TOOLKIT_SKIP=issue-label で通る"
 echo "guard-issue-labels: GitHub MCP 経路で gh を使えないとき（止めずに理由を出す）"
 if NOGH_PATH="$(ff_path_without_gh "$TEST_TMP/nogh-bin" jq awk sed grep tr head cut)"; then
   run_mcp mcp__github__issue_write "$(mcp_issue_input '["bug"]')" PATH="$NOGH_PATH"

@@ -52,7 +52,7 @@ TARGET="$PLUGIN_ROOT/hooks/guard-zsh-glob.sh"
 # 先頭で 1 回落とす。ケース固有の `NAME=v bash "$TARGET"` はこの後に代入として届く（Issue `#1808`）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-isolate_hook_env "FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD" "$TARGET"
+isolate_hook_env "FF_DEV_TOOLKIT_SKIP" "$TARGET"
 SCAN_LIB="$PLUGIN_ROOT/tests/lib/zsh-glob-nomatch.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 # shellcheck source=../lib/asdd-gate-drain.sh
@@ -67,9 +67,9 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 # 利用者の環境（ホストのシェル・抜け道・opt-out）を引き継いで偽緑 / 偽赤にしない。
-unset CLAUDE_CODE_SHELL FF_ZSH_GLOB_ACK FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD FF_ZSH_GLOB_AWK CLAUDECODE CLAUDE_PROJECT_DIR GROK_PLUGIN_ROOT
+unset CLAUDE_CODE_SHELL FF_ZSH_GLOB_ACK FF_DEV_TOOLKIT_SKIP FF_ZSH_GLOB_AWK CLAUDECODE CLAUDE_PROJECT_DIR GROK_PLUGIN_ROOT
 # 既存 glob の契約を単独検査し、追加検出は X 節で有効化する。
-export FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1
+export FF_DEV_TOOLKIT_SKIP=zsh-expansion
 
 if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ff-guard-zsh-glob.XXXXXX" 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
   TEST_TMP="$_ff_mktemp_out"
@@ -233,7 +233,7 @@ assert_fire "zsh の配置が /bin 以外でも basename で判定して発火�
 
 echo "guard-zsh-glob: 停止文の契約（対処と抜け道を出力自体に案内する）"
 run_hook 'grep -rn x docs --include=*.md'
-for needle in 'FF_ZSH_GLOB_ACK=1' 'FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1' "bash <<'EOF'" 'no matches found' 'zsh-glob-nomatch.sh'; do
+for needle in 'FF_ZSH_GLOB_ACK=1' 'FF_DEV_TOOLKIT_SKIP=zsh-glob' "bash <<'EOF'" 'no matches found' 'zsh-glob-nomatch.sh'; do
   case "$REASON" in
     *"$needle"*) ok "停止文が [$needle] を含む" ;;
     *) bad "停止文に [$needle] が無い: [$REASON]" ;;
@@ -303,18 +303,22 @@ grep -rn x --include=*.md .'
 assert_pass "呼び出しの先頭に置いた ACK は呼び出し全体に効く（単位は Bash ツールの 1 呼び出し）"
 run_hook "A='x FF_ZSH_GLOB_ACK=1 y' grep -rn x --include=*.md ."
 assert_fire "引用値の中に現れる ACK は無効"
-run_hook 'grep -rn "x" docs --include=*.md' FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1
-assert_pass "FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1 で無効化できる"
+run_hook 'grep -rn "x" docs --include=*.md' FF_DEV_TOOLKIT_SKIP=zsh-glob
+assert_pass "FF_DEV_TOOLKIT_SKIP=zsh-glob で無効化できる"
+run_hook 'grep -rn "x" docs --include=*.md' FF_DEV_TOOLKIT_SKIP=zsh-globs
+assert_fire "FF_DEV_TOOLKIT_SKIP の鍵の打ち間違い（zsh-globs）では止まったまま"
 run_hook 'FF_ZSH_GLOB_ACK=1 gh api repos/o/r/contents/a.md?ref=main --jq .content'
 assert_pass "クエリ文字列の形（Issue \`#2138\`）も先頭の FF_ZSH_GLOB_ACK=1 で通る"
-run_hook 'gh api repos/o/r/contents/a.md?ref=main --jq .content' FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1
-assert_pass "クエリ文字列の形も FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1 で通る"
+run_hook 'gh api repos/o/r/contents/a.md?ref=main --jq .content' FF_DEV_TOOLKIT_SKIP=zsh-glob
+assert_pass "クエリ文字列の形も FF_DEV_TOOLKIT_SKIP=zsh-glob で通る"
 
 echo "guard-zsh-glob: C 判定不能（候補コマンドに限り fail-closed）"
 make_tree() { # <dir>
-  mkdir -p "$1/hooks" "$1/tests/lib"
+  mkdir -p "$1/hooks" "$1/tests/lib" "$1/scripts/lib"
   cp "$TARGET" "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$1/hooks/"
   cp "$PLUGIN_ROOT/tests/lib/zsh-expansion-guard.sh" "$PLUGIN_ROOT/tests/lib/heredoc-strip.sh" "$SCAN_LIB" "$1/tests/lib/"
+  # 宣言の共通関数と名簿（配布物と同じ配置。無いと suite 全体の FF_DEV_TOOLKIT_SKIP=zsh-expansion が写しで効かない）
+  cp "$PLUGIN_ROOT/scripts/lib/l4-declarations.sh" "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv" "$1/scripts/lib/"
 }
 NOLIB="$TEST_TMP/nolib"
 make_tree "$NOLIB"
@@ -410,7 +414,7 @@ else
   bad "PATH 空の drain: exit=$RC out=[$OUT]（rc=141 なら hook が stdin を drain せずに exit している）"
 fi
 RC=0
-OUT="$(printf '%s' "$BIG_PAYLOAD" | env SHELL=/bin/zsh FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1 PATH=/nonexistent /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
+OUT="$(printf '%s' "$BIG_PAYLOAD" | env SHELL=/bin/zsh FF_DEV_TOOLKIT_SKIP=zsh-glob PATH=/nonexistent /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
 if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "opt-out でも stdin を読み切ってから無出力 exit 0"; else bad "opt-out の drain: exit=$RC out=[$OUT]"; fi
 ASDD_ON="$TEST_TMP/asdd-hooks-on"
 ASDD_OFF="$TEST_TMP/asdd-hooks-off"
@@ -526,7 +530,7 @@ else
   bad "M4: 0 件ヘルパで素通しになったのは ${m4_pass}/${#FIRE_CASES[@]} 件"
 fi
 
-unset FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD
+unset FF_DEV_TOOLKIT_SKIP
 echo "guard-zsh-glob: X equals / scalar expansion"
 EXP_TARGET="$PLUGIN_ROOT/tests/lib/zsh-expansion-guard.sh"
 [ -r "$EXP_TARGET" ] || { echo 'expansion helper missing/not readable' >&2; exit 1; }
@@ -556,8 +560,10 @@ for c in 'echo ===' 'echo $P'; do
   assert_pass 'bash host'
   run_on "$EXP_TARGET" "$c" CLAUDE_CODE_SHELL=/bin/bash
   assert_pass 'explicit bash overrides zsh'
-  run_on "$EXP_TARGET" "$c" FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1
+  run_on "$EXP_TARGET" "$c" FF_DEV_TOOLKIT_SKIP=zsh-expansion
   assert_pass 'skip'
+  run_on "$EXP_TARGET" "$c" FF_DEV_TOOLKIT_SKIP=update-check,zsh-glob
+  assert_pass 'skip: zsh-glob の宣言は covers で helper（zsh-expansion）も止める'
   run_on "$EXP_TARGET" "FF_ZSH_EXPANSION_ACK=1 $c"
   assert_pass 'leading ACK'
 done
@@ -608,7 +614,7 @@ else
 fi
 
 for c in 'echo ===' 'echo $P'; do
-  run_on "$TARGET" "$c" FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1
+  run_on "$TARGET" "$c" FF_DEV_TOOLKIT_SKIP=zsh-glob
   assert_pass 'global glob skip disables expansion too'
 done
 xdir="$TEST_TMP/exp-dispatch-missing"
@@ -668,10 +674,10 @@ run_post "$TARGET" 'set -- $t' SHELL=/bin/bash
 assert_silent 'P3 bash ホストでは PostToolUse も無音'
 run_post "$TARGET" 'FF_ZSH_EXPANSION_ACK=1 set -- $t'
 assert_silent 'P3 先頭の FF_ZSH_EXPANSION_ACK=1 は PostToolUse も免除する'
-run_post "$TARGET" 'set -- $t' FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1
-assert_silent 'P3 FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1 で PostToolUse も無効'
-run_post "$TARGET" 'set -- $t' FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1
-assert_silent 'P3 FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1 で PostToolUse も無効'
+run_post "$TARGET" 'set -- $t' FF_DEV_TOOLKIT_SKIP=zsh-expansion
+assert_silent 'P3 FF_DEV_TOOLKIT_SKIP=zsh-expansion で PostToolUse も無効'
+run_post "$TARGET" 'set -- $t' FF_DEV_TOOLKIT_SKIP=zsh-glob
+assert_silent 'P3 FF_DEV_TOOLKIT_SKIP=zsh-glob で PostToolUse も無効'
 # 空振り（判定器不在・走査失敗・JSON でない入力）は実行を止めない（fail-soft）。
 run_post "$TARGET" 'set -- $t'
 assert_context 'P1 検出した経路は空振りの可能性を前置する' '空振り'
@@ -708,7 +714,7 @@ else bad 'P6 hooks.json の PostToolUse（Bash matcher）に guard-zsh-glob.sh �
 
 
 # 同じ呼び出しで確定した一覧だけを停止対象にする（公開 `#139` / Issue `#2181`）。
-unset FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD
+unset FF_DEV_TOOLKIT_SKIP
 for list_cmd in 'FILES="a.md b.md"; npx prettier --check $FILES' 'FILES="a.md b.md"; git add ${FILES}' 'P="a b"; git grep x -- $P' 'FILES=$(git diff --name-only); npx eslint $FILES' 'FILES=`git diff --name-only`; git add $FILES'; do
   run_hook "$list_cmd"
   assert_fire 'L1 同じ呼び出しで代入した一覧の未引用引数を停止'

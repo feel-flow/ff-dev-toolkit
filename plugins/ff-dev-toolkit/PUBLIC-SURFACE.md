@@ -175,29 +175,13 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 
 #### hooks の無効化・承認の抜け道
 
-- `FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE`
-- `FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD`
-- `FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD`
-- `FF_DEV_TOOLKIT_SKIP_DECISION_TREE`
-- `FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD`
-- `FF_DEV_TOOLKIT_SKIP_MERGE_CLOSING_GUARD`
-- `FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS`
-- `FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD`
-- `FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD`
-- `FF_DEV_TOOLKIT_SKIP_CREDENTIAL_OUTPUT_GUARD`
-- `FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD`
-- `FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD`
-- `FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD`
-- `FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD`
-- `FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK`
-- `FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK`
-- `FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD`
-- `FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK`
-- `FF_DEV_TOOLKIT_SKIP_WSL_NOTICE`
-- `FF_DEV_TOOLKIT_SKIP_WSL_SHELL_GUARD`
-- `FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD`
-- `FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD`
-- `FF_DISCARD_UNCOMMITTED`
+利用者が書く宣言（L4 宣言）は 2 種類です。鍵の正本は `scripts/lib/l4-declarations.tsv` の名簿で、鍵の一覧は下の 4-3 にあります。
+
+- **止める宣言（SKIP）**: 1 つの変数 `FF_DEV_TOOLKIT_SKIP` に、4-3 の鍵をカンマで並べて書きます（例 `FF_DEV_TOOLKIT_SKIP=zsh-glob,update-check`）。プロセスの環境（ホストの env 設定・shell の rc・CI の環境）に置き、そのセッションの間ずっと効きます。値は小文字・数字・`-` の鍵をカンマで区切った形だけを受け付け、空白区切り・大文字・空の要素・前後のカンマを含む値は、値全体を未設定として扱います（ガードは効いたまま）。すべてを止める鍵（`all`）は置きません
+- **1 回だけ通す承認（ACK）**: `FF_` + 鍵を大文字・`_` 区切りにしたもの + `_ACK` の型（例 `FF_ZSH_GLOB_ACK=1`）で、その呼び出しだけを通します。置き場所（コマンドの先頭・区間の先頭・hook のプロセス環境）は ACK ごとに決まっていて、下の各行と各 hook の停止文が示します
+
+- `FF_DEV_TOOLKIT_SKIP`（止める宣言。鍵の一覧と包含は 4-3）
+- `FF_DISCARD_UNCOMMITTED_ACK`（`hooks/guard-checkout-restore.sh` で、未コミット変更のあるファイルへの `git checkout` / `git restore` の 1 回だけを通すコマンド先頭の環境代入）
 - `FF_EFFORT_ACTUAL_ACK`
 - `FF_MERGE_CLOSING_ACK`
 - `FF_EXIT_CODE_ACK`
@@ -205,6 +189,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_UNBOUNDED_WAIT_ACK`（同 hook で、背景実行の上限の無い sleep 待ちの停止だけを通す。until / while の前は独立した文 `FF_UNBOUNDED_WAIT_ACK=1;` とする）
 - `FF_RG_STDIN_ACK`（同 hook で、検索パスの無い rg が標準入力を待ち続ける形の停止だけを通すコマンド先頭の環境代入。先頭に並ぶ代入のどれでもよい）
 - `FF_CREDENTIAL_OUTPUT_ACK`
+- `FF_ISSUE_LABEL_ACK`（`hooks/guard-issue-labels.sh` で、ラベルの欠けた `gh issue create` の 1 回だけを通すコマンド先頭の環境代入。セッションの間ずっと止めるときは鍵 `issue-label`）
 - `FF_LITERAL_WRITE_ACK`
 - `FF_LONG_GATE_BACKGROUND_ACK`
 - `FF_PR_DRAFT_ACK`（`hooks/guard-pr-followup.sh` の Draft PR 検出だけを通すコマンド先頭の環境代入。GitHub MCP 経路では hook の環境変数として読み、セッション全体の GitHub MCP 呼び出しに効く）
@@ -213,7 +198,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_WSL_SHELL_ACK`
 - `FF_ZSH_EXPANSION_ACK`
 - `FF_ZSH_GLOB_ACK`
-- `FF_REVIEW_LOCK_OVERRIDE`
+- `FF_REVIEW_LOCK_ACK`（`hooks/guard-review-in-flight.sh` で、レビュー走行中ロックの deny の 1 回だけを通す。Bash では区間の先頭の環境代入、Bash 以外のツールでは hook のプロセス環境で渡す）
 - `FF_REVIEW_ROUND_ACK`
 
 #### hooks の閾値・対象
@@ -231,7 +216,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 #### skill が呼ぶスクリプトの設定
 
 - `FF_ACE_TS_RUNNER`
-- `FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE`（`multi-agent.sh` が dispatch 前に古い codex-cli を自動更新するのを止める。`1` で無効）
+- `FF_DEV_TOOLKIT_SKIP`（上の節と同じ変数。鍵 `codex-auto-update` で `multi-agent.sh` が dispatch 前に古い codex-cli を自動更新するのを止め、鍵 `commit-identity` で定型コミット（knowledge など）を作るスクリプトが、検査用の合成 git identity のままのコミットを止める判定を外す）
 - `FF_JEV_MODE`
 - `FF_JEV_POINTS`
 - `FF_PRINCIPLES_GLOB`
@@ -287,9 +272,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_CURSOR_TIMEOUT_CAP`
 - `FF_DECOY_LIST`
 - `FF_DEV_TOOLKIT_GUARD`
-- `FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_FIXTURE_GUARD`
-- `FF_DEV_TOOLKIT_SKIP`
 - `FF_DOCS_AWK_STRIP_CR`
 - `FF_DOCS_CLAIMS`
 - `FF_DOCS_GATE_STOP_AFTER`
@@ -517,6 +500,74 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_TOOLKIT_SIDECAR`
 - `FF_ZSH_WORD_SPLIT_PREFIX`（guard-zsh-glob.sh が未引用 scalar の呼び出しの先頭へ付ける文。判定ヘルパと hook の受け渡し値）
 
+##### 互換の別名（remove_after 1.1.0）
+
+L4 宣言をまとめる前の名前です。配布実行物が内部の別名として 1.1.0 より前の版まで読みます。hooks が発火するホストでは、使われたときに新しい書き方を通知します（SKIP の旧名は SessionStart の `hooks/check-update.sh`、ACK の旧名はそれを読んだ hook の additionalContext。scripts の呼び出し側は通知しません）。新しい設定には書かないでください。対応表は「破壊的変更の記録」にあります。
+
+- `FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE`（鍵 `auto-update`。この名前だけは値が空でなければ効く。`0` でも止まる）
+- `FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD`（鍵 `background-cwd`）
+- `FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD`（鍵 `checkout`）
+- `FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE`（鍵 `codex-auto-update`）
+- `FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD`（鍵 `commit-identity`）
+- `FF_DEV_TOOLKIT_SKIP_CREDENTIAL_OUTPUT_GUARD`（鍵 `credential-output`）
+- `FF_DEV_TOOLKIT_SKIP_DECISION_TREE`（鍵 `decision-tree`）
+- `FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD`（鍵 `effort-actual`）
+- `FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS`（鍵 `effort-metrics`）
+- `FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD`（鍵 `exit-code`）
+- `FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD`（鍵 `issue-label`。コマンドの先頭に置いた形は、鍵 `issue-label` の ACK の別名として読む）
+- `FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD`（鍵 `literal-write`）
+- `FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD`（鍵 `long-gate-background`）
+- `FF_DEV_TOOLKIT_SKIP_MERGE_CLOSING_GUARD`（鍵 `merge-closing`）
+- `FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD`（鍵 `pr-followup`）
+- `FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD`（鍵 `review-in-flight`）
+- `FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK`（鍵 `review-roster-check`）
+- `FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK`（鍵 `skill-drift-check`）
+- `FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD`（鍵 `sub-issue-id`）
+- `FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK`（鍵 `update-check`）
+- `FF_DEV_TOOLKIT_SKIP_WSL_NOTICE`（鍵 `wsl-notice`）
+- `FF_DEV_TOOLKIT_SKIP_WSL_SHELL_GUARD`（鍵 `wsl-shell`）
+- `FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD`（鍵 `zsh-expansion`）
+- `FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD`（鍵 `zsh-glob`）
+- `FF_DISCARD_UNCOMMITTED`（鍵 `discard-uncommitted` の ACK の別名）
+- `FF_REVIEW_LOCK_OVERRIDE`（鍵 `review-lock` の ACK の別名）
+
+### 4-3. L4 宣言の鍵
+
+`FF_DEV_TOOLKIT_SKIP` に書ける鍵です。すべて契約で、鍵の削除・改名・意味の変更は破壊的変更です。正本は `scripts/lib/l4-declarations.tsv` の名簿で、この表・公開 README の鍵の表・実装の呼び出しとの一致は機械検査が見ます。
+
+- **種別**: 鍵が止めるもの。ガード（停止・警告）/ 通知 / 記録 / 自動更新
+- **包含**: その鍵の SKIP で併せて止まる、別の鍵（ACK だけを持つ鍵を含む）。名簿で 1 段だけ辿ります。包含は「担当する実体」の中だけで、別の実行経路には及びません（例: `review-in-flight` は `scripts/multi-agent.sh` の巡回上限を止めない）
+- **旧名**: 互換の別名から接頭辞 `FF_DEV_TOOLKIT_SKIP_` を外した残り。フル名は上の「互換の別名」にあります
+
+| 鍵 | 種別 | 担当する実体 | 包含 | 旧名 |
+| --- | --- | --- | --- | --- |
+| `auto-update` | 自動更新 | `hooks/auto-update-marketplace.sh` | - | `AUTO_UPDATE` |
+| `background-cwd` | ガード | `hooks/guard-background-cwd.sh` | - | `BACKGROUND_CWD_GUARD` |
+| `checkout` | ガード | `hooks/guard-checkout-restore.sh` | `discard-uncommitted` | `CHECKOUT_GUARD` |
+| `codex-auto-update` | 自動更新 | `scripts/lib/multi-agent-codex-update.sh` | - | `CODEX_AUTO_UPDATE` |
+| `commit-identity` | ガード | `scripts/lib/commit-identity-functions.sh` | - | `COMMIT_IDENTITY_GUARD` |
+| `credential-output` | ガード | `hooks/guard-credential-output.sh` | - | `CREDENTIAL_OUTPUT_GUARD` |
+| `decision-tree` | 記録 | `hooks/decision-tree.sh` | - | `DECISION_TREE` |
+| `effort-actual` | ガード | `hooks/guard-effort-actual.sh` | - | `EFFORT_ACTUAL_GUARD` |
+| `effort-metrics` | 記録 | `hooks/record-effort-wallclock.sh`・`hooks/record-instruction-bytes.sh`・`scripts/record-gate-minutes.sh` | - | `EFFORT_METRICS` |
+| `exit-code` | ガード | `hooks/guard-exit-code.sh` | `timeout`・`unbounded-wait`・`rg-stdin` | `EXIT_CODE_GUARD` |
+| `issue-label` | ガード | `hooks/guard-issue-labels.sh` | - | `ISSUE_LABEL_GUARD` |
+| `literal-write` | ガード | `hooks/guard-literal-write.sh` | - | `LITERAL_WRITE_GUARD` |
+| `long-gate-background` | ガード | `hooks/guard-long-gate-background.sh` | - | `LONG_GATE_BACKGROUND_GUARD` |
+| `merge-closing` | ガード | `hooks/guard-merge-closing-keyword.sh` | - | `MERGE_CLOSING_GUARD` |
+| `pr-followup` | ガード | `hooks/guard-pr-followup.sh` | `pr-draft` | `PR_FOLLOWUP_GUARD` |
+| `review-in-flight` | ガード | `hooks/guard-review-in-flight.sh` | `review-lock`・`review-round` | `REVIEW_IN_FLIGHT_GUARD` |
+| `review-roster-check` | 通知 | `hooks/check-review-roster-drift.sh` | - | `REVIEW_ROSTER_CHECK` |
+| `skill-drift-check` | 通知 | `hooks/check-skill-drift.sh` | - | `SKILL_DRIFT_CHECK` |
+| `sub-issue-id` | ガード | `hooks/guard-sub-issue-id.sh` | - | `SUB_ISSUE_ID_GUARD` |
+| `update-check` | 通知 | `hooks/check-update.sh` | - | `UPDATE_CHECK` |
+| `wsl-notice` | 通知 | `hooks/check-update.sh` | - | `WSL_NOTICE` |
+| `wsl-shell` | ガード | `hooks/guard-wsl-shell.sh` | - | `WSL_SHELL_GUARD` |
+| `zsh-expansion` | ガード | `hooks/guard-zsh-glob.sh`・`tests/lib/zsh-expansion-guard.sh` | - | `ZSH_EXPANSION_GUARD` |
+| `zsh-glob` | ガード | `hooks/guard-zsh-glob.sh` | `zsh-expansion` | `ZSH_GLOB_GUARD` |
+
+ACK（1 回だけ通す承認）の名前は、鍵から `FF_<鍵を大文字・_ 区切り>_ACK` の型で作ります。ACK だけを持つ鍵（`discard-uncommitted` / `pr-draft` / `review-lock` / `review-round` / `rg-stdin` / `shell-save` / `timeout` / `unbounded-wait`）は SKIP の鍵ではないので、この表に載せません（`FF_DEV_TOOLKIT_SKIP` に書いても効きません）。ACK の一覧は 4-1 にあります。
+
 ## 公開面 5: 環境変数（`FF_` で始まらないもの）
 
 `FF_` で始まらない環境変数も、利用者が設定して効かせる値は契約です。分類は `FF_*` と同じ判定規則（公開されている ∧ 配布実行物が読む）を機械で実行して決めます。
@@ -608,6 +659,40 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 
 内部の変更はこの節に書きません。
 
+**L4 宣言の統合（ADR-087）**: 止める宣言を 1 変数 `FF_DEV_TOOLKIT_SKIP` の鍵へ、1 回だけ通す承認を `FF_<鍵>_ACK` の型へ揃えました。次の旧名は 4-1 の契約から外れ、4-2-2 の「互換の別名」として 1.1.0 より前の版まで読まれます（hooks が発火するホストでは、使うと新しい書き方を通知します）。`FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD` は以前から内部でしたが、鍵 `commit-identity` として契約に上がりました。
+
+| 旧名 | 新しい書き方 |
+| --- | --- |
+| `FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE=1` | `FF_DEV_TOOLKIT_SKIP=auto-update`（旧名は `=0` でも止まっていた。新しい形は鍵を書いたときだけ止まる） |
+| `FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1` | `FF_DEV_TOOLKIT_SKIP=background-cwd` |
+| `FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD=1` | `FF_DEV_TOOLKIT_SKIP=checkout` |
+| `FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE=1` | `FF_DEV_TOOLKIT_SKIP=codex-auto-update` |
+| `FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1` | `FF_DEV_TOOLKIT_SKIP=commit-identity` |
+| `FF_DEV_TOOLKIT_SKIP_CREDENTIAL_OUTPUT_GUARD=1` | `FF_DEV_TOOLKIT_SKIP=credential-output` |
+| `FF_DEV_TOOLKIT_SKIP_DECISION_TREE=1` | `FF_DEV_TOOLKIT_SKIP=decision-tree` |
+| `FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD=1` | `FF_DEV_TOOLKIT_SKIP=effort-actual` |
+| `FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS=1` | `FF_DEV_TOOLKIT_SKIP=effort-metrics` |
+| `FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1` | `FF_DEV_TOOLKIT_SKIP=exit-code` |
+| `FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1`（環境に置く形） | `FF_DEV_TOOLKIT_SKIP=issue-label` |
+| `FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1`（コマンドの先頭に置く 1 回分の形） | `FF_ISSUE_LABEL_ACK=1` |
+| `FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD=1` | `FF_DEV_TOOLKIT_SKIP=literal-write` |
+| `FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD=1` | `FF_DEV_TOOLKIT_SKIP=long-gate-background` |
+| `FF_DEV_TOOLKIT_SKIP_MERGE_CLOSING_GUARD=1` | `FF_DEV_TOOLKIT_SKIP=merge-closing` |
+| `FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1` | `FF_DEV_TOOLKIT_SKIP=pr-followup` |
+| `FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD=1` | `FF_DEV_TOOLKIT_SKIP=review-in-flight` |
+| `FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK=1` | `FF_DEV_TOOLKIT_SKIP=review-roster-check` |
+| `FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK=1` | `FF_DEV_TOOLKIT_SKIP=skill-drift-check` |
+| `FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1` | `FF_DEV_TOOLKIT_SKIP=sub-issue-id` |
+| `FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1` | `FF_DEV_TOOLKIT_SKIP=update-check` |
+| `FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=1` | `FF_DEV_TOOLKIT_SKIP=wsl-notice` |
+| `FF_DEV_TOOLKIT_SKIP_WSL_SHELL_GUARD=1` | `FF_DEV_TOOLKIT_SKIP=wsl-shell` |
+| `FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1` | `FF_DEV_TOOLKIT_SKIP=zsh-expansion` |
+| `FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1` | `FF_DEV_TOOLKIT_SKIP=zsh-glob`（`zsh-expansion` も止まる） |
+| `FF_DISCARD_UNCOMMITTED=1` | `FF_DISCARD_UNCOMMITTED_ACK=1` |
+| `FF_REVIEW_LOCK_OVERRIDE=1` | `FF_REVIEW_LOCK_ACK=1` |
+
+複数の鍵はカンマで並べます（`FF_DEV_TOOLKIT_SKIP=update-check,wsl-notice`）。SKIP の置き場所（ホストの env 設定・shell の rc・CI の環境）と、ACK の置き場所（コマンドの先頭・区間の先頭・hook のプロセス環境）は旧名のときと同じです。
+
 ## この一覧を守る機械検査
 
 開発元リポジトリの回帰ゲートが、本ファイルと実体の集合一致を検査します。
@@ -622,6 +707,12 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 
 `changelog-fragments`:
 
-- 契約側の要素（「公開面 1」「2-1」「公開面 3」の表の先頭セル「4-1」「5-1」）が既定ブランチの本ファイルから**消えている**のに `changelog.d/` に `breaking` 断片が無ければ赤。削除・改名を一覧と実体から同時に消しても、破壊的変更の記録が無い限り通らない
+- 契約側の要素（「公開面 1」「2-1」「公開面 3」の表の先頭セル「4-1」「4-3」の表の先頭セル「5-1」）が既定ブランチの本ファイルから**消えている**のに、消えた要素のそれぞれを名指す `breaking` 断片が `changelog.d/` に無ければ赤。削除・改名を一覧と実体から同時に消しても、破壊的変更の記録が無い限り通らない。無関係な `breaking` 断片が 1 つあるだけでは通らない
+
+`l4-declarations`:
+
+- 「4-3」の鍵の集合 = 名簿 `scripts/lib/l4-declarations.tsv` の SKIP の鍵の集合 = 公開 README の鍵の表 = 配布実行物が `ff_l4_skipped` で呼ぶ鍵の集合
+- 配布実行物の `FF_<…>_ACK` の名前はどれも名簿の ACK の鍵から作れる
+- 「互換の別名」の旧名が、許可した場所（名簿・判定の共通関数・別名を読む行・本ファイルの 4-2-2 と「破壊的変更の記録」・CHANGELOG など）の外に無い。plugin の版が名簿の remove_after に届いたのに旧名が残っていれば赤
 
 機械検査が及ばない範囲: 「公開面 3」の**内部側**として列挙したパスと、「5-0」で宣言していない系統・単独名の `FF_` で始まらない環境変数。撤去・改名のときは `removal-sweep` スキルのチェックリストで残存参照を走査してください。

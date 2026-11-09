@@ -76,9 +76,9 @@
 #   - 互換性: bash 3.2（stock macOS）互換。連想配列・readarray・=~ は使わない
 #
 # 環境変数:
-#   FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1  このガードを無効化する
-#     - 当初の対象（background の Bash）から名前は変えない。既に設定している利用者の
-#       opt-out を壊さないため（別名を足すと opt-out が 2 つに割れる）
+#   FF_DEV_TOOLKIT_SKIP=background-cwd  このガードを無効化する（鍵の名簿は scripts/lib/l4-declarations.tsv）
+#     - 鍵は当初の対象（background の Bash）の名前のまま。対象を広げても鍵を足さない
+#       （鍵を足すと opt-out が 2 つに割れる）
 
 # fail-open のため set -e / set -u は使わない。
 
@@ -104,7 +104,10 @@ fi
 asdd_hook_enabled hooks || exit 0
 
 # opt-out も stdin を読み切ってから抜ける（drain 前に exit すると同じ EPIPE を書き手へ返す）。
-[ "${FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD:-0}" = "1" ] && exit 0
+# 宣言の判定は共通関数 scripts/lib/l4-declarations.sh（ADR-087）。読めないときは止めない側に倒す。
+# shellcheck source=../scripts/lib/l4-declarations.sh
+{ [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
+if ff_l4_skipped 'background-cwd' 'FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD'; then exit 0; fi
 
 # 安価な前置フィルタ: Bash 以外の入力は即終了（`tool_name` の値を素の文字列で見るだけ）
 case "$input" in
@@ -386,7 +389,7 @@ reason="${reason}
 
 この呼び出しは先頭が相対パスの cd なので、どのツリーで走るかが直前の呼び出し次第で変わります。
 **この呼び出しはブロックしました。** 先頭を絶対パスの cd へ書き換えて再実行してください（上の例を参照）。
-このツリー（${root}）で走らせるのが意図どおりなら、${root} から始まる絶対パスで cd を書けば通ります（このガードの無効化は利用者の設定の環境変数 FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1 で行うもので、コマンドの前置では効きません）。"
+このツリー（${root}）で走らせるのが意図どおりなら、${root} から始まる絶対パスで cd を書けば通ります（このガードの無効化は利用者の設定の環境変数 FF_DEV_TOOLKIT_SKIP=background-cwd で行うもので、コマンドの前置では効きません）。"
 jq -n --arg reason "$reason" \
   '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null
 

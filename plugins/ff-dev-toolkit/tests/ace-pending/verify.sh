@@ -253,7 +253,7 @@ bash "$CLI" resolve --playbook "$BOOK" --id PENDING-PR-900-1 --decision reused -
 (
   CDPATH='' cd -P -- "$REPO" || exit 1
   bash "$PLUGIN/scripts/knowledge-commit.sh" add --source ace --id ACE-900 --summary pending-fixture -- docs/08-knowledge/PLAYBOOK.md docs/08-knowledge/PENDING_CANDIDATES.md || exit $?
-  FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 bash "$PLUGIN/scripts/knowledge-commit.sh" commit --type knowledge || exit $?
+  FF_DEV_TOOLKIT_SKIP=commit-identity bash "$PLUGIN/scripts/knowledge-commit.sh" commit --type knowledge || exit $?
 ) >"$TMP/commit-out" 2>"$TMP/commit-err" || { cat "$TMP/commit-out" "$TMP/commit-err"; bad 'knowledge commit'; }
 if [ "$(git -C "$REPO" rev-parse HEAD)" != "$seed_sha" ] && [ -z "$(git -C "$REPO" status --porcelain)" ]; then ok '正式ACE変更と保留除去を実commitした'; else bad 'knowledge commitが未実行か差分が残っている'; fi
 git -C "$REPO" show --pretty=format: --name-only HEAD >"$TMP/paths"
@@ -290,7 +290,7 @@ defer >"$TMP/out"
       : >"$TMP/zsh-add-ran"
     fi
   done
-  FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 bash "$PLUGIN/scripts/knowledge-commit.sh" commit --type knowledge || exit $?
+  FF_DEV_TOOLKIT_SKIP=commit-identity bash "$PLUGIN/scripts/knowledge-commit.sh" commit --type knowledge || exit $?
 ) >"$TMP/pending-only-out" 2>"$TMP/pending-only-err" || { cat "$TMP/pending-only-out" "$TMP/pending-only-err"; bad '保留だけのknowledge commit'; }
 git -C "$REPO" show --pretty=format: --name-only HEAD >"$TMP/pending-only-paths"
 printf 'docs/08-knowledge/PENDING_CANDIDATES.md\n' >"$TMP/expected-paths"
@@ -308,7 +308,7 @@ printf '# 追加カテゴリ\n' >"${BOOK%/*}/playbook/added.md"
   ace_shell=/bin/bash; if command -v zsh >/dev/null 2>&1; then ace_shell=zsh; fi
   FF_DEV_TOOLKIT_ROOT="$PLUGIN" ACE_ID=ACE-1-1 ACE_SUMMARY='Helpful 更新' commit_type=knowledge \
     "$ace_shell" "$TMP/add-snippet.sh" || exit $?
-  FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 bash "$PLUGIN/scripts/knowledge-commit.sh" commit --type knowledge || exit $?
+  FF_DEV_TOOLKIT_SKIP=commit-identity bash "$PLUGIN/scripts/knowledge-commit.sh" commit --type knowledge || exit $?
 ) >"$TMP/playbook-change-out" 2>"$TMP/playbook-change-err" || { cat "$TMP/playbook-change-out" "$TMP/playbook-change-err"; bad 'PLAYBOOK変更のknowledge commit'; }
 git -C "$REPO" show --pretty=format: --name-only HEAD | sort >"$TMP/playbook-change-paths"
 printf '%s\n' .version-claims/docs/08-knowledge/PLAYBOOK.md.claim docs/08-knowledge/PLAYBOOK.md docs/08-knowledge/playbook/added.md | sort >"$TMP/expected-change-paths"

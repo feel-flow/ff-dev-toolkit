@@ -25,7 +25,13 @@ exit_guard="$root/hooks/guard-exit-code.sh"
 tmp="$(mktemp -d /tmp/ff-zsh-rewrite-test.XXXXXX)"
 trap 'rm -rf "$tmp"' EXIT
 unset ff_bash_hooks_revalidated CLAUDECODE CLAUDE_PROJECT_DIR GROK_PLUGIN_ROOT CLAUDE_CODE_SHELL \
-  FF_ZSH_GLOB_ACK FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD FF_ZSH_GLOB_AWK
+  FF_ZSH_GLOB_ACK FF_DEV_TOOLKIT_SKIP FF_ZSH_GLOB_AWK
+# 名簿の legacy 列（内部の別名）も落とす。名前は名簿から読む（旧名をこの試験に複製しない）。
+if [ -r "$root/scripts/lib/l4-declarations.tsv" ]; then
+  while IFS=$'\t' read -r _l4_k _l4_kind _l4_owner _l4_covers _l4_legacy _l4_rest || [ -n "${_l4_k:-}" ]; do
+    case "${_l4_legacy:-}" in FF_[A-Z0-9_]*) unset "$_l4_legacy" ;; esac
+  done < "$root/scripts/lib/l4-declarations.tsv"
+fi
 pass=0
 check() { if "$@"; then pass=$((pass+1)); else echo "FAIL zsh rewrite: $*" >&2; exit 1; fi; }
 # PM: hook 入力の permission_mode（空なら付けない）。単語分割の前置（Issue `#2491`）は bypassPermissions のときだけ。
@@ -190,7 +196,7 @@ out="$(payload 'set -- $X' | env SHELL=/bin/zsh CLAUDE_PROJECT_DIR="$tmp" bash "
 check is_warn_only "$out"
 out="$(payload 'set -- $X' | jq -c '.model="codex"' | env SHELL=/bin/zsh CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" bash "$target")"
 check is_warn_only "$out"
-out="$(run 'set -- $X' FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1)"
+out="$(run 'set -- $X' FF_DEV_TOOLKIT_SKIP=zsh-expansion)"
 check test -z "$out"
 # R13 集約入口: 前置した書き換えは全ガードの再検査（さらに書き換えを要求しない）を通って採用され、
 #   PostToolUse は前置した呼び出しの scalar を返さない。
@@ -300,7 +306,7 @@ elif ! { git -c init.defaultBranch=main -C "$wtrepo" init --quiet >/dev/null 2>&
   exit 1
 else
   bgpay() { jq -nc --arg c "$1" --arg d "$wtrepo" '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$d,permission_mode:"bypassPermissions",tool_input:{command:$c,run_in_background:true,timeout:123,description:"fixture"}}'; }
-  bgrun() { bgpay "$1" | env -u FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD SHELL=/bin/zsh CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" bash "$batch" "$target" "$bg_guard"; }
+  bgrun() { bgpay "$1" | env -u FF_DEV_TOOLKIT_SKIP SHELL=/bin/zsh CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" bash "$batch" "$target" "$bg_guard"; }
   no_cwd_text='[(.systemMessage // ""), (.hookSpecificOutput.additionalContext // ""), (.hookSpecificOutput.permissionDecisionReason // "")] | all(contains("Bash の cwd") | not)'
   # 前置された絶対パスの cd は止めず、cwd ガードはどのチャネルにも何も足さない。
   out="$(bgrun "cd $wtrepo/packages/app && ls \$X")"
@@ -429,4 +435,12 @@ for i in 1 2; do
   check jq -e '.systemMessage | contains("単語分割されません")' <<< "$out" >/dev/null
 done
 check test ! -e "$nstate/notices/x"
+# 集約入口の再検査は同じガードをもう 1 度走らせる。通した回の注記（ACK の旧名の注記）は、元の出力と再検査の
+# 出力の両方に出るので、採用した書き換えの additionalContext には 1 回だけ残す。旧名は名簿から組む
+# （試験に旧名を字句で書かない。tests/l4-declarations の N7）
+dup_lg="$(awk -F'\t' '$1 == "discard-uncommitted" && $2 == "ack" { print $5 }' "$root/scripts/lib/l4-declarations.tsv")"
+check test -n "$dup_lg"
+mkdir -p "$tmp/dupnote"
+out="$(cd "$tmp/dupnote" && bat "${dup_lg}=1 git checkout -- a.txt; grep -rn foo --include=*.sh ." "$target" "$root/hooks/guard-checkout-restore.sh")"
+check jq -e --arg n "旧名 ${dup_lg}=1" '.hookSpecificOutput.updatedInput != null and ([.hookSpecificOutput.additionalContext | splits("\n") | select(contains($n))] | length) == 1' <<< "$out" >/dev/null
 echo "zsh rewrite: $pass checks passed"

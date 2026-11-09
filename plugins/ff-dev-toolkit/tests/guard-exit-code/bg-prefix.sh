@@ -46,7 +46,7 @@ DETECTOR="$PLUGIN_ROOT/tests/lib/exit-code-guard.sh"
 FIXTURES="$SCRIPT_DIR/fixtures/bg-prefix"
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-isolate_hook_env "FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD" "$TARGET"
+isolate_hook_env "FF_DEV_TOOLKIT_SKIP" "$TARGET"
 [ -f "$TARGET" ] || { echo "✗ guard-exit-code.sh が見つかりません: $TARGET" >&2; exit 1; }
 [ -f "$DETECTOR" ] || { echo "✗ 検出器が見つかりません: $DETECTOR" >&2; exit 1; }
 [ -d "$FIXTURES" ] || { echo "✗ fixture のディレクトリが見つかりません: $FIXTURES" >&2; exit 1; }

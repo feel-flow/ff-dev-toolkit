@@ -1348,7 +1348,7 @@ HOOK
           literal) export GIT_LITERAL_PATHSPECS=1 ;;
         esac
         kc add --source obs --id OBS-literal --summary literal -- "$selected" >/dev/null
-        FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 kc commit >/dev/null
+        FF_DEV_TOOLKIT_SKIP=commit-identity kc commit >/dev/null
       ) || exit 1
       python3 "$SCRIPT_DIR/fixtures/literal-hook.py" assert "$F" "$selected" "$pathspec_env" || exit 1
       actual="$(git diff-tree --no-commit-id --name-only -r HEAD)"
@@ -1395,7 +1395,7 @@ HOOK
     printf '%s\n' '- obs' >>docs/08-knowledge/OBSERVATIONS.md
     kc add --source obs --id OBS-19 --summary "要約S" -- docs/08-knowledge/OBSERVATIONS.md >/dev/null
     head_before="$(git rev-parse HEAD)"
-    rc=0; out="$(FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 kc commit 2>&1)" || rc=$?
+    rc=0; out="$(FF_DEV_TOOLKIT_SKIP=commit-identity kc commit 2>&1)" || rc=$?
     if [ "$rc" -eq 1 ] && [[ "$out" == *"KNOWLEDGE_COMMIT=scope-mismatch"* ]] && [[ "$out" == *"unrelated.txt"* ]] && [[ "$out" == *"secret.txt"* ]] \
       && [[ "$out" == *"取り消しました"* ]] && [ -z "$(git ls-files -- secret.txt)" ] && [ -f secret.txt ] && [[ "$out" != *"KNOWLEDGE_ENTRIES="* ]] \
       && [ "$(git rev-parse HEAD)" = "$head_before" ] \
@@ -1408,7 +1408,7 @@ HOOK
     # 案内どおりに記録外のパス（追跡済みの変更と未追跡のファイル）を退避すれば、フックが残っていても同じ保留から
     # 記録したパスだけを commit できる
     git stash push -q --include-untracked -- unrelated.txt secret.txt || exit 1
-    rc=0; out="$(FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 kc commit 2>&1)" || rc=$?
+    rc=0; out="$(FF_DEV_TOOLKIT_SKIP=commit-identity kc commit 2>&1)" || rc=$?
     git stash pop -q || exit 1
     if [ "$rc" -eq 0 ] && [ "$(git diff-tree --no-commit-id --name-only -r HEAD)" = "docs/08-knowledge/OBSERVATIONS.md" ] \
       && [ "$(git rev-parse HEAD^)" = "$head_before" ] && ! git diff --quiet -- unrelated.txt && [ -f secret.txt ]; then
@@ -1431,7 +1431,7 @@ HOOK
     printf '%s\n' '- obs' >>docs/08-knowledge/OBSERVATIONS.md
     kc add --source obs --id OBS-19b --summary "要約M" -- docs/08-knowledge/OBSERVATIONS.md >/dev/null
     head_before="$(git rev-parse HEAD)"
-    rc=0; out="$(FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 kc commit 2>&1)" || rc=$?
+    rc=0; out="$(FF_DEV_TOOLKIT_SKIP=commit-identity kc commit 2>&1)" || rc=$?
     if [ "$rc" -eq 1 ] && [[ "$out" == *"KNOWLEDGE_COMMIT=scope-mismatch"* ]] && [[ "$out" == *"自動では取り消せませんでした"* ]] \
       && [ "$(git log -1 --format=%s)" = "post-commit extra" ] && [ "$(git rev-parse HEAD~2)" = "$head_before" ] \
       && [[ "$out" == *"$(git rev-parse HEAD~1)"* ]] && [[ "$out" != *"$(git rev-parse HEAD)"* ]] \
@@ -1452,7 +1452,7 @@ HOOK
       i=$((i + 1)); printf '%s\n' "- ace$i" >>docs/08-knowledge/PLAYBOOK.md
       kc add --source ace --id "ACE-20-$i" --summary "要約$i" --category "$c" -- docs/08-knowledge/PLAYBOOK.md >/dev/null || exit 1
     done
-    FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 kc commit >/dev/null || exit 1
+    FF_DEV_TOOLKIT_SKIP=commit-identity kc commit >/dev/null || exit 1
     cat_block="$(git log -1 --format=%b | awk '/^Categories:/{f=1} f')"
     longest="$(printf '%s\n' "$cat_block" | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')"
     joined="$(printf '%s\n' "$cat_block" | sed 's/^Categories://' | tr '\n' ' ' | tr -s ' ' | sed 's/^ //; s/ $//')"
@@ -1556,9 +1556,9 @@ HOOK
     else
       echo "  ✗ 合成 identity で止まらない（rc=${rc}）" >&2; exit 1
     fi
-    rc=0; FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 kc commit >/dev/null 2>&1 || rc=$?
+    rc=0; FF_DEV_TOOLKIT_SKIP=commit-identity kc commit >/dev/null 2>&1 || rc=$?
     if [ "$rc" -eq 0 ] && [ "$(commits "$F")" -eq $((before + 1)) ]; then
-      echo "  ✓ 既存のガードと同じ変数（FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1）で意図的に通せる"
+      echo "  ✓ 既存のガードと同じ鍵（FF_DEV_TOOLKIT_SKIP=commit-identity）で意図的に通せる"
     else
       echo "  ✗ 抜け道の変数が効かない（rc=${rc}）" >&2; exit 1
     fi

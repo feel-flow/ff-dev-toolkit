@@ -398,25 +398,104 @@ elif ! git -C "$REPO_ROOT" merge-base --is-ancestor "$surface_base_ref" HEAD 2>/
 else
   # shellcheck source=../../lib/public-surface.sh
   . "$SURFACE_LIB"
-  surface_head_contract="$(ff_surface_contract_tokens "$REPO_ROOT/$SURFACE_DOC_REL" | LC_ALL=C sort -u)"
-  surface_base_doc="$TMP/base-public-surface.md"
-  if git -C "$REPO_ROOT" show "${surface_base_ref}:${SURFACE_DOC_REL}" > "$surface_base_doc" 2>/dev/null; then
-    surface_base_contract="$(ff_surface_contract_tokens "$surface_base_doc" | LC_ALL=C sort -u)"
-  else
-    # base に一覧が無い（一覧の初版）。削除は起こり得ないので空集合として扱う。
-    surface_base_contract=""
-  fi
-  if [[ -n "$surface_base_contract" && -z "$surface_head_contract" ]]; then
-    bad "公開面の一覧から契約要素を 1 件も抽出できません（見出しか書式を変えた場合は本 suite も更新すること）"
-  else
-    surface_removed="$(comm -23 <(printf '%s\n' "$surface_base_contract") <(printf '%s\n' "$surface_head_contract") | sed '/^$/d' | tr '\n' ' ')"
-    surface_breaking="$(find "$REPO_ROOT/changelog.d" -maxdepth 1 -type f -name '*.breaking.*.md' 2>/dev/null | wc -l | tr -d ' ')"
-    if [[ -z "$surface_removed" ]]; then
-      ok "契約側の要素は base から減っていない"
-    elif [[ "$surface_breaking" -gt 0 ]]; then
-      ok "契約側の要素の削除・改名に breaking 断片が伴っている（${surface_removed}）"
-    else
-      bad "契約側の要素が base から消えているのに changelog.d に breaking 断片がありません: ${surface_removed}"
+  # 判定の本体（live の判定と下の変異バッテリーが共有する）。
+  # $1=base の一覧（空文字なら base に一覧が無い = 削除は起こり得ない） $2=HEAD の一覧 $3=断片のディレクトリ
+  # 消えた契約トークンの**それぞれ**を、どれかの breaking 断片が名指していることを要求する
+  # （無関係な breaking 断片が 1 件あるだけでは通さない）。名指しの判定は
+  # tests/lib/public-surface.sh の ff_surface_token_needle / ff_surface_names_token。
+  # rc 0: 消えた要素なし（SURFACE_JUDGE_REMOVED が空）か、全部名指しあり / 1: 名指しの無い要素がある
+  # （SURFACE_JUDGE_UNNAMED に列挙）/ 2: HEAD から契約要素を 1 件も抽出できない
+  surface_breaking_judge() {
+    local base_doc="$1" head_doc="$2" frag_dir="$3" base_set="" head_set token needle
+    local frags=()
+    SURFACE_JUDGE_REMOVED=""
+    SURFACE_JUDGE_UNNAMED=""
+    head_set="$(ff_surface_contract_tokens "$head_doc" | LC_ALL=C sort -u)"
+    if [[ -n "$base_doc" ]]; then
+      base_set="$(ff_surface_contract_tokens "$base_doc" | LC_ALL=C sort -u)"
     fi
+    if [[ -n "$base_set" && -z "$head_set" ]]; then
+      return 2
+    fi
+    SURFACE_JUDGE_REMOVED="$(comm -23 <(printf '%s\n' "$base_set") <(printf '%s\n' "$head_set") | sed '/^$/d')"
+    [[ -n "$SURFACE_JUDGE_REMOVED" ]] || return 0
+    while IFS= read -r token; do
+      [[ -n "$token" ]] && frags+=("$token")
+    done < <(find "$frag_dir" -maxdepth 1 -type f -name '*.breaking.*.md' 2>/dev/null | LC_ALL=C sort)
+    while IFS= read -r token; do
+      [[ -n "$token" ]] || continue
+      needle="$(ff_surface_token_needle "$token")"
+      if ! ff_surface_names_token "$needle" ${frags[@]+"${frags[@]}"}; then
+        SURFACE_JUDGE_UNNAMED="${SURFACE_JUDGE_UNNAMED}${SURFACE_JUDGE_UNNAMED:+ }${token}"
+      fi
+    done <<< "$SURFACE_JUDGE_REMOVED"
+    [[ -z "$SURFACE_JUDGE_UNNAMED" ]]
+  }
+  surface_base_doc="$TMP/base-public-surface.md"
+  if ! git -C "$REPO_ROOT" show "${surface_base_ref}:${SURFACE_DOC_REL}" > "$surface_base_doc" 2>/dev/null; then
+    # base に一覧が無い（一覧の初版）。削除は起こり得ないので空集合として扱う。
+    surface_base_doc=""
   fi
+  surface_rc=0
+  surface_breaking_judge "$surface_base_doc" "$REPO_ROOT/$SURFACE_DOC_REL" "$REPO_ROOT/changelog.d" || surface_rc=$?
+  surface_removed="$(printf '%s\n' "$SURFACE_JUDGE_REMOVED" | tr '\n' ' ' | sed 's/ *$//')"
+  case "$surface_rc" in
+    2) bad "公開面の一覧から契約要素を 1 件も抽出できません（見出しか書式を変えた場合は本 suite も更新すること）" ;;
+    0)
+      if [[ -z "$surface_removed" ]]; then
+        ok "契約側の要素は base から減っていない"
+      else
+        ok "契約側の要素の削除・改名を、どれも breaking 断片が名指している（${surface_removed}）"
+      fi
+      ;;
+    *) bad "契約側の要素が base から消えているのに、それを名指す breaking 断片が changelog.d にありません: ${SURFACE_JUDGE_UNNAMED}" ;;
+  esac
+
+  # 変異バッテリー: 判定の本体を合成した一覧と断片へ当てる（live の判定は手元の base と HEAD の
+  # 1 組しか通らないので、「無関係な breaking 断片では通さない」「4-3 の鍵の削除も契約の削除」は
+  # ここで固定する）。
+  # 合成の名前は実行時に組む（`FF_` で始まる綴りを字句で書くと、公開面の母集団へ入る）。
+  SB_P=FF
+  SB_KEEP="${SB_P}_SB_KEEP" SB_GONE="${SB_P}_SB_GONE"
+  SB_FIX="$TMP/surface-battery"
+  mkdir -p "$SB_FIX/frag"
+  sb_doc() { # $1=出力 $2=4-1 に載せる名前（空白区切り） $3=4-3 に載せる鍵（空白区切り）
+    local out="$1" n
+    {
+      printf '%s\n' '# 公開面' '' '## 公開面 4: 環境変数' '' '### 4-1. 契約' ''
+      for n in $2; do printf '%s\n' "- \`${n}\`"; done
+      printf '%s\n' '' '### 4-2. 内部' '' '#### 4-2-2. 配布実行物' '' "- \`${SB_P}_SB_INTERNAL\`" '' '### 4-3. L4 宣言の鍵' ''
+      printf '%s\n' '| 鍵 | 種別 | 担当する実体 | 包含 | 旧名 |' '| --- | --- | --- | --- | --- |'
+      for n in $3; do printf '%s\n' "| \`${n}\` | skip | \`hooks/x.sh\` | - | \`${SB_P}_SB_OLD\` |"; done
+      printf '%s\n' '' '## 公開面 5: 環境変数（接頭辞の無いもの）' ''
+    } > "$out"
+  }
+  sb_case() { # $1=期待する rc $2=見出し
+    local rc=0
+    surface_breaking_judge "$SB_FIX/base.md" "$SB_FIX/head.md" "$SB_FIX/frag" || rc=$?
+    if [[ "$rc" -eq "$1" ]]; then ok "$2"; else bad "$2（rc=${rc} 未名指し=${SURFACE_JUDGE_UNNAMED:-なし}）"; fi
+  }
+  sb_doc "$SB_FIX/base.md" "$SB_KEEP $SB_GONE" "zsh-glob exit-code"
+  sb_doc "$SB_FIX/head.md" "$SB_KEEP $SB_GONE" "zsh-glob exit-code"
+  sb_case 0 "公開面の判定（変異バッテリー）: 契約が減らなければ断片なしで緑"
+  sb_doc "$SB_FIX/head.md" "$SB_KEEP" "zsh-glob exit-code"
+  printf '%s\n' "- 別の契約 \`${SB_P}_SB_OTHER\` を外した" > "$SB_FIX/frag/1.breaking.unrelated.md"
+  sb_case 1 "公開面の判定（変異バッテリー）: 4-1 から契約トークンを 1 つ消し、無関係な breaking 断片だけを置くと赤"
+  printf '%s\n' "- 契約 \`${SB_GONE}_X\` を外した（消えた名前の前方一致は名指しに数えない）" > "$SB_FIX/frag/2.breaking.prefix.md"
+  sb_case 1 "公開面の判定（変異バッテリー）: 消えた名前を語の一部として含むだけの断片では赤"
+  printf '%s\n' "- 契約 \`${SB_GONE}\` を外した" > "$SB_FIX/frag/3.breaking.named.md"
+  sb_case 0 "公開面の判定（変異バッテリー）: 消えた契約トークンを breaking 断片が名指せば緑"
+  printf '%s\n' "- 契約 \`${SB_GONE}\` を外した" > "$SB_FIX/frag/3.changed.named.md"
+  rm -f "$SB_FIX/frag/3.breaking.named.md"
+  sb_case 1 "公開面の判定（変異バッテリー）: 名指しが breaking 以外の断片にしか無ければ赤"
+  rm -f "$SB_FIX/frag/"*.md
+  sb_doc "$SB_FIX/head.md" "$SB_KEEP $SB_GONE" "zsh-glob"
+  sb_case 1 "公開面の判定（変異バッテリー）: 4-3 から鍵を 1 つ消す（skip:exit-code）と、断片なしで赤"
+  printf '%s\n' '- 鍵 `zsh-glob` の説明を直した' > "$SB_FIX/frag/4.breaking.unrelated-key.md"
+  sb_case 1 "公開面の判定（変異バッテリー）: 4-3 から鍵を消し、別の鍵だけを名指す breaking 断片では赤"
+  printf '%s\n' '- 鍵 `exit-code` を外した（`=exit-code` の宣言は効かなくなる）' > "$SB_FIX/frag/5.breaking.key.md"
+  sb_case 0 "公開面の判定（変異バッテリー）: 消えた鍵を breaking 断片が名指せば緑"
+  rm -f "$SB_FIX/frag/"*.md
+  printf '%s\n' '# 公開面' '' '## 公開面 1: Skills' '' > "$SB_FIX/head.md"
+  sb_case 2 "公開面の判定（変異バッテリー）: HEAD の一覧から契約要素を 1 件も抽出できなければ検査不成立"
 fi

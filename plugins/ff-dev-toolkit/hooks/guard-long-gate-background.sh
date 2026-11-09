@@ -117,7 +117,7 @@
 #     `cd /repo && bash …/run-all.sh` に対しては `cd /repo &&
 #     FF_LONG_GATE_BACKGROUND_ACK=1 bash …/run-all.sh` と置く。コマンドの先頭へ置いても
 #     ゲートが別セグメントなら効かない）
-#   - ガードごと止めるなら環境変数 `FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD=1`
+#   - ガードごと止めるなら環境変数 `FF_DEV_TOOLKIT_SKIP=long-gate-background`
 #
 # ## 発火の記録（親が「停止した子」を数える／区別するための台帳）
 #
@@ -209,7 +209,7 @@
 #   - 互換性: bash 3.2（stock macOS）互換。連想配列・readarray・=~ は使わない
 #
 # 環境変数:
-#   FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD=1  このガードを無効化する
+#   FF_DEV_TOOLKIT_SKIP=long-gate-background  このガードを無効化する
 #   FF_LONG_GATE_FOREGROUND_TIMEOUT_MS=<ミリ秒>       要求する最小 timeout
 #                                                     （既定 600000 = ホストの
 #                                                     foreground 上限）
@@ -233,7 +233,10 @@ fi
 asdd_hook_enabled hooks || exit 0
 
 # opt-out も stdin を読み切ってから抜ける。
-[ "${FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD:-0}" = "1" ] && exit 0
+# 宣言の判定は共通関数 scripts/lib/l4-declarations.sh（ADR-087）。読めないときは止めない側に倒す。
+# shellcheck source=../scripts/lib/l4-declarations.sh
+{ [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
+if ff_l4_skipped 'long-gate-background' 'FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD'; then exit 0; fi
 
 # ---- 名簿（正本はここ 1 箇所） -------------------------------------------------
 #
@@ -714,7 +717,7 @@ background へ回された委譲先は「完了通知を待つ」と言って停
   1) foreground で待つ（推奨）: Bash ツールの \`run_in_background\` を外し、\`timeout\` に \`${REQUIRED_MS}\` を明示する
   2) foreground 上限に収まる粒度へ分割する（変更した suite を単体で緑にしてから全件ゲートは 1 回だけ）
   3) それでも background で起こす必要がある場合は、監視機構を armed してから停止し完了通知で再開する運用に切り替えたうえで、**先頭セグメントの先頭**へ環境代入 FF_LONG_GATE_BACKGROUND_ACK=1 を付けて再実行する
-このガードは委譲先（サブエージェント）の呼び出しだけに掛かります。親（メインセッション）の意図的な background 運用は構造的に対象外です。ガードごと止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD=1 を設定します。"
+このガードは委譲先（サブエージェント）の呼び出しだけに掛かります。親（メインセッション）の意図的な background 運用は構造的に対象外です。ガードごと止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=long-gate-background を設定します。"
 else
   reason="⚠️ ff-dev-toolkit guard（委譲先は長時間ゲートを foreground で待つ）: 長時間ゲート \`${FIRE_LABEL}\` を ${why}。
 background へ回された委譲先は「完了通知を待つ」と言って停止し、親がナッジするまで再開しません（観測台帳 OBS-036。7 回再発）。同時に複数の子が同じ全件ゲートを background で起こすと CPU 競合で他の子まで巻き込みます。
@@ -722,7 +725,7 @@ background へ回された委譲先は「完了通知を待つ」と言って停
   1) foreground で待つ（推奨）: Bash ツールの \`run_in_background\` を外し、\`timeout\` に \`${REQUIRED_MS}\` を明示する
   2) ゲートを foreground 上限に収まる粒度へ分割する（変更した suite を単体で緑にしてから全件ゲートは 1 回だけ）
   3) それでも background で起こす必要がある場合は、監視機構を armed してから停止し完了通知で再開する運用に切り替えたうえで、**ゲートを実行するセグメントの先頭**へ環境代入 FF_LONG_GATE_BACKGROUND_ACK=1 を付けて再実行する（判定はセグメントごとなので、\`cd /repo && bash …/run-all.sh\` なら \`cd /repo && FF_LONG_GATE_BACKGROUND_ACK=1 bash …/run-all.sh\` のように**ゲート側**へ置く。コマンド 1 本だけなら先頭がそのままゲートのセグメントになる）
-このガードは委譲先（サブエージェント）の呼び出しだけに掛かります。ガードごと止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD=1 を設定します。"
+このガードは委譲先（サブエージェント）の呼び出しだけに掛かります。ガードごと止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=long-gate-background を設定します。"
 fi
 
 if [ -n "$LOG_PATH" ]; then

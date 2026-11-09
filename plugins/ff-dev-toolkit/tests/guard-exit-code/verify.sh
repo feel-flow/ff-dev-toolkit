@@ -76,7 +76,7 @@ TARGET="$PLUGIN_ROOT/hooks/guard-exit-code.sh"
 # 先頭で 1 回落とす。ケース固有の `NAME=v bash "$TARGET"` はこの後に代入として届く（Issue `#1808`）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-isolate_hook_env "FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD" "$TARGET"
+isolate_hook_env "FF_DEV_TOOLKIT_SKIP" "$TARGET"
 DETECTOR="$PLUGIN_ROOT/tests/lib/exit-code-guard.sh"
 HELPER="$PLUGIN_ROOT/tests/lib/heredoc-strip.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
@@ -276,7 +276,7 @@ case "$REASON" in
   *) bad "理由文に ACK 抜け道の案内が無い: [$REASON]" ;;
 esac
 case "$REASON" in
-  *FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1*) ok "理由文がガード無効化 env を案内する" ;;
+  *FF_DEV_TOOLKIT_SKIP=exit-code*) ok "理由文がガード無効化 env を案内する" ;;
   *) bad "理由文に skip env の案内が無い: [$REASON]" ;;
 esac
 case "$REASON" in
@@ -607,8 +607,10 @@ run_hook "  FF_EXIT_CODE_ACK=1 $GATE > log 2>&1; echo \"rc=\$?\""
 assert_pass "先頭の空白があっても ACK は効く"
 run_hook "echo FF_EXIT_CODE_ACK=1; $GATE > log 2>&1; echo \"rc=\$?\""
 assert_fire "ACK が文字列として現れるだけでは無効（先頭の環境代入に限る）"
-run_hook "FF_RUN_ALL_FULL=1 $GATE > log 2>&1; echo \"rc=\$?\"" 'FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1'
-assert_pass "FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1 で無効化できる"
+run_hook "FF_RUN_ALL_FULL=1 $GATE > log 2>&1; echo \"rc=\$?\"" 'FF_DEV_TOOLKIT_SKIP=exit-code'
+assert_pass "FF_DEV_TOOLKIT_SKIP=exit-code で無効化できる"
+run_hook "$GATE 2>&1 | tail -20" 'FF_DEV_TOOLKIT_SKIP=exit-code-guard'
+assert_fire "FF_DEV_TOOLKIT_SKIP の鍵の打ち間違い（exit-code-guard）では止まったまま"
 
 echo "guard-exit-code: AC4 — 判定できないときは fail-closed（候補コマンドに限る）"
 FC_NONE="$(make_copy "$TEST_TMP/fc-none")"
@@ -1004,7 +1006,7 @@ else
   bad "PATH 空の drain: exit=$RC out=[$OUT]（rc=141 なら hook が stdin を drain せずに exit している）"
 fi
 RC=0
-OUT="$(printf '%s' "$BIG_PAYLOAD" | FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1 PATH="/nonexistent" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
+OUT="$(printf '%s' "$BIG_PAYLOAD" | FF_DEV_TOOLKIT_SKIP=exit-code PATH="/nonexistent" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
 if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
   ok "opt-out でも stdin を読み切ってから無出力 exit 0"
 else

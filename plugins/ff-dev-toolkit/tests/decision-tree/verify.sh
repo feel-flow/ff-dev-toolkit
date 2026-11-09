@@ -80,6 +80,14 @@ HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 REPORT="$PLUGIN_ROOT/scripts/effort-report.sh"
 QFILE="$PLUGIN_ROOT/scripts/jev/questions/root.json"
 PRINCIPLES="$PLUGIN_ROOT/docs-template/05-operations/deployment/workflow-principles.md"
+# L4 宣言（ADR-087）をホストから引き継がない: 素の FF_DEV_TOOLKIT_SKIP と名簿の旧名（内部の別名）を落とす。
+# 旧名は名簿から読み、この suite には書かない（旧名のケースは tests/l4-declarations が持つ）
+unset FF_DEV_TOOLKIT_SKIP
+if [ -r "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv" ]; then
+  while IFS=$'\t' read -r _l4_k _l4_kind _l4_owner _l4_covers _l4_legacy _l4_rest || [ -n "$_l4_k" ]; do
+    case "$_l4_legacy" in FF_[A-Z0-9_]*) unset "$_l4_legacy" ;; esac
+  done < "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv"
+fi
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
 # shellcheck source=../lib/crlf-jq-shim.sh
@@ -512,7 +520,7 @@ STATE="$TEST_TMP/state"
 run_hook() { # <json> [NAME=VALUE ...]
   local json="$1"; shift
   RC=0
-  OUT="$(printf '%s' "$json" | env -u FF_JEV_MODE -u FF_JEV_POINTS -u FF_JEV_ENABLED -u FF_DEV_TOOLKIT_SKIP_DECISION_TREE FF_DEV_TOOLKIT_STATE_DIR="$STATE" WORKFLOW_TIER_BASE=main "$@" bash "$HOOK" 2>"$TEST_TMP/hook.err")" || RC=$?
+  OUT="$(printf '%s' "$json" | env -u FF_JEV_MODE -u FF_JEV_POINTS -u FF_JEV_ENABLED -u FF_DEV_TOOLKIT_SKIP FF_DEV_TOOLKIT_STATE_DIR="$STATE" WORKFLOW_TIER_BASE=main "$@" bash "$HOOK" 2>"$TEST_TMP/hook.err")" || RC=$?
   ERR="$(cat "$TEST_TMP/hook.err" 2>/dev/null || true)"
 }
 json_ups() { jq -nc --arg sid "$1" --arg cwd "$2" '{hook_event_name: "UserPromptSubmit", session_id: $sid, cwd: $cwd, prompt: "x"}'; }
@@ -587,9 +595,9 @@ run_hook "$(json_stop s5c "$TEST_TMP" "$TRANSCRIPT")"
 run_hook "$(json_stop '../s6' "$GITFIX" "$TRANSCRIPT")"
 [ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ "${ERR#*"(unmeasured)"}" != "$ERR" ] && [ ! -e "$STATE/metrics/sessions/../s6.seen" ] && ok "F11 session_id にパス区切りがあれば記録せず (unmeasured)" || bad "F11 不正 session_id: rc=$RC err=[$ERR]"
 n_before="$(wc -l < "$LEAVES_TSV" | tr -d ' ')"
-run_hook "$(json_stop s7 "$GITFIX" "$TRANSCRIPT")" FF_DEV_TOOLKIT_SKIP_DECISION_TREE=1
+run_hook "$(json_stop s7 "$GITFIX" "$TRANSCRIPT")" FF_DEV_TOOLKIT_SKIP=update-check,decision-tree
 n_after="$(wc -l < "$LEAVES_TSV" | tr -d ' ')"
-[ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ "$n_before" = "$n_after" ] && ok "F12 FF_DEV_TOOLKIT_SKIP_DECISION_TREE=1 は何も記録しない" || bad "F12 skip env: rc=$RC before=$n_before after=$n_after"
+[ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ "$n_before" = "$n_after" ] && ok "F12 FF_DEV_TOOLKIT_SKIP=update-check,decision-tree（鍵 decision-tree）は何も記録しない" || bad "F12 skip env: rc=$RC before=$n_before after=$n_after"
 run_hook "$(jq -nc '{hook_event_name: "PreToolUse", session_id: "s8", tool_name: "Bash", tool_input: {command: "echo"}}')"
 [ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ ! -e "$STATE/metrics/sessions/s8.seen" ] && ok "F13 対象外のイベントは無出力で何もしない" || bad "F13 対象外イベント: rc=$RC out=[$OUT]"
 run_hook '{"hook_event_name":"Stop","session_id":"s9"'
