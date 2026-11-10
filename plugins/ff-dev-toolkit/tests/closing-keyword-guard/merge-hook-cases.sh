@@ -6,11 +6,10 @@ closing_merge_hook_cases() {
   local ref="#${issue_no}" other_ref="#${other_issue_no}" pr_ref="#${pr_no}"
   before=$((PASS+FAIL))
   hook="$PLUGIN_ROOT/hooks/guard-merge-closing-keyword.sh"
-  # 宣言（FF_DEV_TOOLKIT_SKIP と、名簿の legacy 列にある merge-closing の旧名）をホストから引き継がない。
-  # 旧名は名簿から読む（この試験に旧名を複製しない）。読めないときは素の 1 変数だけを落とす。
-  local mc_test_legacy mc_test_decl=""
-  mc_test_legacy="$(awk -F'\t' '$1 == "merge-closing" && $2 == "skip" { print $5 }' "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv" 2>/dev/null)"
-  case "$mc_test_legacy" in FF_[A-Z0-9_]*) : ;; *) mc_test_legacy=FF_DEV_TOOLKIT_SKIP ;; esac
+  # 宣言（FF_DEV_TOOLKIT_SKIP と、FF_DEV_TOOLKIT_SKIP_ で始まる撤去した旧名。`#2735`）をホストから引き継がない。
+  # 素の 1 変数は起動のたびに env -u で落とし、旧名はここで全部落とす。
+  local mc_test_decl="" _l4_v
+  for _l4_v in "${!FF_DEV_TOOLKIT_SKIP_@}"; do unset "$_l4_v"; done
   for source in "$hook" "$PLUGIN_ROOT/scripts/lib/merge-message.sh" "$PLUGIN_ROOT/tests/lib/review-shell-lex.sh"; do
     if [ ! -r "$source" ] || [ ! -s "$source" ]; then bad 'merge hook: sourceが無い/読めない/空'; return; fi
   done
@@ -58,7 +57,7 @@ STUB
     "$MC_TEST_JQ" -n --arg c "$command" --arg d "${2:-$tmp/work}" '{tool_name:"Bash",tool_input:{command:$c},cwd:$d}' >"$input_file"
     rc=0
     : >"$tmp/gh-calls"
-    out="$(/usr/bin/env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT -u FF_DEV_TOOLKIT_SKILL_FILE -u FF_DEV_TOOLKIT_SKIP -u "$mc_test_legacy" -u FF_MERGE_CLOSING_ACK -u GH_REPO PATH="$tmp/bin:$PATH" ${mc_test_decl:+"$mc_test_decl"} MC_TEST_MODE="$mode" MC_TEST_RESPONSE="$response" MC_TEST_CALLS="$tmp/gh-calls" MC_TEST_OTHER_RESPONSE="$tmp/other.json" MC_TEST_OTHER_CWD="$tmp/other" /bin/bash "$hook" <"$input_file" 2>"$tmp/stderr")" || rc=$?
+    out="$(/usr/bin/env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT -u FF_DEV_TOOLKIT_SKILL_FILE -u FF_DEV_TOOLKIT_SKIP -u FF_MERGE_CLOSING_ACK -u GH_REPO PATH="$tmp/bin:$PATH" ${mc_test_decl:+"$mc_test_decl"} MC_TEST_MODE="$mode" MC_TEST_RESPONSE="$response" MC_TEST_CALLS="$tmp/gh-calls" MC_TEST_OTHER_RESPONSE="$tmp/other.json" MC_TEST_OTHER_CWD="$tmp/other" /bin/bash "$hook" <"$input_file" 2>"$tmp/stderr")" || rc=$?
     err="$("$MC_TEST_CAT" "$tmp/stderr")"
   }
   mc_test_assert() { # <deny|allow|note|silent> <label>

@@ -86,14 +86,10 @@ TESTS_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 PLUGIN_ROOT="$(cd "$TESTS_DIR/.." && pwd -P)"
 DEFAULT_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd -P)"
 ROOT="${FF_DOCS_REPO_ROOT:-$DEFAULT_ROOT}"
-# L4 宣言（ADR-087）をホストから引き継がない: 素の FF_DEV_TOOLKIT_SKIP と名簿の旧名（内部の別名）を落とす。
-# 旧名は名簿から読み、この suite には書かない（旧名のケースは tests/l4-declarations が持つ）
+# L4 宣言（ADR-087）をホストから引き継がない: 素の FF_DEV_TOOLKIT_SKIP と、FF_DEV_TOOLKIT_SKIP_ で始まる
+# 撤去した旧名（残っていると記録は止まる。`#2735`）を全部落とす（旧名のケースは tests/l4-declarations が持つ）
 unset FF_DEV_TOOLKIT_SKIP
-if [ -r "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv" ]; then
-  while IFS=$'\t' read -r _l4_k _l4_kind _l4_owner _l4_covers _l4_legacy _l4_rest || [ -n "$_l4_k" ]; do
-    case "$_l4_legacy" in FF_[A-Z0-9_]*) unset "$_l4_legacy" ;; esac
-  done < "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv"
-fi
+for _l4_v in "${!FF_DEV_TOOLKIT_SKIP_@}"; do unset "$_l4_v"; done
 
 FIX="$SCRIPT_DIR/fixtures"
 CREATE="$PLUGIN_ROOT/skills/create-issue/SKILL.md"

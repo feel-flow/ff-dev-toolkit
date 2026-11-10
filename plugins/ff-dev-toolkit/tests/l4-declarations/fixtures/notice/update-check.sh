@@ -1,7 +1,8 @@
 # shellcheck shell=bash
-# SessionStart の L4 宣言の通知: hooks/check-update.sh。表は環境に鍵 update-check の旧名=1 と
-# FF_DEV_TOOLKIT_SKIP=<名簿に無い鍵> を置いて起動し、systemMessage と additionalContext の文言を見る。
-# fx_judge は更新チェックが止まったまま（PASS = 更新通知もキャッシュも無い）かを返す。更新の取得先は
+# SessionStart の L4 宣言の通知: hooks/check-update.sh。表は 3 行（tests/l4-declarations/verify.sh の N12）で、撤去した
+# 旧名（鍵から組む）と FF_DEV_TOOLKIT_SKIP を行ごとに置いて起動し、systemMessage と additionalContext の文言を見る。
+# fx_judge は更新チェックが止まったまま（PASS = 更新通知もキャッシュも無い）か、走った（STOP = 📦 かキャッシュ）かを
+# 返す（旧名は通知の鍵を止めないので、止める行は新しい鍵 update-check で止め、旧名だけの行は走らせる）。更新の取得先は
 # v99.0.0 のタグを持つローカルの bare リポジトリ（止まっていなければ 📦 とキャッシュが出る）。
 fx_owners='hooks/check-update.sh'
 fx_setup() {

@@ -159,7 +159,7 @@ export FF_DEV_TOOLKIT_SKIP=update-check,wsl-notice
 - `FF_REVIEW_LOCK_ACK=1` — レビュー走行中の凍結で、その書き込みだけを通します。Bash では書き込みを含む区間の先頭に付け、Bash 以外のツールでは hook のプロセス環境で渡します
 - 名前の変わらない ACK: `FF_CREDENTIAL_OUTPUT_ACK` / `FF_EFFORT_ACTUAL_ACK` / `FF_EXIT_CODE_ACK` / `FF_LITERAL_WRITE_ACK` / `FF_LONG_GATE_BACKGROUND_ACK` / `FF_MERGE_CLOSING_ACK` / `FF_PR_DRAFT_ACK` / `FF_REVIEW_ROUND_ACK` / `FF_RG_STDIN_ACK` / `FF_SHELL_SAVE_ACK` / `FF_SUB_ISSUE_ID_ACK` / `FF_TIMEOUT_ACK` / `FF_UNBOUNDED_WAIT_ACK` / `FF_WSL_SHELL_ACK` / `FF_ZSH_EXPANSION_ACK` / `FF_ZSH_GLOB_ACK`
 
-この形にまとめる前の個別の名前は、1.1.0 より前の版まで内部の別名として読まれます。hooks が発火するホスト（Claude Code など）では、使うと新しい書き方を通知します（SKIP の旧名はセッション開始時、ACK の旧名はその呼び出しのとき）。scripts から読む宣言（commit identity の判定・codex-cli の自動更新）は、旧名で止めても自分では通知しません。対応表は同梱の `PUBLIC-SURFACE.md` の「破壊的変更の記録」と CHANGELOG にあります。
+この形にまとめる前の個別の名前（旧名）は、もう読みません。ガードと通知を止めていた旧名は効かず、そのガードと通知は動きます。副作用のある 4 つの鍵（`auto-update` / `codex-auto-update` / `effort-metrics` / `decision-tree`）だけは、旧名の値が空でなければ（`0` でも）その処理を止めたままにします（旧名で止めていた更新や記録が黙って動き出さないため）。hooks が発火するホスト（Claude Code など）では、旧名が環境に残っているとセッション開始時に毎回、置き換えを通知します。旧名と新しい書き方の対応表は、同梱の `PUBLIC-SURFACE.md` の「破壊的変更の記録」と CHANGELOG にあります。
 
 ### 更新通知
 

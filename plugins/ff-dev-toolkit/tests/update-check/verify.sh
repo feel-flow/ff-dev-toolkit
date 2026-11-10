@@ -25,7 +25,7 @@
 #   - オフライン（到達不能）時は無出力 + exit 0 + fail キャッシュ記録
 #   - 到達可能だが SemVer タグが 1 件も無いリポジトリでは通知せず fail が残る
 #   - FF_DEV_TOOLKIT_SKIP=update-check（鍵の一覧のどこにあってもよい）はキャッシュ作成すら行わず即終了
-#     （WSL 案内を止めた状態。案内は第 17 節）。旧名の別名と L4 宣言の通知は tests/l4-declarations が持つ
+#     （WSL 案内を止めた状態。案内は第 17 節）。撤去した旧名と L4 宣言の通知は tests/l4-declarations が持つ
 #   - SemVer 3 要素でないタグ（v1.2.3-rc.1 等）の除外（peeled ref は fixture の
 #     annotated tag で ls-remote 出力に並ぶ状態を作っている。$ アンカー除去の
 #     退行はこの rc タグ検査が拾う）
@@ -60,16 +60,14 @@ HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 . "$SCRIPT_DIR/../lib/git-fixture.sh"
 
 [ -f "$TARGET" ] || { echo "✗ hooks/check-update.sh が見つかりません: $TARGET" >&2; exit 1; }
-# L4 宣言（ADR-087）をホストから引き継がない。素の FF_DEV_TOOLKIT_SKIP と、名簿の legacy 列の旧名
-# （内部の別名。hook は旧名が効く値だと SessionStart で通知を出す）を落とす。旧名は名簿から読み、
-# この suite には書かない（旧名と通知のケースは tests/l4-declarations が持つ）
+# L4 宣言（ADR-087）をホストから引き継がない。素の FF_DEV_TOOLKIT_SKIP と、FF_DEV_TOOLKIT_SKIP_ で始まる
+# 撤去した旧名（`#2735`。hook は旧名が空でない値で残っていると SessionStart で通知を出す）を全部落とす
+# （旧名と通知のケースは tests/l4-declarations が持つ）
 L4_TSV="$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv"
 L4_LIB="$PLUGIN_ROOT/scripts/lib/l4-declarations.sh"
 [ -f "$L4_TSV" ] && [ -f "$L4_LIB" ] || { echo "✗ L4 宣言の名簿か判定 lib が見つかりません: $L4_TSV / $L4_LIB" >&2; exit 1; }
 unset FF_DEV_TOOLKIT_SKIP
-while IFS=$'\t' read -r _l4_k _l4_kind _l4_owner _l4_covers _l4_legacy _l4_rest || [ -n "$_l4_k" ]; do
-  case "$_l4_legacy" in FF_[A-Z0-9_]*) unset "$_l4_legacy" ;; esac
-done < "$L4_TSV"
+for _l4_v in "${!FF_DEV_TOOLKIT_SKIP_@}"; do unset "$_l4_v"; done
 command -v git >/dev/null 2>&1 || { echo "✗ git が必要です" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "✗ jq が必要です（通知 JSON の構文検証に使用）" >&2; exit 1; }
 

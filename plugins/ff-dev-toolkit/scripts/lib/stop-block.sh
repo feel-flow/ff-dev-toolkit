@@ -11,6 +11,11 @@
 # - 正本ファイルはプラグイン相対（リポジトリ直下の配布外スクリプトはリポジトリ相対）のパス。
 # - 入れ子の停止は、規則を決めた層が印字し、外側は包み直さない（`次の一手:` を 2 行にしない）。
 # - どの行も `○ skip` で始めない（run-all の per-check 集計が二重に数える）。
+# - L4 宣言について知っているのは 1 つだけ: 変数 ff_l4_retired_note（scripts/lib/l4-declarations.sh が
+#   source 時に空にし、ガードの旧名を見つけた回に新しい書き方の 1 行を置く）が空でなければ、`次の一手:` 行の
+#   末尾へ `（<注記>）` を足す（行は 1 行のまま。改行を含む注記は足さない）。注記を読むのは、同じシェルで
+#   l4-declarations.sh を読んだ回（その関数 ff_l4_retired_key が定義されている回）だけで、読んでいない
+#   呼び出し側（run-all など）には、環境から持ち込まれた同名の値を添えない。ADR-087。
 #
 # source 専用。外部コマンドを起動しない（hook は PATH を絞った環境でも deny の文を組む）。bash 3.2 互換。
 # 引数が不正なとき（層が語彙外・rule-id が kebab-case でない・どれかの欄が空・理由か次の一手が
@@ -56,5 +61,11 @@ ff_stop_block() { # <層> <rule-id> <正本> <理由> <次の一手>
       '次の一手: 呼び出し側の ff_stop_block の引数を直す（層は 環境 / 方針 / ガード / 宣言、rule-id は ASCII の kebab-case、各欄は空でない 1 行）'
     return 2
   fi
+  # L4 宣言の旧名の注記（scripts/lib/l4-declarations.sh が、ガードの旧名を見つけた回に置く 1 行）を
+  # 次の一手 の末尾へ括弧で添える。1 行のまま保つため、改行を含む注記は添えない。
+  local note=""
+  declare -F ff_l4_retired_key >/dev/null 2>&1 && note="${ff_l4_retired_note-}"
+  case "$note" in *"$nl"* | *"$cr"*) note="" ;; esac
+  [ -z "$note" ] || next="${next}（${note}）"
   printf '%s\n' "止めた層: ${layer}" "止めた規則: ${rule}（${canon}）— ${reason}" "次の一手: ${next}"
 }

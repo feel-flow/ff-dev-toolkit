@@ -188,7 +188,11 @@ assert_pass "git restore --staged 単独（worktree 非破壊）は素通し"
 run_hook 'git stash push -- dirty.txt'
 assert_pass "代替手段 git stash push 自体は素通し"
 run_hook 'FF_DISCARD_UNCOMMITTED_ACK=1 git checkout -- dirty.txt'
-assert_pass "FF_DISCARD_UNCOMMITTED_ACK=1 バイパスは素通し（無出力。旧名の注記も出さない）"
+assert_pass "FF_DISCARD_UNCOMMITTED_ACK=1 バイパスは素通し（無出力）"
+# 撤去した旧名（`#2735`。新しい名前から _ACK を外した形。旧名は字句で書かない）の前置では通らない
+retired_ack="FF_DISCARD_UNCOMMITTED_ACK"
+run_hook "${retired_ack%_ACK}=1 git checkout -- dirty.txt"
+assert_fire "撤去した旧名（FF_DISCARD_UNCOMMITTED_ACK から _ACK を外した形）の前置では通らない（deny）"
 run_hook 'git status && git diff -- dirty.txt'
 assert_pass "checkout/restore を含まない git は素通し"
 run_hook 'ls -la'

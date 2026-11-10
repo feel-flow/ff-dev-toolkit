@@ -273,7 +273,7 @@ if [ "$rewrite_count" -gt 0 ] && [ "$blocking" -ne 2 ] \
   # 採用の一文はガードの書き換え通知に添える。ガードが通知を出さなかった回（同じセッションで出し済み。
   # Issue `#2616`）は添えず、呼び出しごとに画面へ 1 行出さない。updatedInput は通知の有無に依らず同じ。
   # additionalContext は行の単位で重複を落とす（並びは保つ）。再検査は同じガードをもう 1 度走らせるので、
-  # 通した回の注記（ACK の旧名の注記など）が元の出力と再検査の出力の両方に出る。
+  # 通した回の注記が元の出力と再検査の出力の両方に出る。
   merged="$(printf '%s' "$merged" | jq --argjson checked "$rechecked" --argjson update "$rewritten_input" '
     . as $original
     | . * $checked

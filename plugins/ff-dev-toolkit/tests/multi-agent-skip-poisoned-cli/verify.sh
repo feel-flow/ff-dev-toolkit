@@ -35,7 +35,7 @@
 #       client_version より古ければインストール元（npm / Homebrew）の手段で更新してから
 #       回す。dry-run は表示だけ、インストール元不明・更新失敗・判定不能は名指しして続行、
 #       FF_DEV_TOOLKIT_SKIP=codex-auto-update（鍵の一覧のどこかにあればよい）で無効化、鍵の打ち間違いでは止めない
-#       （旧名の別名は tests/l4-declarations が持つ）
+#       （撤去した旧名のケースは tests/l4-declarations が持つ）
 #
 # 変異検出: cli_failure_is_deterministic を常に偽へ倒すと (1)(2)(4)(5) が赤になる。
 # 変異検出（2026-09-25 実測、プラグインの写しへ 1 件ずつ当てた。レビュー 1 巡目の fix 後に取り直し）:
@@ -748,6 +748,14 @@ if [ -z "$UPDATE_CALLS" ] && log_has "codex-cli version check skipped (FF_DEV_TO
   ok "update/skip-env: FF_DEV_TOOLKIT_SKIP=update-check,codex-auto-update（鍵 codex-auto-update）で更新しない"
 else
   bad "update/skip-env: calls='${UPDATE_CALLS}'"; show_log
+fi
+# 撤去した旧名（`#2735`。鍵 codex-auto-update から組む。旧名は字句で書かない）は値 0 でも止め、理由はその旧名を名指す
+retired_codex="FF_DEV_TOOLKIT_SKIP_""CODEX_AUTO_UPDATE"
+run_update_case "$U/bin-npm" 1.1.0 1.2.0 "${retired_codex}=0"
+if [ -z "$UPDATE_CALLS" ] && log_has "codex-cli version check skipped (旧名 ${retired_codex} を見つけたので、安全のため止めました。旧名は読み替えません。FF_DEV_TOOLKIT_SKIP=codex-auto-update へ書き換えてください。codex-auto-update を動かすなら、FF_DEV_TOOLKIT_SKIP に書かずに旧名を外すだけでよい)"; then
+  ok "update/retired-name: 撤去した旧名（=0）が環境にあれば更新せず、理由は見つけた旧名・新しい書き方・動かすなら旧名を外すだけでよいことを名指す"
+else
+  bad "update/retired-name: calls='${UPDATE_CALLS}'"; show_log
 fi
 run_update_case "$U/bin-npm" 1.1.0 1.2.0 FF_DEV_TOOLKIT_SKIP=codex-autoupdate
 if [ -n "$UPDATE_CALLS" ] && ! log_has "codex-cli version check skipped"; then

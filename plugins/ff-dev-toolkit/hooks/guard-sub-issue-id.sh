@@ -84,7 +84,7 @@ asdd_hook_enabled hooks || exit 0
 
 # L4 宣言（ADR-087）。lib を読めない配置では止めない側（ガードは効いたまま）に倒し、stderr も汚さない
 { [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
-if ff_l4_skipped 'sub-issue-id' 'FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD'; then exit 0; fi
+if ff_l4_skipped 'sub-issue-id'; then exit 0; fi
 
 # ---- GitHub MCP 経路（sub_issue_write）--------------------------------------
 # 振り分け（tool_name の読み取り・判定表の照合）は共有ヘルパの ff_github_mcp_route_input。

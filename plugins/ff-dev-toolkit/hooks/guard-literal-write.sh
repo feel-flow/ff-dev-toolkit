@@ -93,7 +93,7 @@ esac
 # 宣言の判定は共通関数 scripts/lib/l4-declarations.sh（ADR-087）。読めないときは止めない側に倒す。
 # shellcheck source=../scripts/lib/l4-declarations.sh
 { [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
-if ff_l4_skipped 'literal-write' 'FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD'; then exit 0; fi
+if ff_l4_skipped 'literal-write'; then exit 0; fi
 
 # ---- 安価な前置フィルタ（候補でなければ何も読まずに抜ける） -------------------------
 # 候補: perl の綴りと `$` の両方がある（述語 A・B の perl 側）、または node の綴りと

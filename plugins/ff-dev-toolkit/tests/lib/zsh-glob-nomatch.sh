@@ -353,7 +353,17 @@ ff_zsh_equals_fix_scan() {
 
 # 単語分割の書き換え（Issue `#2491`）で前置する文。未引用の `$VAR` / `${VAR}` を bash と同じ規則で
 # 単語分割させる（`for t in $list` / `set -- $t` / 関数引数など、形を問わず効く）。
-FF_ZSH_WORD_SPLIT_PREFIX='setopt SH_WORD_SPLIT; '
+# 文面は zsh-word-split-prefix.sh の 1 箇所。終了コードガードも同じ値を判定入力の先頭から外す。
+# サブシェルで読み、こちらへ代入する。定義ファイルの exit が呼び出し元を終わらせない。
+# 読めないときは空になる。空のときは単語分割の前置きを付けない（呼び出し側）。テストで
+# ツリーを複製するときは、定義ファイルも一緒にコピーする。
+_ff_zsh_prefix_lib="${BASH_SOURCE[0]%/*}/zsh-word-split-prefix.sh"
+FF_ZSH_WORD_SPLIT_PREFIX="$(
+  unset FF_ZSH_WORD_SPLIT_PREFIX
+  # shellcheck source=zsh-word-split-prefix.sh
+  . "$_ff_zsh_prefix_lib" 2>/dev/null && printf '%s' "${FF_ZSH_WORD_SPLIT_PREFIX-}"
+)" || FF_ZSH_WORD_SPLIT_PREFIX=""
+unset _ff_zsh_prefix_lib
 
 # rc 0: コマンドの最初の文（先頭の空白・改行を除く）が `setopt … SH_WORD_SPLIT …` で、`;` か改行で
 # 後ろの文と区切られている（呼び出し全体で単語分割が bash と同じになる）。zsh のオプション名は大文字小文字と

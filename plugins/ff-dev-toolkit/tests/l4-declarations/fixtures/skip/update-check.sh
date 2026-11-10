@@ -2,7 +2,7 @@
 # 鍵 update-check: hooks/check-update.sh（SessionStart）。止める効果 = 更新チェック（キャッシュの作成と
 # ls-remote）と更新通知（systemMessage の 📦）。
 # 入力: ローカルの bare リポジトリに v99.0.0 のタグを置き、取得先をそこへ向ける。キャッシュは作業ディレクトリの中。
-# 旧名の回と鍵の打ち間違いの回は L4 宣言の通知も出るので、判定は 📦 とキャッシュで見る（systemMessage の有無では見ない）。
+# 撤去した旧名の回と鍵の打ち間違いの回は L4 宣言の通知も出るので、判定は 📦 とキャッシュで見る（systemMessage の有無では見ない）。
 fx_owners='hooks/check-update.sh'
 fx_setup() {
   fx_git_repo "$fx_wk/work" || return 1

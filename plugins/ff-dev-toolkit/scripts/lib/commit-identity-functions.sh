@@ -23,8 +23,13 @@ declare -F ff_l4_skipped >/dev/null 2>&1 \
   || { [ -r "${BASH_SOURCE[0]%/*}/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/l4-declarations.sh"; } 2>/dev/null \
   || ff_l4_skipped() { return 1; }
 ff_commit_identity_check() {
-  local repo="${1:-.}" name email
-  if ff_l4_skipped 'commit-identity' 'FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD'; then return 0; fi
+  local repo="${1:-.}" name email ff_ci_skip=1
+  if ff_l4_skipped 'commit-identity'; then ff_ci_skip=0; fi
+  # 旧名を見つけた回に共通関数が置く注記は、hook の停止文（scripts/lib/stop-block.sh）のためのもの。この lib を
+  # 読む scripts（リリース・knowledge-commit）は同じシェルで長く動き、注記を使わない（ADR-087 決定 4）ので、
+  # 残すと別の段の停止文の 次の一手 に関係の無い注記が付く。呼んだ直後に空へ戻す
+  ff_l4_retired_note=""
+  [ "$ff_ci_skip" -ne 0 ] || return 0
   name="$(git -C "$repo" config --get user.name 2>/dev/null || true)"
   email="$(git -C "$repo" config --get user.email 2>/dev/null || true)"
   case "$email" in

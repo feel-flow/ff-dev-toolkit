@@ -219,7 +219,7 @@ esac
 # 宣言の判定は共通関数 scripts/lib/l4-declarations.sh（ADR-087）。読めないときは止めない側に倒す。
 # shellcheck source=../scripts/lib/l4-declarations.sh
 { [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
-if ff_l4_skipped 'exit-code' 'FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD'; then exit 0; fi
+if ff_l4_skipped 'exit-code'; then exit 0; fi
 
 # 検出器のゲート名簿の綴り（検出器の is_named_gate と一致させること。上記「名簿の綴りだけは
 # 複製している」を参照。verify.sh が静的に照合する）。
@@ -536,6 +536,29 @@ elif [ "$awk_rc" -ne 0 ]; then
   deny_unavailable "heredoc 除去（awk）が失敗しました（rc=${awk_rc}）"
 fi
 [ -n "$code_only" ] || exit 0
+
+# 単語分割の書き換え（Issue `#2491`）が先頭へ付ける文は、実行されるコマンドには残る。
+# 判定入力だけから、共有定義と先頭が一致する 1 つを外してから候補判定と検出器へ渡す
+# （Issue `#2701`）。検出器へ setopt を前置きの形として足さない。定義が読めない・空・
+# 先頭が一致しないときは外さない。外さないと、伝播している起動は止まる。1 行目で
+# ゲートを起動して伝播を欠く起動は、検出器が起動と読めず素通しになる。
+# 集約入口では外さない。外すと再検査が同じ文を重ね、書き換えを拒否する。
+# 定義ファイルはサブシェルで読む。トップレベルの exit がこの hook を終わらせないため。
+# 落とす区間は終了コードの根拠を含まない文面だけなので、根拠は残った区間で足りる。
+ff_zsh_prefix_lib="${BASH_SOURCE[0]%/*}/../tests/lib/zsh-word-split-prefix.sh"
+ff_zsh_prefix=""
+if [ -r "$ff_zsh_prefix_lib" ]; then
+  ff_zsh_prefix="$(
+    unset FF_ZSH_WORD_SPLIT_PREFIX
+    # shellcheck source=../tests/lib/zsh-word-split-prefix.sh
+    . "$ff_zsh_prefix_lib" 2>/dev/null && printf '%s' "${FF_ZSH_WORD_SPLIT_PREFIX-}"
+  )" || ff_zsh_prefix=""
+fi
+if [ -n "$ff_zsh_prefix" ] && [ "${code_only#"$ff_zsh_prefix"}" != "$code_only" ]; then
+  code_only="${code_only#"$ff_zsh_prefix"}"
+fi
+[ -n "$code_only" ] || exit 0
+unset ff_zsh_prefix ff_zsh_prefix_lib
 
 # heredoc を落とした後にもう一度候補判定する（本文だけが綴りを持っていた入力を
 # 検出器へ渡さない）。

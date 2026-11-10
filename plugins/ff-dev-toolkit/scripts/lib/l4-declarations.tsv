@@ -1,7 +1,7 @@
 # L4 宣言（利用者が書く SKIP / ACK）の名簿。鍵の正本はこの 1 ファイルだけ（ADR-087）。
 #
-# 読み手は scripts/lib/l4-declarations.sh（covers の解決）と tests/l4-declarations/verify.sh
-# （名簿と実装・公開文書・試験の隔離の照合）。名簿の外に鍵を書かない。
+# 読み手は scripts/lib/l4-declarations.sh（covers の解決）、hooks/check-update.sh（SessionStart の通知）と
+# tests/l4-declarations/verify.sh（名簿と実装・公開文書・試験の隔離の照合）。名簿の外に鍵を書かない。
 #
 # 行の形（タブ区切り 7 列。# 始まりと空行は無視。空の欄は `-` と書く — タブを IFS にした
 # read は連続するタブを 1 つに畳むので、空の欄を空文字にすると後ろの列がずれる）:
@@ -14,61 +14,57 @@
 #                     包含は owner の hook / script の中での包含で、別の実行経路
 #                     （例: scripts/multi-agent.sh の巡回上限）には及ばない。同じ鍵の ACK は
 #                     その鍵の SKIP で止まるので covers に書かない
-#   legacy            旧名（内部の別名）のフル名。別名が無い行は `-`
-#   legacy_value_rule eq1 … 旧名の値が 1 のときだけ効く / nonempty … 空でなければ効く（値 0 でも効く）。
-#                     skip-legacy … kind=ack で legacy が `-` の行だけ: 同じ鍵の kind=skip の旧名を、
-#                     この ACK の 1 回分の前置の別名としても読む（ISSUE_LABEL だけ）。別名が無い行は `-`
-#   remove_after      別名を読むのをやめる版。plugin.json の version がこれ以上なのに legacy が
-#                     残っていると tests/l4-declarations が赤にする
+#   legacy            別名（旧名）を置くときの列。`#2735` で別名を撤去したので、今は全行 `-`
+#   legacy_value_rule kind=skip の行だけ: retired-stop … 旧名を見つけたら（値が空でなければ、0 でも）止める。
+#                     副作用を持つ 4 鍵（auto-update / codex-auto-update / effort-metrics / decision-tree）
+#                     だけに書き、呼び出しは ff_l4_skipped '<鍵>' 'retired-stop' の形にする。それ以外は `-`
+#                     （旧名では止めない。止まった回の停止文の 次の一手 に新しい書き方を添える）
+#   remove_after      別名を読むのをやめる版を置くときの列。別名が無いので、今は全行 `-`
 #
-# SKIP の鍵は、旧名から接頭辞 FF_DEV_TOOLKIT_SKIP_ と末尾の _GUARD だけを外して小文字の
-# ケバブにしたもの。`all` は置かない。ISSUE_LABEL の旧名（前置する 1 回分の形を含む）は
-# 同じ変数なので kind=skip の行にだけ書き、kind=ack の行は legacy_value_rule を skip-legacy にする
-# （旧名は名簿の中で 1 行に 1 回だけ現れる）。
-#
-# ACK の別名（kind=ack の legacy と skip-legacy が指す旧名）を hook / script が読む行には、同じ行に
-# 新しい名前（FF_<鍵>_ACK）も書く。tests/l4-declarations の旧名の残存の検査は、そういう行だけを許す。
+# 旧名はどこにも書かない。共通関数と SessionStart の通知は、環境にある FF_DEV_TOOLKIT_SKIP_ で始まる
+# 変数の名前から鍵を導いて照合する（接頭辞 FF_DEV_TOOLKIT_SKIP_ と末尾の _GUARD を外し、英大文字を
+# 小文字、_ を - にしたもの。ADR-087 決定 1 の規則の逆）。`all` は置かない。
 key	kind	owner	covers	legacy	legacy_value_rule	remove_after
-auto-update	skip	hooks/auto-update-marketplace.sh	-	FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE	nonempty	1.1.0
-background-cwd	skip	hooks/guard-background-cwd.sh	-	FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD	eq1	1.1.0
-checkout	skip	hooks/guard-checkout-restore.sh	discard-uncommitted	FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD	eq1	1.1.0
-codex-auto-update	skip	scripts/lib/multi-agent-codex-update.sh	-	FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE	eq1	1.1.0
-commit-identity	skip	scripts/lib/commit-identity-functions.sh	-	FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD	eq1	1.1.0
-credential-output	skip	hooks/guard-credential-output.sh	-	FF_DEV_TOOLKIT_SKIP_CREDENTIAL_OUTPUT_GUARD	eq1	1.1.0
-decision-tree	skip	hooks/decision-tree.sh	-	FF_DEV_TOOLKIT_SKIP_DECISION_TREE	eq1	1.1.0
-effort-actual	skip	hooks/guard-effort-actual.sh	-	FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD	eq1	1.1.0
-effort-metrics	skip	hooks/record-effort-wallclock.sh,hooks/record-instruction-bytes.sh,scripts/record-gate-minutes.sh	-	FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS	eq1	1.1.0
-exit-code	skip	hooks/guard-exit-code.sh	timeout,unbounded-wait,rg-stdin	FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD	eq1	1.1.0
-issue-label	skip	hooks/guard-issue-labels.sh	-	FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD	eq1	1.1.0
-literal-write	skip	hooks/guard-literal-write.sh	-	FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD	eq1	1.1.0
-long-gate-background	skip	hooks/guard-long-gate-background.sh	-	FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD	eq1	1.1.0
-merge-closing	skip	hooks/guard-merge-closing-keyword.sh	-	FF_DEV_TOOLKIT_SKIP_MERGE_CLOSING_GUARD	eq1	1.1.0
-pr-followup	skip	hooks/guard-pr-followup.sh	pr-draft	FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD	eq1	1.1.0
-review-in-flight	skip	hooks/guard-review-in-flight.sh	review-lock,review-round	FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD	eq1	1.1.0
-review-roster-check	skip	hooks/check-review-roster-drift.sh	-	FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK	eq1	1.1.0
-skill-drift-check	skip	hooks/check-skill-drift.sh	-	FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK	eq1	1.1.0
-sub-issue-id	skip	hooks/guard-sub-issue-id.sh	-	FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD	eq1	1.1.0
-update-check	skip	hooks/check-update.sh	-	FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK	eq1	1.1.0
-wsl-notice	skip	hooks/check-update.sh	-	FF_DEV_TOOLKIT_SKIP_WSL_NOTICE	eq1	1.1.0
-wsl-shell	skip	hooks/guard-wsl-shell.sh	-	FF_DEV_TOOLKIT_SKIP_WSL_SHELL_GUARD	eq1	1.1.0
-zsh-expansion	skip	hooks/guard-zsh-glob.sh,tests/lib/zsh-expansion-guard.sh	-	FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD	eq1	1.1.0
-zsh-glob	skip	hooks/guard-zsh-glob.sh	zsh-expansion	FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD	eq1	1.1.0
-credential-output	ack	hooks/guard-credential-output.sh	-	-	-	1.1.0
-discard-uncommitted	ack	hooks/guard-checkout-restore.sh	-	FF_DISCARD_UNCOMMITTED	eq1	1.1.0
-effort-actual	ack	hooks/guard-effort-actual.sh	-	-	-	1.1.0
-exit-code	ack	hooks/guard-exit-code.sh	-	-	-	1.1.0
-issue-label	ack	hooks/guard-issue-labels.sh	-	-	skip-legacy	1.1.0
-literal-write	ack	hooks/guard-literal-write.sh	-	-	-	1.1.0
-long-gate-background	ack	hooks/guard-long-gate-background.sh	-	-	-	1.1.0
-merge-closing	ack	hooks/guard-merge-closing-keyword.sh	-	-	-	1.1.0
-pr-draft	ack	hooks/guard-pr-followup.sh	-	-	-	1.1.0
-review-lock	ack	hooks/guard-review-in-flight.sh	-	FF_REVIEW_LOCK_OVERRIDE	eq1	1.1.0
-review-round	ack	hooks/guard-review-in-flight.sh,tests/lib/review-round-counter.sh,scripts/multi-agent.sh,scripts/multi-review.sh	-	-	-	1.1.0
-rg-stdin	ack	hooks/guard-exit-code.sh	-	-	-	1.1.0
-shell-save	ack	hooks/guard-shell-save.sh	-	-	-	1.1.0
-sub-issue-id	ack	hooks/guard-sub-issue-id.sh	-	-	-	1.1.0
-timeout	ack	hooks/guard-exit-code.sh	-	-	-	1.1.0
-unbounded-wait	ack	hooks/guard-exit-code.sh	-	-	-	1.1.0
-wsl-shell	ack	hooks/guard-wsl-shell.sh	-	-	-	1.1.0
-zsh-expansion	ack	hooks/guard-zsh-glob.sh,tests/lib/zsh-expansion-guard.sh	-	-	-	1.1.0
-zsh-glob	ack	hooks/guard-zsh-glob.sh,tests/lib/zsh-expansion-guard.sh	-	-	-	1.1.0
+auto-update	skip	hooks/auto-update-marketplace.sh	-	-	retired-stop	-
+background-cwd	skip	hooks/guard-background-cwd.sh	-	-	-	-
+checkout	skip	hooks/guard-checkout-restore.sh	discard-uncommitted	-	-	-
+codex-auto-update	skip	scripts/lib/multi-agent-codex-update.sh	-	-	retired-stop	-
+commit-identity	skip	scripts/lib/commit-identity-functions.sh	-	-	-	-
+credential-output	skip	hooks/guard-credential-output.sh	-	-	-	-
+decision-tree	skip	hooks/decision-tree.sh	-	-	retired-stop	-
+effort-actual	skip	hooks/guard-effort-actual.sh	-	-	-	-
+effort-metrics	skip	hooks/record-effort-wallclock.sh,hooks/record-instruction-bytes.sh,scripts/record-gate-minutes.sh	-	-	retired-stop	-
+exit-code	skip	hooks/guard-exit-code.sh	timeout,unbounded-wait,rg-stdin	-	-	-
+issue-label	skip	hooks/guard-issue-labels.sh	-	-	-	-
+literal-write	skip	hooks/guard-literal-write.sh	-	-	-	-
+long-gate-background	skip	hooks/guard-long-gate-background.sh	-	-	-	-
+merge-closing	skip	hooks/guard-merge-closing-keyword.sh	-	-	-	-
+pr-followup	skip	hooks/guard-pr-followup.sh	pr-draft	-	-	-
+review-in-flight	skip	hooks/guard-review-in-flight.sh	review-lock,review-round	-	-	-
+review-roster-check	skip	hooks/check-review-roster-drift.sh	-	-	-	-
+skill-drift-check	skip	hooks/check-skill-drift.sh	-	-	-	-
+sub-issue-id	skip	hooks/guard-sub-issue-id.sh	-	-	-	-
+update-check	skip	hooks/check-update.sh	-	-	-	-
+wsl-notice	skip	hooks/check-update.sh	-	-	-	-
+wsl-shell	skip	hooks/guard-wsl-shell.sh	-	-	-	-
+zsh-expansion	skip	hooks/guard-zsh-glob.sh,tests/lib/zsh-expansion-guard.sh	-	-	-	-
+zsh-glob	skip	hooks/guard-zsh-glob.sh	zsh-expansion	-	-	-
+credential-output	ack	hooks/guard-credential-output.sh	-	-	-	-
+discard-uncommitted	ack	hooks/guard-checkout-restore.sh	-	-	-	-
+effort-actual	ack	hooks/guard-effort-actual.sh	-	-	-	-
+exit-code	ack	hooks/guard-exit-code.sh	-	-	-	-
+issue-label	ack	hooks/guard-issue-labels.sh	-	-	-	-
+literal-write	ack	hooks/guard-literal-write.sh	-	-	-	-
+long-gate-background	ack	hooks/guard-long-gate-background.sh	-	-	-	-
+merge-closing	ack	hooks/guard-merge-closing-keyword.sh	-	-	-	-
+pr-draft	ack	hooks/guard-pr-followup.sh	-	-	-	-
+review-lock	ack	hooks/guard-review-in-flight.sh	-	-	-	-
+review-round	ack	hooks/guard-review-in-flight.sh,tests/lib/review-round-counter.sh,scripts/multi-agent.sh,scripts/multi-review.sh	-	-	-	-
+rg-stdin	ack	hooks/guard-exit-code.sh	-	-	-	-
+shell-save	ack	hooks/guard-shell-save.sh	-	-	-	-
+sub-issue-id	ack	hooks/guard-sub-issue-id.sh	-	-	-	-
+timeout	ack	hooks/guard-exit-code.sh	-	-	-	-
+unbounded-wait	ack	hooks/guard-exit-code.sh	-	-	-	-
+wsl-shell	ack	hooks/guard-wsl-shell.sh	-	-	-	-
+zsh-expansion	ack	hooks/guard-zsh-glob.sh,tests/lib/zsh-expansion-guard.sh	-	-	-	-
+zsh-glob	ack	hooks/guard-zsh-glob.sh,tests/lib/zsh-expansion-guard.sh	-	-	-	-

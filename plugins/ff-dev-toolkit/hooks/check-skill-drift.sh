@@ -65,7 +65,7 @@ asdd_hook_enabled hooks || exit 0
 
 # L4 宣言（ADR-087）。lib を読めない配置では止めない側（検査は効いたまま）に倒し、stderr も汚さない
 { [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
-if ff_l4_skipped 'skill-drift-check' 'FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK'; then exit 0; fi
+if ff_l4_skipped 'skill-drift-check'; then exit 0; fi
 
 # 判定と値の抜き出しは bash の組み込みだけで行い、外部コマンドもサブシェルも起動しない。プロセス起動が
 # 遅い Windows（Git Bash）では、plugin.json 172 件・スキル 186 件の 1 件ごとに grep / sed / basename を

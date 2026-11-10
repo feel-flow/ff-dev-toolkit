@@ -77,7 +77,7 @@ done
 # lib を読めない配置では止めない側（記録は効いたまま）に倒し、stderr も汚さない
 case "${BASH_SOURCE[0]}" in */*) ff_rgm_dir="${BASH_SOURCE[0]%/*}" ;; *) ff_rgm_dir="." ;; esac
 { [ -r "${ff_rgm_dir}/lib/l4-declarations.sh" ] && . "${ff_rgm_dir}/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
-if ff_l4_skipped 'effort-metrics' 'FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS'; then exit 0; fi
+if ff_l4_skipped 'effort-metrics' 'retired-stop'; then exit 0; fi
 
 case "$SECONDS_ARG" in
   '' | *[!0-9]*) exit 0 ;;

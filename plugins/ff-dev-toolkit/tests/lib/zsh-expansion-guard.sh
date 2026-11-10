@@ -21,7 +21,7 @@ IFS= read -r -d '' input || true
 # （zsh-glob の宣言も covers でここを止める）。
 # shellcheck source=../../scripts/lib/l4-declarations.sh
 { [ -r "${BASH_SOURCE[0]%/*}/../../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
-if ff_l4_skipped 'zsh-expansion' 'FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD'; then exit 0; fi
+if ff_l4_skipped 'zsh-expansion'; then exit 0; fi
 host_shell="${CLAUDE_CODE_SHELL:-${SHELL:-}}"
 case "${host_shell##*/}" in zsh | zsh-*) ;; *) exit 0 ;; esac
 case "$input" in *'='* | *'$'*) ;; *) exit 0 ;; esac

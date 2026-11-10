@@ -137,10 +137,10 @@ esac
 # zsh-glob の宣言は covers で zsh-expansion も止める（名簿 scripts/lib/l4-declarations.tsv）。
 # shellcheck source=../scripts/lib/l4-declarations.sh
 { [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
-if ff_l4_skipped 'zsh-glob' 'FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD'; then exit 0; fi
+if ff_l4_skipped 'zsh-glob'; then exit 0; fi
 # equals / scalar の検出（zsh-expansion）の宣言は 3 か所（PostToolUse・PreToolUse・書き換え）で使うので 1 回だけ判定する
 ff_zsh_exp_skipped=0
-if ff_l4_skipped 'zsh-expansion' 'FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD'; then ff_zsh_exp_skipped=1; fi
+if ff_l4_skipped 'zsh-expansion'; then ff_zsh_exp_skipped=1; fi
 
 # ---- ホスト判定（zsh のときだけ） -----------------------------------------------
 host_shell="${CLAUDE_CODE_SHELL:-${SHELL:-}}"
@@ -398,6 +398,11 @@ try_rewrite() {
     # 条件）を持つ呼び出しにも付けない — 前置すると ACK が先頭の語でなくなり、再検査でそのガードが止める。
     # 付けない回も glob / equals の引用の書き換えは続ける。
     case "$exp_hits" in *scalar*) split_on=1 ;; esac
+    # 定義が読めない・空のときは前置しない。空文字を前置すると、引用の書き換えと同居した回に
+    # 「先頭に付けた」と出て scalar の警告が消える。引用の書き換えは続ける（上の「付けない回」）。
+    if [ "$split_on" -eq 1 ] && [ -z "${FF_ZSH_WORD_SPLIT_PREFIX-}" ]; then
+      split_on=0
+    fi
     if [ "$split_on" -eq 1 ]; then
       if ff_zsh_word_split_prefixed "$cmd"; then
         split_on=0

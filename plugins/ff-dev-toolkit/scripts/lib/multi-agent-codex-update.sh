@@ -176,8 +176,13 @@ ensure_codex_cli_current() {
   # 持たない。ADR-075 決定 3）。入口を通さずこの構成ファイルだけを読んだ回と、lib を読めない配置では
   # 止めない側（版の確認と更新は効いたまま）に倒す
   declare -F ff_l4_skipped >/dev/null 2>&1 || ff_l4_skipped() { return 1; }
-  if ff_l4_skipped 'codex-auto-update' 'FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE'; then
-    echo "ℹ️  codex-cli version check skipped (FF_DEV_TOOLKIT_SKIP=codex-auto-update)." >&2
+  if ff_l4_skipped 'codex-auto-update' 'retired-stop'; then
+    # 撤去した旧名で止めた回は、共通関数が見つけた旧名を ff_l4_retired_stop_name に置く（旧名は字句で書かない）
+    if [ -n "${ff_l4_retired_stop_name-}" ]; then
+      echo "ℹ️  codex-cli version check skipped (旧名 ${ff_l4_retired_stop_name} を見つけたので、安全のため止めました。旧名は読み替えません。FF_DEV_TOOLKIT_SKIP=codex-auto-update へ書き換えてください。codex-auto-update を動かすなら、FF_DEV_TOOLKIT_SKIP に書かずに旧名を外すだけでよい)." >&2
+    else
+      echo "ℹ️  codex-cli version check skipped (FF_DEV_TOOLKIT_SKIP=codex-auto-update)." >&2
+    fi
     return 0
   fi
   local installed required layout source prefix cmd after update_rc=0 state lock last=""

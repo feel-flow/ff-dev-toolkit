@@ -1108,9 +1108,9 @@ else
     # 停止文の共通形（末尾 3 行: 止めた層 / 止めた規則 / 次の一手）の lib・採用名簿・hook の deny（Issue `#2712`）。
     # skip 経路なし（jq は必須ツール）。read-only・外部ネットワークなし（〜数秒）。
     "$SCRIPT_DIR/stop-block-contract/verify.sh"
-    # L4 宣言（SKIP / ACK）の名簿 scripts/lib/l4-declarations.tsv と、呼び出しの鍵・旧名、PUBLIC-SURFACE 4-3、
-    # oss README の鍵の表、配布実行物の ACK の型、旧名の残存、別名の期限、試験の隔離の既定の unset、
-    # 共通関数の終了コードと子プロセスを起こさないこと（ADR-087）。skip 経路なし（jq / git は必須）。
+    # L4 宣言（SKIP / ACK）の名簿 scripts/lib/l4-declarations.tsv と、呼び出しの鍵・第 2 引数（retired-stop）、
+    # PUBLIC-SURFACE 4-3、oss README の鍵の表、配布実行物の ACK の型、撤去した旧名の書き戻し、試験の隔離の既定の
+    # unset、共通関数の終了コードと子プロセスを起こさないこと（ADR-087 / `#2735`）。skip 経路なし（jq / git は必須）。
     # selftest は合成 root への変異注入で各検査の検出力を測る（高速モードでは除外）。
     "$SCRIPT_DIR/l4-declarations/verify.sh"
     "$SCRIPT_DIR/l4-declarations-selftest/verify.sh"

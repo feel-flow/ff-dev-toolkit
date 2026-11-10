@@ -94,6 +94,7 @@ mode 000 でも読める環境（root 等）のため走査失敗ケースは未
 node が無いため features.hooks=false 経路は未検査	stop	stop	stop
 帰属検査: 一時ディレクトリを作成できない環境のためスキップ（mktemp:	stop	stop	stop
 権限を外してもファイルを読める実行者（root 等）なので M10 は未実行	stop	stop	stop
+この実行者は chmod 000 のファイルも読めるので grep が rc 2 にならず	stop	stop	stop	plugins/ff-dev-toolkit/tests/l4-declarations-selftest/verify.sh
 perl が無いため CRLF の jq を再現できません（この検査は未実行）	stop	stop	stop
 perl が無いため CRLF の jq を再現できません（L10b は未実行）	stop	stop	stop
 このユーザーでは 555 のディレクトリにも書けるため rm 失敗検査をスキップ	stop	stop	stop

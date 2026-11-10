@@ -16,7 +16,7 @@
 #   - ゲートを書けない環境では実行せず無出力で exit 0（毎セッション再試行しない）
 #   - claude CLI が無い環境では何も書かず exit 0（fail-silent。起動を妨げない）
 #   - FF_DEV_TOOLKIT_SKIP=auto-update（鍵の一覧のどこかにあればよい）で無効化でき、鍵の打ち間違いでは止まらない
-#     （旧名の別名は tests/l4-declarations が持つ）
+#     （撤去した旧名のケースは tests/l4-declarations が持つ）
 #   - claude が失敗しても exit 0（オフライン耐性）
 #   - hooks.json に async: true + timeout 付きで登録されている（SessionStart の
 #     体感遅延を作らない — AC）
@@ -35,12 +35,10 @@ HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 . "$SCRIPT_DIR/../lib/crlf-jq-shim.sh"
 
 [[ -f "$TARGET" ]] || { echo "✗ hooks/auto-update-marketplace.sh がありません" >&2; exit 1; }
-# L4 宣言（ADR-087）をホストから引き継がない: 素の FF_DEV_TOOLKIT_SKIP と名簿の旧名（内部の別名）を落とす。
-# 旧名は名簿から読み、この suite には書かない（旧名のケースは tests/l4-declarations が持つ）
+# L4 宣言（ADR-087）をホストから引き継がない: 素の FF_DEV_TOOLKIT_SKIP と、FF_DEV_TOOLKIT_SKIP_ で始まる
+# 撤去した旧名（残っていると自動更新は止まる。`#2735`）を全部落とす（旧名のケースは tests/l4-declarations が持つ）
 unset FF_DEV_TOOLKIT_SKIP
-while IFS=$'\t' read -r _l4_k _l4_kind _l4_owner _l4_covers _l4_legacy _l4_rest || [[ -n "$_l4_k" ]]; do
-  case "$_l4_legacy" in FF_[A-Z0-9_]*) unset "$_l4_legacy" ;; esac
-done < "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv"
+for _l4_v in "${!FF_DEV_TOOLKIT_SKIP_@}"; do unset "$_l4_v"; done
 command -v jq >/dev/null 2>&1 || { echo "○ skip: jq が無いため auto-update-hook を検証できません（検査は1件も実行されていません）"; exit 0; }
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/auto-update-hook.XXXXXX")"

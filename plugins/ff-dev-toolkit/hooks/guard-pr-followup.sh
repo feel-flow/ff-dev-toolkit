@@ -97,7 +97,7 @@ asdd_hook_enabled hooks || exit 0
 
 # L4 宣言（ADR-087）。lib を読めない配置では止めない側（ガードは効いたまま）に倒し、stderr も汚さない
 { [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
-if ff_l4_skipped 'pr-followup' 'FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD'; then exit 0; fi
+if ff_l4_skipped 'pr-followup'; then exit 0; fi
 
 # Draft PR の deny（Bash 経路と GitHub MCP 経路で共有。違うのは対象の表示と 2 つの選択肢だけ）。
 deny_draft() { # <対象の表示> <選択肢 1> <選択肢 2>

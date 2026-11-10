@@ -141,7 +141,7 @@ asdd_hook_enabled hooks || exit 0
 
 # L4 宣言（ADR-087）。lib を読めない配置では止めない側（ガードは効いたまま）に倒し、stderr も汚さない
 { [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
-if ff_l4_skipped 'effort-actual' 'FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD'; then exit 0; fi
+if ff_l4_skipped 'effort-actual'; then exit 0; fi
 
 # ---- GitHub MCP 経路（merge_pull_request）------------------------------------
 # MCP の呼び出しにはコマンド文字列が無い。tool_input の owner / repo / pullNumber を同じ意味の

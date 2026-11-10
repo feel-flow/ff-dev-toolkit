@@ -849,17 +849,10 @@ else
   ff_git_fixture_init "$GI_FX" || bad "guard-commit-identity: fixture の初期化に失敗"
   GI_OK="$TMP/gi-real"
   ff_git_fixture_init "$GI_OK" "Real Person" "real@example.com" || bad "guard-commit-identity: 実 identity fixture の初期化に失敗"
-  # L4 宣言（ADR-087）をホストから引き継がない: 素の FF_DEV_TOOLKIT_SKIP は gi_decide が落とし、名簿の旧名
-  # （内部の別名）はここで落とす。旧名は名簿から読み、この suite には書かない（旧名のケースは
+  # L4 宣言（ADR-087）をホストから引き継がない: 素の FF_DEV_TOOLKIT_SKIP は gi_decide が落とし、
+  # FF_DEV_TOOLKIT_SKIP_ で始まる撤去した旧名（`#2735`）はここで全部落とす（旧名のケースは
   # tests/l4-declarations が持つ）
-  GI_L4_TSV="$SCRIPT_DIR/../../scripts/lib/l4-declarations.tsv"
-  if [ -r "$GI_L4_TSV" ]; then
-    while IFS=$'\t' read -r _l4_k _l4_kind _l4_owner _l4_covers _l4_legacy _l4_rest || [ -n "$_l4_k" ]; do
-      case "$_l4_legacy" in FF_[A-Z0-9_]*) unset "$_l4_legacy" ;; esac
-    done < "$GI_L4_TSV"
-  else
-    bad "guard-commit-identity: L4 宣言の名簿を読めない: ${GI_L4_TSV}"
-  fi
+  for _l4_v in "${!FF_DEV_TOOLKIT_SKIP_@}"; do unset "$_l4_v"; done
   # $1: コマンド文字列 / $2: hook JSON の cwd（既定は合成 identity の fixture）
   # → stdout に deny / allow（deny 以外の出力形は判定不能として "other"）
   gi_decide() {

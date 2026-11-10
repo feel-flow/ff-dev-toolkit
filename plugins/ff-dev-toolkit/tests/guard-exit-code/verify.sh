@@ -67,6 +67,7 @@
 # 空振り検出: 背景の名簿外分岐を if (0) にする、または待ちタグの print を別名にする（名前だけ残して中身が変わる）と、該当の deny は素通しになり赤（2026-10-30 実測: 変異 13/14/15 は各 1 件が pass へ落ち、変異検出がそれを赤として数える。正常は 259/0）。
 # 空振り検出: pipe-and-chain（Issue `#2593`）は、検出器の print を外す・pipefail の宣言を無視する・`||` まで対象にする・head で終わる左辺まで止める・前置フィルタ 3 箇所から `|` の後ろの `&&` を外す・書き換え案を一般形へ戻す・head の段がある行へ pipefail を勧める 7 変異が各 rc=1。無変異対照は rc=0（2026-11-04 WSL 実測）
 # 空振り検出: 背景実行のゲート起動の前置き行（代入・cd・heredoc でスクリプトを書く行。Issue `#2672`）は bg-prefix.sh が持つ。fixture のディレクトリが無い・pass が 11 件未満・expect.tsv と fire-*.txt の数が合わない・OBS 4 件と Count 4 の 2 本が欠けると赤。検出器を Issue `#2672` の修正前の版へ戻したツリーでは 62 件、代入を並べた 1 文の退行（Issue `#2683`）の修正前の版では 9 件失敗する（2026-11-07 Windows Git Bash 実測）。bg-prefix.sh の失敗はこの suite の失敗として数える。
+# 空振り検出: 単語分割の書き換えが先頭へ付ける文を終了コードガードの判定入力から外す検査は zsh-prefix.sh が持つ。fixture のディレクトリが無い・pass が 2 件未満・expect.tsv と fire-*.txt の数が合わない・pass と fire-dropped の本文が字面を持たない・fire-near-shwordsplit がその字面を含む・本文が共有定義の変数名を含むと赤。共有定義を別の文へ変えた実ファイルでこの suite を回すと 1 件失敗（成功 268。正常は 269/0）。子の zsh-prefix.sh は 8 件失敗（成功 14。正常は 26/0）で、伝播する 2 件が deny、伝播を欠く fire-dropped の 3 検査が素通し、変異前コピーの対照 2 件が deny、コピーへの再変異は元の字面が残っていないので sed が当たらない（2026-11-09 実測）。zsh-prefix.sh の失敗はこの suite の失敗として数える。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -1372,6 +1373,13 @@ if bash "$SCRIPT_DIR/bg-prefix.sh"; then
   ok "bg-prefix.sh（代入・cd で始まる背景起動の OBS fixture・hook と exit_code_scan の一致・変異検出）が緑"
 else
   bad "bg-prefix.sh が失敗しました（上の ✗ 行）"
+fi
+
+echo "guard-exit-code: 単語分割の前置きを判定入力から外す（fixture・一致・変異は zsh-prefix.sh）"
+if bash "$SCRIPT_DIR/zsh-prefix.sh"; then
+  ok "zsh-prefix.sh（前置き付きの伝播は通過・伝播を欠くとゲート起動行で停止・定義の変異で赤）が緑"
+else
+  bad "zsh-prefix.sh が失敗しました（上の ✗ 行）"
 fi
 
 echo

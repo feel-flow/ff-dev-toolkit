@@ -489,6 +489,11 @@ run_hook "$(edit_json)" 'FF_DEV_TOOLKIT_SKIP=review-inflight'
 assert_deny "FF_DEV_TOOLKIT_SKIP の鍵の打ち間違い（review-inflight）では deny のまま"
 run_hook "$(edit_json)" 'FF_REVIEW_LOCK_ACK=0'
 assert_deny "FF_REVIEW_LOCK_ACK=0 は解除にならない（値 1 だけが効く）"
+# 撤去した旧名（`#2735`。新しい名前の _ACK を _OVERRIDE に替えた形。旧名は字句で書かない）では解除にならない
+retired_lock="FF_REVIEW_LOCK_ACK"
+retired_lock="${retired_lock%_ACK}_OVERRIDE"
+run_hook "$(edit_json)" "${retired_lock}=1"
+assert_deny "撤去した旧名（_ACK を _OVERRIDE に替えた形）=1 を hook の環境に置いても解除にならない"
 
 echo "guard-review-in-flight: (c) ロック無しで通る"
 clear_lock
@@ -575,6 +580,8 @@ run_hook "$(bash_json 'FF_REVIEW_LOCK_ACK=1 git commit -m x')"
 assert_silent "(d6) 対象 git コマンド先頭の FF_REVIEW_LOCK_ACK=1 で通る"
 run_hook "$(bash_json 'echo FF_REVIEW_LOCK_ACK=1 && git commit -m x')"
 assert_deny "(d6) 別セグメントに現れるだけの解除指定は効かない"
+run_hook "$(bash_json "${retired_lock}=1 git commit -m x")"
+assert_deny "(d6) 撤去した旧名（_ACK を _OVERRIDE に替えた形）の前置では解除にならない"
 clear_lock
 
 echo "guard-review-in-flight: (e) Agent + pr-review-toolkit + dirty で確認を出す"

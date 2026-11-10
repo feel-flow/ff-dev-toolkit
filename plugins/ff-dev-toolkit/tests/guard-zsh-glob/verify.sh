@@ -316,7 +316,8 @@ echo "guard-zsh-glob: C 判定不能（候補コマンドに限り fail-closed�
 make_tree() { # <dir>
   mkdir -p "$1/hooks" "$1/tests/lib" "$1/scripts/lib"
   cp "$TARGET" "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$1/hooks/"
-  cp "$PLUGIN_ROOT/tests/lib/zsh-expansion-guard.sh" "$PLUGIN_ROOT/tests/lib/heredoc-strip.sh" "$SCAN_LIB" "$1/tests/lib/"
+  cp "$PLUGIN_ROOT/tests/lib/zsh-expansion-guard.sh" "$PLUGIN_ROOT/tests/lib/heredoc-strip.sh" "$SCAN_LIB" \
+    "$PLUGIN_ROOT/tests/lib/zsh-word-split-prefix.sh" "$1/tests/lib/"
   # 宣言の共通関数と名簿（配布物と同じ配置。無いと suite 全体の FF_DEV_TOOLKIT_SKIP=zsh-expansion が写しで効かない）
   cp "$PLUGIN_ROOT/scripts/lib/l4-declarations.sh" "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv" "$1/scripts/lib/"
 }

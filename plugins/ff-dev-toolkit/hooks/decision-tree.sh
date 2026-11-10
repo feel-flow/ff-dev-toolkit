@@ -87,7 +87,7 @@ asdd_hook_enabled hooks || exit 0
 
 # L4 宣言（ADR-087）。lib を読めない配置では止めない側（hook は効いたまま）に倒し、stderr も汚さない
 { [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
-if ff_l4_skipped 'decision-tree' 'FF_DEV_TOOLKIT_SKIP_DECISION_TREE'; then exit 0; fi
+if ff_l4_skipped 'decision-tree' 'retired-stop'; then exit 0; fi
 [ -n "$input" ] || exit 0
 
 unmeasured() { echo "decision-tree: (unmeasured) $1" >&2; exit 0; }

@@ -2,6 +2,7 @@
 # Issue #439: 実行環境分離の検出力を、隔離コピーへの mutation で常設検証する。
 # 空振り検出: guard suite の glob が 0 件（tests/guard-* を退避）で「0 件しか見つからない」、hook の起動行を 1 つも認識できない guard suite で「針が当たらない入力」の赤になる（2026-09-28 実測、bundle `#1808`）。isolate_hook_env から推移的な参照の追跡・FF_RUN_ALL_* / FF_REACHED_END の除外・CLAUDE_* の抽出をそれぞれ外す 3 変異は、いずれも fixture hook の control が赤。参照の追跡をリテラルの置き場（tests/lib/ 等）の綴りだけに戻す変異も、変数経由の間接参照しか持たない fixture で赤。
 # 空振り検出: isolate_hook_env から multi-agent の構成ファイル（scripts/lib/multi-agent-*.sh）の解決を外すと、参照閉包の control が「ホスト値 FF_FIXTURE_PART が残った」で赤（2026-10-20 実測）。構成ファイルではない scripts/lib の lib を辿らないこと（FF_FIXTURE_LIB_ONLY が残る）が対照。
+# 空振り検出: isolate_hook_env の名簿へ積む行から撤去した L4 宣言の旧名の列挙（${!FF_DEV_TOOLKIT_SKIP_@}）を外す変異と、build_isolate_env の旧名の loop を空にする変異は、閉包が参照しない旧名の形の変数を置いた control が「撤去した旧名 … が残った / 届いた」で赤（2026-11-10 macOS / Bash 3.2.57 実測）。
 
 set -euo pipefail
 
@@ -481,6 +482,50 @@ check_all_guard_wiring() {
 echo "== hook env isolation (guard suites) =="
 expect_pass "isolate_hook_env: 参照閉包のホスト値を落とし、保持変数とケース固有の代入は通す" run_hook_isolation_control
 expect_pass "isolate_hook_env: 空白を含む置き場でも同じ意味論で動く" run_hook_isolation_control "$TMP/hook fixture with space"
+
+# 撤去した L4 宣言の旧名（FF_DEV_TOOLKIT_SKIP_ で始まる名前。`#2735`）: 閉包が参照しない名前でも、isolate_hook_env と
+# build_isolate_env + run_isolated の両方が落とす（残っていると副作用系の hook は止まり、ガードの停止文には注記が
+# 足される）。名前は実行時に組む（公開面の母集団へ新しい綴りを入れない）
+RETIRED_PROBE="FF_DEV_TOOLKIT_SKIP_""RETIRED_PROBE"
+run_retired_isolation_control() { # <library>
+  local library="$1" fix="$TMP/retired-fixture"
+  make_hook_fixture "$fix"
+  env "${RETIRED_PROBE}=host" bash -c '
+    set -euo pipefail
+    . "$1"
+    isolate_hook_env "FF_DEV_TOOLKIT_SKIP_FIXTURE_GUARD" "$2"
+    if [ -n "$(eval "printf %s \"\${$3+x}\"")" ]; then
+      echo "control: isolate_hook_env の後に撤去した旧名 $3 が残った" >&2; exit 1
+    fi
+  ' _ "$library" "$fix/hooks/guard-fixture.sh" "$RETIRED_PROBE" || return 1
+  env "${RETIRED_PROBE}=host" bash -c '
+    set -euo pipefail
+    . "$1"
+    build_isolate_env "MULTI_AGENT_CONFIG" "$2"
+    run_isolated bash -c "[ -z \"\${$3+x}\" ]" || { echo "control: run_isolated の子へ撤去した旧名 $3 が届いた" >&2; exit 1; }
+    run_isolated "$3=case" bash -c "[ \"\${$3}\" = case ]" || { echo "control: ケース固有の旧名の代入が run_isolated の子へ届かない" >&2; exit 1; }
+  ' _ "$library" "$VARS_FIXTURE" "$RETIRED_PROBE"
+}
+expect_pass "撤去した旧名（閉包が参照しない FF_DEV_TOOLKIT_SKIP_<名前>）を isolate_hook_env と build_isolate_env の両方が落とす" \
+  run_retired_isolation_control "$LIBRARY"
+mkdir -p "$TMP/retired-lib-a" "$TMP/retired-lib-b"
+for d in "$TMP/retired-lib-a" "$TMP/retired-lib-b"; do
+  [ ! -f "$TESTS_DIR/lib/adapter-common-sources.sh" ] || cp "$TESTS_DIR/lib/adapter-common-sources.sh" "$d/"
+done
+awk '
+  index($0, "for var in $ff_l4_default_unset ${!FF_DEV_TOOLKIT_SKIP_@}; do") { i = index($0, " ${!FF_DEV_TOOLKIT_SKIP_@}"); $0 = substr($0, 1, i - 1) substr($0, i + 26); changed = 1 }
+  { print }
+  END { if (!changed) exit 9 }
+' "$LIBRARY" > "$TMP/retired-lib-a/adapter-env-isolation.sh" || { echo "✗ isolate_hook_env の旧名の列挙を外す mutation を適用できません" >&2; exit 1; }
+expect_named_failure "isolate_hook_env の名簿へ積む行から旧名の列挙を外す mutation を赤にする" \
+  "isolate_hook_env の後に撤去した旧名" run_retired_isolation_control "$TMP/retired-lib-a/adapter-env-isolation.sh"
+awk '
+  $0 == "  for var in ${!FF_DEV_TOOLKIT_SKIP_@}; do" { print "  for var in ; do"; changed = 1; next }
+  { print }
+  END { if (!changed) exit 9 }
+' "$LIBRARY" > "$TMP/retired-lib-b/adapter-env-isolation.sh" || { echo "✗ build_isolate_env の旧名の loop を空にする mutation を適用できません" >&2; exit 1; }
+expect_named_failure "build_isolate_env の旧名の loop を空にする mutation を赤にする" \
+  "run_isolated の子へ撤去した旧名" run_retired_isolation_control "$TMP/retired-lib-b/adapter-env-isolation.sh"
 expect_named_failure "isolate_hook_env: 名簿に無いセンチネルを fail-closed" \
   "分離名簿にセンチネル" run_hook_isolation_failure "FF_NOT_IN_HOOK" "$TMP/hook-fixture/hooks/guard-fixture.sh"
 expect_named_failure "isolate_hook_env: 空のセンチネルを fail-closed" \

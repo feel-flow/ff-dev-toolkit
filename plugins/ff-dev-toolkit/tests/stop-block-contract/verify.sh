@@ -3,10 +3,14 @@
 # 空振り検出: stop-block.sh が無い・読めない・0 バイトのとき、関数 ff_stop_block を定義しないとき、採用名簿と実体（ff_stop_block を層の語で呼ぶ配布物）の集合が一致しないとき（名簿の縮小・実体の 0 件を含む）、hook の deny 出力が JSON でない・deny でない・理由が空のときは「形に合う」と数えず検査不成立の赤にする。写しで測った: lib の不在 / 読めない / 0 バイト / 関数なしはいずれも冒頭で rc 1、名簿から 1 行消す・guard-literal-write.sh / run-all.sh の呼び出しを消すと R1 が赤、guard-exit-code.sh の deny を `{}` にすると E2・E5 が赤（2026-11-08 macOS / Bash 3.2.57 実測）。
 # 変異検出: run-bash-hooks.sh の未実行の注記を理由文の先頭から外すと E4、guard-literal-write.sh の停止文を理由文の前へ置くと E1・E5 が赤（2026-11-08 macOS / Bash 3.2.57 実測）。
 # 空振り検出: 写しで測った（2026-11-08 macOS / Bash 3.2.57）: guard-review-in-flight.sh の先頭文の `）: ` から空白を消すと E6 の 2 件、Edit の次の一手へ走行中ロックの ACK の前置（この実測は改名前の名前で行った）を戻すと E6（Edit）、集約 jq の sort_by を外すと E4b、guard-literal-write.sh の lib の source をサブシェルの外へ戻すと E7（guard-literal-write.sh）が赤。走行中ロックの fixture を作れない回は E6 を検査不成立の赤にする。
+# 空振り検出: 写しの stop-block.sh で測った（2026-11-10 macOS / Bash 3.2.57）: 注記の門番（declare -F ff_l4_retired_key）を外すと U11 が「次の一手: n（x）」で、改行を含む注記を落とす分岐を外すと U13 が「次の一手: n（一行目」で赤。U12 は U11 の陽性の対照（共通関数を読んだ側では注記を添える）。写しの commit-identity-functions.sh で、注記を空へ戻す行を消すと U14 が「次の一手 に注記が残った」で赤（同じ環境で ff_l4_skipped だけを呼んだ回に注記が入ることを U14 の陽性の対照にする）。
 #
 # 検査:
 #   U. 単体: 正確な 3 行（AC の文字列そのもの）・語彙外の層 / 空欄 / 改行入りの欄 / kebab-case でない rule-id は
 #      stop-block-invalid の 3 行で rc 2・PATH が空でも動く（外部コマンドを起動しない）・`○ skip` で始まる行を出さない
+#      ・L4 宣言の旧名の注記は共通関数を読んだ呼び出し側でだけ 次の一手 に添え、改行を含む注記は添えない（U11〜U13）
+#      ・scripts の呼び出し側（scripts/lib/commit-identity-functions.sh の ff_commit_identity_check）は、旧名を見つけても
+#        注記を後の停止文へ持ち越さない（U14。リリースのように同じシェルで長く動く呼び出し側の漏れ）
 #   R. 採用名簿: 配布物のうち ff_stop_block を層の語で呼ぶファイルの集合が名簿と一致する（縮んでも増えても赤）
 #   E. 端から端: 3 hook を deny させる最小入力で permissionDecisionReason の末尾 3 行が形に合い、先頭の
 #      `⚠️ ff-dev-toolkit guard（…）:` は変わらない / run-bash-hooks.sh 経由の 2 deny で未実行の注記がブロック群の前に
@@ -33,7 +37,8 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 # 利用者の opt-out / ACK と、書き換え経路へ入る Claude Code の環境を引き継がない（deny を書き換えへ逃がさない）。
 # 接頭辞の後ろの `_` を必須にしない（素の FF_DEV_TOOLKIT_SKIP=<鍵>[,<鍵>…] も落とす）。
 for _v in $(env | sed -n 's/^\(FF_DEV_TOOLKIT_SKIP[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$_v"; done
-# L4 宣言の既定の unset（SKIP の 1 変数と、名簿 scripts/lib/l4-declarations.tsv の kind=ack の全件）。
+# L4 宣言の既定の unset（SKIP の 1 変数と、名簿 scripts/lib/l4-declarations.tsv の kind=ack の全件と、
+# FF_DEV_TOOLKIT_SKIP_ で始まる撤去した旧名の全部。旧名が残っていると停止文の 次の一手 に注記が足される。`#2735`）。
 # 名簿との一致は tests/l4-declarations が印の間の名前で照合する（印と並びを崩さない）。
 # l4-default-unset:begin
 unset FF_DEV_TOOLKIT_SKIP \
@@ -42,15 +47,12 @@ unset FF_DEV_TOOLKIT_SKIP \
   FF_PR_DRAFT_ACK FF_REVIEW_LOCK_ACK FF_REVIEW_ROUND_ACK FF_RG_STDIN_ACK FF_SHELL_SAVE_ACK \
   FF_SUB_ISSUE_ID_ACK FF_TIMEOUT_ACK FF_UNBOUNDED_WAIT_ACK FF_WSL_SHELL_ACK FF_ZSH_EXPANSION_ACK \
   FF_ZSH_GLOB_ACK 2>/dev/null || true
+for _l4_v in "${!FF_DEV_TOOLKIT_SKIP_@}"; do unset "$_l4_v"; done
 # l4-default-unset:end
-# 名簿の legacy 列（内部の別名）も落とす。名前は名簿から読む（旧名をこの suite に複製しない）。
-if [ -r "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv" ]; then
-  while IFS=$'\t' read -r _k _kind _owner _covers _legacy _rest || [ -n "$_k" ]; do
-    case "$_legacy" in FF_[A-Z0-9_]*) unset "$_legacy" 2>/dev/null || true ;; esac
-  done < "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv"
-fi
+# 停止文の共通形が読む注記の変数（scripts/lib/l4-declarations.sh を読まない呼び出し側では、環境の値がそのまま
+# 届く）も落とす
 unset CLAUDECODE CLAUDE_PROJECT_DIR GROK_PLUGIN_ROOT FF_BASH_HOOKS_NOTICE_LOG \
-  ff_bash_hooks_revalidated FF_EXIT_CODE_GUARD_GATES FF_JEV_MODE 2>/dev/null || true
+  ff_bash_hooks_revalidated ff_l4_retired_note FF_EXIT_CODE_GUARD_GATES FF_JEV_MODE 2>/dev/null || true
 # 巡回カウンタは E6 の主題（走行中ロック）と直交するので無効にする（ホストの値を引き継がない）。
 export FF_REVIEW_ROUND_LIMIT=0
 # fixture リポジトリ（E6 の走行中ロック）の identity を呼び出し元へ漏らさない（GIT_DIR 系も中和する）
@@ -151,6 +153,50 @@ case "$(printf '%s\n' "$expected" | grep -c '^[[:space:]]*○ skip')" in
   0) ok "U10: どの行も ○ skip で始めない（run-all の per-check 集計が二重に数えない）" ;;
   *) bad "U10: ○ skip で始まる行がある" ;;
 esac
+# L4 宣言の旧名の注記（scripts/lib/l4-declarations.sh が置く）の門番。共通関数を読まない呼び出し側では、同名の
+# 変数があっても添えない（U11）。読んだ側では添え（U12。U11 の陽性の対照）、改行を含む注記は添えない（U13）
+L4_LIB="$PLUGIN_ROOT/scripts/lib/l4-declarations.sh"
+next_of() { printf '%s\n' "$1" | grep '^次の一手: '; }
+out="$("$BASH_BIN" -c '. "$1"; ff_l4_retired_note=x; ff_stop_block ガード rule-a hooks/x.sh "r" "n"' _ "$LIB" 2>&1)"
+if [ "$(next_of "$out")" = '次の一手: n' ]; then
+  ok "U11: 共通関数を読まない呼び出し側では、ff_l4_retired_note があっても 次の一手 に添えない"
+else
+  bad "U11: 共通関数を読まない呼び出し側で注記が添えられた: out=[$out]"
+fi
+out="$("$BASH_BIN" -c '. "$2"; . "$1"; ff_l4_retired_note=注記; ff_stop_block ガード rule-a hooks/x.sh "r" "n"' _ "$LIB" "$L4_LIB" 2>&1)"
+if [ "$(next_of "$out")" = '次の一手: n（注記）' ]; then
+  ok "U12: 共通関数を読んだ呼び出し側では、注記を 次の一手 の末尾へ括弧で添える"
+else
+  bad "U12: 共通関数を読んだ呼び出し側で注記が添えられない: out=[$out]"
+fi
+out="$("$BASH_BIN" -c '. "$2"; . "$1"; ff_l4_retired_note="$(printf "一行目\n二行目")"; ff_stop_block ガード rule-a hooks/x.sh "r" "n"' _ "$LIB" "$L4_LIB" 2>&1)"
+if [ "$(next_of "$out")" = '次の一手: n' ] && [ "$(printf '%s\n' "$out" | grep -c .)" -eq 3 ]; then
+  ok "U13: 改行を含む注記は添えない（停止文は 3 行のまま）"
+else
+  bad "U13: 改行を含む注記の扱いが違う: out=[$out]"
+fi
+# U14: commit-identity の旧名（鍵から組む。旧名は字句で書かない）だけを置いた環境で、リリースと同じく本体のシェルで
+# commit-identity-functions.sh を読み、実 identity のリポジトリで ff_commit_identity_check を呼んでから ff_stop_block を
+# 呼ぶ。次の一手 に注記が残らない。陽性の対照: 同じ環境で ff_l4_skipped 'commit-identity' だけを呼ぶと注記が入る
+CI_LIB="$PLUGIN_ROOT/scripts/lib/commit-identity-functions.sh"
+CI_RETIRED="FF_DEV_TOOLKIT_SKIP_""COMMIT_IDENTITY_GUARD"
+CI_REPO="$WORK/u14-repo"
+if ff_git_fixture_init "$CI_REPO" "Real Person" "real@example.com" >/dev/null 2>&1; then
+  ctl="$(env "${CI_RETIRED}=1" "$BASH_BIN" -c '. "$1"; ff_l4_skipped commit-identity; printf "%s" "${ff_l4_retired_note-}"' _ "$L4_LIB" 2>&1)"
+  out="$(env "${CI_RETIRED}=1" "$BASH_BIN" -c '. "$1"; . "$2"; ff_commit_identity_check "$3" || exit 9; ff_stop_block ガード rule-a hooks/x.sh "r" "n"' _ "$CI_LIB" "$LIB" "$CI_REPO" 2>&1)"
+  case "$ctl" in
+    *"FF_DEV_TOOLKIT_SKIP=commit-identity"*)
+      if [ "$(next_of "$out")" = '次の一手: n' ]; then
+        ok "U14: ff_commit_identity_check は旧名の注記を後の停止文へ持ち越さない（陽性の対照: ff_l4_skipped だけなら注記が入る）"
+      else
+        bad "U14: ff_commit_identity_check の後の停止文の 次の一手 に注記が残った: out=[$out]"
+      fi
+      ;;
+    *) bad "U14: 陽性の対照が成り立たない（旧名 ${CI_RETIRED}=1 で ff_l4_skipped を呼んでも注記が入らない。検査不成立）: [$ctl]" ;;
+  esac
+else
+  bad "U14: 実 identity のリポジトリを作れない（検査不成立）"
+fi
 
 echo "stop-block-contract: R 採用名簿"
 # 配布物の発生元（プラグイン相対）。リポジトリ直下の scripts/release-dev-toolkit.sh（配布外）は公開 checkout に

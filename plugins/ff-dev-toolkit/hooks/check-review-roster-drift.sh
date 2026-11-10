@@ -116,7 +116,7 @@ asdd_hook_enabled hooks || exit 0
 
 # L4 宣言（ADR-087）。lib を読めない配置では止めない側（検査は効いたまま）に倒し、stderr も汚さない
 { [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
-if ff_l4_skipped 'review-roster-check' 'FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK'; then exit 0; fi
+if ff_l4_skipped 'review-roster-check'; then exit 0; fi
 
 json_escape() {
   # 改行・制御文字は落とす。残るのは path / REASON / レビュアー名だけ。

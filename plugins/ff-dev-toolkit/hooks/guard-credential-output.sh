@@ -14,7 +14,7 @@ asdd_rc=$?
 # 宣言の判定は共通関数 scripts/lib/l4-declarations.sh（ADR-087）。読めないときは止めない側に倒す。
 # shellcheck source=../scripts/lib/l4-declarations.sh
 { [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
-if ff_l4_skipped 'credential-output' 'FF_DEV_TOOLKIT_SKIP_CREDENTIAL_OUTPUT_GUARD'; then exit 0; fi
+if ff_l4_skipped 'credential-output'; then exit 0; fi
 
 candidate_name() {
   case "$1" in

@@ -188,9 +188,6 @@
 #                                                 なら対象コマンド（区間）先頭の環境代入としても効く
 #                                                 （`FF_REVIEW_LOCK_ACK=1 git commit ...` /
 #                                                 `FF_REVIEW_LOCK_ACK=1 tee notes.md`）。
-#                                                 旧名（内部の別名。名簿 scripts/lib/l4-declarations.tsv
-#                                                 の legacy 列）も同じ 2 つの置き場所で受け、受けた回は
-#                                                 additionalContext で新しい名前を 1 行示す（ADR-087）。
 #                                                 Edit / Write などの編集系ツールにはコマンド行が
 #                                                 無く、hook はセッションの環境変数を継承するだけ
 #                                                 なので、そちらは再起動なしには変えられない
@@ -283,7 +280,7 @@ asdd_hook_enabled hooks || exit 0
 # 宣言の判定は共通関数 scripts/lib/l4-declarations.sh（ADR-087）。読めないときは止めない側に倒す。
 # shellcheck source=../scripts/lib/l4-declarations.sh
 { [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
-if ff_l4_skipped 'review-in-flight' 'FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD'; then exit 0; fi
+if ff_l4_skipped 'review-in-flight'; then exit 0; fi
 
 command -v jq >/dev/null 2>&1 || exit 0
 
@@ -354,14 +351,6 @@ emit_message() { # <text>
   review_round_commit
   ROUND_NOTE_DONE=1
   jq -n --arg m "$1" --arg rn "$ROUND_NOTE" '{systemMessage: (if $rn == "" then $m else ($rn + "\n" + $m) end)}' 2>/dev/null
-  exit 0
-}
-
-# 止めずに通し、エージェントの文脈へ 1 行を返す（ACK を旧名で受けた回の通知。後始末は emit_message と同じ）。
-emit_context() { # <text>
-  review_round_commit
-  ROUND_NOTE_DONE=1
-  jq -n --arg m "$1" --arg rn "$ROUND_NOTE" '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: $m}} + (if $rn == "" then {} else {systemMessage: $rn} end)' 2>/dev/null
   exit 0
 }
 
@@ -624,8 +613,6 @@ case "$tool" in
     # 分割過多は「git がコマンド位置に来ず非発火」に倒れるだけで誤ブロックにならない。
     is_write_git=0
     cmd_override=0
-    # 解除を旧名（内部の別名）で受けた回は 1（通す回に新しい名前を 1 行示す）
-    cmd_override_legacy=0
     segments="$(printf '%s\n' "$code_only" | awk '{ gsub(/&&|\|\||;|\|/, "\n"); print }')"
     [ "$has_git" -eq 1 ] || segments=""
     # 先行区間の `cd <dir>`（`cd <worktree> && git commit`）は後続の git の対象ツリーを動かす。
@@ -690,14 +677,12 @@ case "$tool" in
       n=${#toks[@]}
       i=0
       seg_override=0
-      seg_override_legacy=0
       while [ "$i" -lt "$n" ]; do
         case "${toks[$i]}" in
           # 対象 git コマンド先頭の環境代入としての解除（guard-checkout-restore.sh の
           # FF_DISCARD_UNCOMMITTED_ACK と同じ形。Bash ツールで実際に効く唯一の指定方法）
-          FF_REVIEW_LOCK_ACK=1 | FF_REVIEW_LOCK_OVERRIDE=1)
+          FF_REVIEW_LOCK_ACK=1)
             seg_override=1
-            [ "${toks[$i]}" = "FF_REVIEW_LOCK_ACK=1" ] || seg_override_legacy=1
             i=$((i + 1))
             ;;
           [A-Za-z_]*=*) i=$((i + 1)) ;;
@@ -811,7 +796,6 @@ case "$tool" in
       esac
       is_write_git=1
       [ "$seg_override" -eq 1 ] && cmd_override=1
-      [ "$seg_override_legacy" -eq 1 ] && cmd_override_legacy=1
       break
     done <<EOF
 $segments
@@ -837,7 +821,6 @@ EOF
       if [ "$write_scan_rc" -eq 0 ]; then
         is_write_bash=1
         [ "${WRITE_OVERRIDE:-0}" -eq 1 ] && cmd_override=1
-        [ "${WRITE_OVERRIDE_LEGACY:-0}" -eq 1 ] && cmd_override_legacy=1
         write_note="このコマンドは${WRITE_REASON}。判定できない書き込みは deny 側へ倒します。
 下書き・一時出力は作業ツリーの外（scratchpad や \`mktemp -d\` の一時ディレクトリ）へ書いてください。レビュー出力先 ${ROOT}/${OUTPUT_DIR_NAME}/ への書き込みは止めません。
 "
@@ -874,14 +857,10 @@ if [ "$lock_live" -ne 1 ] && [ "$LANE_LIVE" -eq 0 ] && [ -n "$guard_notes" ]; th
   emit_message "${guard_notes}このコマンドはブロックしません。"
 fi
 
-# 旧名（内部の別名）は同じ置き場所で受け、通す回に新しい名前を 1 行示す（ADR-087）
-ff_lock_legacy_note="ℹ️ ff-dev-toolkit guard（レビュー走行中）: 旧名 FF_REVIEW_LOCK_OVERRIDE=1 を読みました。新しい名前は FF_REVIEW_LOCK_ACK=1 です（旧名は ff-dev-toolkit 1.1.0 で読まなくなります）。"
-if [ "${FF_REVIEW_LOCK_ACK:-0}" = "1" ] || [ "${FF_REVIEW_LOCK_OVERRIDE:-0}" = "1" ]; then
-  [ "${FF_REVIEW_LOCK_ACK:-0}" = "1" ] || emit_context "$ff_lock_legacy_note"
+if [ "${FF_REVIEW_LOCK_ACK:-0}" = "1" ]; then
   exit 0
 fi
 if [ "${cmd_override:-0}" = "1" ]; then
-  [ "${cmd_override_legacy:-0}" = "1" ] && emit_context "$ff_lock_legacy_note"
   exit 0
 fi
 

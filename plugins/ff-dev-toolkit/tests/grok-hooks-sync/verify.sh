@@ -19,16 +19,9 @@ SHIM="$PLUGIN_ROOT/scripts/grok/hook-shim.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-# センチネルは guard-checkout-restore.sh の L4 宣言の旧名（内部の別名。hook の ff_l4_skipped の第 2 引数に
-# リテラルで残る）。旧名は名簿 scripts/lib/l4-declarations.tsv の鍵 checkout（kind=skip）の行から読み、
-# この suite には書かない（ADR-087）。名簿から読めなければセンチネルが空になり、isolate_hook_env が止める
-GROK_SENTINEL=""
-if [ -r "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv" ]; then
-  while IFS=$'\t' read -r _l4_k _l4_kind _l4_owner _l4_covers _l4_legacy _l4_rest || [ -n "$_l4_k" ]; do
-    if [ "$_l4_k" = "checkout" ] && [ "$_l4_kind" = "skip" ]; then GROK_SENTINEL="$_l4_legacy"; fi
-  done < "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv"
-fi
-isolate_hook_env "$GROK_SENTINEL" "$PLUGIN_ROOT/hooks/guard-checkout-restore.sh"
+# センチネルは guard-checkout-restore.sh の解除変数（tests/guard-checkout-restore と同じ。hook の本文に
+# リテラルで現れる。抽出が空振りしたら isolate_hook_env が止める）
+isolate_hook_env "FF_DEV_TOOLKIT_SKIP FF_DISCARD_UNCOMMITTED_ACK" "$PLUGIN_ROOT/hooks/guard-checkout-restore.sh"
 # shellcheck source=../lib/git-fixture.sh
 . "$SCRIPT_DIR/../lib/git-fixture.sh"
 

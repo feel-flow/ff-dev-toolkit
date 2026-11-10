@@ -263,7 +263,11 @@ run_hook 'gh issue list --label bug | head -1; gh issue create --title t'
 assert_deny "対: 引用符の外の ; と | は分割点のまま（後続セグメントの起票を検出する）"
 
 run_hook 'FF_ISSUE_LABEL_ACK=1 gh issue create --title t'
-assert_silent "AC4: 案内した抜け道（FF_ISSUE_LABEL_ACK=1）を前置した起票は停止しない（旧名の注記も出さない）"
+assert_silent "AC4: 案内した抜け道（FF_ISSUE_LABEL_ACK=1）を前置した起票は停止しない（無出力）"
+# 撤去した旧名（`#2735`。SKIP の旧名の形を 1 回分の前置にしたもの。旧名は字句で書かず鍵から組む）では通らない
+retired_prefix="FF_DEV_TOOLKIT_SKIP_"
+run_hook "${retired_prefix}ISSUE_LABEL_GUARD=1 gh issue create --title t"
+assert_deny "AC4: 撤去した旧名（SKIP の旧名の形）の前置では通らない"
 run_hook 'echo FF_ISSUE_LABEL_ACK=1; gh issue create --title t'
 assert_deny "AC4: 別セグメントに現れるだけの FF_ISSUE_LABEL_ACK=1 では通らない"
 run_hook 'gh issue create --title t' "$TARGET" 'FF_DEV_TOOLKIT_SKIP=issue-label'

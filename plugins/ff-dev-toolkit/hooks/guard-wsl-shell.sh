@@ -48,7 +48,7 @@ case "${OSTYPE:-}" in msys* | cygwin*) ;; *) exit 0 ;; esac
 # 宣言の判定は共通関数 scripts/lib/l4-declarations.sh（ADR-087）。読めないときは止めない側に倒す。
 # shellcheck source=../scripts/lib/l4-declarations.sh
 { [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
-if ff_l4_skipped 'wsl-shell' 'FF_DEV_TOOLKIT_SKIP_WSL_SHELL_GUARD'; then exit 0; fi
+if ff_l4_skipped 'wsl-shell'; then exit 0; fi
 case "$input" in *[wW][sS][lL]*) ;; *) exit 0 ;; esac
 case "$input" in *'$'*) ;; *) exit 0 ;; esac
 if ! source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh"; then

@@ -62,9 +62,10 @@ asdd_hook_enabled hooks || exit 0
 #   FF_DEV_TOOLKIT_SKIP=<鍵>[,<鍵>…]    鍵 update-check で更新チェックを、鍵 wsl-notice で Windows の Git Bash
 #                                       での WSL 案内を無効化する（ユーザー向け。鍵の名簿は
 #                                       scripts/lib/l4-declarations.tsv、判定は scripts/lib/l4-declarations.sh。ADR-087）
-#   L4 宣言の通知: 名簿の旧名（内部の別名）が効く値で設定されている・FF_DEV_TOOLKIT_SKIP に名簿の
-#   kind=skip に無い鍵がある・値が文法に合わない、のどれかがあれば、更新チェックを止めた回も含めて
-#   毎回の SessionStart で置き換えの案内と停止文の 3 行（ADR-084 決定 6）を出す（下の L4 宣言の節）
+#   L4 宣言の通知: 環境に撤去した旧名（FF_DEV_TOOLKIT_SKIP_ で始まり、名前から名簿の kind=skip の鍵を
+#   導けるもの）が空でない値で残っている・FF_DEV_TOOLKIT_SKIP に名簿の kind=skip に無い鍵がある・値が
+#   文法に合わない、のどれかがあれば、更新チェックを止めた回も含めて毎回の SessionStart で置き換えの案内と
+#   停止文の 3 行（ADR-084 決定 6）を出す（下の L4 宣言の節）
 #   以下はテストシーム（tests/update-check/verify.sh が実ネットワークに触れずに
 #   本スクリプトを駆動するための注入口。通常運用で設定する必要はない）:
 #   FF_DEV_TOOLKIT_UPDATE_REPO_URL      参照先リポジトリ URL の上書き
@@ -89,67 +90,60 @@ asdd_hook_enabled hooks || exit 0
 # コピー）では止めない側（更新チェックも WSL 案内も効いたまま）に倒し、stderr も汚さない。
 { [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
 # 通知: 名簿（scripts/lib/l4-declarations.tsv）を組み込みの read で 1 回読み、
-#   (1) legacy 列の旧名が legacy_value_rule で効く値になっている（kind=ack の別名も含む）
+#   (1) 環境に撤去した旧名が空でない値で残っている（FF_DEV_TOOLKIT_SKIP_ で始まる変数の名前から、共通関数の
+#       ff_l4_retired_key で鍵を導き、名簿の kind=skip にある鍵になるもの。旧名はどこにも書かない）
 #   (2) FF_DEV_TOOLKIT_SKIP に名簿の kind=skip に無い鍵がある
 #   (3) FF_DEV_TOOLKIT_SKIP の値が文法（lib と同じ規則）に合わず、全体を未設定として扱った
-# のどれかがあれば、置き換えの行と停止文の 3 行（ADR-084 決定 6）を組む。出力は更新通知・WSL 案内と
-# 同じ JSON 1 つへ並べる（更新チェックを止めた回も EXIT trap で出す）。外部コマンドもサブシェルも
-# 起動しない。旧名は名簿から読み、この hook には書かない。JSON の文字列へそのまま埋め込むので、
-# 埋め込む値は名簿の形（旧名は英大文字・数字・_、鍵は文法を通った小文字のケバブ）に限り、文法に
-# 合わない値そのものは埋め込まない。行の区切りは JSON のエスケープ \n（2 文字）で書く。
+# のどれかがあれば、置き換えの行と停止文の 3 行（ADR-084 決定 6）を組む。(1) の文は鍵の legacy_value_rule で
+# 分ける: retired-stop の鍵（副作用を持つ 4 鍵）は旧名を見つけたので止めている、それ以外は旧名を読まなくなった
+# （その鍵は効いている）。導いた鍵が名簿に無い名前は数えない。次の一手の置き換え（FF_DEV_TOOLKIT_SKIP=<鍵>）に
+# 入れるのは、retired-stop の鍵（いま止まっている。動かすなら旧名を外すだけでよい、を添える）と、それ以外の鍵の
+# 旧名の値が 1（旧い意味で止めていた値）のものだけ。値 0 などガードを効かせたままにする値の旧名は、外すだけを
+# 案内する（止める書き換えを勧めない）。出力は更新通知・WSL 案内と同じ JSON 1 つへ
+# 並べる（更新チェックを止めた回も EXIT trap で出す）。外部コマンドもサブシェルも起動しない。JSON の文字列へ
+# そのまま埋め込むので、埋め込む値は名簿の形（旧名は英大文字・数字・_、鍵は文法を通った小文字のケバブ）に
+# 限り、文法に合わない値そのものは埋め込まない。行の区切りは JSON のエスケープ \n（2 文字）で書く。
+# 共通関数を読めない配置では (1) を数えない（旧名を導けない。(2)・(3) は今までどおり出す）。
 ff_cu_tsv="${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.tsv"
 ff_cu_l4_msg=""
 ff_cu_l4_ctx=""
 ff_cu_nl='\n'
-# 小文字のケバブ → 英大文字・_ 区切り（ACK の名前を組む。組み込みだけ。結果は ff_cu_up）
-ff_cu_upper() {
-  local s="${1-}" c pre lower=abcdefghijklmnopqrstuvwxyz upper=ABCDEFGHIJKLMNOPQRSTUVWXYZ
-  ff_cu_up=""
-  while [ -n "$s" ]; do
-    c="${s:0:1}"
-    s="${s:1}"
-    case "$c" in
-      [abcdefghijklmnopqrstuvwxyz]) pre="${lower%%"$c"*}"; c="${upper:${#pre}:1}" ;;
-      -) c="_" ;;
-    esac
-    ff_cu_up="${ff_cu_up}${c}"
-  done
-}
 ff_cu_l4_build() {
-  local k kind legacy rule ra val first=1 skip_keys=" " list item rest repl
-  local lines="" legacy_n=0 legacy_skip_names="" legacy_skip_keys="" ack_steps="" unknown="" unknown_n=0 bad=0
+  local k kind rule first=1 skip_keys=" " stop_keys=" " list item rest name
+  local lines="" retired_n=0 retired_names="" retired_keys="" run_keys="" unknown="" unknown_n=0 bad=0
   local suggest="" rule_id reason next
   [ -f "$ff_cu_tsv" ] && [ -r "$ff_cu_tsv" ] || return 0
-  # owner / covers の列は読み捨てる
-  while IFS=$'\t' read -r k kind _ _ legacy rule ra || [ -n "$k" ]; do
+  # owner / covers / legacy / remove_after の列は読み捨てる
+  while IFS=$'\t' read -r k kind _ _ _ rule _ || [ -n "$k" ]; do
     case "$k" in '' | '#'*) continue ;; esac
     if [ "$first" = 1 ]; then first=0; continue; fi
-    [ "$kind" = "skip" ] && skip_keys="${skip_keys}${k} "
-    case "$legacy" in FF_*) ;; *) continue ;; esac
-    case "$legacy" in *[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]*) continue ;; esac
-    case "$k" in '' | *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) continue ;; esac
-    val="${!legacy-}"
-    case "$rule" in
-      nonempty) [ -n "$val" ] || continue ;;
-      *) [ "$val" = "1" ] || continue ;;
-    esac
-    if [ "$kind" = "skip" ]; then
-      repl="FF_DEV_TOOLKIT_SKIP=${k}"
-      case " ${legacy_skip_keys} " in *" ${k} "*) ;; *) legacy_skip_keys="${legacy_skip_keys}${legacy_skip_keys:+ }${k}" ;; esac
-      legacy_skip_names="${legacy_skip_names}${legacy_skip_names:+, }${legacy}"
-    else
-      ff_cu_upper "$k"
-      # 置き場所は ACK ごとに違い（区間の先頭・hook の環境など）、改名でも変えていない。この通知が見るのは
-      # セッションの環境だけで、環境で効く ACK（Edit / Write にはコマンド行が無いので hook の環境を読むもの）と、
-      # コマンドの先頭でしか読まない ACK（環境に置いても元から効いていない）の両方がある。どちらにも正しい
-      # よう、名前だけを替え、置き場所は ACK ごとの決まりに従う案内にする
-      repl="FF_${ff_cu_up}_ACK=1（1 回分だけ通す承認。置き場所は旧名と同じで、ACK ごとに決まっている）"
-      ack_steps="${ack_steps}${ack_steps:+、}${legacy} を FF_${ff_cu_up}_ACK=1 へ改名する（セッションの環境で効くのは hook の環境を読む ACK だけで、それ以外はコマンドの先頭に置く。置き場所は各 hook の停止文が示す）"
-    fi
-    case "$ra" in '' | *[!0123456789.]*) ra="次の版" ;; esac
-    lines="${lines}・旧名 ${legacy} は内部の別名で、${ra} で読まなくなります。置き換え: ${repl}${ff_cu_nl}"
-    legacy_n=$((legacy_n + 1))
+    [ "$kind" = "skip" ] || continue
+    case "$k" in *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) continue ;; esac
+    skip_keys="${skip_keys}${k} "
+    [ "$rule" != "retired-stop" ] || stop_keys="${stop_keys}${k} "
   done < "$ff_cu_tsv"
+  if declare -F ff_l4_retired_key > /dev/null; then
+    for name in "${!FF_DEV_TOOLKIT_SKIP_@}"; do
+      [ -n "${!name-}" ] || continue
+      case "$name" in *[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]*) continue ;; esac
+      ff_l4_retired_key "$name" || continue
+      k="$ff_l4_rk"
+      case "$skip_keys" in *" ${k} "*) ;; *) continue ;; esac
+      case "$stop_keys" in
+        *" ${k} "*) lines="${lines}・旧名 ${name} を見つけたので、安全のため ${k} を止めています（旧名は読み替えません）。置き換え: FF_DEV_TOOLKIT_SKIP=${k}${ff_cu_nl}" ;;
+        *) lines="${lines}・旧名 ${name} は読まなくなりました（${k} は効いています）。止めるなら FF_DEV_TOOLKIT_SKIP=${k}${ff_cu_nl}" ;;
+      esac
+      case "$stop_keys" in
+        *" ${k} "*) case " ${run_keys} " in *" ${k} "*) ;; *) run_keys="${run_keys}${run_keys:+ }${k}" ;; esac ;;
+        *) [ "${!name-}" = "1" ] || k="" ;;
+      esac
+      if [ -n "$k" ]; then
+        case " ${retired_keys} " in *" ${k} "*) ;; *) retired_keys="${retired_keys}${retired_keys:+ }${k}" ;; esac
+      fi
+      retired_names="${retired_names}${retired_names:+, }${name}"
+      retired_n=$((retired_n + 1))
+    done
+  fi
   list="${FF_DEV_TOOLKIT_SKIP-}"
   if [ -n "$list" ]; then
     case "$list" in
@@ -167,14 +161,14 @@ ff_cu_l4_build() {
         ;;
     esac
   fi
-  [ "$legacy_n" -gt 0 ] || [ "$unknown_n" -gt 0 ] || [ "$bad" = 1 ] || return 0
+  [ "$retired_n" -gt 0 ] || [ "$unknown_n" -gt 0 ] || [ "$bad" = 1 ] || return 0
   if [ "$unknown_n" -gt 0 ]; then
     lines="${lines}・FF_DEV_TOOLKIT_SKIP の鍵 ${unknown} は名簿の kind=skip にありません（何も止めていません。打ち間違いなら直す）${ff_cu_nl}"
   fi
   if [ "$bad" = 1 ]; then
     lines="${lines}・FF_DEV_TOOLKIT_SKIP の値が文法（小文字の鍵をカンマで並べる。空白・大文字・空の要素・前後のカンマは不可）に合わないため、全体を未設定として扱いました（どのガードも止めていません）${ff_cu_nl}"
   fi
-  for item in $legacy_skip_keys; do
+  for item in $retired_keys; do
     case " ${suggest} " in *" ${item} "*) ;; *) suggest="${suggest}${suggest:+ }${item}" ;; esac
   done
   suggest="${suggest// /,}"
@@ -183,9 +177,9 @@ ff_cu_l4_build() {
   elif [ "$unknown_n" -gt 0 ]; then
     rule_id="l4-declarations/unknown-key"
   else
-    rule_id="l4-declarations/legacy-alias"
+    rule_id="l4-declarations/retired-name"
   fi
-  reason="L4 宣言の読み替え（旧名 ${legacy_n} 件・名簿に無い鍵 ${unknown_n} 件・文法違反 ${bad} 件）"
+  reason="L4 宣言の読み替え（撤去した旧名 ${retired_n} 件・名簿に無い鍵 ${unknown_n} 件・文法違反 ${bad} 件）"
   next=""
   if [ "$bad" = 1 ]; then
     next="FF_DEV_TOOLKIT_SKIP を小文字の鍵のカンマ区切り（例: FF_DEV_TOOLKIT_SKIP=update-check,wsl-notice）に直す"
@@ -194,8 +188,8 @@ ff_cu_l4_build() {
   elif [ "$unknown_n" -gt 0 ]; then
     next="FF_DEV_TOOLKIT_SKIP から名簿に無い鍵を外す"
   fi
-  [ -z "$legacy_skip_names" ] || next="${next}${next:+。}旧名（${legacy_skip_names}）は外す"
-  [ -z "$ack_steps" ] || next="${next}${next:+。}${ack_steps}"
+  [ -z "$retired_names" ] || next="${next}${next:+。}旧名（${retired_names}）は外す"
+  [ -z "$run_keys" ] || next="${next}。${run_keys// /・} を動かすなら、FF_DEV_TOOLKIT_SKIP に書かずに旧名を外すだけでよい"
   next="${next}。書き換えたら新しい会話を開始する"
   ff_cu_l4_msg="⚠️ ff-dev-toolkit: L4 宣言（SKIP / ACK）に書き換えの要るところがあります。${ff_cu_nl}${lines}止めた層: 宣言${ff_cu_nl}止めた規則: ${rule_id}（scripts/lib/l4-declarations.tsv）— ${reason}${ff_cu_nl}次の一手: ${next}"
   ff_cu_l4_ctx="ff-dev-toolkit の SessionStart 検査が、利用者の L4 宣言（ADR-087。SKIP は FF_DEV_TOOLKIT_SKIP=<鍵>[,<鍵>…] の 1 変数、ACK は FF_<鍵>_ACK の型）に書き換えの要るところを見つけた。利用者に次を伝え、環境変数の書き換えを案内すること:${ff_cu_nl}${lines}止めた層: 宣言${ff_cu_nl}止めた規則: ${rule_id}（scripts/lib/l4-declarations.tsv）— ${reason}${ff_cu_nl}次の一手: ${next}"
@@ -222,7 +216,7 @@ wsl_hold=0
 wsl_cache_dir="${FF_DEV_TOOLKIT_UPDATE_CACHE_DIR:-${XDG_CACHE_HOME:-${HOME:-}/.cache}/ff-dev-toolkit}"
 wsl_lib="${BASH_SOURCE[0]%/*}/../scripts/lib/wsl-notice.sh"
 ff_cu_wsl_skip=0
-if ff_l4_skipped 'wsl-notice' 'FF_DEV_TOOLKIT_SKIP_WSL_NOTICE'; then ff_cu_wsl_skip=1; fi
+if ff_l4_skipped 'wsl-notice'; then ff_cu_wsl_skip=1; fi
 if [ "$ff_cu_wsl_skip" = 0 ] && [ -f "$wsl_lib" ] \
   && source "$wsl_lib" 2>/dev/null && ff_host_is_msys "${OSTYPE:-}"; then
   # 現在時刻は bash 組み込みで取る。%(...)T の無い bash 3.2 だけ date へ落とす（ここは Git Bash /
@@ -271,7 +265,7 @@ notice_emit_only() {
 
 # ---- 更新チェックのオプトアウト（更新チェックのキャッシュ読み書きを含め、以降の処理より先） ----
 # 止めた回も、上の EXIT trap が WSL 案内と L4 宣言の通知を出す
-if ff_l4_skipped 'update-check' 'FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK'; then exit 0; fi
+if ff_l4_skipped 'update-check'; then exit 0; fi
 
 # ---- 自バージョン取得 --------------------------------------------------------
 # 実運用では Claude Code が CLAUDE_PLUGIN_ROOT を与える。テストや手動実行では

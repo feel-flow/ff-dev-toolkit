@@ -20,6 +20,18 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-10
+
+### 修正
+
+- 背景でゲートを起動する Bash のうち、単語分割の書き換えが先頭へ `setopt SH_WORD_SPLIT; ` を付け、終了コードを `exit $rc` まで伝播している呼び出しを、終了コードガードが止めなくなりました。終了コードを伝播しない呼び出しは、これまでどおりゲートの起動行を名指して止まります。
+
+### 削除
+
+- L4 宣言をまとめる前の旧名（`FF_DEV_TOOLKIT_SKIP_` で始まる個別の名前 24 個と、`FF_DISCARD_UNCOMMITTED` / `FF_REVIEW_LOCK_OVERRIDE`）を、内部の別名として読むのをやめた。どれも 1.0.0 の前に契約から外した名前で、置き換え先は `FF_DEV_TOOLKIT_SKIP` に鍵をカンマで並べる書き方（例 `FF_DEV_TOOLKIT_SKIP=exit-code`。鍵の一覧は `plugins/ff-dev-toolkit/PUBLIC-SURFACE.md` の 4-3）と、`FF_` + 鍵 + `_ACK=1` の型の承認。ガードと通知を止めていた旧名は効かなくなり、そのガードと通知はふたたび動く。終了コード・リテラル書き込み・レビュー走行中の 3 つのガードが止めたときは、停止文の「次の一手」の行に、その旧名を読まなくなったことと新しい書き方を添える
+- 副作用のある 4 つの鍵（`auto-update` / `codex-auto-update` / `effort-metrics` / `decision-tree`）の旧名は、別名として読む代わりに、値が空でなければ（`0` でも）その処理を止めたままにする。旧名で止めていた環境で、更新や記録が黙って動き出さないようにするため。これまで値が `1` のときだけ止めていた 3 つ（`codex-auto-update` / `effort-metrics` / `decision-tree`）は、止まる範囲が広がる。SessionStart の通知は、旧名を見つけるたびに置き換えを案内する
+- `FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1` をコマンドの先頭に置く 1 回分の形も読まなくなった。1 回だけ通すときは `FF_ISSUE_LABEL_ACK=1` を使う
+
 ## [1.0.0] - 2026-11-10
 
 ### 変更

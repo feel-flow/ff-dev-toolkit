@@ -1,22 +1,20 @@
 # shellcheck shell=bash
-# 振る舞いの表（tests/l4-declarations/verify.sh の N10〜N12）の fixture が使う道具。
+# 振る舞いの表（tests/l4-declarations/verify.sh の N10・N12・N14）の fixture が使う道具。
 #
 # verify.sh は 1 回の起動ごとに env -i で新しい /bin/bash を立て、このファイル → fixture の順に
-# source してから fx_setup / fx_run / fx_judge（ACK の fixture は fx_input も）を呼ぶ。環境に残るのは
-# HOME / PATH / LANG / TMPDIR と次の小文字の変数、それに表の行が足す宣言（FF_DEV_TOOLKIT_SKIP=<鍵>・
-# 旧名・ACK の名前）だけで、利用者の環境の宣言は表に混ざらない。
+# source してから fx_setup / fx_run / fx_judge を呼ぶ。環境に残るのは HOME / PATH / LANG / TMPDIR と
+# 次の小文字の変数、それに表の行が足す宣言（FF_DEV_TOOLKIT_SKIP=<鍵>・鍵から組んだ撤去した旧名）だけで、
+# 利用者の環境の宣言は表に混ざらない。
 #   fx_wk      この起動の作業ディレクトリ（HOME と TMPDIR もこの中。起動ごとに新しい）
 #   fx_plugin  プラグイン root（plugins/ff-dev-toolkit）
 #   fx_root    リポジトリ root
 #
-# fixture の書き方（skip/<鍵>.sh・ack/<鍵>.sh・notice/<鍵>.sh。1 ファイル 1 鍵）:
+# fixture の書き方（skip/<鍵>.sh・notice/<鍵>.sh。1 ファイル 1 鍵）:
 #   fx_owners='<owner> …'  名簿の owner 列と同じ集合を空白区切りの単引用リテラルで書く（verify.sh が照合する）
 #   fx_setup               入力・一時リポジトリ・stub を作業ディレクトリの中に作る（ネットワークを使わない）
 #   fx_run                 owner を起動する。stdout を out、stderr を err、rc を rc（どれも作業ディレクトリ）に置く
 #   fx_judge               skip / notice: 「STOP <根拠>」（ガード・通知・記録が効いた）か「PASS <根拠>」
 #                          （素通し）を 1 行出す。それ以外の語で始まる行は判定不能として表が赤にする
-#   fx_forms='<形> …'      ack だけ: 前置の形の一覧。hookenv は hook の環境に置く形、それ以外は区間の先頭の前置
-#   fx_input <形>          ack だけ: 変数 fx_ack_prefix（`<名前>=1 ` か空）を前置した入力を in.json に書く
 # 関数・変数は fx_ で始める（verify.sh と他の fixture の名前を壊さない）。
 
 fx_bash_input() { # <command> <cwd> [<tool_input へ足す JSON>] — PreToolUse(Bash) の stdin を stdout へ

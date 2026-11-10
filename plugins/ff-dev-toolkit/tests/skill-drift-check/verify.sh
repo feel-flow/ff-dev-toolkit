@@ -37,13 +37,9 @@ TARGET="$PLUGIN_ROOT/hooks/check-skill-drift.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 
 [ -f "$TARGET" ] || { echo "✗ hooks/check-skill-drift.sh が見つかりません: $TARGET" >&2; exit 1; }
-# L4 宣言（ADR-087）の旧名（内部の別名）をホストから引き継がない。旧名は名簿から読み、この suite には
-# 書かない（旧名のケースは tests/l4-declarations が持つ）。素の FF_DEV_TOOLKIT_SKIP は run_hook が落とす
-if [ -r "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv" ]; then
-  while IFS=$'\t' read -r _l4_k _l4_kind _l4_owner _l4_covers _l4_legacy _l4_rest || [ -n "$_l4_k" ]; do
-    case "$_l4_legacy" in FF_[A-Z0-9_]*) unset "$_l4_legacy" ;; esac
-  done < "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv"
-fi
+# L4 宣言（ADR-087）の、FF_DEV_TOOLKIT_SKIP_ で始まる撤去した旧名（`#2735`）をホストから引き継がない
+# （旧名のケースは tests/l4-declarations が持つ）。素の FF_DEV_TOOLKIT_SKIP は run_hook が落とす
+for _l4_v in "${!FF_DEV_TOOLKIT_SKIP_@}"; do unset "$_l4_v"; done
 command -v jq >/dev/null 2>&1 || { echo "✗ jq が必要です（通知 JSON の構文検証に使用）" >&2; exit 1; }
 
 # rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ

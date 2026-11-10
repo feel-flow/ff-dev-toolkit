@@ -53,13 +53,14 @@ asdd_hook_enabled hooks || exit 0
 #     不能）黙って exit 0。check-then-act の非アトミック競合と、書き込み不能
 #     環境での毎セッション再試行の両方を 1 つのゲートで防ぐ
 #
-# 無効化: 環境変数 FF_DEV_TOOLKIT_SKIP=auto-update（鍵の名簿は scripts/lib/l4-declarations.tsv。
-#   旧名の別名だけは値が空でなければ効く — 名簿の legacy_value_rule=nonempty）
+# 無効化: 環境変数 FF_DEV_TOOLKIT_SKIP=auto-update（鍵の名簿は scripts/lib/l4-declarations.tsv）。
+#   撤去した旧名が環境に残っていれば、値に依らず（0 でも）止める（名簿の legacy_value_rule=retired-stop。
+#   旧名で止めていた自動更新を黙って動かし始めない。案内は SessionStart の hooks/check-update.sh が出す）
 # ゲートの上書き（テスト用）: FF_DEV_TOOLKIT_AUTO_UPDATE_STAMP=<base path>
 
 # L4 宣言（ADR-087）。lib を読めない配置では止めない側（自動更新は効いたまま）に倒し、stderr も汚さない
 { [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
-if ff_l4_skipped 'auto-update' 'FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE' 'nonempty'; then exit 0; fi
+if ff_l4_skipped 'auto-update' 'retired-stop'; then exit 0; fi
 command -v claude >/dev/null 2>&1 || exit 0
 
 stamp="${FF_DEV_TOOLKIT_AUTO_UPDATE_STAMP:-$HOME/.claude/.ff-dev-toolkit-auto-update-stamp}"

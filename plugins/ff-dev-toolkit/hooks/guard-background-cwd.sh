@@ -107,7 +107,7 @@ asdd_hook_enabled hooks || exit 0
 # 宣言の判定は共通関数 scripts/lib/l4-declarations.sh（ADR-087）。読めないときは止めない側に倒す。
 # shellcheck source=../scripts/lib/l4-declarations.sh
 { [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
-if ff_l4_skipped 'background-cwd' 'FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD'; then exit 0; fi
+if ff_l4_skipped 'background-cwd'; then exit 0; fi
 
 # 安価な前置フィルタ: Bash 以外の入力は即終了（`tool_name` の値を素の文字列で見るだけ）
 case "$input" in

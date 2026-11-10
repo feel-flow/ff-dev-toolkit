@@ -51,7 +51,7 @@ asdd_hook_enabled hooks || exit 0
 
 # L4 宣言（ADR-087）。lib を読めない配置では止めない側（記録は効いたまま）に倒し、stderr も汚さない
 { [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
-if ff_l4_skipped 'effort-metrics' 'FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS'; then exit 0; fi
+if ff_l4_skipped 'effort-metrics' 'retired-stop'; then exit 0; fi
 
 # 安価な前置フィルタ（jq を起動せずに非該当を落とす）
 case "$input" in

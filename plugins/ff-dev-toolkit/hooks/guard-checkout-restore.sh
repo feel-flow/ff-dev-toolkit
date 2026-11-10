@@ -10,12 +10,9 @@
 # 警告は再実行可能な deny（`permissionDecision: "deny"` の `permissionDecisionReason`）として
 # 実装する。PreToolUse の `additionalContext` はエージェントへ届くが、Claude Code の CLI と
 # Remote Control の画面にも表示される（2026-11-04 実測。Issue `#2614`）ので、止めない警告の
-# 出口にはしない。例外は ACK の旧名で通した回の 1 行の注記だけで、旧名を使った回にしか出ず、
-# 別名とともに 1.1.0 で消える（ADR-087 決定 5）。
+# 出口にはしない。
 # 意図的な破棄は、対象 git コマンドの先頭に環境代入 FF_DISCARD_UNCOMMITTED_ACK=1 を
-# 付ければ素通しする（文字列としてコマンド中に現れるだけでは無効）。旧名（内部の別名。
-# 名簿 scripts/lib/l4-declarations.tsv の legacy 列）も同じ置き場所で受け、受けた回は
-# additionalContext で新しい名前を 1 行示す（ADR-087）。
+# 付ければ素通しする（文字列としてコマンド中に現れるだけでは無効）。
 #
 # 発火しない（誤爆させない）ケース:
 #   - ブランチ切り替え（`git checkout <branch>` / `git checkout -b <new>` /
@@ -65,7 +62,7 @@ asdd_hook_enabled hooks || exit 0
 # 宣言の判定は共通関数 scripts/lib/l4-declarations.sh（ADR-087）。読めないときは止めない側に倒す。
 # shellcheck source=../scripts/lib/l4-declarations.sh
 { [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
-if ff_l4_skipped 'checkout' 'FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD'; then exit 0; fi
+if ff_l4_skipped 'checkout'; then exit 0; fi
 
 # 安価な前置フィルタ: git かつ checkout/restore を含まない入力は即終了
 case "$input" in
@@ -131,8 +128,6 @@ is_local_branch() {
 }
 
 DIRTY_LIST=""
-# ACK を旧名（内部の別名）で受けた回は 1（通知を 1 行出す）
-ff_discard_legacy=0
 
 add_dirty() {
   local p
@@ -150,15 +145,14 @@ add_dirty() {
 analyze_segment() {
   local toks=("$@")
   local n=${#toks[@]}
-  local i=0 t sub="" bypass=0 legacy=0 gitdir="$CWD"
+  local i=0 t sub="" bypass=0 gitdir="$CWD"
 
   # 先頭の環境代入とラッパーコマンドを剥がす
   while [ "$i" -lt "$n" ]; do
     t="$(strip_quotes "${toks[$i]}")"
     case "$t" in
-      FF_DISCARD_UNCOMMITTED_ACK=1 | FF_DISCARD_UNCOMMITTED=1)
+      FF_DISCARD_UNCOMMITTED_ACK=1)
         bypass=1
-        [ "$t" = "FF_DISCARD_UNCOMMITTED_ACK=1" ] || legacy=1
         i=$((i + 1))
         continue
         ;;
@@ -188,10 +182,7 @@ analyze_segment() {
     *) return 0 ;;
   esac
   # 対象 git コマンド先頭の環境代入としてのバイパスだけを認める
-  if [ "$bypass" -eq 1 ]; then
-    [ "$legacy" -eq 1 ] && ff_discard_legacy=1
-    return 0
-  fi
+  [ "$bypass" -eq 0 ] || return 0
 
   # git のグローバルオプションを飛ばしてサブコマンドを特定する。
   # -C は dirty 判定の実行ディレクトリにも反映する（相対は cwd 基準）。
@@ -330,15 +321,7 @@ done <<EOF
 $segments
 EOF
 
-# ACK を旧名で受けた回の通知（1 行。新しい名前を示す）。通す回は additionalContext だけを出す。
-ff_discard_note=""
-[ "$ff_discard_legacy" -eq 1 ] && ff_discard_note="ℹ️ ff-dev-toolkit guard（未コミット変更の消失防止）: 旧名 FF_DISCARD_UNCOMMITTED=1 を読みました。新しい名前は FF_DISCARD_UNCOMMITTED_ACK=1 です（旧名は ff-dev-toolkit 1.1.0 で読まなくなります）。"
-
-if [ -z "$DIRTY_LIST" ]; then
-  [ -n "$ff_discard_note" ] && jq -n --arg m "$ff_discard_note" \
-    '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: $m}}' 2>/dev/null
-  exit 0
-fi
+[ -n "$DIRTY_LIST" ] || exit 0
 
 reason="⚠️ ff-dev-toolkit guard（未コミット変更の消失防止・警告）: 未コミット変更のあるファイルへの git checkout/restore を検出しました。
 対象: $DIRTY_LIST
@@ -348,8 +331,6 @@ reason="⚠️ ff-dev-toolkit guard（未コミット変更の消失防止・警
   2) 退避で復元: git stash push -- <file> （ファイルは HEAD の状態になり、git stash pop で変更を戻せます）
 意図的に未コミット変更を破棄する場合は、コマンド先頭に FF_DISCARD_UNCOMMITTED_ACK=1 を付けて再実行してください。
 このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=checkout を設定します。"
-[ -z "$ff_discard_note" ] || reason="${reason}
-${ff_discard_note}"
 
 jq -n --arg reason "$reason" \
   '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null

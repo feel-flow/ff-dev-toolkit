@@ -9,6 +9,7 @@
 # 変異検出: try_rewrite の出現回数照合を外すと R5（単一引用の中の同じ綴り。再走査では見えない）が、ホスト判定を外すと R7 が赤になる（2026-10-25 実測）。
 # 変異検出: Issue `#2138` のクエリ形の判定を無効化すると R1q が、直後の `&` の除外を外すと R5 のクエリ形が赤になる（2026-10-26 実測）。
 # 変異検出: Issue `#2491` の単語分割の判定（split_on=1）を消した hook は R10 を書き換えず警告だけに戻り、前置の認識（zsh-expansion-guard.sh の ff_zsh_word_split_prefixed）を消すと PostToolUse が前置済みの呼び出しにも scalar を返す。どちらも R15 が suite の中でコピーへ当てて赤を確かめる（2026-11-02 Windows Git Bash 実測）。permission_mode の条件を外すと R16 の default が前置され（R15b）、ACK のときに書き換え全体を諦める旧形へ戻すと R17 の glob の引用が deny へ戻る（R15c。レビュー 1 巡目の対応後に実測）。
+# 変異検出: 共有定義が空のときに前置をやめる分岐を外すと、定義ファイルが無いコピーの R10e は「付けました」を禁じる検査で赤になる（rc=1）。同じ分岐を return 1 にすると、その R10e の引用後コマンドが空になり赤になる（rc=1。2026-11-09 実測）。
 # 変異検出: CR の除外を外すと R3c が、保留した equals の deny を EXIT trap で出す経路を外すと R5 の equals 系が赤になる（2026-10-25 レビュー対応後に実測）。
 # 空振り検出: Issue `#2616` の通知の頻度は、session_id が無い・記録のキーに使えない（`../` `/` 空白）・記録を作れない（置き場がファイル）回を
 #   「毎回出す」側に固定する（R20e）。出し済みの判定が常に真になる hook は R1 から赤、判定不能の通知まで絞る hook は R20f が赤になる。
@@ -26,12 +27,8 @@ tmp="$(mktemp -d /tmp/ff-zsh-rewrite-test.XXXXXX)"
 trap 'rm -rf "$tmp"' EXIT
 unset ff_bash_hooks_revalidated CLAUDECODE CLAUDE_PROJECT_DIR GROK_PLUGIN_ROOT CLAUDE_CODE_SHELL \
   FF_ZSH_GLOB_ACK FF_DEV_TOOLKIT_SKIP FF_ZSH_GLOB_AWK
-# 名簿の legacy 列（内部の別名）も落とす。名前は名簿から読む（旧名をこの試験に複製しない）。
-if [ -r "$root/scripts/lib/l4-declarations.tsv" ]; then
-  while IFS=$'\t' read -r _l4_k _l4_kind _l4_owner _l4_covers _l4_legacy _l4_rest || [ -n "${_l4_k:-}" ]; do
-    case "${_l4_legacy:-}" in FF_[A-Z0-9_]*) unset "$_l4_legacy" ;; esac
-  done < "$root/scripts/lib/l4-declarations.tsv"
-fi
+# FF_DEV_TOOLKIT_SKIP_ で始まる撤去した旧名（`#2735`）も全部落とす（残っていると停止文に注記が足される）。
+for _l4_v in "${!FF_DEV_TOOLKIT_SKIP_@}"; do unset "$_l4_v"; done
 pass=0
 check() { if "$@"; then pass=$((pass+1)); else echo "FAIL zsh rewrite: $*" >&2; exit 1; fi; }
 # PM: hook 入力の permission_mode（空なら付けない）。単語分割の前置（Issue `#2491`）は bypassPermissions のときだけ。
@@ -154,6 +151,28 @@ split_of() { printf '%s%s' 'setopt SH_WORD_SPLIT; ' "$1"; }
 PM=bypassPermissions
 is_split() { jq -e '.hookSpecificOutput.updatedInput != null and .hookSpecificOutput.permissionDecision == null and (.hookSpecificOutput.additionalContext | contains("単語分割")) and (.systemMessage | contains("SH_WORD_SPLIT"))' <<< "$1" >/dev/null; }
 is_warn_only() { jq -e '.hookSpecificOutput == null and (.systemMessage | contains("単語分割"))' <<< "$1" >/dev/null; }
+# R10e 共有定義が読めない・空: 前置せず、引用の書き換えは続け、scalar の警告は残す。
+# 通知の出し済みが隣の検査へ漏れないよう、呼び出しごとに空のプロジェクトディレクトリを使う。
+r10e="$tmp/r10e"
+mkdir -p "$r10e/hooks" "$r10e/tests/lib"
+cp -R "$root/hooks/." "$r10e/hooks/"
+cp "$root/tests/lib/"*.sh "$r10e/tests/lib/"
+run_r10e() { # <project-dir> <command>
+  payload "$2" | env SHELL=/bin/zsh CLAUDECODE=1 CLAUDE_PROJECT_DIR="$1" bash "$r10e/hooks/guard-zsh-glob.sh"
+}
+out="$(run_r10e "$tmp/r10e-a" 'grep -rn foo --include=*.md $X')"
+check test "$(rewritten "$out")" = 'setopt SH_WORD_SPLIT; grep -rn foo --include="*.md" $X'
+rm -f "$r10e/tests/lib/zsh-word-split-prefix.sh"
+out="$(run_r10e "$tmp/r10e-b" 'grep -rn foo --include=*.md $X')"
+check test "$(rewritten "$out")" = 'grep -rn foo --include="*.md" $X'
+check jq -e '.hookSpecificOutput.updatedInput != null and .hookSpecificOutput.permissionDecision == null and (.systemMessage | contains("単語分割")) and (.systemMessage | contains("付けました") | not)' <<< "$out" >/dev/null
+printf '%s\n' "FF_ZSH_WORD_SPLIT_PREFIX=''" > "$r10e/tests/lib/zsh-word-split-prefix.sh"
+out="$(run_r10e "$tmp/r10e-c" 'grep -rn foo --include=*.md $X')"
+check test "$(rewritten "$out")" = 'grep -rn foo --include="*.md" $X'
+check jq -e '.hookSpecificOutput.updatedInput != null and .hookSpecificOutput.permissionDecision == null and (.systemMessage | contains("単語分割")) and (.systemMessage | contains("付けました") | not)' <<< "$out" >/dev/null
+rm -f "$r10e/tests/lib/zsh-word-split-prefix.sh"
+out="$(run_r10e "$tmp/r10e-d" 'echo ${X}')"
+check is_warn_only "$out"
 # R10 陽性: 未引用 scalar を含む呼び出しは、元のコマンドの先頭へ setopt SH_WORD_SPLIT; を付けた updatedInput になる。
 split_fire=(
   'for t in "a b" "c d"; do set -- $t; echo "$1/$2"; done'
@@ -435,12 +454,11 @@ for i in 1 2; do
   check jq -e '.systemMessage | contains("単語分割されません")' <<< "$out" >/dev/null
 done
 check test ! -e "$nstate/notices/x"
-# 集約入口の再検査は同じガードをもう 1 度走らせる。通した回の注記（ACK の旧名の注記）は、元の出力と再検査の
-# 出力の両方に出るので、採用した書き換えの additionalContext には 1 回だけ残す。旧名は名簿から組む
-# （試験に旧名を字句で書かない。tests/l4-declarations の N7）
-dup_lg="$(awk -F'\t' '$1 == "discard-uncommitted" && $2 == "ack" { print $5 }' "$root/scripts/lib/l4-declarations.tsv")"
-check test -n "$dup_lg"
-mkdir -p "$tmp/dupnote"
-out="$(cd "$tmp/dupnote" && bat "${dup_lg}=1 git checkout -- a.txt; grep -rn foo --include=*.sh ." "$target" "$root/hooks/guard-checkout-restore.sh")"
-check jq -e --arg n "旧名 ${dup_lg}=1" '.hookSpecificOutput.updatedInput != null and ([.hookSpecificOutput.additionalContext | splits("\n") | select(contains($n))] | length) == 1' <<< "$out" >/dev/null
+# 集約入口の再検査は同じガードをもう 1 度走らせる。通した回の注記は、元の出力と再検査の出力の両方に出るので、
+# 採用した書き換えの additionalContext には 1 回だけ残す。注記は、通すたびに同じ 1 行を出す stub の hook で作る
+dup_note="dupnote: 通した回の注記"
+jq -nc --arg m "$dup_note" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$m}}' > "$tmp/passnote.json"
+printf '#!/usr/bin/env bash\ncat >/dev/null\ncat %q\n' "$tmp/passnote.json" > "$tmp/passnote.sh"
+out="$(bat 'grep -rn foo --include=*.sh .' "$target" "$tmp/passnote.sh")"
+check jq -e --arg n "$dup_note" '.hookSpecificOutput.updatedInput != null and ([.hookSpecificOutput.additionalContext | splits("\n") | select(contains($n))] | length) == 1' <<< "$out" >/dev/null
 echo "zsh rewrite: $pass checks passed"

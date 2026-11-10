@@ -2,7 +2,8 @@
 # 鍵 auto-update: hooks/auto-update-marketplace.sh（SessionStart）。止める効果 = claude CLI の
 # `plugin marketplace update` / `plugin update` の呼び出し（stub の記録 calls）。
 # 入力: SessionStart の stdin、PATH の先頭に claude の stub、同日ゲートは作業ディレクトリの中。
-# 旧名は legacy_value_rule=nonempty なので、表は旧名=0 の行も素通しを期待する。
+# 名簿の legacy_value_rule=retired-stop なので、表は撤去した旧名（=0 と _GUARD 付き =1）の行で素通し（更新を
+# 呼ばない）を、空の値の行で止める（更新を呼ぶ）を期待する。
 fx_owners='hooks/auto-update-marketplace.sh'
 fx_setup() {
   mkdir -p "$fx_wk/bin" "$fx_wk/stamps" || return 1
