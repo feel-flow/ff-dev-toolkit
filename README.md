@@ -22,17 +22,6 @@ claude plugin marketplace add feel-flow/ff-dev-toolkit
 claude plugin install ff-dev-toolkit@ff-dev-toolkit
 ```
 
-> **⚠️ v0.7.0 で改名しました（旧 `dev-toolkit` → `ff-dev-toolkit`）。** リポジトリ・marketplace・プラグイン名すべてが変わったため、旧版を入れている既存ユーザーは再インストールが必要です:
->
-> ```bash
-> claude plugin uninstall dev-toolkit@dev-toolkit
-> claude plugin marketplace remove dev-toolkit
-> claude plugin marketplace add feel-flow/ff-dev-toolkit
-> claude plugin install ff-dev-toolkit@ff-dev-toolkit
-> ```
->
-> Codex CLI / Cowork で利用している場合も同様に、旧プラグインの削除と marketplace の再登録が必要です（手順は各プラットフォームのプラグイン管理 UI / CLI に読み替え）。
-
 ### 組織のプラグインディレクトリ（GitHubから同期）で配布する場合
 
 Claude（Web / デスクトップ）の管理画面にある「GitHubから同期」は、**Private / Internal リポジトリのみ**が同期対象です（2026年7月時点。最新の挙動は同ダイアログの注意書きを確認してください）。本リポジトリは Public のため、組織のプラグインディレクトリの同期元として登録できません。
@@ -81,15 +70,6 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 | `/multi-review` | マルチAI CLI による並列レビュー |
 
 > **スキル未解決時のフォールバック**: チェーンのスキルが `Unknown skill` で解決できない場合、まず名前を疑う — セッションの利用可能スキル一覧をキーワードで検索して実名を確認し、プレフィックス付き（`<プラグイン名>:<スキル名>`）と無しの両方を試す（両者は別名として共存しうる）。`ListSkills` が返すのは claude.ai 側の別レジストリであり、その空振りを不在の根拠にしない。一覧にも無い場合（インストール済みプラグインが該当スキルの追加より古い）は、プラグインを更新するか、インストール済みプラグインの `skills/<スキル名>/SKILL.md` を直接 Read して手順に従う。それでも解決しない場合は、リポジトリ内の実体（`plugins/<プラグイン名>/skills/<スキル名>/SKILL.md`）とインストール済みプラグインディレクトリの中身を突き合わせる — プラグインが複数ディレクトリへ分割インストールされ、一部スキルが当該セッションのレジストリに載っていないことがある。その場合はリポジトリ側の SKILL.md を読んで手順に従う（スキルが存在しないと結論しない）。
-
-### 旧 Codex standalone copy からの移行
-
-過去の手順で `~/.codex/skills/out-of-scope-issue` をフルコピーしている場合、先に marketplace と plugin を更新し、Codex の新規セッションで `/skills` に `ff-dev-toolkit:out-of-scope-issue` が出ることを確認してください。確認後、旧 standalone copy は drift と重複発火を避けるため削除できます。プラグイン側からユーザー領域を自動削除はしません。
-
-```bash
-codex plugin marketplace upgrade ff-dev-toolkit
-codex plugin add ff-dev-toolkit@ff-dev-toolkit
-```
 
 ### MCP サーバー（spec-docs）
 
@@ -398,7 +378,76 @@ Copilot CLI で確認したのは marketplace 登録 → インストール → 
 
 バージョンごとの変更内容は [CHANGELOG.md](./CHANGELOG.md) を参照してください。
 
-互換性の約束の対象（skill の起動名 / hooks / `FF_*` 環境変数 / 導入先へ配置されるパスのうち、何が契約で何が実装詳細か）は [PUBLIC-SURFACE.md](./plugins/ff-dev-toolkit/PUBLIC-SURFACE.md) にまとめてあります。契約側を壊す変更は CHANGELOG の `### 破壊的変更` 節に記録されます。
+### 1.0.0 で約束したもの
+
+1.0.0 から、次の 4 系統のうち「契約」に分類した要素を、互換性を約束する対象にしました。
+
+- skill の起動名（`/ff-dev-toolkit:<name>` など）
+- hooks（`hooks/hooks.json` が登録する入口）
+- 環境変数（`FF_*` と、`FF_` で始まらない一部の変数）
+- 導入先へ配置されるパス
+
+それぞれの何が契約で何が実装詳細（予告なく変えてよい内部）かは、同梱の [PUBLIC-SURFACE.md](./plugins/ff-dev-toolkit/PUBLIC-SURFACE.md) の一覧が正本です。契約側を壊す変更は CHANGELOG の `### 破壊的変更` 節に、復旧の手順と一緒に記録されます。
+
+### 版の上げ方（1.0.0 以降）
+
+版の幅は、その版の CHANGELOG にある分類で決まります。
+
+| CHANGELOG の分類 | 版 |
+| --- | --- |
+| 「破壊的変更」がある（契約の削除・改名・意味の変更） | major（例 1.2.3 → 2.0.0） |
+| 「修正」だけ | patch（例 1.2.3 → 1.2.4） |
+| それ以外（追加・変更・削除・ドキュメント・セキュリティ。「修正」と他の分類が混ざる版を含む） | minor（例 1.2.3 → 1.3.0） |
+
+- 内部の変更は、どれだけ大きくても major を上げません。CHANGELOG の「削除」節は内部の要素の削除などを書く節で、契約の要素の削除は「破壊的変更」として扱います
+- 契約の要素を削除する（改名で古い名前を消す場合を含む）ときは、最低 1 つ前のマイナー版で、CHANGELOG の `### 変更` 節に「次の major で削除予定」と予告します。予告した版では、古い名前もまだ受け付けます。予告なしには削除しません
+- 0.x の版では「破壊的変更」は記録の規約で、破壊的変更を含む版も minor で上げていました
+
+## 0.x からの移行
+
+### 0.x から 1.x への更新
+
+v0.7.0 以降の版（プラグイン名が `ff-dev-toolkit` のもの）を使っている場合は、次の順に更新して Claude Code を再起動します。
+
+```bash
+claude plugin marketplace update
+claude plugin update ff-dev-toolkit@ff-dev-toolkit
+```
+
+- `ff-dev-toolkit@ff-dev-toolkit` は「プラグイン名@marketplace 名」の登録 ID です。別の名前で marketplace を登録している場合は、`claude plugin list` で確認した ID を渡してください（素の名前を渡すと `Plugin not found` で失敗します）
+- 更新は Claude Code を再起動してから効きます。既存の会話を再開すると古い版に再接続されるため、新しい会話を始めてください
+- Codex CLI では `codex plugin marketplace upgrade ff-dev-toolkit` の後に `codex plugin add ff-dev-toolkit@ff-dev-toolkit` を実行します
+
+### 古い宣言の名前の書き換え
+
+hook を止める宣言と 1 回だけ通す承認は、1.0.0 の前に「`FF_DEV_TOOLKIT_SKIP` に鍵を並べる形」と「`FF_` + 鍵 + `_ACK` の形」へまとめました。まとめる前の個別の名前（旧名）は、v1.1.0 から読みません。旧名で止めていたガードと通知はふたたび動きます（副作用のある 4 つの鍵だけは、旧名が残っていると処理を止めたままにします）。
+
+- 書き換え先の鍵と書き方: 「[hook を止める宣言と 1 回だけ通す承認](#hook-を止める宣言と-1-回だけ通す承認)」
+- 旧名と新しい書き方の対応表: 同梱の PUBLIC-SURFACE.md の「[破壊的変更の記録](./plugins/ff-dev-toolkit/PUBLIC-SURFACE.md#破壊的変更の記録)」
+
+hooks が発火するホスト（Claude Code など）では、旧名が環境に残っているとセッション開始時に置き換えを通知します。
+
+### v0.7.0 より前の版（旧名 `dev-toolkit`）から
+
+v0.7.0 でリポジトリ・marketplace・プラグイン名をすべて `ff-dev-toolkit` に改名しました。旧 `dev-toolkit` は更新では移れないため、削除してから入れ直します。
+
+```bash
+claude plugin uninstall dev-toolkit@dev-toolkit
+claude plugin marketplace remove dev-toolkit
+claude plugin marketplace add feel-flow/ff-dev-toolkit
+claude plugin install ff-dev-toolkit@ff-dev-toolkit
+```
+
+Codex CLI / Cowork で利用している場合も同様に、旧プラグインの削除と marketplace の再登録が必要です（手順は各プラットフォームのプラグイン管理 UI / CLI に読み替え）。
+
+### 旧 Codex standalone copy から
+
+過去の手順で `~/.codex/skills/out-of-scope-issue` をフルコピーしている場合、先に marketplace と plugin を更新し、Codex の新規セッションで `/skills` に `ff-dev-toolkit:out-of-scope-issue` が出ることを確認してください。確認後、旧 standalone copy は drift と重複発火を避けるため削除できます。プラグイン側からユーザー領域を自動削除はしません。
+
+```bash
+codex plugin marketplace upgrade ff-dev-toolkit
+codex plugin add ff-dev-toolkit@ff-dev-toolkit
+```
 
 ## 開発とフィードバック
 

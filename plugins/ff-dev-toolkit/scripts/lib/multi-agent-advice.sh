@@ -547,7 +547,22 @@ print_failure_advice() {
     skip_cause="$(skipped_task_cause "$task")"
     # スキップは失敗の分類・rc 由来の案内を一切通さない。cause も明示的に空へ倒す
     # （前の反復の値が残ると、実行していないタスクに 🔑 / 💳 / 📏 が付く）。
-    if [[ -n "$skip_cause" ]]; then
+    if [[ -n "$skip_cause" && -n "$(lane_precheck_block "$cli")" ]]; then
+      # 起動前の確認・--resume の記憶で止めたレーン（Issue `#2044`）。「この実行で既に失敗した」は事実と違う
+      cause=""
+      echo "     ⏭ ${task} — not started: $(lane_precheck_block_phrase "$cli")." >&2
+      case "$skip_cause" in
+        auth)
+          login_cmd="$(cli_login_command "$cli")"
+          echo "        Log in first${login_cmd:+ (${login_cmd})}, then re-run:" >&2 ;;
+        model-unsupported)
+          echo "        Update the CLI, or choose a model this account supports for this run with" >&2
+          echo "        $(get_cli_model_env_vars "$cli" | awk '{ print $1 }')=<model>, then re-run:" >&2 ;;
+        *)
+          echo "        Usage comes back with time or credits; when it is back, re-run:" >&2 ;;
+      esac
+      echo "       $(model_env_prefix "$cli")${retry_self} --cli ${cli} --perspective ${persp}" >&2
+    elif [[ -n "$skip_cause" ]]; then
       cause=""
       echo "     ⏭ ${task} — not executed. ${cli} had already failed in this run with" >&2
       echo "        $(cause_phrase "$skip_cause"), which is a property of the CLI and not of" >&2

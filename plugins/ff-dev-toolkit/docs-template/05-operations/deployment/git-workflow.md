@@ -1152,13 +1152,14 @@ esac
 
 **マージ前に `git worktree list` で base / head ブランチの保持を確認する**。`finish.sh precheck` は保持を `git worktree list --porcelain` で実測し、保持されていれば既存の worktree 互換経路として `--delete-branch` を付けない merge と、成功時だけ走る head 削除処理を `&&` で繋いだ 1 コマンドを生成する（`DELETE_BRANCH_MODE=separate-push`）。この経路では照合済み head OID の lease を明示する。生成コマンドは `--repo` を明示するため、gh v2.102.0 はローカルブランチの切替・削除を行わず、その後始末は `/merge-cleanup` が担当する。**gh 経路は `MERGE_COMMAND_BEGIN` 〜 `MERGE_COMMAND_END` の出力をそのまま実行する**。MCP 経路は下の条件付き例外に従う。他セッションの worktree は削除せず、保持者のパスと状態を報告して処分はユーザー判断に委ねる。
 
-merge 対象は取得済みのホストを含むリポジトリ URL を引用した `--repo` へ固定する。実行時の cwd・`GH_REPO`・`GH_HOST`・gh の既定ホストへ選び直さない。同一リポジトリの PR では、削除処理が生成時に固定した consumer root の `origin` へ exact ref を照会する。リポジトリの `delete_branch_on_merge` 設定から削除の要否を推測せず、ref が既に無ければ push せず成功、PR head と同じ OID なら `--force-with-lease=refs/heads/<head>:<OID>` 付きで削除、別 OID なら警告して保全する。削除 push が拒否された回も再照会し、自動削除との競合による不在や別 OID への更新を区別する。照会不能・応答不正・期待 OID が残ったままの削除失敗は非 0 で終わるため、その終了コードだけで merge の失敗とは読まず、PR の state と残存 ref を確認する。fork PR は従来どおり `HEAD_DELETE=skipped-fork` で削除を生成しない。
+merge 対象は取得済みのホストを含むリポジトリ URL を引用した `--repo` へ固定する。実行時の cwd・`GH_REPO`・`GH_HOST`・gh の既定ホストへ選び直さない。同一リポジトリの PR では、削除処理が生成時に固定した consumer root の `origin` へ exact ref を照会する。リポジトリの `delete_branch_on_merge` 設定から削除の要否を推測せず、ref が既に無ければ push せず成功、PR head と同じ OID なら `--force-with-lease=refs/heads/<head>:<OID>` 付きで削除、別 OID なら警告して保全する。削除 push が拒否された回も再照会し、自動削除との競合による不在や別 OID への更新を区別する。照会不能・応答不正・期待 OID が残ったままの削除失敗、実行時の `FF_MERGE_CLEANUP_PROTECT_BRANCHES` が不正な回（rc 2、ref はそのまま）は非 0 で終わるため、その終了コードだけで merge の失敗とは読まず、PR の state と残存 ref を確認する。保護設定は precheck の時点と削除本文の実行時点でそれぞれの環境変数から読む。fork / 判定不能の PR は、separate-push の回は従来どおり `HEAD_DELETE=skipped-fork` で削除本文を生成しない。head 名が merge-cleanup と同じ保護（`develop` / `main` / `master` / `staging/*` は設定でも外れない。追加分は `FF_MERGE_CLEANUP_PROTECT_BRANCHES` で、未設定時は `release/*`、`none` は追加なし）に当たる回は、worktree の保持に関わらず `--delete-branch` も削除本文も付けない。同一リポジトリの PR では出力が `HEAD_DELETE=skipped-protected` と `HEAD_DELETE_RESULT=skipped-protected` になり、削除 script も照会せず同じ結果を rc 0 で返す。fork / 判定不能の PR は `HEAD_DELETE` を変えず（separate-push は `skipped-fork`、delete-branch 経路は行なし）、`--delete-branch` だけを外す。保護設定が不正な回は precheck が rc 2 で止まり、MERGE_COMMAND を出さない。
 
 | `HEAD_DELETE_RESULT` | 削除処理の結果（いずれも exit 0） |
 | --- | --- |
 | `deleted` | 期待 OID の ref を lease 付きで削除した |
 | `already-missing` | ref は既に存在しない（GitHub の自動削除を含む） |
 | `preserved-different-oid` | 同名 ref が別 OID のため削除せず保全した |
+| `skipped-protected` | 保護ブランチのため削除していない（ref はそのまま） |
 
 削除本文は生成済みコマンドに含まれるため、実行時の cwd やマージ後の plugin 更新・除去に依存しない。`SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0` は削除 push だけに付く。`FF_MERGE_DELETE_SEPARATE=1` の回は worktree の保持を見ず、生成コマンドを `gh pr merge` だけにする（`DELETE_BRANCH_MODE=separate-consumer`）。`FF_DELETE_PUSH_SKIP_HOOKS=0` の回は、生成する削除 push と `/merge-cleanup` の削除 push からこの代入を外す。完了報告には「リモートブランチを削除したか」を merge の成否とは**別項目**で明示し、上の結果を載せる（`/merge-cleanup` のサマリーも同じ項目を出す）。
 

@@ -119,7 +119,7 @@ MCP: 取得値: MCP の同じ PR の title/body/全 commits/closingIssuesReferen
 
 script が `MERGE_COMMAND_BEGIN` 〜 `MERGE_COMMAND_END` に出す。方式は `MERGE_METHOD`（[マージ方式の明示](#merge-method)）。merge 対象は取得済みのホストを含むリポジトリ URL を引用した `--repo` へ固定し、先端は直前に照合した `REMOTE_HEAD`、件名・本文は 2b が検査した文字列を単引用で包む（`printf '%q'` は非 UTF-8 ロケールで日本語を壊すので使わない）。
 
-`--delete-branch` は base / head が別 worktree に保持されていない回だけ付く。保持されている回は付けず、merge 成功時だけ実行する head 削除本文を `&&` で繋ぐ（`DELETE_BRANCH_MODE=separate-push`・`BASE_HELD_BY` / `HEAD_HELD_BY`・`HEAD_DELETE=lease`。fork は `skipped-fork` で削除を生成しない）。削除は生成元 consumer の exact ref を照会し、不在は成功・別 OID は保全・一致だけ lease 付き削除、拒否後も再照会する。`HEAD_DELETE_RESULT` と非 0 の読み方は [Git Workflow](../../../docs-template/05-operations/deployment/git-workflow.md#ステップ8-マージmerge) に従う。
+`--delete-branch` は base / head が別 worktree に保持されていない回だけ付く。保持されている回は付けず、merge 成功時だけ実行する head 削除本文を `&&` で繋ぐ（`DELETE_BRANCH_MODE=separate-push`・`BASE_HELD_BY` / `HEAD_HELD_BY`・`HEAD_DELETE=lease`。fork / 判定不能は `skipped-fork` で削除本文を生成しない）。head 名が merge-cleanup と同じ保護（`develop` / `main` / `master` / `staging/*` は設定でも外れない。追加分は `FF_MERGE_CLEANUP_PROTECT_BRANCHES` で、未設定時は `release/*`、`none` は追加なし）に当たる回は、worktree の保持に関わらず `--delete-branch` も削除本文も付けない。同一リポジトリの PR は `HEAD_DELETE=skipped-protected` と `HEAD_DELETE_RESULT=skipped-protected` を出し、削除 script も照会せず同じ結果を rc 0 で返す。fork / 判定不能の PR は `HEAD_DELETE` を変えず、`--delete-branch` だけを外す。保護設定が不正なら precheck は rc 2 で MERGE_COMMAND を出さず、実行時に不正なら削除本文が rc 2 で ref を残す。削除は生成元 consumer の exact ref を照会し、不在は成功・別 OID は保全・一致だけ lease 付き削除、拒否後も再照会する。`HEAD_DELETE_RESULT` と非 0 の読み方は [Git Workflow](../../../docs-template/05-operations/deployment/git-workflow.md#ステップ8-マージmerge) に従う。
 
 gh 経路の生成コマンドは書き写さず、そのまま実行する。MCP 経路だけは下の「MCP merge」の6引数への直接対応を使う。削除を別行にすると merge 失敗後にも未マージの head を削除できる。取得済み URL の `--repo` により、実行時の cwd・`GH_REPO`・`GH_HOST`・既定ホストから対象を選び直さない。gh v2.102.0 は明示した `--repo` の下でローカルの切替・削除を行わず、その後始末は `/merge-cleanup` へ委譲する。保持 worktree の separate-push 経路は互換性と明示的な OID lease のために維持する。
 
@@ -261,7 +261,7 @@ MCP: 取得値: MCP の同じ最終 headRefOid と元 subject/body。形式: 既
 
 実 write 前に対象と6引数を示し、既存の権限内で実行する。成功応答だけで完了にせず、fresh PR で `merged=true` と結果 SHA、各 Issue で Closes の CLOSED / Refs の OPEN 維持を後読する。`AUTO_CLOSE_UNRELIABLE` の警告・手動復旧・再後読を省略しない。能力 / 必須 raw 不足は operation / field / page を示して停止する。現在の connector の実在 schema 確認は live 完走の証拠ではない。
 
-MCP merge には branch 削除引数が無い。merge 前に固定した canonical `scripts/lib/finish-delete-merged-head.sh` の実体と、consumer root / head branch / expected OID の3引数を使う。**merge 成功と fresh merged read-back 後だけ**、同一 repository の head と確認した対象へ helper を呼ぶ（helper 自身は fork / merge 状態を判定しない）。fork / 不明は保全し、別 OID は `preserved-different-oid`、不在は `already-missing`、一致だけ lease 削除とする。生成 shell の尾部を切り出したり一般 ref-delete API で lease を置換しない。helper / Git が使えなければ削除未実施を明示し、merge / delete / cleanup を別状態で報告する。
+MCP merge には branch 削除引数が無い。merge 前に固定した canonical `scripts/lib/finish-delete-merged-head.sh` の実体と、consumer root / head branch / expected OID の3引数を使う。**merge 成功と fresh merged read-back 後だけ**、同一 repository の head と確認した対象へ helper を呼ぶ（helper 自身は fork / merge 状態を判定しない）。保護ブランチ（merge-cleanup と同じ名前の判定。`develop` / `main` / `master` / `staging/*` は常に保護し、追加分は `FF_MERGE_CLEANUP_PROTECT_BRANCHES`）は照会も削除もせず、`HEAD_DELETE_RESULT=skipped-protected` で rc 0 になる。fork / 不明は保全し、別 OID は `preserved-different-oid`、不在は `already-missing`、一致だけ lease 削除とする。生成 shell の尾部を切り出したり一般 ref-delete API で lease を置換しない。helper / Git が使えなければ削除未実施を明示し、merge / delete / cleanup を別状態で報告する。
 
 ### raw と writer の受け渡し
 

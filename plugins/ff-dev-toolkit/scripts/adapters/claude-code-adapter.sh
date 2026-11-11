@@ -38,6 +38,53 @@ readonly CLI_COMMAND="claude"
 # "Claude Code" は成果物ヘッダー用で、--cli へ渡せる綴りではない）。
 readonly CLI_LANE="claude-code"
 
+# ── 起動前のレーン確認（--precheck。Issue `#2044`。入口と契約は adapter-common-cli.sh の
+#    handle_adapter_precheck_request）──
+#
+# claude は認証だけ読める: `claude auth status --json` は保存済みの資格情報を読むだけで、モデルを
+# 起動しない（2026-11-10 に 2.1.309 で実測: loggedIn / authMethod / apiProvider / subscriptionType を返し、
+# 未ログインは rc=1 + loggedIn:false）。**残量は読めない**（非対話の取得手段が無い）ので、ログイン済みは
+# authenticated（通常どおり起動）であって「利用可能」ではない。止めるのは未ログインの明示状態だけ:
+# 終了コード 1 で、loggedIn=false かつ authMethod="none" かつ apiProvider="firstParty"。
+# 次の env で認証する経路は auth status に映らないことがあるので、確かめずに unknown とする
+# （実測: ANTHROPIC_AUTH_TOKEN だけを渡すと loggedIn:false / authMethod:none を返すが、要求は認証されうる）:
+#   ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL / CLAUDE_CODE_USE_BEDROCK / CLAUDE_CODE_USE_VERTEX /
+#   CLAUDE_CODE_USE_FOUNDRY
+# 限界: サーバ側で失効した OAuth token も保存されていれば loggedIn:true と出る（classify_cli_failure_cause の
+# ヘッダーの実測）。失効は起動前には止められず、実行時の失敗分類（🔑）に任せる。
+# 出力の email・組織名は読まない・書かない。
+# shellcheck disable=SC2034 # adapter-common-cli.sh（source 先）の handle_adapter_precheck_request が読む
+readonly ADAPTER_PRECHECK_CAPABILITY="auth"
+
+adapter_precheck_probe() {
+  if [[ -n "${ANTHROPIC_AUTH_TOKEN:-}${ANTHROPIC_BASE_URL:-}${CLAUDE_CODE_USE_BEDROCK:-}${CLAUDE_CODE_USE_VERTEX:-}${CLAUDE_CODE_USE_FOUNDRY:-}" ]]; then
+    echo unknown
+    return 0
+  fi
+  local out="" rc=0
+  # 実測の終了コード: ログイン済み = 0、未ログイン = 1（どちらも完全な JSON を出す）。それ以外
+  # （期限切れの 124・起動できない 125・クラッシュ）は、途中までの出力が未ログインの形に見えても
+  # unknown にする。JSON は最初の非空行が `{`、最後の非空行が `}` で閉じていることを要求する
+  out="$(run_with_timeout "$(lane_precheck_timeout)" "$CLI_COMMAND" auth status --json 2>/dev/null)" || rc=$?
+  if [[ "$rc" != 0 && "$rc" != 1 ]] \
+     || ! LC_ALL=C awk 'NF { if (!first) first = $0; last = $0 } END { exit (first ~ /^[[:space:]]*\{/ && last ~ /\}[[:space:]]*$/) ? 0 : 1 }' <<<"$out" 2>/dev/null; then
+    echo unknown
+    return 0
+  fi
+  if [[ "$rc" == 1 ]] \
+     && LC_ALL=C grep -Eq '"loggedIn"[[:space:]]*:[[:space:]]*false' <<<"$out" \
+     && LC_ALL=C grep -Eq '"authMethod"[[:space:]]*:[[:space:]]*"none"' <<<"$out" \
+     && LC_ALL=C grep -Eq '"apiProvider"[[:space:]]*:[[:space:]]*"firstParty"' <<<"$out"; then
+    echo unauthenticated
+  elif [[ "$rc" == 0 ]] && LC_ALL=C grep -Eq '"loggedIn"[[:space:]]*:[[:space:]]*true' <<<"$out"; then
+    echo authenticated
+  else
+    echo unknown
+  fi
+}
+
+handle_adapter_precheck_request "$@"
+
 # ── Parse Arguments ──
 
 # 委譲の受理を opt-in する（adapter-common.sh の parse_adapter_args が検査する）。

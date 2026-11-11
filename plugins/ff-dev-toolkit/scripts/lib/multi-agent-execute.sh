@@ -281,6 +281,13 @@ execute_tasks() {
   DELEGATED_TASKS=""
   POISONED_CLIS=""
 
+  # 起動前のレーン確認と --resume の記憶（Issue `#2044`。scripts/lib/multi-agent-precheck.sh）。
+  # 止めたレーンの観点は EXECUTION_PLAN から外れて SKIPPED_TASKS へ載る。下の並列・逐次の
+  # どちらの経路も、外れた観点を見ない。プランが空になっても「全部キャッシュから戻した」の
+  # return 0 へは落とさない — 起動しなかった観点は失敗数に数え、終わりの集計へ進む。
+  apply_lane_precheck
+  failed=$((failed + LANE_PRECHECK_SKIP_COUNT))
+
   # review だけ: タスクを 1 つでも起動する前に「完了までツリーを触らない」バナーを
   # 1 回出す。ツリーが動いた実行の破棄（verify_repo_unchanged）は**事後検出**で、
   # 着手前に注意を促さないと数分のレビューが丸ごと無駄になる再発が起きていた。
@@ -324,7 +331,13 @@ execute_tasks() {
   # 並列起動の直前に負荷を実測する（閾値超なら今回だけ逐次へ倒す）。
   apply_load_gate || return 2
 
-  if [[ "$PARALLEL" == "true" ]]; then
+  # 負荷ゲートが PARALLEL を倒した後の値で決める
+  local dispatch_mode="$PARALLEL"
+  [[ -n "$EXECUTION_PLAN" ]] || dispatch_mode="none"
+  if [[ "$dispatch_mode" == "none" ]]; then
+    # 起動前の確認ですべてのレーンを止めた回。起動するタスクが無い。
+    :
+  elif [[ "$dispatch_mode" == "true" ]]; then
     # ── 並列実行: CLI 間は並列、同一 CLI 内は逐次（Issue `#251`） ──
     # minimize_cost が premium の観点を最安 tier へ振り替えると、同一 CLI
     # （現行の振替先は flat-rate の grok-cli — issue `#783` で free-tier が消えた後の
@@ -554,13 +567,16 @@ execute_tasks() {
   for delegated_entry in $DELEGATED_TASKS; do
     delegated_count=$((delegated_count + 1))
   done
+  # 実行時の失敗から確定した利用不可を、同じ入力の --resume のために記憶する（Issue `#2044`）
+  remember_runtime_unavailable
   collect_unavailable_cross_tasks
   local unavailable_entry
   if [[ $failed -gt 0 ]] && all_failures_unavailable_cross; then
     # 失敗・スキップのすべてが主担当以外の利用不可。主担当の結果で
     # 完了させる。使えるようにする手順は print_failure_advice が 🔑 / 💳 / 🚫 で添える。
     echo "ℹ️  Completed with the main reviewer (${REVIEW_MAIN}) only: the second CLI was unavailable" >&2
-    echo "   (authentication / credits / unsupported model). Not a failure — the next run tries it again." >&2
+    echo "   (authentication / credits / unsupported model). Not a failure — a new review input checks it again" >&2
+    echo "   (a --resume of this same input keeps it stopped; --retry-exhausted starts it again)." >&2
     for unavailable_entry in $UNAVAILABLE_CROSS_TASKS; do
       echo "     ⏭ ${unavailable_entry%:*} — $(cause_phrase "${unavailable_entry##*:}")" >&2
     done
@@ -575,6 +591,7 @@ execute_tasks() {
     else
       echo "⚠️  ${failed} ${TASK_TYPE} task(s) failed." >&2
     fi
+    print_lane_precheck_direct_read_advice
     print_failure_advice
     return 1
   elif [[ $delegated_count -gt 0 ]]; then

@@ -84,7 +84,12 @@
 #                           argument stays "Unknown option".
 #   --staged                Review only the staged index diff (review task only; mutually exclusive with --base)
 #   --resume                Reuse successful results from an identical prior input and
-#                           execute only failed, timed-out, missing, or corrupt tasks
+#                           execute only failed, timed-out, missing, or corrupt tasks.
+#                           A non-main lane that the same input already found unavailable
+#                           (out of credits / not logged in / unsupported model, from the
+#                           lane precheck or the CLI's own failure) is not started again
+#   --retry-exhausted       With --resume: forget that remembered unavailability and check
+#                           the lane again (the lane precheck still runs). Review only
 #   --archive-only[=<branch>] Archive checked previous output, without reviewers (review only).
 #                           Critical requires a different previous branch matching its series.
 #   --fresh                 Archive leftover files in the output dir to
@@ -700,6 +705,7 @@ MULTI_AGENT_PARTS=(
   "${SCRIPT_DIR}/lib/multi-agent-critical.sh"
   "${SCRIPT_DIR}/lib/multi-agent-archive.sh"
   "${SCRIPT_DIR}/lib/multi-agent-execute.sh"
+  "${SCRIPT_DIR}/lib/multi-agent-precheck.sh"
   "${SCRIPT_DIR}/lib/multi-agent-failure.sh"
   "${SCRIPT_DIR}/lib/multi-agent-codex-update.sh"
   "${SCRIPT_DIR}/lib/multi-agent-advice.sh"

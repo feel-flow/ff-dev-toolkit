@@ -154,7 +154,12 @@ HEADER
     # 前回の未解消 Critical の保持は下の task_left_perspective_unproven がそのまま効かせる
     # （FAILED_TASKS / SKIPPED_TASKS から外していないため）。
     tv_unavail="$(unavailable_cross_task_cause "${tv_cli}/${crit_persp}")"
-    if [[ -n "$tv_unavail" ]]; then
+    if [[ -n "$tv_unavail" && -n "$(lane_precheck_block "$tv_cli")" ]]; then
+      # 起動前の確認・--resume の記憶で止めたレーン（Issue `#2044`）。起動していないことを名乗る
+      typed_unavailable="${typed_unavailable}- ${tv_cli} / ${crit_persp} — 主担当（${REVIEW_MAIN}）のみで完了（${tv_cli}: $(lane_precheck_label_ja "$tv_cli")）
+"
+      tv_reason=""
+    elif [[ -n "$tv_unavail" ]]; then
       typed_unavailable="${typed_unavailable}- ${tv_cli} / ${crit_persp} — 主担当（${REVIEW_MAIN}）のみで完了（${tv_cli}: $(unavailable_cause_label_ja "$tv_unavail")）
 "
       tv_reason=""

@@ -53,6 +53,15 @@ readonly CLI_LANE="grok-cli"
 # shellcheck disable=SC2034 # adapter-common.sh（source 先）が読む
 ADAPTER_SUPPORTS_DELEGATION=true
 
+# ── 起動前のレーン確認（--precheck。Issue `#2044`。入口は adapter-common-cli.sh）──
+# grok は残量も認証も非対話では確定できない（2026-11-10 に 1.0.70 で確認: `grok usage <SESSION_ID>` は
+# 過去のセッションの消費量で残量ではなく、status 系のサブコマンドも無い）ので能力は none。
+# --precheck は常に unknown を返し、通常どおり起動する。利用枠切れは実行時の失敗分類と、同じ入力の
+# --resume の記憶（scripts/lib/multi-agent-precheck.sh）で扱う。
+# shellcheck disable=SC2034 # adapter-common-cli.sh（source 先）の handle_adapter_precheck_request が読む
+readonly ADAPTER_PRECHECK_CAPABILITY="none"
+handle_adapter_precheck_request "$@"
+
 # ── Preflight ──
 
 # 委譲経路（--delegate-dir）は CLI を起動しないので導入を要求しない（Issue `#2118`）

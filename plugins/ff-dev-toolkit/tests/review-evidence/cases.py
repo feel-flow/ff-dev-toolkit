@@ -234,7 +234,7 @@ class Evidence(HostDelegationCases, unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if not k.startswith(tuple('_'.join(parts) + '_' for parts in [
             ('MULTI', 'AGENT'), ('FF', 'DEV', 'TOOLKIT'), ('FF', 'REVIEW')]))
                and k not in ('CLAUDE_PLUGIN_ROOT', 'GROK_PLUGIN_ROOT')}
-        env.update(PATH=str(stub_bin) + ':' + env['PATH'], FF_REVIEW_ROUND_LIMIT='0',
+        env.update(PATH=str(stub_bin) + ':' + env['PATH'], FF_REVIEW_ROUND_LIMIT='0', MULTI_AGENT_LANE_PRECHECK='off',
                    FF_DEV_TOOLKIT_SKIP='codex-auto-update', FF_DEV_TOOLKIT_ROOT=str(root))
         if extra == ('--archive-only',):
             cmd = ['bash', str(root / 'scripts/multi-review.sh'), '--base', 'develop', '--archive-only']
@@ -510,7 +510,7 @@ class Evidence(HostDelegationCases, unittest.TestCase):
             cli.chmod(0o755)
             env = {k: v for k, v in os.environ.items() if not k.startswith(tuple('_'.join(parts) + '_' for parts in [
                 ('MULTI', 'AGENT'), ('FF', 'DEV', 'TOOLKIT'), ('FF', 'REVIEW')]))}
-            env.update(PATH=str(stub) + ':' + env['PATH'], FF_REVIEW_ROUND_LIMIT='0',
+            env.update(PATH=str(stub) + ':' + env['PATH'], FF_REVIEW_ROUND_LIMIT='0', MULTI_AGENT_LANE_PRECHECK='off',
                        FF_DEV_TOOLKIT_SKIP='codex-auto-update')
             cmd = ['bash', str(SCRIPT.parent / 'multi-review.sh'), '--cli', 'codex-cli',
                    '--perspective', 'code-review', '--base', 'develop', '--evidence', '--fresh']

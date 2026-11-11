@@ -525,6 +525,7 @@ multi-agent-critical-marker/verify.sh
 multi-agent-host-delegation/completed-lane-cases.sh
 multi-agent-host-delegation/verify.sh
 multi-agent-ignore-paths/verify.sh
+multi-agent-lane-precheck/verify.sh
 multi-agent-load-gate/verify.sh
 multi-agent-plan/verify.sh
 multi-agent-resume/verify.sh
@@ -552,6 +553,7 @@ shared-version-convergence/cases/claim-helper-failures.sh
 shared-version-convergence/cases/merge-races.sh
 shared-version-convergence/verify.sh
 stop-block-contract/verify.sh
+stop-reason-evidence/verify.sh
 sync-forbidden-patterns/verify.sh
 sync-sha-contract/footer-reuse-runtime.sh
 sync-sha-contract/release-runtime.sh

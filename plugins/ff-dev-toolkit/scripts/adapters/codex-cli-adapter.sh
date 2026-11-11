@@ -39,6 +39,113 @@ readonly CLI_LANE="codex-cli"
 # shellcheck disable=SC2034 # adapter-common.sh（source 先）が読む
 ADAPTER_SUPPORTS_DELEGATION=true
 
+# ── 起動前のレーン確認（--precheck。Issue `#2044`。入口と契約は adapter-common-cli.sh の
+#    handle_adapter_precheck_request）──
+#
+# codex は残量を読める: App Server（`codex app-server`、stdio の JSON-RPC）の
+# `account/rateLimits/read` は**モデルを起動しない**（2026-10-24 に 0.164.0、2026-11-10 に 0.166.0 で
+# initialize → initialized → account/rateLimits/read だけの呼び出しが正常応答することを実測。
+# 公式仕様: https://learn.chatgpt.com/docs/app-server）。実測の注意: stdin を EOF にすると応答を
+# 返さずに終了するので、応答の行を読むまで stdin を開いたままにする（読んだら閉じる）。
+# `codex login status` は使わない — 利用枠切れでも正常と出る（Issue `#2140` の観測）。
+#
+# 判定は保守的に（迷ったら unknown = 通常どおり起動する）。backend の互換ビュー `rateLimits` だけを見る
+# （`rateLimitsByLimitId` は他モデルの枠を含み、そちらの上限で codex を止めないため）:
+#   exhausted … rateLimitReachedType がスキーマの 5 値（rate_limit_reached / workspace_{owner,member}_
+#               {credits_depleted,usage_limit_reached}）のどれかで、クレジットで続けられる印（hasCredits /
+#               unlimited）が無く、ordinaryUsageAllowed が true でない
+#               または ordinaryUsageAllowed が false で、クレジットも明示的に無い（hasCredits=false かつ unlimited=false）
+#   available … ordinaryUsageAllowed が true で、rateLimitReachedType が無い
+#   unknown   … それ以外（ordinaryUsageAllowed が null = スキーマが「回復を推測するな」と言う状態を含む）
+# 使用率（usedPercent）からは推測しない。応答の accountId・残高・email は出力にもログにも書かない。
+# JSON の読み取りは jq か python3 があるときだけ行う（どちらも無ければ unknown）。
+# shellcheck disable=SC2034 # adapter-common-cli.sh（source 先）の handle_adapter_precheck_request が読む
+readonly ADAPTER_PRECHECK_CAPABILITY="quota"
+
+# 応答の行（id=1）を 1 行だけ stdout へ出す。読み終えたら（または codex が先に終わったら）印を作り、
+# stdin の書き手を止めて codex を EOF で終わらせる。全体の期限は呼び出し側の run_with_timeout。
+_codex_rate_limits_session() { # <done-flag>
+  local flag="$1" i=0 line
+  {
+    printf '%s\n' \
+      '{"method":"initialize","id":0,"params":{"clientInfo":{"name":"ff-dev-toolkit-precheck","version":"0"}}}' \
+      '{"method":"initialized"}' \
+      '{"method":"account/rateLimits/read","id":1}'
+    while [[ ! -e "$flag" && "$i" -lt 6000 ]]; do
+      sleep 0.1
+      i=$((i + 1))
+    done
+  } | "$CLI_COMMAND" app-server 2>/dev/null | {
+    while IFS= read -r line; do
+      case "$line" in
+        *'"id":1,'*|*'"id":1}'*) printf '%s\n' "$line"; break ;;
+      esac
+    done
+    : > "$flag"
+  }
+}
+
+_codex_rate_limits_state() { # stdin: 応答の行 → stdout: available | exhausted | unknown
+  local json
+  json="$(cat)"
+  [[ -n "$json" ]] || { echo unknown; return 0; }
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s\n' "$json" | jq -r '
+      (.result // null) as $r
+      | if ($r | type) != "object" then "unknown" else
+          (($r.rateLimits // {}) | if type == "object" then . else {} end) as $rl
+          | ($rl.credits | if type == "object" then . else null end) as $c
+          | (($c != null) and (($c.hasCredits == true) or ($c.unlimited == true))) as $usable
+          | (($c != null) and ($c.hasCredits == false) and ($c.unlimited == false)) as $denied
+          | ((($rl.rateLimitReachedType | type) == "string")
+             and ($rl.rateLimitReachedType | test("^(rate_limit_reached|workspace_(owner|member)_(credits_depleted|usage_limit_reached))$"))) as $reached
+          | if $reached and ($usable | not) and ($r.ordinaryUsageAllowed != true) then "exhausted"
+            elif ($r.ordinaryUsageAllowed == false) and $denied then "exhausted"
+            elif ($r.ordinaryUsageAllowed == true) and ($rl.rateLimitReachedType == null) then "available"
+            else "unknown" end
+        end' 2>/dev/null || echo unknown
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' "$json" | python3 -I -c '
+import json, re, sys
+try:
+    r = json.loads(sys.stdin.read()).get("result")
+except Exception:
+    print("unknown"); sys.exit(0)
+if not isinstance(r, dict):
+    print("unknown"); sys.exit(0)
+rl = r.get("rateLimits") if isinstance(r.get("rateLimits"), dict) else {}
+c = rl.get("credits") if isinstance(rl.get("credits"), dict) else None
+usable = c is not None and (c.get("hasCredits") is True or c.get("unlimited") is True)
+denied = c is not None and c.get("hasCredits") is False and c.get("unlimited") is False
+t = rl.get("rateLimitReachedType")
+reached = isinstance(t, str) and re.fullmatch(r"rate_limit_reached|workspace_(owner|member)_(credits_depleted|usage_limit_reached)", t) is not None
+ok = r.get("ordinaryUsageAllowed")
+if reached and not usable and ok is not True:
+    print("exhausted")
+elif ok is False and denied:
+    print("exhausted")
+elif ok is True and t is None:
+    print("available")
+else:
+    print("unknown")
+' 2>/dev/null || echo unknown
+    return 0
+  fi
+  echo unknown
+}
+
+adapter_precheck_probe() {
+  local dir line
+  dir="$(mktemp -d 2>/dev/null)" || { echo unknown; return 0; }
+  line="$(run_with_timeout "$(lane_precheck_timeout)" _codex_rate_limits_session "${dir}/done" 2>/dev/null)" || true
+  rm -rf "$dir"
+  printf '%s\n' "$line" | LC_ALL=C awk 'NR == 1' | _codex_rate_limits_state
+}
+
+handle_adapter_precheck_request "$@"
+
 # ── Preflight ──
 
 # 委譲経路（--delegate-dir）は CLI を起動しないので導入を要求しない（Issue `#2118`）

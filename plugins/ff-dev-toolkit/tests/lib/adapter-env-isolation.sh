@@ -248,7 +248,11 @@ run_isolated() {
     _ri_opts+=("$1" "$2")
     shift 2
   done
-  env "${ISOLATE_ENV[@]}" ${_ri_opts[@]+"${_ri_opts[@]}"} FF_MULTI_AGENT_LOAD_PER_CORE=0 "$@"
+  # MULTI_AGENT_LANE_PRECHECK=off も同じ理由の既定。起動前のレーン確認（Issue `#2044`）は副担当の
+  # CLI を `codex app-server` / `claude auth status` で 1 回起動するので、stub の起動回数や引数を
+  # 数える suite がそれを数えてしまう。確認の契約は multi-agent-lane-precheck suite が
+  # MULTI_AGENT_LANE_PRECHECK=on を注入して固定する（後の代入が勝つ）。
+  env "${ISOLATE_ENV[@]}" ${_ri_opts[@]+"${_ri_opts[@]}"} FF_MULTI_AGENT_LOAD_PER_CORE=0 MULTI_AGENT_LANE_PRECHECK=off "$@"
 }
 
 # env -u が届かない経路（プロセス内 source）向け。ISOLATE_ENV は `-u NAME` の並びなので

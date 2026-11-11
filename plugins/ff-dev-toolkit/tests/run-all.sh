@@ -1178,6 +1178,14 @@ else
     # stub CLI の起動回数で実測する。一時 git リポジトリ + stub CLI（〜10 秒）。
     # 実 CLI・ネットワーク・課金は伴わない。
     "$SCRIPT_DIR/multi-agent-skip-poisoned-cli/verify.sh"
+    # 起動前のレーン確認（モデルを起動しない利用枠・認証の取得）と、同じレビュー入力の --resume の中での
+    # 利用不可の記憶（Issue `#2044`）。codex / claude / grok を副担当にした 3 通りと陰性対照を stub CLI の
+    # 起動回数で実測する。一時 git リポジトリ + stub CLI（〜2 分）。実 CLI・ネットワーク・課金は伴わない。
+    "$SCRIPT_DIR/multi-agent-lane-precheck/verify.sh"
+    # 停止理由の候補（stderr を 4KB へ切り詰める前に拾う。Issue `#2140`）を 3 アダプタで実走して、
+    # 結果ファイル先頭と統合レポートの未完了の観点への表示、偽のエラー行・偽メタ情報の境界、
+    # 制御の分類へ流れないことを見る。一時 git リポジトリ + stub CLI（〜1 分）。実 CLI・課金は伴わない。
+    "$SCRIPT_DIR/stop-reason-evidence/verify.sh"
     # claude-code レーンを CLI spawn ではなくホストのセッション内エージェントで走らせる
     # 選択肢。CLI 起動回数 0・handoff の stdout 契約・委譲待ちの終了コード 3・
     # レポートの DELEGATED / INCOMPLETE・書き戻しの受理と拒否（別入力 / 本文不成立）・
@@ -1504,6 +1512,11 @@ REQUIRED_SUITES=(
   # 見ており、一時領域不足で skip すると、観点数ぶんの無駄な待ち時間の再発と、
   # スキップを通常の失敗として案内する退行が黙って戻る（Issue #1143）。
   multi-agent-skip-poisoned-cli
+  # 起動前のレーン確認と --resume の記憶を見るのはこの suite だけで、一時領域不足で skip すると
+  # 「尽きたレーンを毎回起動して待つ」退行と「確かめられない状態で止める」退行が黙って戻る（Issue `#2044`）。
+  multi-agent-lane-precheck
+  # 4KB 抜粋の外へ落ちた停止理由の表示を見るのはこの suite だけ（Issue `#2140`）。skip 条件は一時領域の有無だけ。
+  stop-reason-evidence
   # ホスト委譲の契約を見るのはこの suite だけ。一時領域不足で skip すると、
   # (a) 委譲指定なのに CLI を起動する (b) 委譲待ちを成功として返す (c) 別入力への応答を
   # 今回の結果として受理する、のどれが退行しても緑で通る。skip 条件は一時領域の有無だけ。

@@ -13,7 +13,9 @@
 # ── CLI Detection ──
 # 検出は「PATH に在るか」だけを見る。認証・残高の状態はここでは probe しない —
 # 4 CLI の実提供機能を実測したうえでの判断で、根拠と代わりに何をしているかは
-# classify_cli_failure_cause のヘッダーに書いてある（Issue `#659`）。
+# classify_cli_failure_cause のヘッダーに書いてある（Issue `#659`）。モデルを起動せずに
+# 確かめられる CLI（codex の残量・claude の認証）は、検出ではなくタスクを起動する直前の
+# レーン確認が確かめる（scripts/lib/multi-agent-precheck.sh。Issue `#2044`）。プランからは外さない。
 detect_available_clis() {
   AVAILABLE_CLIS=""
   EXCLUDED_INSTALLED_CLIS=""
@@ -719,10 +721,10 @@ warn_if_stale_local_base() {
 # それが分かるのはタスクを丸ごと失ったあとで、dry-run は毎回「載る」としか言わない。
 # 「3 本のクロスモデル」のつもりが常に 2 本で走る、という形が見えないまま続く。
 #
-# 認証・残高を probe しないという方針（detect_available_clis のヘッダー、および
+# 認証・残高を**課金される呼び出しで** probe しないという方針（detect_available_clis のヘッダー、および
 # classify_cli_failure_cause の「なぜ preflight probe を採らなかったか」）は
-# **そのまま維持する**。あちらを退けた理由は「残高・認証は課金される API 呼び出しを
-# しないと分からない」で、ここで見るのは性質が違う:
+# **そのまま維持する**（モデルを起動せずに読める CLI だけを起動前に確かめる経路は
+# scripts/lib/multi-agent-precheck.sh。Issue `#2044`）。ここで見るのは性質が違う:
 #   - 環境固有（このマシンでは毎回失敗する）
 #   - 決定的（同じ環境なら同じ答え）
 #   - モデルを呼ぶ前に確定する（= 課金されない手段で観測できる）
@@ -816,7 +818,7 @@ warn_unappliable_sandbox() {
   if [[ "$kind" == "undetermined" ]]; then
     echo "         この実行から外すなら: 走らせたい CLI を --cli で明示するか、外す方を --exclude-cli ${cli} で名指しする" >&2
     echo "                     （その 1 回の引数。判定不能の原因を直せば次回は警告が消えます）" >&2
-    echo "         検査対象は sandbox の適用可否だけです（認証・残高は probe しません）。" >&2
+    echo "         検査対象は sandbox の適用可否だけです（認証・残高はこの検査では見ません。起動前に確かめられる CLI は「起動前の確認」の行が出ます）。" >&2
     return 0
   fi
   echo "         この実行から外すなら 2 択です:" >&2
@@ -830,7 +832,7 @@ warn_unappliable_sandbox() {
   echo "                     既に exclude_clis があるならキーを増やさず、同じ 1 文字列へ空白区切りで足す" >&2
   echo "                     （例: exclude_clis: \"codex-cli ${cli}\"）。リポジトリへ commit すると" >&2
   echo "                     プロジェクト全員に効くので、この機械だけなら MULTI_AGENT_CONFIG で別ファイルを指す。" >&2
-  echo "         検査対象は sandbox の適用可否だけです（認証・残高は probe しません）。" >&2
+  echo "         検査対象は sandbox の適用可否だけです（認証・残高はこの検査では見ません。起動前に確かめられる CLI は「起動前の確認」の行が出ます）。" >&2
   return 0
 }
 
@@ -904,6 +906,7 @@ show_plan() {
       # 直前の CLI の項目を閉じる位置で、その CLI 宛の sandbox 警告を出す。
       if [[ -n "$current_cli" ]]; then
         warn_unappliable_sandbox "$current_cli"
+        show_lane_precheck "$current_cli"
       fi
       current_cli="$cli"
       local tier
@@ -920,6 +923,7 @@ show_plan() {
   done <<< "$EXECUTION_PLAN"
   if [[ -n "$current_cli" ]]; then
     warn_unappliable_sandbox "$current_cli"
+    show_lane_precheck "$current_cli"
   fi
 
   # 同一 CLI への観点集中の可視化（Issue `#251`）。minimize_cost の振替で、振替先の

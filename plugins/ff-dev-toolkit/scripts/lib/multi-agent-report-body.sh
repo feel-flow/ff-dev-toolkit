@@ -146,7 +146,14 @@ append_plan_sections() {
       # 「pending」と名乗る。同じ未検証ファイルが CRITICAL_BLOCK 判定の入力にもなる。
       local unavail_cause
       unavail_cause="$(unavailable_cross_task_cause "${cli_name}/${perspective_name}")"
-      if [[ -n "$unavail_cause" ]]; then
+      if [[ -n "$unavail_cause" && -n "$(lane_precheck_block "$cli_name")" ]]; then
+        # 起動前の確認・--resume の記憶で止めたレーン（Issue `#2044`）。実行時に落ちた回と
+        # 同じく主担当のみの完了だが、CLI の出力は無い（起動していない）
+        echo "⏭ **MAIN REVIEWER ONLY** — ${cli_name} was not started: $(lane_precheck_block_phrase "$cli_name")."
+        echo "This run completed with the main reviewer (${REVIEW_MAIN}) only. This is not a finding of"
+        echo "\"clean\" for this perspective from ${cli_name}; it was not reviewed by it (recorded as"
+        echo "$(lane_precheck_label_ja "$cli_name" | awk '{ print $1 }')). The not-started record is at \`${result_file}\`."
+      elif [[ -n "$unavail_cause" ]]; then
         # 主担当以外の利用不可。INCOMPLETE を名乗らない — 主担当の全観点が
         # 完走した回だけここへ来るので、レビューとしては主担当のみで完了している。
         # サルベージした成果物（CLI の stderr）は本文へ貼らない: 判定材料ではなく、
@@ -190,6 +197,12 @@ append_plan_sections() {
           echo "adopted and this report regenerated."
         fi
         echo "Absence of a finding here means unchecked, not clean."
+      elif [[ -n "$(lane_precheck_block "$cli_name")" && -n "$(skipped_task_cause "${cli_name}/${perspective_name}")" ]]; then
+        # 起動前の確認で止めたが、主担当のみの完了にはならなかった回（主担当が未完走・fast 経路で
+        # 主担当がプランに居ない等）。結果ファイルの不在・存在に関わらず、起動していないことを名指しする
+        echo "⏭ **NOT STARTED** — this task was not executed, so it counts as **INCOMPLETE**."
+        echo "${cli_name} was stopped before launch: $(lane_precheck_block_phrase "$cli_name")."
+        echo "Recorded as $(lane_precheck_label_ja "$cli_name" | awk '{ print $1 }'). Absence of a finding here means unchecked, not clean."
       elif [[ -f "$result_file" ]]; then
         # An adapter marks salvaged partial output with `Status: incomplete`
         # (adapters/adapter-common.sh). Repeat that in the report: without it the
@@ -515,8 +528,87 @@ typed_verdict_failsafe_critical() { # <result-file> <records-file> <scratch-file
   esac
 }
 
+# 結果ファイルの先頭からアダプタが書いた停止理由の候補を読む（Issue `#2140`。書き手は
+# adapter-common-cli.sh の fail_cli_task / stop_reason_*）。表示専用で、制御の分類には使わない。
+# 読む範囲は位置で固定する: ヘッダー → 空行 → バナーの段落（`> ` の連続）→ 空行 →
+# `### Stop reason evidence` の節。本文（保全した部分出力・CLI stderr）は必ずこの後ろにあるので、
+# 本文に同じ形の行を書かれても読まない。
+# 出力: "<code>\t<confidence>\t<根拠の行>"（候補の行が無い旧形式・形が違うときは空）。根拠の行は、
+# 候補が利用枠・認証なら同じ語彙に当たる最も新しい箇条書き、それ以外は最後の箇条書き
+# （候補と根拠が食い違って見えないように。語彙の正本は adapter-common-cli.sh の CLI_FAILURE_*_RE）
+result_stop_reason_fields() { # <result-file>
+  [[ -f "$1" && -r "$1" ]] || return 0
+  local raw head code conf evs ev="" re=""
+  raw="$(LC_ALL=C awk '
+    state == 0 { if ($0 == "") state = 1; next }
+    state == 1 {
+      if ($0 ~ /^> /) {
+        if (cand == "" && $0 ~ /^> Stop reason candidate: `[a-z-]+` \((estimated|confirmed|unknown)\)/) cand = $0
+        next
+      }
+      if ($0 == "" && cand != "") { state = 2; next }
+      exit
+    }
+    state == 2 { if ($0 == "### Stop reason evidence") { state = 3; next } ; exit }
+    # 節は「導入の 1 段落 → 空行 → 箇条書き」か、候補が無い回の 1 段落だけ。導入の次に来た
+    # 箇条書きでない行（候補が無い回は本文の先頭行）で止め、本文の箇条書きを根拠として読まない
+    state == 3 {
+      if ($0 ~ /^- `/) { if (!intro) exit; ev = $0; sub(/^- `+ /, "", ev); sub(/ `+$/, "", ev); n++; line[n] = ev; seen = 1; next }
+      if ($0 == "") next
+      if (seen || intro) exit
+      intro = 1
+      next
+    }
+    END {
+      if (cand == "") exit
+      code = cand; sub(/^> Stop reason candidate: `/, "", code); sub(/`.*$/, "", code)
+      conf = cand; sub(/^[^(]*\(/, "", conf); sub(/\).*$/, "", conf)
+      printf "%s %s\n", code, conf
+      for (i = 1; i <= n; i++) print line[i]
+    }' "$1" 2>/dev/null)" || return 0
+  [[ -n "$raw" ]] || return 0
+  head="$(printf '%s\n' "$raw" | LC_ALL=C awk 'NR == 1')"
+  read -r code conf <<<"$head"
+  evs="$(printf '%s\n' "$raw" | LC_ALL=C awk 'NR > 1')"
+  if [[ -n "$evs" ]]; then
+    case "$code" in
+      billing) re="$CLI_FAILURE_BILLING_RE" ;;
+      auth)    re="$CLI_FAILURE_AUTH_RE" ;;
+    esac
+    if [[ -n "$re" ]]; then
+      ev="$(printf '%s\n' "$evs" | LC_ALL=C grep -iE "$re" | tail -n 1)" || ev=""
+    fi
+    [[ -n "$ev" ]] || ev="$(printf '%s\n' "$evs" | tail -n 1)"
+    ev="$(printf '%s\n' "$ev" | LC_ALL=C awk '{ gsub(/`/, "\047"); if (length($0) > 200) $0 = substr($0, 1, 200) " ..."; print }')"
+  fi
+  printf '%s\t%s\t%s\n' "$code" "$conf" "$ev" | _ff_drop_invalid_utf8
+}
+
+# 未完了の観点の 1 行へ添える停止理由（日本語）。候補が読めないときは空文字。
+result_stop_reason_summary_ja() { # <result-file>
+  local fields code conf ev label conf_ja
+  fields="$(result_stop_reason_fields "$1")" || fields=""
+  [[ -n "$fields" ]] || return 0
+  IFS=$'\t' read -r code conf ev <<<"$fields"
+  case "$code" in
+    billing) label="利用枠・クレジット" ;;
+    auth)    label="認証" ;;
+    timeout) label="時間切れ" ;;
+    *)       label="不明" ;;
+  esac
+  case "$conf" in
+    confirmed) conf_ja="runner の期限で確定" ;;
+    estimated) conf_ja="ログからの推定" ;;
+    *) if [[ -n "$ev" ]]; then conf_ja="エラー行はあるが分類できない"; else conf_ja="根拠になるエラー行なし"; fi ;;
+  esac
+  printf '。停止理由の候補: %s（%s）' "$label" "$conf_ja"
+  [[ -z "$ev" ]] || printf ' — 根拠: `%s`' "$ev"
+}
+
 # 観点の「未完了」の理由。append_plan_sections が節へ未完了を名乗らせる判定と同じ順
-# （委譲待ち → 結果ファイルの incomplete ヘッダ → スキップ → 結果なし）で見る。
+# （委譲待ち → 結果ファイルの incomplete ヘッダ → 起動前の確認で止めたレーン → スキップ → 結果なし）で見る。
+# 起動前の確認・--resume の記憶で止めた観点は、結果ファイルの理由コード（lane-precheck-* / lane-memory-*）か
+# LANE_PRECHECK_BLOCKS で名指す（Issue `#2044`。scripts/lib/multi-agent-precheck.sh）。
 # 空文字 = 未完了ではない。
 review_task_incomplete_reason() { # <cli> <perspective>
   local cli="$1" persp="$2" result_file="${OUTPUT_DIR}/$1/$2.md"
@@ -530,9 +622,18 @@ review_task_incomplete_reason() { # <cli> <perspective>
         missing-review-body-prose) echo "結果の拒否: 散文の重大度行だけのレビュー（型付き判定行なし）" ;;
         missing-review-body)       echo "結果の拒否: 型付き判定行の無い出力" ;;
         review-body-unparsed)      echo "結果の拒否: 出力を解析できない（不正な UTF-8 など）" ;;
-        *)                         echo "CLI の失敗・タイムアウト・結果の拒否（途中までの出力のみ）" ;;
+        # 起動前の確認・--resume の記憶で止めた観点（Issue `#2044`。書き手は multi-agent-precheck.sh）
+        lane-precheck-*|lane-memory-*)
+          if [[ -n "$(lane_precheck_block "$cli")" ]]; then
+            lane_precheck_label_ja "$cli"
+          else
+            echo "未確認 — 起動前の確認で止めたレーン（起動していない）"
+          fi ;;
+        *)                         echo "CLI の失敗・タイムアウト・結果の拒否（途中までの出力のみ）$(result_stop_reason_summary_ja "$result_file")" ;;
       esac
     fi
+  elif [[ -n "$(lane_precheck_block "$cli")" && -n "$(skipped_task_cause "${cli}/${persp}")" ]]; then
+    lane_precheck_label_ja "$cli"
   elif [[ -n "$(skipped_task_cause "${cli}/${persp}")" ]]; then
     echo "同じ CLI の先行失敗によりスキップ"
   else

@@ -397,6 +397,9 @@ mkdir -p "$PSTUB" "$TMP/codex-home"
 cat > "$PSTUB/codex" <<SH
 #!/usr/bin/env bash
 if [ "\${1:-}" = "--version" ]; then echo "codex-cli 9.9.9"; exit 0; fi
+# 起動前のレーン確認（App Server）には答えない = unknown（通常どおり起動）。この suite が見るのは
+# 実行時の失敗の扱いで、レーン確認の契約は tests/multi-agent-lane-precheck が持つ
+if [ "\${1:-}" = app-server ]; then exit 0; fi
 mode="\$(cat "$TMP/codex-mode")"
 if [ "\$mode" = refused ]; then
   cat >/dev/null
@@ -618,6 +621,9 @@ mkdir -p "$NPM_PKG/bin" "$U/brew-root/Caskroom/codex/1.1.0" \
   "$U/bin-npm" "$U/bin-brew" "$U/bin-plain" "$U/tools" "$U/codex-home" "$U/state" "$U/other-prefix"
 cat > "$U/codex-impl" <<SH
 #!/usr/bin/env bash
+# 起動前のレーン確認（App Server。モデルを起動しない）は数えない — ここで固定するのは版チェックが
+# レビューの起動を増やさないこと（レーン確認の契約は tests/multi-agent-lane-precheck が持つ）
+[ "\${1:-}" = app-server ] && exit 0
 printf 'x\n' >> "$U/codex-runs"
 cat >/dev/null
 echo "## Review"

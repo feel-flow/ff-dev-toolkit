@@ -70,6 +70,14 @@ report_task_failure() {
 # 実測した 3 件のどれも捕まえられない。4 CLI 中 2 つは probe 自体が無いので、いずれに
 # せよ失敗側の切り分けが必要になる。
 #
+# **追記（Issue `#2044`、2026-11-10）**: 上の (1) は codex については成り立たなくなった。codex の
+# App Server に、モデルを起動せずに残量を読む `account/rateLimits/read` があることを実測したので、
+# 起動前のレーン確認（scripts/lib/multi-agent-precheck.sh。能力はアダプタが宣言する）が
+# 「残量を読める CLI の明示的な枯渇」と「認証だけ読める CLI（claude）の未ログインの明示状態」だけを
+# 起動前に止める。課金される probe は今も使わない。残量を読めない CLI（claude / grok / copilot）と、
+# 確かめられなかった回は従来どおり起動し、下の失敗時の切り分けが働く。(2) の限界（サーバ側で失効した
+# token は logged in と出る）はそのまま残る。
+#
 # そこで preflight ではなく**失敗時の切り分け**で AC を満たす。判定材料は成果物に
 # 保全済みの CLI stderr（adapter-common.sh の fail_cli_task が `### CLI stderr` 節へ
 # 書く）だけで、追加のプロセスもネットワークも課金も発生しない。
@@ -80,6 +88,8 @@ report_task_failure() {
 # 抜粋は末尾 4KB に頭打ちされる（adapter-common.sh の tail -c）ので、再接続リトライで
 # 末尾が埋まった回は先頭の 401 が抜粋外に落ちる。分類は「出たら手がかり」であって
 # 「出なければ無関係」ではない — 陰性を根拠に切り分けを打ち切らないこと。
+# 抜粋の外へ落ちた理由の行は、表示用に限って結果ファイル先頭の「停止理由の候補」へ拾ってある
+# （adapter-common-cli.sh の stop_reason_*。Issue `#2140`）。ここ（制御の分類）はそれを読まない。
 #
 # 判定不能は空文字を返す = 従来どおりの案内に落ちる fail-open。誤った断定は
 # 「認証を直しに行ったが実際はクラッシュだった」形の遠回りを生むので、
@@ -131,7 +141,8 @@ _PROMPT_TOO_LONG_RE='prompt is too long|prompt too long|input is too long|input 
 _PROMPT_TOO_LONG_CONTEXT_RE='api error|invalid_request_error|request_too_large|context_length_exceeded|invalid request|bad request|refused|rejected|too large|\berror\b|error[^a-z0-9]{0,4}(400|413)|(http|status|code)[^0-9]{0,10}(400|413)'
 # 部分出力側でだけ掛ける行頭アンカー。CLI / API が吐いたエラー行の体裁を列挙する。
 # レビュー本文の箇条書き・散文・引用（`- `, `> `, `  1. ` 等）はここで落ちる。
-_PROMPT_TOO_LONG_ERRLINE_RE='^[[:space:]]{0,4}(api error|stream error|error|fatal|request failed|unhandled|\{"(type|error)"|\[error\])'
+# 正本は adapter-common-cli.sh の CLI_FAILURE_ERROR_LINE_RE（停止理由の候補の抽出と共有する。Issue `#2140`）
+_PROMPT_TOO_LONG_ERRLINE_RE="$CLI_FAILURE_ERROR_LINE_RE"
 
 # 語彙照合の本体。面によって要求を変える。
 #   stderr  … canonical は単独可（CLI 自身のチャネルで、そこに拒否文がそのまま出る）。
@@ -293,13 +304,12 @@ classify_cli_failure_cause() { # <result-file> [tail] → "auth" | "billing" | "
     # パイプにしないのは `set -o pipefail` 下で grep -q が先頭付近で早期終了すると
     # printf が EPIPE で死に、パイプライン rc=141 が「不一致」に化けるため（実測: 先頭に
     # unauthorized を置いた 640KB 入力が LOST）。真陽性が読み解けない形で落ちる。
-    if grep -qiE \
-      'out of credits|no credits|insufficient credit|credit balance|balance exhausted|insufficient_quota|payment required|spend limit|spending limit|all available credits|usage limit|monthly limit|weekly limit|(http|status|code)[^0-9]{0,10}402|402[^0-9]{0,12}(payment|http|status)' <<<"$stderr_section"; then
+    # 語彙の正本は adapter-common-cli.sh の CLI_FAILURE_BILLING_RE（停止理由の候補の表示と共有する。Issue `#2140`）
+    if grep -qiE "$CLI_FAILURE_BILLING_RE" <<<"$stderr_section"; then
       printf 'billing\n'
       return 0
     fi
-    if grep -qiE \
-      'failed to authenticate|oauth session expired|could not be refreshed|unauthorized|not logged in|not signed in|authentication (failed|error)|invalid api key|invalid_api_key|expired (token|credential)|token (is |has )?expired|please (log ?in|sign in)|re-?authenticate|(http|status|code)[^0-9]{0,10}401|401[^0-9]{0,12}(unauthorized|http|status)' <<<"$stderr_section"; then
+    if grep -qiE "$CLI_FAILURE_AUTH_RE" <<<"$stderr_section"; then
       printf 'auth\n'
       return 0
     fi

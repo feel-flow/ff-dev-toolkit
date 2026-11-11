@@ -119,7 +119,13 @@
 #   FRESH_STATUS=0|2  FRESH_REPORT=<報告へ貼る文言>  FRESH_REASON= FRESH_ACTION=（2 のとき）
 #   RERUN_FULL_GATE=no|yes|see-action  RERUN_REASON=
 #   BASE_HELD_BY=<path> HEAD_HELD_BY=<path>（別 worktree が保持しているとき）
-#   DELETE_BRANCH_MODE=delete-branch|separate-push|separate-consumer  HEAD_DELETE=lease|skipped-fork（separate-push のとき）
+#   DELETE_BRANCH_MODE=delete-branch|separate-push|separate-consumer
+#     保護 head では delete-branch でも --delete-branch を付けない（モード名は保持の有無だけを表す）
+#   HEAD_DELETE=lease|skipped-fork|skipped-protected
+#     lease は separate-push で同一リポジトリの非保護 head。skipped-fork は separate-push の fork / 判定不能。
+#     skipped-protected は同一リポジトリの保護 head（保持の有無を問わない。--delete-branch も削除の尾も付けない）。
+#     fork / 判定不能の delete-branch 経路も、保護名なら --delete-branch を外す（HEAD_DELETE 行は出さない）
+#   HEAD_DELETE_RESULT=skipped-protected（同一リポジトリの保護 head のとき。削除 script も同じ名前を照会せず rc 0 で同じ結果を出す）
 #   DELETE_BRANCH_NOTE=（separate-consumer のとき。削除を付けない理由）
 #   DELETE_PUSH_HOOKS=skipped|kept（lease の削除尾があるとき。kept はフック回避を外した生成）
 #   MERGE_COMMAND_BEGIN … MERGE_COMMAND_END（そのまま実行できる形。書き写さずに貼る）

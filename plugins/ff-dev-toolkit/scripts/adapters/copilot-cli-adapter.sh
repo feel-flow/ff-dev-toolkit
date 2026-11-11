@@ -30,6 +30,13 @@ source "${SCRIPT_DIR}/adapter-common.sh"
 readonly CLI_NAME="Copilot CLI"
 readonly CLI_COMMAND="copilot"
 
+# ── 起動前のレーン確認（--precheck。Issue `#2044`。入口は adapter-common-cli.sh）──
+# copilot は残量も認証もモデルを起動せずには確かめられない（`login` だけで status 系が無い）ので
+# 能力は none。--precheck は常に unknown を返し、通常どおり起動する。
+# shellcheck disable=SC2034 # adapter-common-cli.sh（source 先）の handle_adapter_precheck_request が読む
+readonly ADAPTER_PRECHECK_CAPABILITY="none"
+handle_adapter_precheck_request "$@"
+
 # ── Preflight ──
 
 if ! cli_available "$CLI_COMMAND"; then

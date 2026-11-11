@@ -148,6 +148,9 @@ BASE_BRANCH_IDENTITY="${BASE_BRANCH#origin/}"
 POSITIONAL_PR=""
 DRY_RUN=false
 RESUME=false
+# --resume の中の利用不可の記憶を捨てて確かめ直す（Issue `#2044`。scripts/lib/multi-agent-precheck.sh）。
+# 入力 identity には入れない — 入れると、記憶を捨てたいだけの再実行で完了済みのキャッシュまで外れる
+RETRY_EXHAUSTED=false
 FRESH=false
 ARCHIVE_ONLY=false
 ARCHIVE_PREVIOUS_BRANCH=""
@@ -319,24 +322,22 @@ collect_unavailable_cross_tasks() {
   done <<< "$plan"
   [[ "$main_seen" == "true" ]] || return 0
   for entry in $FAILED_TASKS; do
-    task="${entry%:*}"; rc="${entry##*:}"; cli="${task%%/*}"; persp="${task#*/}"
-    [[ "$cli" != "$REVIEW_MAIN" && "$rc" != "124" && "$rc" != "0" ]] || continue
-    result="${OUTPUT_DIR}/${cli}/${persp}.md"
-    [[ -f "$result" ]] || continue
-    # アダプタの拒否（理由コード行あり）と、部分出力を保全した成果物は許容しない
-    grep -q '^> Reason code: ' "$result" 2>/dev/null && continue
-    grep -qxF 'No output was captured before the CLI was stopped.' "$result" 2>/dev/null || continue
-    cause="$(classify_cli_failure_cause "$result" tail)"
-    cli_failure_is_deterministic "$cause" || continue
+    task="${entry%:*}"; rc="${entry##*:}"; cli="${task%%/*}"
+    [[ "$cli" != "$REVIEW_MAIN" ]] || continue
+    # 時間切れ・アダプタの拒否（理由コード行あり）・部分出力を保全した成果物は許容しない。
+    # 条件の正本は task_failure_confirms_unavailable（scripts/lib/multi-agent-precheck.sh。
+    # --resume の記憶も同じ条件で書く）
+    cause="$(task_failure_confirms_unavailable "$task" "$rc")" || continue
     UNAVAILABLE_CROSS_TASKS="${UNAVAILABLE_CROSS_TASKS:+$UNAVAILABLE_CROSS_TASKS }${task}:${cause}"
   done
-  # スキップは同じ CLI の先行タスクが上の条件で利用不可と判定された回だけ許容する
-  # （スキップ自体は節全体の分類で起きるので、先行タスクの許容を根拠にする）
+  # スキップは同じ CLI の先行タスクが上の条件で利用不可と判定された回か、起動前の確認・
+  # --resume の記憶でそのレーンを止めた回（Issue `#2044`。止めたのは明示状態か、同じ条件で
+  # 確定した記憶だけ）に許容する（スキップ自体は節全体の分類で起きるので、先行タスクの許容を根拠にする）
   for entry in $SKIPPED_TASKS; do
     task="${entry%:*}"; cause="${entry##*:}"; cli="${task%%/*}"
     [[ "$cli" != "$REVIEW_MAIN" ]] || continue
     cli_failure_is_deterministic "$cause" || continue
-    [[ " ${UNAVAILABLE_CROSS_TASKS} " == *" ${cli}/"* ]] || continue
+    [[ " ${UNAVAILABLE_CROSS_TASKS} " == *" ${cli}/"* || -n "$(lane_precheck_block "$cli")" ]] || continue
     UNAVAILABLE_CROSS_TASKS="${UNAVAILABLE_CROSS_TASKS:+$UNAVAILABLE_CROSS_TASKS }${task}:${cause}"
   done
   return 0
@@ -582,6 +583,7 @@ parse_args() {
       --base)        BASE_BRANCH="$2"; BASE_BRANCH_SOURCE="--base flag"; BASE_BRANCH_EXPLICIT=true; shift 2 ;;
       --staged)      STAGED_DIFF=true; shift ;;
       --resume)      RESUME=true; shift ;;
+      --retry-exhausted) RETRY_EXHAUSTED=true; shift ;;
       --fresh)       FRESH=true; shift ;;
       --archive-only) ARCHIVE_ONLY=true; shift ;;
       --archive-only=*)

@@ -863,7 +863,34 @@ cmd_precheck() {
         head_delete="skipped-fork"
         echo "⚠️  head ブランチの削除コマンドは生成しません（isCrossRepository=${is_cross}: fork の PR、または判定不能）" >&2
       fi
-      echo "HEAD_DELETE=${head_delete}"
+    fi
+  fi
+  # head を消しうる経路に、merge-cleanup と同じ名前の保護を掛ける。同一リポジトリの削除経路に加え、
+  # fork / 判定不能でも --delete-branch が残る回（delete-branch 経路）は名前で外す。is_cross を
+  # 読み違えた回に --delete-branch が統合ブランチを消さないよう、判定不能を削除の側へ倒さない。
+  # 判定の実体は削除 script にあり、ここは source して関数だけ使う（埋め込み本文はファイルのまま）。
+  # 関数が無い・設定が読めない回は MERGE_COMMAND を出さない。
+  if [[ "$delete_mode" != "separate-consumer" ]] && [[ "$is_cross" == "false" || -n "$DELETE_FLAG" ]]; then
+    local protect_script="$plugin_root/scripts/lib/finish-delete-merged-head.sh"
+    need_bundled lib/finish-delete-merged-head.sh
+    assert_bundled_shebang_lf "$protect_script"
+    # shellcheck source=finish-delete-merged-head.sh
+    . "$protect_script" || die_env "head 削除の同梱 script を読み込めません。merge コマンドを生成しない" "ff-dev-toolkit を再導入してから skill を呼び直す"
+    if ! declare -F ff_protect_branch_prepare >/dev/null 2>&1 || ! declare -F ff_is_protected_branch >/dev/null 2>&1; then
+      die_env "head 削除の保護判定が同梱 script にありません。merge コマンドを生成しない" "ff-dev-toolkit を再導入してから skill を呼び直す"
+    fi
+    ff_protect_branch_prepare || die_env "保護ブランチの設定を解釈できません。merge コマンドを生成しない" "FF_MERGE_CLEANUP_PROTECT_BRANCHES の値を直して finish.sh precheck を再実行する（空要素・前後の空白・文字クラスは不可。追加の保護を無くす場合は none）"
+    if ff_is_protected_branch "$head_ref"; then
+      DELETE_FLAG=""
+      # HEAD_DELETE の値は同一リポジトリの回だけ変える（fork / 判定不能の HEAD_DELETE 契約は従来どおり）
+      [[ "$is_cross" != "false" ]] || head_delete="skipped-protected"
+      echo "⚠️  head は保護ブランチのため削除コマンドを生成しません（${head_ref}）" >&2
+    fi
+  fi
+  if [[ -n "$head_delete" ]]; then
+    echo "HEAD_DELETE=${head_delete}"
+    if [[ "$head_delete" == "skipped-protected" ]]; then
+      echo "HEAD_DELETE_RESULT=skipped-protected"
     fi
   fi
   echo "DELETE_BRANCH_MODE=${delete_mode}"

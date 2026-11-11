@@ -88,7 +88,7 @@ cold/clear の新ブランチは `--fresh` 無しで開始する。旧ブラン�
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --dry-run --route <REVIEW_ROUTE の値> $ARGUMENTS
 ```
 
-CLI・観点・モード・timeout・警告を報告。✅ は PATH 在だけで認証・残高は未確認。sandbox の probe が INCOMPLETE のときは未確認。**無警告は成功の保証ではない**。grok の docker.sock symlink は先に [read-only 手順](../../docs-template/05-operations/deployment/grok-cli-reviewer.md) を試す。
+CLI・観点・モード・timeout・警告を報告。✅ は PATH 在だけで認証・残高は未確認（🔎 行を除く）。sandbox の probe が INCOMPLETE のときは未確認。**無警告は成功の保証ではない**。grok の docker.sock symlink は先に [read-only 手順](../../docs-template/05-operations/deployment/grok-cli-reviewer.md) を試す。
 
 ### 2. レビュー実行
 

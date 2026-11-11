@@ -281,6 +281,184 @@ describe_cli_failure() {
 # trace or an auth error, small enough that a chatty CLI cannot bury the report.
 readonly STDERR_EXCERPT_BYTES=4000
 
+# ── 失敗の語彙（制御の分類と停止理由の表示で共有する。Issue `#2140`）──
+#
+# 正本はここ 1 か所。オーケストレータの classify_cli_failure_cause（scripts/lib/multi-agent-failure.sh）
+# と、アダプタが結果ファイルの先頭へ書く停止理由の候補（下の stop_reason_*）が同じ語彙を読む。
+# multi-agent.sh は構成ファイルより先に adapter-common.sh を source するので、分類側からも見える。
+# 語彙を足す・狭めるときの根拠（実測した各 CLI の文言・402 / 401 の文脈語を要求する理由）は
+# classify_cli_failure_cause の残高側・認証側のコメントにある。
+#
+# CLI / API が吐いたエラー行の体裁（行頭アンカー）。レビュー本文の箇条書き・散文・引用
+# （`- `, `> `, `  1. ` 等）はここで落ちる。
+readonly CLI_FAILURE_ERROR_LINE_RE='^[[:space:]]{0,4}(api error|stream error|error|fatal|request failed|unhandled|\{"(type|error)"|\[error\])'
+readonly CLI_FAILURE_BILLING_RE='out of credits|no credits|insufficient credit|credit balance|balance exhausted|insufficient_quota|payment required|spend limit|spending limit|all available credits|usage limit|monthly limit|weekly limit|(http|status|code)[^0-9]{0,10}402|402[^0-9]{0,12}(payment|http|status)'
+readonly CLI_FAILURE_AUTH_RE='failed to authenticate|oauth session expired|could not be refreshed|unauthorized|not logged in|not signed in|authentication (failed|error)|invalid api key|invalid_api_key|expired (token|credential)|token (is |has )?expired|please (log ?in|sign in)|re-?authenticate|(http|status|code)[^0-9]{0,10}401|401[^0-9]{0,12}(unauthorized|http|status)'
+
+# ── 停止理由の候補（Issue `#2140`）──
+#
+# 潰す事故: 結果ファイルの stderr 抜粋は末尾 4KB（STDERR_EXCERPT_BYTES）に頭打ちされ、
+# codex はプロンプト（diff）を stderr へエコーするので、CLI が止まった理由の行
+# （"Your workspace is out of credits" 等）が抜粋の外へ落ちる。結果ファイルにも統合レポートにも
+# 理由が残らず、利用者は「待つ / 設定を直す / やり直す」を選べなかった（導入先で 4 回実測）。
+#
+# 方式（利用者の決定、2026-11-10）: テキスト経路のまま、**切り詰める前の** stderr 全体から
+# エラー候補の行を拾い、プロンプトと一致する行を除いてから、確度を付けて結果ファイルの先頭へ書く。
+# CLI ごとの構造化出力は採らない（codex / claude / grok で形式が違い、全 CLI に効かない）。
+# ここは共通層なので、どの CLI が副担当でも同じ処理になる（CLI 名で分岐しない）。
+#
+# **表示専用。** 制御上の失敗分類（同じ CLI の残りタスクのスキップ・主担当のみの完了 = exit 0）は
+# 従来どおり classify_cli_failure_cause が stderr 抜粋だけで決める。候補は分類へ流さない:
+#   - 候補の行は `- ` + コードスパンで書く。分類器の部分出力側の走査（行頭がエラーの体裁の行）と
+#     「Partial output captured …」直後の 1 行目の照合のどちらにも当たらない形にするため
+#   - 候補の節は本文（部分出力・CLI stderr 節）より前に置く。stderr 節の特定は末尾の閉じフェンスから
+#     逆に辿るので、その位置を動かさない
+#
+# 確度は 3 段: confirmed（runner の期限が発火した = timeout。他の語で上書きしない）/
+# estimated（候補の行が利用枠・認証の語彙に当たった。CLI 自身が分類して報告したわけではない）/
+# unknown（候補の行が無い、または語彙に当たらない）。リセット時刻などログに無いことは推測しない。
+#
+# 限界: CLI の会話（モデルの応答）がエラーの体裁を真似た行は、プロンプトに無ければ候補に残る。
+# 候補はあくまで手がかりで、確度が estimated の表示は「CLI がそう言った」ではない。
+readonly STOP_REASON_EVIDENCE_MAX_LINES=5
+readonly STOP_REASON_EVIDENCE_LINE_BYTES=300
+
+# 切り詰める前の stderr から、プロンプトと一致する行を除いたエラー候補の行を返す（古い順、最大 5 行。
+# 新しい 5 行に利用枠・認証の語の行が無いときは、その語の最も新しい行 1 つと新しい 4 行）。
+# Usage: stop_reason_evidence_lines <stderr_log> [prompt_file]
+# prompt_file が読めるときは、その行と完全一致する stderr の行を除く（エコーがどこにあっても外れる。
+# diff に書かれた偽のエラー行もここで落ちる）。読めないとき（プロンプトを消した後の失敗）は、
+# プロンプトの終端行の最後の出現より後ろだけを見る（classify_cli_failure_cause と同じ手がかり。終端行が
+# 無ければ全体を見る — エコーしない CLI と、エコーより前に止まった回）。
+# 各行は CR・制御文字・ANSI エスケープを除き、STOP_REASON_EVIDENCE_LINE_BYTES バイトで切り、
+# 不正な UTF-8（切れ端を含む）を落とす。出力が空 = 候補なし（呼び出し側が unknown として書く）。
+stop_reason_evidence_lines() {
+  local log="$1" prompt_file="${2:-}" filtered esc
+  [[ -s "$log" && -r "$log" ]] || return 0
+  [[ -n "$prompt_file" && -f "$prompt_file" && -r "$prompt_file" ]] || prompt_file=""
+  esc="$(printf '\033')"
+  # LC_ALL=C: 切り詰める前のログは不正な UTF-8 を含みうる（照合はバイト単位で足りる）
+  filtered="$(LC_ALL=C awk -v pf="$prompt_file" -v sentinel="${PROMPT_END_SENTINEL:-}" '
+      pf != "" && FILENAME == pf { if ($0 != "") p[$0] = 1; next }
+      { n++; line[n] = $0; if (sentinel != "" && $0 == sentinel) last_s = n }
+      END {
+        from = (pf != "") ? 1 : last_s + 1
+        for (i = from; i <= n; i++) if (!(line[i] in p)) print line[i]
+      }' ${prompt_file:+"$prompt_file"} "$log" 2>/dev/null)" || return 0
+  [[ -n "$filtered" ]] || return 0
+  # 体裁の照合より先に ANSI エスケープ・CR・制御文字を落とす（色付きの `fatal:` は行頭が ESC で、
+  # 行頭アンカーに当たらない）。行頭の字下げは照合が {0,4} まで許すので残す
+  filtered="$(printf '%s\n' "$filtered" | LC_ALL=C awk -v esc="$esc" '
+      {
+        gsub(esc "\\[[0-9;?]*[ -/]*[@-~]", "")
+        gsub(/[\001-\010\013-\037\177]/, "")
+        sub(/[[:space:]]+$/, "")
+        if ($0 != "") print
+      }' 2>/dev/null)" || return 0
+  filtered="$(printf '%s\n' "$filtered" \
+    | LC_ALL=C grep -iE "(${CLI_FAILURE_ERROR_LINE_RE})|${CLI_FAILURE_BILLING_RE}|${CLI_FAILURE_AUTH_RE}" 2>/dev/null)" || return 0
+  local all kept vocab
+  all="$(printf '%s\n' "$filtered" \
+    | LC_ALL=C awk -v max="$STOP_REASON_EVIDENCE_LINE_BYTES" '
+        {
+          sub(/^[[:space:]]+/, "")
+          if ($0 == "" || $0 == prev) next
+          prev = $0
+          if (length($0) > max) $0 = substr($0, 1, max) " ..."
+          n++; line[n] = $0
+        }
+        END { for (i = (n > 1000 ? n - 999 : 1); i <= n; i++) print line[i] }')" || return 0
+  [[ -n "$all" ]] || return 0
+  # 表示は新しい順の 5 行。ただし利用枠・認証の語に当たる行がその外にしか無いときは、最も新しい
+  # 1 行を先頭に残す（後続の再接続エラーなどで押し出されると、候補が不明へ化けて理由が消える）
+  kept="$(printf '%s\n' "$all" | tail -n "$STOP_REASON_EVIDENCE_MAX_LINES")"
+  if ! LC_ALL=C grep -qiE "${CLI_FAILURE_BILLING_RE}|${CLI_FAILURE_AUTH_RE}" <<<"$kept"; then
+    vocab="$(printf '%s\n' "$all" | LC_ALL=C grep -iE "${CLI_FAILURE_BILLING_RE}|${CLI_FAILURE_AUTH_RE}" | tail -n 1)" || vocab=""
+    if [[ -n "$vocab" ]]; then
+      kept="${vocab}
+$(printf '%s\n' "$all" | tail -n $((STOP_REASON_EVIDENCE_MAX_LINES - 1)))"
+    fi
+  fi
+  printf '%s\n' "$kept" | _ff_drop_invalid_utf8
+}
+
+# 不正な UTF-8（バイト数で切った切れ端を含む）を落とす。iconv が無い・使えない環境では
+# 非 ASCII のバイトを ? に置き換える（下流の awk が multibyte conversion failure で落ちないこと
+# を優先する。日本語は読めなくなるが、構造は壊さない）。
+_ff_drop_invalid_utf8() {
+  local in out=""
+  in="$(cat)"
+  [[ -n "$in" ]] || return 0
+  # glibc の iconv -c は落とした文字があると rc=1 を返すが、出力は正しい。rc ではなく出力の有無で見る
+  if command -v iconv >/dev/null 2>&1; then
+    out="$(printf '%s\n' "$in" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)" || true
+  fi
+  if [[ -n "$out" ]]; then
+    printf '%s\n' "$out"
+  else
+    printf '%s\n' "$in" | LC_ALL=C tr '\200-\377' '?'
+  fi
+}
+
+# 候補の行から停止理由のコードを決める（表示専用）。
+# Usage: stop_reason_code <kind> <evidence-lines> → "timeout confirmed" | "billing estimated" | "auth estimated" | "unknown unknown"
+stop_reason_code() {
+  local kind="$1" evidence="$2"
+  if [[ "$kind" == "timeout" ]]; then
+    echo "timeout confirmed"
+  elif [[ -n "$evidence" ]] && LC_ALL=C grep -qiE "$CLI_FAILURE_BILLING_RE" <<<"$evidence"; then
+    echo "billing estimated"
+  elif [[ -n "$evidence" ]] && LC_ALL=C grep -qiE "$CLI_FAILURE_AUTH_RE" <<<"$evidence"; then
+    echo "auth estimated"
+  else
+    echo "unknown unknown"
+  fi
+}
+
+# 1 行をコードスパンにする。区切りは行中の最長のバッククォート列より 1 本長くし、両端に空白を置く
+# （CommonMark は 1 つずつ剥がす）。行頭は必ず `- ` になる — 分類器の行頭アンカーにも、
+# `> Reason code:` / `<!-- Status` / `### CLI stderr` の照合にも当たらない。
+stop_reason_bullets() { # stdin: 候補の行 → stdout: 箇条書き
+  LC_ALL=C awk '
+    {
+      s = $0; max = 0
+      while (match(s, /`+/)) { if (RLENGTH > max) max = RLENGTH; s = substr(s, RSTART + RLENGTH) }
+      f = ""; for (i = 0; i <= max; i++) f = f "`"
+      print "- " f " " $0 " " f
+    }'
+}
+
+# 結果ファイルの先頭（バナーの段落）へ載せる 1 行と、本文の前に置く根拠の節を組み立てる。
+# Usage: stop_reason_banner_line <code> <confidence>
+# 機械可読の形は統合レポート（multi-agent-report-body.sh の review_task_incomplete_reason）が読む:
+#   > Stop reason candidate: `<code>` (<confidence>) — <説明>
+stop_reason_banner_line() {
+  local code="$1" conf="$2" gloss
+  case "${code}:${conf}" in
+    timeout:confirmed) gloss="the runner's deadline fired; the lines below are what the CLI printed before it was stopped, not a second cause" ;;
+    timeout:estimated) gloss="the recorded reason says the runner's deadline fired, but that record may be stale (see the warning above); the lines below are what the CLI printed" ;;
+    billing:estimated) gloss="credits / usage limit, estimated from the CLI's own error lines below — the CLI did not report a category itself" ;;
+    auth:estimated)    gloss="authentication, estimated from the CLI's own error lines below — the CLI did not report a category itself" ;;
+    *)                 gloss="no error line in the CLI's stderr names a known cause, so the reason is not known — check the CLI's own logs or its auth / rate-limit state" ;;
+  esac
+  printf '> Stop reason candidate: `%s` (%s) — %s.' "$code" "$conf" "$gloss"
+}
+
+stop_reason_evidence_section() { # <evidence-lines> <stderr-was-empty: true|false>
+  local evidence="$1" empty="$2"
+  echo "### Stop reason evidence"
+  echo ""
+  if [[ -n "$evidence" ]]; then
+    echo "Lines the CLI wrote to stderr that look like its own errors, taken from the whole stderr before the excerpt below was cut to the last $((STDERR_EXCERPT_BYTES / 1000))KB, with lines that repeat the prompt removed (at most ${STOP_REASON_EVIDENCE_MAX_LINES}, newest last). They are candidates, not a diagnosis."
+    echo ""
+    printf '%s\n' "$evidence" | stop_reason_bullets
+  elif [[ "$empty" == "true" ]]; then
+    echo "The CLI wrote nothing to stderr, so there is no line to take a reason from."
+  else
+    echo "No error-shaped line was found in the CLI's stderr after removing the lines that repeat the prompt."
+  fi
+}
+
 # Record a failed task as an explicitly INCOMPLETE result, then exit non-zero.
 # Usage: fail_cli_task <exit_code> <stderr_log> <perspective_name> <partial_output>
 # Reads: CLI_NAME, OUTPUT_FILE, TIMEOUT, TASK_TYPE. Does not return.
@@ -362,6 +540,25 @@ fail_cli_task() {
     echo "       Give it more room with: --timeout $((TIMEOUT * 2))" >&2
   fi
 
+  # 停止理由の候補（Issue `#2140`）。切り詰める前の stderr 全体から拾うので、下の tail -c と
+  # stderr ファイルの削除より前に置く。対象は CLI が自分で止まった・止められた回だけ —
+  # 本文の不受理（missing-review-body* / review-body-unparsed）・sandbox-refused は CLI が
+  # 完走しており理由はバナーが既に名指ししている。orchestrator-error は stderr が無い。
+  # 表示専用: kind・exit_rc・分類器の入力（stderr 抜粋）は変えない。
+  local stop_banner="" stop_section="" stop_evidence="" stop_code="" stop_conf="" stop_stderr_empty=true
+  case "$kind" in
+    command|""|timeout|empty-output)
+      stop_evidence="$(stop_reason_evidence_lines "$stderr_log" "${_FF_PROMPT_FILE:-}")" || stop_evidence=""
+      read -r stop_code stop_conf <<<"$(stop_reason_code "$kind" "$stop_evidence")"
+      # 理由の記録が古いかもしれない回（上の stale_note）は、timeout も確定とは言えない
+      if [[ -n "$stale_note" && "$stop_conf" == "confirmed" ]]; then stop_conf="estimated"; fi
+      [[ -n "$stderr_log" && -s "$stderr_log" ]] && stop_stderr_empty=false
+      stop_banner="
+$(stop_reason_banner_line "$stop_code" "$stop_conf")"
+      stop_section="$(stop_reason_evidence_section "$stop_evidence" "$stop_stderr_empty")"
+      ;;
+  esac
+
   local stderr_excerpt=""
   if [[ -s "$stderr_log" ]]; then
     echo "--- CLI stderr ---" >&2
@@ -413,6 +610,14 @@ ${partial}"
     else
       body="No output was captured before the CLI was stopped."
     fi
+  fi
+
+  # 候補の節は本文より前に置く（分類器は「Partial output captured …」の直後の行と、末尾の
+  # stderr 節を見る。そのどちらの位置も動かさない）
+  if [[ -n "$stop_section" ]]; then
+    body="${stop_section}
+
+${body}"
   fi
 
   if [[ -n "$stderr_excerpt" ]]; then
@@ -476,7 +681,7 @@ ${stderr_fence}"
 > Reason code: \`${kind}\`" ;;
   esac
   if ! write_output "$OUTPUT_FILE" "$CLI_NAME" "$perspective_name" \
-    "> ⚠️ **INCOMPLETE — ${CLI_NAME} ${reason}.** This is not a finished ${TASK_TYPE:-review}: ${banner_detail}.${reason_line}${stale_note}
+    "> ⚠️ **INCOMPLETE — ${CLI_NAME} ${reason}.** This is not a finished ${TASK_TYPE:-review}: ${banner_detail}.${reason_line}${stop_banner}${stale_note}
 
 ${body}" \
     "incomplete"; then
@@ -770,4 +975,44 @@ echo_effort_setting() {
       fi ;;
   esac
 }
+# ── 起動前のレーン確認の入口（--precheck。Issue `#2044`）──
+#
+# オーケストレータ（scripts/lib/multi-agent-precheck.sh の run_lane_precheck）が、タスクを起動する前に
+# `<adapter> --precheck` で呼ぶ。**モデルを起動しない取得だけ**を行い、stdout へ 2 行を返して exit 0:
+#   capability=<quota|auth|none>
+#   state=<available|authenticated|exhausted|unauthenticated|unknown>
+# 能力はアダプタが ADAPTER_PRECHECK_CAPABILITY で宣言し、取得は adapter_precheck_probe が行う
+# （状態の語を 1 つ stdout へ出す）。宣言の意味:
+#   quota … 残量を読める（available / exhausted / unknown を返しうる）
+#   auth  … 認証の有無だけ読める（authenticated / unauthenticated / unknown。残量は読まない）
+#   none  … どちらも読めない（常に unknown）
+# 宣言と食い違う状態・CLI の不在・取得の失敗・期限切れ・関数の不在は unknown へ倒す（利用可能とも
+# 枯渇とも読まない）。本体は CLI 名で分岐せず、この 2 行だけで判断する。
+# 観点ファイル・出力先を取らない別入口なので、parse_adapter_args より前で呼ぶこと。
+
+# 取得 1 回あたりの期限（秒。既定 10 — 実測の応答は 2 秒前後）。MULTI_AGENT_LANE_PRECHECK_TIMEOUT で変えられる（1〜600。不正値は既定）。
+lane_precheck_timeout() {
+  local t="${MULTI_AGENT_LANE_PRECHECK_TIMEOUT:-10}"
+  [[ "$t" =~ ^[1-9][0-9]{0,2}$ && "$t" -le 600 ]] || t=10
+  printf '%s\n' "$t"
+}
+
+handle_adapter_precheck_request() { # "$@"（アダプタの引数そのまま）
+  [[ "${1:-}" == "--precheck" ]] || return 0
+  local cap="${ADAPTER_PRECHECK_CAPABILITY:-none}" state="unknown" out=""
+  case "$cap" in
+    quota|auth) ;;
+    *) cap="none" ;;
+  esac
+  if [[ "$cap" != "none" ]] && declare -F adapter_precheck_probe >/dev/null 2>&1 \
+     && cli_available "$CLI_COMMAND"; then
+    out="$(adapter_precheck_probe 2>/dev/null)" || out=""
+  fi
+  case "${cap}:${out}" in
+    quota:available|quota:exhausted|auth:authenticated|auth:unauthenticated) state="$out" ;;
+  esac
+  printf 'capability=%s\nstate=%s\n' "$cap" "$state"
+  exit 0
+}
+
 _ac_part_loaded="adapter-common-cli.sh"

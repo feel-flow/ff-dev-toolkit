@@ -71,6 +71,8 @@ set -euo pipefail
 unset FORCE_COLOR CLICOLOR_FORCE CLICOLOR
 # マージ後工程の判定は導入先の設定で動く。開発者の環境に値があると既存ケースの出力が変わる
 unset FF_POST_MERGE_TERMS FF_POST_MERGE_PATHS FF_MERGE_DELETE_SEPARATE
+# 保護ブランチの追加パターンは導入先の設定で動く。開発者の環境に値があると既存ケースの削除判定が変わる
+unset FF_MERGE_CLEANUP_PROTECT_BRANCHES
 # 専用セキュリティゲートの記録（Issue `#2684`）も同じく導入先の設定で動く。分類の設定を隔離する
 unset MULTI_AGENT_SECURITY_GLOB MULTI_AGENT_SECURITY_GLOB_EXTRA MULTI_AGENT_SECURITY_REVIEW MULTI_AGENT_CONFIG
 
@@ -634,6 +636,8 @@ run_finish() { # <cwd> <args...>
 
 # shellcheck source=merge-delete-cases.sh
 . "$SCRIPT_DIR/merge-delete-cases.sh"
+# shellcheck source=protected-head-cases.sh
+. "$SCRIPT_DIR/protected-head-cases.sh"
 # shellcheck source=post-merge-cases.sh
 . "$SCRIPT_DIR/post-merge-cases.sh"
 # shellcheck source=security-record-cases.sh
@@ -1560,6 +1564,8 @@ else
   bad "E3: worktree 一覧の失敗が fail-open（rc=${RC}）: ${OUT} / ${ERR}"
 fi
 g -C "$WORK" worktree remove --force "$TMP/wt-develop" >/dev/null 2>&1 || true
+
+_ff_finish_protected_head_cases
 
 # ── F. precheck: Refs 運用（closing keyword 抵触） ─────────────────────────────
 echo

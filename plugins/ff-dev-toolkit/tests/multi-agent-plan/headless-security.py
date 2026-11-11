@@ -52,7 +52,9 @@ with tempfile.TemporaryDirectory(prefix=".ff-sandbox-probe.", dir=Path(__file__)
     env = {"PATH": str(bins) + ":" + str(tools) + ":/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(home),
            "LANG": "ja_JP.UTF-8", "LC_ALL": "ja_JP.UTF-8", "TMPDIR": str(Path(scratch).resolve()),
            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
-           "FF_DEV_TOOLKIT_ROOT": str(root), "NO_COLOR": "1"}
+           "FF_DEV_TOOLKIT_ROOT": str(root), "NO_COLOR": "1",
+           # 起動前のレーン確認は stub の起動を数えるこの suite の対象外（契約は tests/multi-agent-lane-precheck）
+           "MULTI_AGENT_LANE_PRECHECK": "off"}
     # Use the existing fixture identity helper; every child inherits only this isolated env.
     init = '. "$1"; ff_git_fixture_init "$2" "ff-2281" "test@example.com"; git -C "$2" checkout -qb develop; printf base > "$2/app"; git -C "$2" add app; git -C "$2" -c commit.gpgsign=false commit -qm base; git -C "$2" checkout -qb feature/test; printf change > "$2/app"'
     subprocess.run(["bash", "-euc", init, "fixture", str(root / "tests/lib/git-fixture.sh"), str(repo)], env=env, check=True, capture_output=True)

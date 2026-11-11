@@ -20,6 +20,23 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-11
+
+### 追加
+
+- `multi-agent.sh` のレビューは、主担当でもホスト委譲でもないレーンを起動する前に、モデルを起動しない取得だけでそのレーンが使えるかを確かめる。何を確かめられるかはアダプタが宣言する（codex は App Server の `account/rateLimits/read` で残量、claude は `claude auth status --json` で認証だけ、grok と copilot は確かめない）。残量が明示的に尽きている・未ログインのレーンは起動せず、結果ファイル（`Status: incomplete` と理由コード `lane-precheck-billing` / `lane-precheck-auth`）と統合レポートに「未確認（利用枠）」「未確認（認証）」と記録する。主担当が全観点を完走していれば、実行時に利用不可で落ちた回と同じく主担当のみで完了（0 終了）になる。確かめられない・取得に失敗した・期限を過ぎた回は通常どおり起動する。dry-run はプランの各 CLI の下に確認の結果を出す。`MULTI_AGENT_LANE_PRECHECK=off` で無効化、`MULTI_AGENT_LANE_PRECHECK_TIMEOUT` で 1 回の取得の期限（既定 10 秒）を変えられる。
+- 同じレビュー入力の `--resume` は、事前の確認で尽きていると分かったレーンと、CLI 自身の失敗（何も出力せずに利用枠・認証・モデル非対応で終了）から利用不可と確定したレーンを再起動しない。記憶は入力ごとの resume キャッシュの中にだけ置くので、別の HEAD・diff・プランでは確かめ直す。`--retry-exhausted` で記憶を捨てて起動し直せる。どのレーンも起動しなかった回は非 0 のまま、ホストが diff を直読するよう案内する（完了は名乗らない）。
+- CLI が非 0 で止まった回の結果ファイル先頭に「停止理由の候補」を出す。stderr を末尾 4KB へ切り詰める前に、プロンプトと一致する行を除いたエラー行を拾い、確度（runner の期限は確定、利用枠・認証の語に当たった行は推定、それ以外は不明）を付けて根拠の行と一緒に書く。統合レポートの「未確認 › 未完了の観点」にも同じ候補と根拠を添える。どの CLI のレーンでも（主担当・副担当を問わず）共通層で同じ処理になる。表示専用で、同じ CLI の残りタスクのスキップ・主担当のみの完了・終了コードの判定には使わない。
+
+### 修正
+
+- `finish.sh precheck` は、merge-cleanup と同じ保護判定（develop / main / master / `staging/*` と FF_MERGE_CLEANUP_PROTECT_BRANCHES。未設定時は `release/*`）に当たる head について、MERGE_COMMAND から --delete-branch と head 削除の尾を外す。同一リポジトリの PR は HEAD_DELETE_RESULT=skipped-protected を出し、fork / 判定不能の PR も --delete-branch を外す。削除 script も同じ名前なら照会せず rc 0 で skipped-protected を返す。保護設定が不正な回は precheck が rc 2 で MERGE_COMMAND を出さず、削除 script も rc 2 で ref を残す。通常の feature ブランチは従来どおり lease 付きで削除する。
+
+### ドキュメント
+
+- 公開 README の「バージョンと書籍からの参照」に、1.0.0 で互換性を約束した 4 系統（skill の起動名・hooks・環境変数・導入先へ配置されるパス）と、1.0.0 以降の版の上げ方（「破壊的変更」があれば major、「修正」だけなら patch、それ以外は minor。契約の要素の削除は最低 1 つ前のマイナー版で予告する）を書いた。
+- 0.x 期の移行案内（v0.7.0 の改名・旧 Codex standalone copy）をインストールの節と収録内容の節から外し、新しい節「0.x からの移行」へまとめた。同じ節に、0.x から 1.x への更新手順（`claude plugin marketplace update` → `claude plugin update ff-dev-toolkit@ff-dev-toolkit` → Claude Code の再起動）と、v1.1.0 で読まなくなった古い宣言の名前の書き換え先を書いた。
+
 ## [1.1.0] - 2026-11-10
 
 ### 修正
