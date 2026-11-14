@@ -26,13 +26,13 @@
 #   「レビュー担当の選択と利用制限時の継続」の専用セキュリティゲート項）を出す:
 #   REVIEW_SECURITY_SENSITIVE=yes|no|unknown   … 根の DT_SECURITY（設定を読めない回は unknown）
 #   REVIEW_SECURITY_EVIDENCE=<path>            … yes の根拠（1 行 1 path）
-#   REVIEW_PRIMARY_HOST=claude-code|codex-cli|grok-cli|unknown … CLAUDECODE=1 / CODEX_THREAD_ID
-#       （Codex CLI が自身の起動するシェルへ渡す）/ GROK_AGENT から判定（2 つ以上立つ回・どれも無い回は unknown）
+#   REVIEW_PRIMARY_HOST=claude-code|codex-cli|grok-cli|antigravity-cli|unknown … CLAUDECODE=1 / CODEX_THREAD_ID
+#       （Codex CLI が自身の起動するシェルへ渡す）/ GROK_AGENT / ANTIGRAVITY_AGENT=1 から判定（2 つ以上立つ回・どれも無い回は unknown）
 #   REVIEW_SECURITY_BASE_CHECK=match|mismatch|no-origin-head|unchecked
 #       /security-review は origin/HEAD を基点に固定するので、差分モードの base と照合する
 #       （--files / --files-from は base を持たないので unchecked）。Codex Security の diff scan と
-#       grok のセッション内レビューは base を明示で受けるので、この照合では止めない
-#   REVIEW_SECURITY_GATE=security-review|codex-security|grok-session|unverified|unsupported|off|none
+#       grok / Antigravity のセッション内レビューは base を明示で受けるので、この照合では止めない
+#   REVIEW_SECURITY_GATE=security-review|codex-security|grok-session|antigravity-session|unverified|unsupported|off|none
 #       security-review … 主担当 claude-code が通常のレビューに加えて /security-review を実行する
 #       codex-security  … 主担当 codex-cli、または主担当 grok-cli でセッション内レビューが使えない回が、
 #                         通常のレビューに加えて Codex Security プラグインの security-diff-scan を実行する
@@ -41,12 +41,15 @@
 #       grok-session    … 主担当 grok-cli が通常のレビューに加えて、同じセッションの spawn_subagent で
 #                         セキュリティレビューを実行する（GROK_SUBAGENTS が 0 / false / off / no のときは
 #                         使えない。headless の grok -p には回さない）
+#       antigravity-session … 主担当 antigravity-cli が通常のレビューに加えて、同じセッションの read-only
+#                             subagent（invoke_subagent）でセキュリティレビューを実行する（headless の agy -p には回さない）
 #       unverified      … 主担当 claude-code だが基点（指すコミット）が食い違う / origin/HEAD が無い、
 #                         主担当 codex-cli だが security-diff-scan が導入されていない・差分モードで
 #                         diff scan の基点を解決できない（--base / WORKFLOW_TIER_BASE / origin/HEAD が無い）、
 #                         主担当 grok-cli だがセッション内レビューの基点を解決できない、または
 #                         セッション内レビューが無効で security-diff-scan も実行できない
-#                         （報告行は「実行できる CLI なし」。「指摘なし」にはしない）、または
+#                         （報告行は「実行できる CLI なし」。「指摘なし」にはしない）、
+#                         主担当 antigravity-cli だがセッション内レビューの基点を解決できない、または
 #                         決定木のルータが無く何も判定できない。走らせず未確認と記録する
 #       unsupported     … 主担当を判定できない（印が無い・2 つ以上）。専用ゲートは未対応として記録する（省略しない）
 #       off             … security_review=off（判定は出すが専用ゲートを起動しない）
@@ -429,13 +432,16 @@ host_marks=0
 [ "${CLAUDECODE:-}" != "1" ] || host_marks=$((host_marks + 1))
 [ -z "${CODEX_THREAD_ID:-}" ] || host_marks=$((host_marks + 1))
 [ -z "${GROK_AGENT:-}" ] || host_marks=$((host_marks + 1))
+[ "${ANTIGRAVITY_AGENT:-}" != "1" ] || host_marks=$((host_marks + 1))
 if [ "$host_marks" -eq 1 ]; then
   if [ "${CLAUDECODE:-}" = "1" ]; then
     host="claude-code"
   elif [ -n "${CODEX_THREAD_ID:-}" ]; then
     host="codex-cli"
-  else
+  elif [ -n "${GROK_AGENT:-}" ]; then
     host="grok-cli"
+  else
+    host="antigravity-cli"
   fi
 fi
 
@@ -502,6 +508,7 @@ codex_security_skill=""
 codex_skill_missing=""
 codex_unverified=""
 grok_unverified=""
+antigravity_unverified=""
 grok_fallback=0
 if [ "$host" = "codex-cli" ] || { [ "$host" = "grok-cli" ] && [ "$grok_subagents_off" -eq 1 ]; }; then
   lookup_codex_security_skill
@@ -552,6 +559,13 @@ elif [ "$host" = "grok-cli" ]; then
       grok_unverified="${grok_unverified}。${codex_skill_missing}"
     fi
   fi
+elif [ "$host" = "antigravity-cli" ]; then
+  if [ "$sec_files_mode" -eq 0 ] && [ -z "$sec_base_commit" ]; then
+    gate="unverified"
+    antigravity_unverified="セッション内レビューの基点${sec_base:+ ${sec_base} }を解決できません（--base で PR の base を渡す）"
+  else
+    gate="antigravity-session"
+  fi
 elif [ "$host" != "claude-code" ]; then
   gate="unsupported"
 elif [ "$base_check" = "no-origin-head" ] || [ "$base_check" = "mismatch" ]; then
@@ -574,6 +588,9 @@ case "$gate" in
   grok-session)
     if [ "$sec_files_mode" -eq 0 ]; then diff_target="${sec_base}...HEAD"; else diff_target="--files の変更"; fi
     report="grok CLI のセッション内レビューを実行する（担当: grok-cli。対象: ${diff_target}。${basis}）" ;;
+  antigravity-session)
+    if [ "$sec_files_mode" -eq 0 ]; then diff_target="${sec_base}...HEAD"; else diff_target="--files の変更"; fi
+    report="Antigravity のセッション内レビューを実行する（担当: antigravity-cli。対象: ${diff_target}。${basis}）" ;;
   codex-security)
     # 差分モードは基点を解決できた回だけここへ来る（できない回は上で unverified）
     if [ "$sec_files_mode" -eq 0 ]; then diff_target="${sec_base}...HEAD"; else diff_target="--files の変更"; fi
@@ -587,6 +604,8 @@ case "$gate" in
       report="未確認（${codex_unverified}。${basis}）"
     elif [ "$host" = "grok-cli" ]; then
       report="未確認（${grok_unverified}。${basis}）"
+    elif [ "$host" = "antigravity-cli" ]; then
+      report="未確認（${antigravity_unverified}。${basis}）"
     elif [ "$base_check" = "no-origin-head" ]; then
       report="未確認（/security-review の基点 origin/HEAD がありません。${basis}）"
     else

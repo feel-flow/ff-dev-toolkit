@@ -236,6 +236,38 @@ build_distributed_plan() {
   fi
 
   finalize_distributed_review_plan
+  reject_unowned_distributed_perspectives
+}
+
+# 登録表のどの CLI も持たない観点は、distributed ではプランに載らず警告も
+# 「単一 CLI に縮退した」までしか出ない。単一 --cli が所有権を
+# 迂回してプランへ入れた観点は、ここに来た時点でプランに在るので拒否しない。
+perspective_owned_by_registry() { # <perspective>
+  local cli owned
+  for cli in $ALL_CLIS; do
+    owned="$(get_cli_perspectives "$cli")"
+    list_contains "$owned" "$1" && return 0
+  done
+  return 1
+}
+
+reject_unowned_distributed_perspectives() {
+  [[ "$TASK_TYPE" == "review" && -n "$PERSPECTIVE_FILTER" ]] || return 0
+  local perspective dropped=""
+  for perspective in $PERSPECTIVE_FILTER; do
+    perspective_excluded "$perspective" && continue
+    execution_plan_has_perspective "$perspective" && continue
+    perspective_owned_by_registry "$perspective" && continue
+    dropped="${dropped:+$dropped }$perspective"
+  done
+  [[ -z "$dropped" ]] || {
+    echo "ERROR: no CLI in the ownership registry owns the requested perspective(s): ${dropped}" >&2
+    echo "       The distributed plan would drop them without reviewing them." >&2
+    for perspective in $dropped; do
+      echo "       Run it with an explicit CLI: --mode cross-model --cli <CLI> --perspective ${perspective}" >&2
+    done
+    exit 2
+  }
 }
 
 # headless Grok の承認待ち・型付き判定行なしを、コマンド実行を要する review 観点で避ける。
@@ -488,7 +520,17 @@ all_review_perspectives() {
 # ── Build Execution Plan (cross-model mode) ──
 build_cross_model_plan() {
   EXECUTION_PLAN=""
-  local perspective="${PERSPECTIVE_FILTER:-code-review}"
+  local perspective="${PERSPECTIVE_FILTER:-code-review}" dropped=""
+  # cross-model は観点を 1 つだけ載せる。2 つ目以降を %% で捨てる前に名指しして止める。
+  # プランの「all CLIs run」行より前に止めるので、観点が落ちたまま dry-run が
+  # 成功することはない。review 以外は従来の先頭 1 件のまま（この拒否は
+  # multi-review の AC）。
+  if [[ "$TASK_TYPE" == "review" && "$perspective" == *" "* ]]; then
+    dropped="${perspective#* }"
+    echo "ERROR: --mode cross-model keeps only the first perspective ('${perspective%% *}') and would drop: ${dropped}" >&2
+    echo "       Launch each perspective on its own, or drop --mode cross-model and use distributed." >&2
+    exit 2
+  fi
   perspective="${perspective%% *}"
 
   echo "  🔄 Cross-model mode: all CLIs run '${perspective}'" >&2
@@ -497,9 +539,9 @@ build_cross_model_plan() {
     if [[ -n "$CLI_FILTER" ]] && ! list_contains "$CLI_FILTER" "$cli_name"; then
       continue
     fi
-    # Copilot CLI is metered — include only when explicitly requested via --cli
-    if [[ "$cli_name" == "copilot-cli" && -z "$CLI_FILTER" ]]; then
-      echo "  ⏭  copilot-cli skipped (metered). Opt in with --cli copilot-cli." >&2
+    # Metered CLIs (copilot-cli / antigravity-cli) — include only when explicitly requested via --cli
+    if [[ "$(get_cli_cost_tier "$cli_name")" == "metered" && -z "$CLI_FILTER" ]]; then
+      echo "  ⏭  ${cli_name} skipped (metered). Opt in with --cli ${cli_name}." >&2
       continue
     fi
     perspective_excluded "$perspective" && continue

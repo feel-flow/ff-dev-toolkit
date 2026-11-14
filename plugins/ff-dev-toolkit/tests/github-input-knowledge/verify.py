@@ -120,7 +120,17 @@ fixture
   entries=[{**x,'body':str(f/f'mcp-parent-{status}.json'),'http_status':status} if x['operation']=='doctor.parents' else x for x in base];out=run('workflow-doctor.sh',[*argv,'--github-input',index(entries)]);check(b'SKIP\t6\t' in out,'doctor parent '+str(status)+' never becomes parent=null')
  entries=[{**x,'last':False} if x['operation']=='doctor.open-issues' else x for x in base];out=run('workflow-doctor.sh',[*argv,'--github-input',index(entries)]);check(b'SKIP\t6\t' in out,'doctor incomplete pagination stays SKIP')
  # Optional subject provenance retains real Git guards and branch fallback.
- for n,entries,expected in [('subject-file',[entry('knowledge.subject-issue',{'pr':7},f/'subject.json','subject')],42),('subject-fallback',[],9)]:
+ # Without a closing reference the same raw supplies body Refs, then the title; another repository's Refs never counts.
+ H=chr(35)
+ raw=lambda name,obj:[entry('knowledge.subject-issue',{'pr':7},put(name+'.json',obj),'subject')]
+ for n,entries,expected in [('subject-file',[entry('knowledge.subject-issue',{'pr':7},f/'subject.json','subject')],42),('subject-fallback',[],9),
+   ('subject-refs',raw('subject-refs',{'closingIssuesReferences':[],'title':'docs: record','body':'Refs: other/repo'+H+'77\nRefs '+H+'6147\nRef '+H+'8'}),6147),
+   ('subject-closing-first',raw('subject-closing-first',{'closingIssuesReferences':[{'number':42}],'title':'fix: '+H+'1 t','body':'Refs '+H+'6147'}),42),
+   ('subject-title',raw('subject-title',{'closingIssuesReferences':[],'title':'fix: repo'+H+'12 then '+H+'5150','body':'no reference'}),5150),
+   ('subject-cross-repository',raw('subject-cross-repository',{'closingIssuesReferences':[],'title':'docs: record','body':'Refs other/repo'+H+'77'}),9),
+   ('subject-refs-before-title',raw('subject-refs-before-title',{'closingIssuesReferences':[],'title':'fix: '+H+'1 t','body':'Refs '+H+'6147'}),6147),
+   ('subject-cross-repository-title',raw('subject-cross-repository-title',{'closingIssuesReferences':[],'title':'docs: '+H+'5150 record','body':'Refs other/repo'+H+'77'}),5150),
+   ('subject-no-body',raw('subject-no-body',{'closingIssuesReferences':[]}),9)]:
   root,g=repo(n,'ace-from-pr-7-#9');hook=root/'.git/hooks/commit-msg';hook.write_text('#!/bin/bash\ngrep -qE \'#[0-9]+\' \"$1\"\n');hook.chmod(0o755);doc=root/'docs/08-knowledge/OBSERVATIONS.md';doc.parent.mkdir(parents=True);doc.write_text('observation\n')
   run('knowledge-commit.sh',['add','--github-input',index(entries),'--source','obs','--id','OBS-001','--summary','fixture','--',doc],cwd=root)
   pending=(root/'.git/ff-knowledge-pending').read_text();check(('I\t'+str(expected)+'\n') in pending,n+' optional closing reference/fallback')

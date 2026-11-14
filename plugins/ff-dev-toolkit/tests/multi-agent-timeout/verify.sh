@@ -151,7 +151,7 @@ else
   bad "adapter-common.sh の REVIEW_TIMEOUT 既定が不一致: adapter=${ADAPTER_DEFAULT} SSOT=${CANON}"
 fi
 
-for adapter in claude-code codex-cli copilot-cli grok-cli; do
+for adapter in antigravity-cli claude-code codex-cli copilot-cli grok-cli; do
   hdr="$PLUGIN_ROOT/scripts/adapters/${adapter}-adapter.sh"
   if grep -qE "^#   --timeout <seconds>.*default: ${CANON}([^0-9]|$)" "$hdr"; then
     ok "${adapter}-adapter.sh のヘッダー既定が一致 (${CANON})"
@@ -200,7 +200,7 @@ fi
 # rm -f）が空出力チェックより前へ動くことの 2 点なので、行順で静的にピン留めする。
 # grep が失敗した場合（対象ファイル欠落・読取不能を含む）は変数が空になり bad へ
 # 落ちるため、rc の丸めが偽緑を作ることはない。
-for adapter in claude-code codex-cli copilot-cli grok-cli; do
+for adapter in antigravity-cli claude-code codex-cli copilot-cli grok-cli; do
   f="$PLUGIN_ROOT/scripts/adapters/${adapter}-adapter.sh"
   reason_line=""
   reason_line="$(grep -n 'record_timeout_reason empty-output' "$f" 2>/dev/null | head -1 | cut -d: -f1)" || true
@@ -593,7 +593,7 @@ REGISTRY_COMMANDS="$(
          if (cmd != "") print cmd
        }' "$MULTI_AGENT" | sort -u | tr '\n' ' '
 )"
-STUB_NAMES="claude codex copilot grok"
+STUB_NAMES="agy claude codex copilot grok"
 if [ "$(printf '%s\n' $REGISTRY_COMMANDS | sort -u | tr -d ' \n')" \
    = "$(printf '%s\n' $STUB_NAMES | sort -u | tr -d ' \n')" ]; then
   ok "stub の CLI コマンド名が get_cli_command の全 arm を覆っている (${STUB_NAMES})"
@@ -604,7 +604,7 @@ else
 fi
 [ -n "$REGISTRY_CLIS" ] || bad "ALL_CLIS を読めない（stub 網の検査が空振りしている）"
 
-for name in claude copilot grok; do
+for name in agy claude copilot grok; do
   cat > "$STUB/$name" <<SH
 #!/usr/bin/env bash
 touch "$TMP/invoked-$name"
@@ -2552,18 +2552,19 @@ else
 fi
 
 # --- D3: build_prompt 失敗時に INCOMPLETE + orchestrator 起因（#267） ---
-# 4 アダプタすべてを欠落 perspective で直接起動する。CLI は stub で preflight を通す。
+# 5 アダプタすべてを欠落 perspective で直接起動する。CLI は stub で preflight を通す。
 ADAPTERS_DIR="$PLUGIN_ROOT/scripts/adapters"
 # bash 3.2 互換のため連想配列は使わない
-ADAPTER_KEYS="claude-code codex-cli copilot-cli grok-cli"
+ADAPTER_KEYS="antigravity-cli claude-code codex-cli copilot-cli grok-cli"
 build_prompt_ok=0
 build_prompt_fail=0
 for key in $ADAPTER_KEYS; do
   case "$key" in
-    claude-code) stub_cmd=claude ;;
-    codex-cli)   stub_cmd=codex ;;
-    copilot-cli) stub_cmd=copilot ;;
-    grok-cli)    stub_cmd=grok ;;
+    antigravity-cli) stub_cmd=agy ;;
+    claude-code)     stub_cmd=claude ;;
+    codex-cli)       stub_cmd=codex ;;
+    copilot-cli)     stub_cmd=copilot ;;
+    grok-cli)        stub_cmd=grok ;;
   esac
   adapter_sh="$ADAPTERS_DIR/${key}-adapter.sh"
   out_file="$TMP/build-prompt-${key}.md"
@@ -2587,11 +2588,11 @@ for key in $ADAPTER_KEYS; do
     [[ -f "$out_file" ]] && sed 's/^/    | /' "$out_file" | head -20 >&2 || true
   fi
 done
-if [[ "$build_prompt_fail" -eq 0 && "$build_prompt_ok" -eq 4 ]]; then
-  ok "build_prompt: 4 アダプタすべてが欠落 perspective で INCOMPLETE + orchestrator を残す"
+if [[ "$build_prompt_fail" -eq 0 && "$build_prompt_ok" -eq 5 ]]; then
+  ok "build_prompt: 5 アダプタすべてが欠落 perspective で INCOMPLETE + orchestrator を残す"
 fi
 
-# 静的: 4 アダプタが if ! prompt="$(build_prompt ...)" 形を保っていること
+# 静的: 5 アダプタが if ! prompt="$(build_prompt ...)" 形を保っていること
 # （素の prompt="$(build_prompt ...)" へ戻す退行を検出）
 static_bp_ok=1
 for key in $ADAPTER_KEYS; do

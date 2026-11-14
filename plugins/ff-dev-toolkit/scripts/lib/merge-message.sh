@@ -1,27 +1,35 @@
 #!/usr/bin/env bash
 # Source-only merge-message helpers. Callers choose fail-open or fail-closed for rc 2.
-# Sets REFS_RAW/CLOSES_RAW/CLOSES_UNION/REFS_ONLY; emits no stdout.
+# ff_merge_issue_sets sets REFS_RAW/CLOSES_RAW/CLOSES_UNION/REFS_ONLY and emits no stdout.
+# ff_merge_refs_tokens prints the body's Ref / Refs tokens to stdout in document order.
+# 本文の Ref / Refs 参照を、出現順のまま 1 行 1 トークン（`#N` か `owner/repo#N`）で stdout へ出す。
+# 拾う綴りは Ref / Refs のみ（大文字小文字は問わない。コロンが続く形も可）。`関連 #N` や
+# 裸の `#N` は拾わない。awk の現在行を $(0) と書くのは、裸のドル記号 + 0 が skill 読み込み時の
+# 引数展開で PR 番号へ置換された実測（本文から定数文字列に化けて抽出 0 件で素通り）の名残で、
+# script 側でも同じ形を保つ（awk では $ は演算子なので $(0) は現在行と完全に同義）。
+# precheck の REFS 群と knowledge-commit の件名の Issue 解決が同じ抽出規則を共有する（Issue `#2681`）。
+ff_merge_refs_tokens() { # <PR body>
+  printf '%s\n' "$1" | awk '
+    {
+      line = $(0)
+      while (match(line, /(^|[^A-Za-z])[Rr][Ee][Ff][Ss]?[ \t:]*([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)?#[0-9]+/)) {
+        token = substr(line, RSTART, RLENGTH)
+        sub(/^([^A-Za-z])?[Rr][Ee][Ff][Ss]?[ \t:]*/, "", token)
+        print token
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }'
+}
+
 ff_merge_issue_sets() { # <owner/repo> <PR body> <API closing refs> <checker keyword lines>
   local TARGET_REPO="$1" PR_BODY="$2" API_CLOSES_TOKENS="$3" EXTRACT_RC KEYWORDS_PATTERN
   KEYWORDS_PATTERN="$(printf '%s\n' "$4" | LC_ALL=C awk '
     NF { if ($0 !~ /^[a-z]+$/) exit 2; s = s (n++ ? "|" : "") $0 }
     END { if (!n) exit 2; print s }
   ')" || return 2
-  # 拾う綴りは Ref / Refs のみ（大文字小文字は問わない。コロンが続く形も可）。`関連 #N` や
-  # 裸の `#N` は拾わない。awk の現在行を $(0) と書くのは、裸のドル記号 + 0 が skill 読み込み時の
-  # 引数展開で PR 番号へ置換された実測（本文から定数文字列に化けて抽出 0 件で素通り）の名残で、
-  # script 側でも同じ形を保つ（awk では $ は演算子なので $(0) は現在行と完全に同義）。
+  # 抽出規則は ff_merge_refs_tokens にある。集合として扱うのでここで重複を畳む。
   REFS_RAW="$(set -o pipefail
-    printf '%s\n' "${PR_BODY}" | awk '
-      {
-        line = $(0)
-        while (match(line, /(^|[^A-Za-z])[Rr][Ee][Ff][Ss]?[ \t:]*([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)?#[0-9]+/)) {
-          token = substr(line, RSTART, RLENGTH)
-          sub(/^([^A-Za-z])?[Rr][Ee][Ff][Ss]?[ \t:]*/, "", token)
-          print token
-          line = substr(line, RSTART + RLENGTH)
-        }
-      }' | sort -u)"
+    ff_merge_refs_tokens "${PR_BODY}" | sort -u)"
   EXTRACT_RC=$?
   [[ "${EXTRACT_RC}" -eq 0 ]] || return 2
   # 本文からの closing keyword 抽出。拾う綴りは GitHub の closing keyword 9 語（大文字小文字は

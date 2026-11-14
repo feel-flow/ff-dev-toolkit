@@ -366,7 +366,7 @@ contains "$COLLECTION" 'EXTRACT_RC}" -eq 0' "抽出の失敗を rc の意味論�
 # contains のテキスト照合では「awk が原文どおり存在する」ことしか言えず、引数展開
 # による意味破壊（line = $0 が line = <PR番号> へ化ける類）や正規表現の退行は検出
 # できない。SKILL.md のフェンスから awk プログラムを抽出し、本文へ実際に適用して
-# 抽出結果を固定する。マーカー（"| awk" 開始行〜"sort -u" 終了行）が変わって抽出
+# 抽出結果を固定する。マーカー（"| awk" 開始行〜"sort -u" 終了行または awk の閉じ行）が変わって抽出
 # できなくなった場合は fail-closed でこの検査を赤にする。
 # 終端行（`}' | sort -u ...`）はクォート以降を切り落として残りを出力する。固定文字列
 # "    }" を合成すると、終端行に実文が同居する形へ変わったときに黙って欠落する。
@@ -374,7 +374,8 @@ extract_skill_awk_after() {
   local needle="$1"
   awk -v q="'" -v needle="$needle" '
     found == 0 && index($0, needle) > 0 { armed = 1 }
-    extracting == 1 && index($0, "sort -u") > 0 {
+    # 終端は sort -u へ渡す行か、関数へ切り出した awk の閉じ行（閉じ波括弧と引用符だけの行）。
+    extracting == 1 && (index($0, "sort -u") > 0 || $0 ~ ("^[ \t]*}" q "[ \t]*$")) {
       tail_pos = index($0, q)
       if (tail_pos > 1) print substr($0, 1, tail_pos - 1)
       found = 1; extracting = 0; next
@@ -385,7 +386,8 @@ extract_skill_awk_after() {
   ' "$COLLECTION"
 }
 
-SKILL_AWK_SRC="$(extract_skill_awk_after 'REFS_RAW=')" || SKILL_AWK_SRC=""
+# Refs の awk は ff_merge_refs_tokens へ切り出してある（件名の Issue 解決と共有。REFS_RAW はそれを呼ぶ）。
+SKILL_AWK_SRC="$(extract_skill_awk_after 'ff_merge_refs_tokens() {')" || SKILL_AWK_SRC=""
 if [[ -n "$SKILL_AWK_SRC" ]]; then
   ok "手順 1 の awk プログラムを finish.sh から抽出できる"
 else

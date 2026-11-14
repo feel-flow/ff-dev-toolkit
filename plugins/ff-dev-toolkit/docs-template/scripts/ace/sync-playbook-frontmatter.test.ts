@@ -507,6 +507,19 @@ describe("computeSync (write)", () => {
     }
   });
 
+  it("分割側が `## Changelog` を持たず版見出しから始まる形でも found（Issue `#2587`）", () => {
+    const content = `---\nversion: "1.158.0"\nace_entry_count: 1\n---\n### ACE-1-1: a\n| Category | coding |\n\n## Changelog\n\n> 本体は [playbook/CHANGELOG.md](playbook/CHANGELOG.md) へ移動した。\n\n- 現行: [playbook/CHANGELOG.md](playbook/CHANGELOG.md)\n`;
+    const split = `# ACE Playbook Changelog\n\n### [1.158.0] - 2026-11-02\n\n#### 追加\n\n- ACE-1-1: a\n\n### [1.157.0] - 2026-11-01\n`;
+    const result = computeSync(content, 1, { splitChangelogContent: split });
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.changelogState).toBe("found");
+      expect(result.changelogSource).toBe("split");
+      expect(result.changelogVersion).toBe("1.158.0");
+      expect(result.versionChangelogInSync).toBe(true);
+    }
+  });
+
   it("本体が空スタブで分割側に Changelog セクションが無ければ empty のまま（Issue #949）", () => {
     const content = `---\nversion: "1.0.0"\nace_entry_count: 1\n---\n### ACE-1-1: a\n| Category | coding |\n\n## Changelog\n\n`;
     const result = computeSync(content, 1, { splitChangelogContent: "# 別物\n" });
@@ -1388,6 +1401,36 @@ describe("main (CLI contract)", () => {
     expect(status).toBe(0);
     expect(output).toContain("（playbook/CHANGELOG.md）");
     expect(output).toContain("version: frontmatter=1.3.0 / Changelog最新=1.3.0");
+  });
+
+  it("CLI は説明文つきの誘導スタブから、版見出しで始まる playbook/CHANGELOG.md を読んで check / write を通す（Issue `#2587`）", () => {
+    const dir = tempDir();
+    const playbook = path.join(dir, "PLAYBOOK.md");
+    const subDir = path.join(dir, "playbook");
+    fs.mkdirSync(subDir);
+    const stub = [
+      "## Changelog", "",
+      "> **Changelog 本体は [playbook/CHANGELOG.md](playbook/CHANGELOG.md) へ移動した**。",
+      "> このセクションは誘導スタブであり、**バージョン記録を持たない — ここに版を追記しない**。", "",
+      "- 現行: [playbook/CHANGELOG.md](playbook/CHANGELOG.md)",
+      "- 過去分: [playbook/CHANGELOG-archive-1.65.0-1.115.0.md](playbook/CHANGELOG-archive-1.65.0-1.115.0.md)（凍結）", "",
+    ].join("\n");
+    fs.writeFileSync(playbook, `---\nace_entry_count: 1\nupdated: "2026-01-01"\nversion: "1.158.0"\nchangeImpact: medium\n---\n索引のみ\n\n${stub}`);
+    fs.writeFileSync(path.join(subDir, "coding.md"), `### ACE-3-1: a\n| Category | coding |\n`);
+    const history = (latest: string) =>
+      `# ACE Playbook Changelog\n\n${latest}### [1.158.0] - 2026-11-02\n\n#### 追加\n\n- ACE-3-1: a\n\n### [1.157.0] - 2026-11-01\n\n#### 追加\n\n- ACE-2-1: b\n`;
+    fs.writeFileSync(path.join(subDir, "CHANGELOG.md"), history(""));
+
+    const checked = withCapturedConsole(() => main(["node", "sync", playbook, "--check"]));
+    expect(checked.status).toBe(0);
+    expect(checked.output).toContain("version: frontmatter=1.158.0 / Changelog最新=1.158.0（playbook/CHANGELOG.md）");
+
+    // 次の版を分割側へ足した回は、--write --bump-version が frontmatter をその版へ揃える
+    fs.writeFileSync(path.join(subDir, "CHANGELOG.md"), history("### [1.159.0] - 2026-11-03\n\n#### カウンター更新\n\n- ACE-3-1: Helpful +1（理由）\n\n"));
+    const written = withCapturedConsole(() => main(["node", "sync", playbook, "--write", "--bump-version"]));
+    expect(written.status).toBe(0);
+    expect(fs.readFileSync(playbook, "utf8")).toContain('version: "1.159.0"');
+    expect(withCapturedConsole(() => main(["node", "sync", playbook, "--check"])).status).toBe(0);
   });
 
   it("CLI は本体・分割のどちらにも Changelog が無いとき切り出し案内付きで exit 1 を返す（Issue #949）", () => {

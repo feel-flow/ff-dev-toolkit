@@ -105,7 +105,7 @@ git -C "$REPO" commit -qm "init"
 git -C "$REPO" switch -q -c feature/x
 
 # 全 CLI を「導入済み」にする。dry-run なので stub 自体は起動されない。
-for name in claude codex copilot grok; do
+for name in agy claude codex copilot grok; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 99' > "$STUB/$name"
   chmod +x "$STUB/$name"
 done
@@ -454,7 +454,9 @@ for metered_task in explore implement; do
   fi
 
   if grep -q 'copilot-cli skipped (metered). Opt in with --cli copilot-cli.' "$DEFAULT_METERED_LOG" \
+    && grep -q 'antigravity-cli skipped (metered). Opt in with --cli antigravity-cli.' "$DEFAULT_METERED_LOG" \
     && ! grep -q 'copilot-cli \[metered\]:' "$DEFAULT_METERED_LOG" \
+    && ! grep -q 'antigravity-cli \[metered\]:' "$DEFAULT_METERED_LOG" \
     && ! grep -q "^     - ${metered_perspective}$" "$DEFAULT_METERED_LOG"; then
     ok "${metered_task} の既定プランから metered CLI を理由付きで除外"
   else
@@ -482,7 +484,48 @@ for metered_task in explore implement; do
     bad "${metered_task} の明示 opt-in が計画へ反映されない"
     sed 's/^/    | /' "$EXPLICIT_METERED_LOG" >&2
   fi
+
+  EXPLICIT_AGY_LOG="$TMP/${metered_task}-explicit-agy.log"
+  if (
+    cd "$REPO"
+    run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+      --task "$metered_task" --mode distributed --base develop \
+      --description "antigravity explicit opt-in" --cli antigravity-cli \
+      --perspective "$metered_perspective" --dry-run
+  ) >"$EXPLICIT_AGY_LOG" 2>&1; then
+    ok "${metered_task} は明示 --cli antigravity-cli で opt-in できる"
+  else
+    bad "${metered_task} の明示 antigravity-cli opt-in が失敗"
+  fi
+
+  if grep -q 'antigravity-cli \[metered\]:' "$EXPLICIT_AGY_LOG" \
+    && grep -q "^     - ${metered_perspective}$" "$EXPLICIT_AGY_LOG"; then
+    ok "${metered_task} の antigravity-cli 明示 opt-in が指定観点を計画"
+  else
+    bad "${metered_task} の antigravity-cli 明示 opt-in が計画へ反映されない"
+    sed 's/^/    | /' "$EXPLICIT_AGY_LOG" >&2
+  fi
 done
+
+CROSS_METERED_LOG="$TMP/review-cross-model-metered.log"
+if (
+  cd "$REPO"
+  run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+    --task review --mode cross-model --base develop --dry-run
+) >"$CROSS_METERED_LOG" 2>&1; then
+  ok "cross-model の既定 dry-run が成功"
+else
+  bad "cross-model の既定 dry-run が失敗"
+fi
+if grep -q 'copilot-cli skipped (metered). Opt in with --cli copilot-cli.' "$CROSS_METERED_LOG" \
+  && grep -q 'antigravity-cli skipped (metered). Opt in with --cli antigravity-cli.' "$CROSS_METERED_LOG" \
+  && ! grep -q 'copilot-cli \[metered\]:' "$CROSS_METERED_LOG" \
+  && ! grep -q 'antigravity-cli \[metered\]:' "$CROSS_METERED_LOG"; then
+  ok "cross-model 既定プランでも metered CLI（copilot-cli / antigravity-cli）を除外する"
+else
+  bad "cross-model 既定プランに metered CLI が混入、または opt-in 案内が不足"
+  sed 's/^/    | /' "$CROSS_METERED_LOG" >&2
+fi
 
 echo "== CLI 入力検証 =="
 # 退役した名前（cursor-cli, issue #240）は綴りとして正しく見えるので、汎用の
@@ -524,6 +567,56 @@ if run_plan "$MULTI_PERSP_LOG" --cli codex-cli \
   fi
 else
   bad "単一 CLI + 複数観点の dry-run が非 0 で終了した"
+fi
+
+# cross-model は 2 つ目以降をプラン行より前に拒否する。distributed は
+# 登録表のどの CLI も持たない観点を名指しして拒否する。単一 --cli はその観点も載せる。
+CROSS_DROP_LOG="$TMP/cross-drop.log"
+CROSS_DROP_RC=0
+if (
+  cd "$REPO"
+  run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+    --task review --mode cross-model --perspective code-review,test-analysis \
+    --base develop --dry-run
+) >"$CROSS_DROP_LOG" 2>&1; then
+  bad "cross-model の複数観点が成功している"
+else
+  CROSS_DROP_RC=$?
+  if [[ "$CROSS_DROP_RC" -eq 2 ]] \
+    && grep -qF "would drop: test-analysis" "$CROSS_DROP_LOG" \
+    && ! grep -qF "all CLIs run" "$CROSS_DROP_LOG"; then
+    ok "cross-model は捨てる観点をプラン行より前に名指しして exit 2"
+  else
+    bad "cross-model の複数観点の拒否が足りない (rc=$CROSS_DROP_RC)"
+  fi
+fi
+
+UNOWNED_LOG="$TMP/unowned-perspective.log"
+UNOWNED_RC=0
+if (
+  cd "$REPO"
+  run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+    --task review --mode distributed --perspective comprehensive-review \
+    --base develop --dry-run
+) >"$UNOWNED_LOG" 2>&1; then
+  bad "登録表に無い観点の distributed が成功している"
+else
+  UNOWNED_RC=$?
+  if [[ "$UNOWNED_RC" -eq 2 ]] \
+    && grep -qF "comprehensive-review" "$UNOWNED_LOG" \
+    && grep -qF -- "--mode cross-model --cli <CLI> --perspective comprehensive-review" "$UNOWNED_LOG"; then
+    ok "distributed は登録表に無い観点を名指しして exit 2"
+  else
+    bad "登録表に無い観点の拒否が足りない (rc=$UNOWNED_RC)"
+  fi
+fi
+
+EXPLICIT_UNOWNED_LOG="$TMP/explicit-unowned.log"
+if run_plan "$EXPLICIT_UNOWNED_LOG" --cli codex-cli --perspective comprehensive-review \
+  && grep -qE '^ *- comprehensive-review$' "$EXPLICIT_UNOWNED_LOG"; then
+  ok "単一 CLI は登録表に無い観点もプランに載せる"
+else
+  bad "単一 CLI が登録表に無い観点を拒否した"
 fi
 
 # 空プランの判定は dry-run と実行で一致していること。従来は実行が非 0、dry-run が

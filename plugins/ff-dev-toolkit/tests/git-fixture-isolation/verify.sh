@@ -494,6 +494,7 @@ adapter-base-ref-freshness/verify.sh
 adapter-model-args/verify.sh
 adapter-prompt-guard/verify.sh
 adapter-prompt-utf8/verify.sh
+antigravity-hooks-sync/verify.sh
 changelog-fragments/cases/attribution.sh
 changelog-fragments/cases/footer.sh
 changelog-fragments/cases/parallel-branches.sh
@@ -521,6 +522,7 @@ merge-cleanup/detached-caller.sh
 merge-cleanup/long-paths.sh
 merge-cleanup/verify.sh
 merge-cleanup/windows-junctions.sh
+multi-agent-critical-marker/merged-shelve-cases.sh
 multi-agent-critical-marker/verify.sh
 multi-agent-host-delegation/completed-lane-cases.sh
 multi-agent-host-delegation/verify.sh

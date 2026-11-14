@@ -1,6 +1,23 @@
 # POSIX awk. Caller fixes LC_ALL=C for byte comparisons.
 function source_name() { return ENVIRON["FF_READ_KEY"] != "" ? ENVIRON["FF_READ_KEY"] : FILENAME }
-BEGIN { mode=""; section=""; version=0; added=0; helpful=0; bad=0; invalid=0; stopped=0; hint=0 }
+# -v headingless=1 は固定候補（分割した CHANGELOG.md）専用。`## Changelog` が無く、最初の版見出しより前に
+# レベル 2 見出しも無いファイルを、その版見出しから読む（TS の scanChangelog の headingless と同じ規則）。
+BEGIN { mode=""; section=""; version=0; added=0; helpful=0; bad=0; invalid=0; stopped=0; rows=0; prose=0; pointer=0; blocked=0 }
+# 説明文つきの誘導スタブが履歴を譲れるのは、節内のリンクが固定候補を指すときだけ。
+function points_to_candidate(line,    rest, at, close_at, target) {
+  rest=line
+  while ((at=index(rest, "](")) > 0) {
+    rest=substr(rest, at+2)
+    close_at=index(rest, ")")
+    if (!close_at) return 0
+    target=substr(rest, 1, close_at-1)
+    sub(/[ \t].*$/, "", target); sub(/#.*$/, "", target)
+    while (substr(target, 1, 2)=="./") target=substr(target, 3)
+    if (target=="CHANGELOG.md" || target=="playbook/CHANGELOG.md") return 1
+    rest=substr(rest, close_at+1)
+  }
+  return 0
+}
 function date_version(line) { return line ~ /^### \[[0-9]+\.[0-9]+\.[0-9]+\] - [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/ }
 function legacy_version(line) { return line ~ /^## v[0-9]+\.[0-9]+\.[0-9]+ \([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\)[ \t]*$/ }
 function helpful_row(line) { return line ~ /^- ACE-[A-Za-z0-9][A-Za-z0-9._-]*: Helpful [+]1( ×[1-9][0-9]*)?(（.+）|[[:space:]]+—[[:space:]]+.+)[[:space:]]*$/ }
@@ -38,6 +55,8 @@ function comment_padding(size) { return sprintf("%*s", size, "") }
   if (mode=="") {
     if (line ~ /^##[ \t]+Changelog[ \t]*$/) { mode="canonical"; next }
     if (legacy_version(line)) { mode="legacy"; version++; next }
+    if (line ~ /^##[ \t]+/) { blocked=1; next }
+    if (headingless && !blocked && date_version(line)) { mode="canonical"; version++; section="" }
     next
   }
   if (mode=="legacy" && legacy_version(line)) { version++; next }
@@ -47,7 +66,17 @@ function comment_padding(size) { return sprintf("%*s", size, "") }
     if (line ~ /^#### 追加/) { section="added"; next }
     if (line ~ /^#### カウンター更新/) { section="helpful"; next }
     if (line ~ /^#### /) { section=""; next }
-    if (!version) { if (line !~ /^[ \t]*$/ && line !~ /^[ \t]*\[[^]]+\]\([^)]+\)[ \t]*$/) hint=1; next }
+    if (!version) {
+      # TS の走査はインラインコードを先に空白化する。スタブの説明文が `Helpful +1` などをコード表記で
+      # 引用しても履歴らしい行に数えず、コード表記の中のリンクも固定候補への誘導に数えない。
+      gsub(/`[^`]*`/, " ", line)
+      if (line ~ /^[ \t]*$/) next
+      if (points_to_candidate(line)) pointer=1
+      if (line ~ /^[ \t]*\[[^]]+\]\([^)]+\)[ \t]*$/) next
+      if (line ~ /Helpful [+]1|^- (ACE-|追加:|更新:)|^###.*\[/) rows=1
+      else prose=1
+      next
+    }
     if (section=="helpful") {
       if (helpful_row(line)) helpful++
       else if (line ~ /Helpful [+]1/) { bad++; print source_name() ":" NR ": " line }
@@ -75,7 +104,7 @@ END {
   else if (mode=="") print "VERDICT=no-changelog"
   else if (bad) print "VERDICT=unreadable-helpful"
   else if (invalid) print "VERDICT=unreadable-format"
-  else if (!version && !hint) print "VERDICT=empty-stub"
+  else if (!version && !rows && (!prose || pointer)) print "VERDICT=empty-stub"
   else if (!added && !helpful) print "VERDICT=no-rows"
   else print "VERDICT=ok"
 }

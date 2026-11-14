@@ -105,7 +105,7 @@ git -C "$REPO" commit -qm init
 git -C "$REPO" switch -q -c feature/x
 
 # 全 CLI を導入済みにする（dry-run なので stub は起動されない）
-for name in claude codex copilot grok; do
+for name in agy claude codex copilot grok; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 99' > "$STUB/$name"
   chmod +x "$STUB/$name"
 done

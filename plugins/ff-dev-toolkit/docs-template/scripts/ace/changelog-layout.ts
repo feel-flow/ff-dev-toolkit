@@ -33,30 +33,65 @@ export function maskChangelog(text: string): string {
   return unclosed < 0 ? masked : masked.slice(0, unclosed) + masked.slice(unclosed).replace(/[^\n]/gu, " ");
 }
 
+/** The only files a stub may hand the history over to (relative to the book). */
+const FIXED_CANDIDATES: readonly string[] = ["CHANGELOG.md", "playbook/CHANGELOG.md"];
+const DATED_VERSION = /^### \[[0-9]+\.[0-9]+\.[0-9]+\] - [0-9]{4}-[0-9]{2}-[0-9]{2}/u;
+
+/** A stub may carry prose only when one of its links names a fixed candidate. */
+function pointsToFixedCandidate(line: string): boolean {
+  for (const link of line.matchAll(/\]\(([^)\s]*)[^)]*\)/gu)) {
+    const target = link[1].replace(/#.*$/u, "").replace(/^(?:\.\/)+/u, "");
+    if (FIXED_CANDIDATES.includes(target)) return true;
+  }
+  return false;
+}
+
+export type ScanOptions = {
+  /**
+   * 固定候補（分割した CHANGELOG.md）専用。`## Changelog` を持たず、最初の版見出し
+   * `### [x.y.z] - 日付` より前にレベル 2 見出しが無いファイルを、その版見出しから読む。
+   */
+  headingless?: boolean;
+};
+
 /** Metadata is shared by row readers and the version-only synchronizer. */
-export function scanChangelog(raw: string): HistoryScan {
+export function scanChangelog(raw: string, options: ScanOptions = {}): HistoryScan {
   const lines = maskChangelog(raw).split("\n");
   const main = lines.findIndex((line) => /^##[ \t]+Changelog[ \t]*$/u.test(line));
   const legacy = lines.findIndex((line) => /^## v[0-9]+\.[0-9]+\.[0-9]+ \([0-9]{4}-[0-9]{2}-[0-9]{2}\)[ \t]*$/u.test(line));
-  const start = main >= 0 ? main + 1 : legacy;
+  let bare = -1;
+  if (options.headingless === true) {
+    // 壊れた `## Changelog` などレベル 2 見出しが先にある候補は、版だけのファイルとして読まない。
+    const first = lines.findIndex((line) => /^##[ \t]+/u.test(line) || DATED_VERSION.test(line));
+    if (first >= 0 && DATED_VERSION.test(lines[first])) bare = first;
+  }
+  const canonical = bare >= 0 || main >= 0;
+  const start = bare >= 0 ? bare : main >= 0 ? main + 1 : legacy;
   const headings: HistoryHeading[] = [];
   let end = lines.length;
-  let hasUnparsedRows = false;
-  if (start < 0) return { lines, headings, kind: "absent", start, end, hasUnparsedRows };
+  let rows = false;
+  let prose = false;
+  let pointer = false;
+  if (start < 0) return { lines, headings, kind: "absent", start, end, hasUnparsedRows: false };
   for (let index = start; index < lines.length; index += 1) {
     const line = lines[index];
-    const old = main < 0 ? /^## v([0-9]+\.[0-9]+\.[0-9]+) \(([0-9]{4}-[0-9]{2}-[0-9]{2})\)[ \t]*$/u.exec(line) : null;
+    const old = canonical ? null : /^## v([0-9]+\.[0-9]+\.[0-9]+) \(([0-9]{4}-[0-9]{2}-[0-9]{2})\)[ \t]*$/u.exec(line);
     if (/^##[ \t]+/u.test(line) && !old) { end = index; break; }
-    const current = main >= 0 ? /^###[ \t]+\[([0-9]+\.[0-9]+\.[0-9]+)\](?:[ \t]+-[ \t]+([0-9]{4}-[0-9]{2}-[0-9]{2}))?/u.exec(line) : null;
+    const current = canonical ? /^###[ \t]+\[([0-9]+\.[0-9]+\.[0-9]+)\](?:[ \t]+-[ \t]+([0-9]{4}-[0-9]{2}-[0-9]{2}))?/u.exec(line) : null;
     if (old || current) {
       const match = (old ?? current)!;
       headings.push({ line: index, version: match[1], date: match[2] ?? null, format: old ? "legacy" : "canonical" });
-    } else if (/Helpful \+1|^- (?:ACE-|追加:|更新:)|^###.*\[/u.test(line)
-      || (!headings.length && line.trim() !== "" && !/^\s*\[[^\]]+\]\([^)]+\)\s*$/u.test(line))) {
+    } else if (/Helpful \+1|^- (?:ACE-|追加:|更新:)|^###.*\[/u.test(line)) {
       // A malformed history must not be hidden by a different file.
-      hasUnparsedRows = true;
+      rows = true;
+    } else if (!headings.length && line.trim() !== "") {
+      if (pointsToFixedCandidate(line)) pointer = true;
+      if (!/^\s*\[[^\]]+\]\([^)]+\)\s*$/u.test(line)) prose = true;
     }
   }
+  // 説明文つきの誘導スタブは、固定候補へのリンクを持つときだけ履歴を譲る。
+  // リンクの無い任意の文章は、従来どおり本体の壊れた履歴として扱う。
+  const hasUnparsedRows = rows || (prose && !pointer);
   return { lines, headings, kind: headings.length ? "found" : "empty", start, end, hasUnparsedRows };
 }
 
@@ -88,7 +123,7 @@ export function selectChangelog(playbookPath: string, reader = knowledgeReaderFo
   if (!present.length) return { path: mainPath, text, scan };
   const candidate = present[0];
   const candidateText = readCandidate(candidate, root, reader);
-  const candidateScan = scanChangelog(candidateText);
+  const candidateScan = scanChangelog(candidateText, { headingless: true });
   if (candidateScan.kind !== "found") throw new Error(`Changelog の版を読めません: ${candidate}`);
   return { path: candidate, text: candidateText, scan: candidateScan };
 }

@@ -77,7 +77,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 | 観測台帳 | `active` | **未対策**の落とし穴（蓄積中）。回避策はエントリ本文の `→` 以降 |
 | 観測台帳 | `promoted` | **対策 Issue あり**。Issue 列の state を見る — `open` は対応中（同じ落とし穴を踏んだら再発コメントの対象）、`closed` は完了照合前または対策後の再発（最新メモで区別し、close だけで対策済みとはしない） |
 | 観測台帳 | `mitigated` | **対策反映を確認済み**（昇格見送り・Issue 対応完了）。元 Issue と対策の所在（`owner/repo#N` / `skill:<名>` / `doc:<path>#<アンカー>`）が Issue 列にある。未対策として扱わない |
-| 観測台帳 | `archived` | 休眠（180 日以上再発なし）。`--include-archived` のときだけ出る |
+| 観測台帳 | `archived` | 休眠（再発が無く `/observation-refine` が archive したもの）または統合元（`Issue` 列が統合先の `#obs-nnn` を指す。主張は統合先を読む）。`--include-archived` のときだけ出る |
 
 - `mitigated` でも最新メモに未解消再発・追跡先未確定があれば有効な対策として適用しない。完了照合・再発分岐の正本は [retrospective の promotion.md](../retrospective/references/promotion.md)。
 - `promoted` / `mitigated` を「まだ誰も対策していない」と読まないこと。対策があるのに独自の回避策を実装へ持ち込むと、対策の二重化になる
@@ -115,7 +115,7 @@ store の実配置は既定パス（`docs/08-knowledge/PLAYBOOK.md` / `OBSERVATI
 
 ## 位置づけ
 
-| | 書く | 引く |
-| --- | --- | --- |
-| ACE Playbook | `/ace-curate` | 本スキル（git-workflow「着手前の Playbook 参照」の実行手段） |
-| 観測台帳 | `/retrospective` | 本スキル（実装・レビュー前のキーワード検索、振り返りの promoted × open 突き合わせ） |
+| | 書く | 引く | 整理する |
+| --- | --- | --- | --- |
+| ACE Playbook | `/ace-curate` | 本スキル（git-workflow「着手前の Playbook 参照」の実行手段） | `/ace-refine` |
+| 観測台帳 | `/retrospective` | 本スキル（実装・レビュー前のキーワード検索、振り返りの promoted × open 突き合わせ） | `/observation-refine`（候補の算出は本スキルのスクリプトの `--ledger-dump` を入力にする） |

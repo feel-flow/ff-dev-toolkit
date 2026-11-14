@@ -27,7 +27,7 @@
 DELEGATION_LANE="claude-code"
 delegation_lane_allowed() { # <cli> → rc0 = --delegate-to-host=<cli> で委譲してよいレーン
   case "$1" in
-    claude-code | codex-cli | grok-cli) return 0 ;;
+    claude-code | codex-cli | grok-cli | antigravity-cli) return 0 ;;
     *) return 1 ;;
   esac
 }

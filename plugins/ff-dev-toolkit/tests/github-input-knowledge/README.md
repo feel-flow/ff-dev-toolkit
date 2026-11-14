@@ -13,7 +13,7 @@ The new `--github-input /absolute/index.json` uses the common version 1 raw file
 | doctor.open-issues | state=open, per_page=100 | inspect / `{page:1}`, then contiguous pages | REST array with number/labels; PRs and epic/bundle excluded by existing predicate; missing page or terminal `last` → SKIP |
 | doctor.parents | numbers (current <=100 batch, ordered) | inspect / `{}` | `data.repository.iN = {number:N,parent:null\|{number}}`; all requested aliases and no extra aliases required |
 | doctor.drafts | state=open, draft=true, author=@me, limit=200 | inspect / `{}` | number/title array; preserve author selector and exclude knowledge titles as before; unknown actor is not all-author data |
-| knowledge.subject-issue | pr | subject / `{}` | closingIssuesReferences[0].number; optional failure retains branch #N fallback |
+| knowledge.subject-issue | pr | subject / `{}` | closingIssuesReferences[0].number, then the first same-repository `Ref` / `Refs #N` in `body` (document order; `owner/repo#N` never counts), then the first `#N` in `title`; `title` / `body` are optional, and a missing value or failure retains branch #N fallback |
 | knowledge.repo | none | probe / `{}` | nameWithOwner equal to Git origin identity; missing → unknown |
 | knowledge.classic-protection | branch | probe / `{}` | required protection fields; recognized HTTP404 only means classic absent, HTTP403/400 remains unknown |
 | knowledge.rulesets | branch | probe / `{}` | applicable branch rules array, every type known; unavailable → unknown |

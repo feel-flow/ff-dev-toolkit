@@ -16,11 +16,13 @@
 #   rule    <node-id>   <キー>   <値>
 #     choice ノードの機械判定規則。root の 4 キーは route.sh のヘッダが意味を持つ
 #
-# 制約（--check が固定する）: 深さ（root から葉までの辺数）≤ 4、葉 ≤ 55、
+# 制約（--check が固定する）: 深さ（root から葉までの辺数）≤ 4、葉 ≤ 60、
 # 実在しない葉 / 到達不能なノード / 木に載っていないスキル・hook / 同じ (node, key) の rule の重複 /
 # 未知の rule キーはいずれも赤。葉の上限は「27 スキル + 起票時の 16 hook + 熟慮へ + アーカイブ候補
 # = 45」から、Wave 0 が hook を 2 本足したぶんを含めて 50 へ置いた。28 本目のスキル（gh-auth-doctor）で
 # 「28 スキル + 22 hook + 熟慮へ = 51」になったので、上限だけを 55 へ補正した（深さの上限は据え置き）。
+# 29 本目のスキル（observation-refine）で「29 スキル + 26 hook + 熟慮へ = 56」になったので、同じ導出で
+# 上限を 60 へ補正した（深さの上限は据え置き。hook は 22 本から 26 本へ増えており、55 は 28 スキルの時点で埋まっていた）。
 
 # ---- 根: 経路分岐（fast / full / none）------------------------------------------------
 # 規則の評価順（route.sh）: contract-path に当たる path が 1 つでもあれば full →
@@ -98,6 +100,7 @@ node	tail	select	尾で何を記録・整理するか
 answer	tail	knowledge	skill:ace-curate
 answer	tail	retrospective	skill:retrospective
 answer	tail	refine	skill:ace-refine
+answer	tail	ledger-refine	skill:observation-refine
 answer	tail	orphan-transcripts	skill:sweep-orphan-transcripts
 answer	tail	none	none
 

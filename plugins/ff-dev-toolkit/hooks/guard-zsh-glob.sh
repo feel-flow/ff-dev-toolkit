@@ -48,8 +48,10 @@
 #   - zsh ホストでない / `jq` 不在（コマンド本文を取り出せず、候補かどうかも決められない）
 #   - 生の入力に `=` と glob 文字（`*` `?` `[`）が 1 つも無い、またはコマンドに `-…=` の右の glob 文字も
 #     `?` の直後の `key=` も無い（候補でない）
+#   - 修飾子の候補（`$name:X`。Issue `#2756`）だけの呼び出し。書き換えを出せない回は、ヘルパの不在・走査の
+#     失敗・jq の取り出しの失敗を含めて無出力で通す（従来の素通しを悪化させない。止める根拠を持たない）
 #
-# fail-closed（理由付き deny）にする面 — **候補コマンドに限る**。判定を完了できないのに
+# fail-closed（理由付き deny）にする面 — **glob / equals の候補コマンドに限る**。判定を完了できないのに
 # 通すと、守ろうとしている失敗（コマンド全体が走らない）をそのまま通す:
 #   - ASDD ゲートが検証不能を返す（`.asdd/config.json` があるのに node が無い等。無効の rc 3 は素通し）
 #   - 引用・展開が閉じないまま入力が終わる（判定ヘルパの rc 4。走査が途中で止まっている）
@@ -82,6 +84,12 @@
 # 承認待ち・拒否を増やすので付けない）。位置引数（`$1`）だけの呼び出しは既存の scalar 検出が数えないので付かない。書き換えた呼び出しの scalar は
 # 警告せず、PostToolUse も scalar を返さない（最初の文が setopt SH_WORD_SPLIT の呼び出しは zsh-expansion-guard.sh が
 # scalar の対象から外す）。入力書き換えに対応しない環境（Codex / grok / 対応前の Claude Code）は従来の警告・deny のまま。
+# 同じ環境で、zsh が履歴修飾子として値を書き換える `$name:X`（`"$db:refs"` の `:r` など。引用の内外を問わない）を
+# `${name}:X` へ書き換える（Issue `#2756`。文を足さず語の綴りだけを変え、bash では同じ値になるので、権限判定の
+# 対象になる文が増える単語分割の前置と違い権限モードを問わない）。判定は
+# tests/lib/zsh-glob-nomatch.sh の ff_zsh_modifier_fix_scan、置換は glob / equals と同じ出現数の照合を通す。
+# 書き換え案が一意に決まらない呼び出し（同じ綴りが単一引用の中にもある・heredoc を含む）と未対応の環境は、
+# 従来どおり無出力で通す（修飾子だけでは deny しない）。zsh-expansion の ACK・無効化で止まる。
 # `bash <<'EOF'` へ包み直す案（Issue `#2491` の案 B）は採らない — 包んだ本文はホストの権限判定・安全確認が中身を
 # 読めない形になり、同じ集約入口の終了コードガードの bash -c 書き換えがホストの安全確認で拒否された実測がある。
 # 止めない通知（未引用 scalar の警告の systemMessage・PostToolUse の additionalContext・書き換えの通知）は、
@@ -96,7 +104,9 @@
 # ## 既知の限界（素通しする形）
 #
 #   - 一般のパス glob（`ls *.md` / `ls a*.ts b*.mts`）— 述語の対象外（上記）
-#   - `$name:修飾子`。未引用 scalar と equals は zsh-expansion-guard.sh へ委ねる。
+#   - `$name:修飾子` のうち書き換え案が一意に決まらない呼び出し（上記）、`${…}` の直下（入れ子の二重引用・
+#     `$(…)` の外）の `$name:修飾子`、位置引数・特殊引数の修飾子（`$1:t` / `"$@:r"`）、`:&`（直前の置換の繰り返し）。
+#     未引用 scalar と equals は zsh-expansion-guard.sh へ委ねる。
 #   - 変数やコマンド置換の結果として組み立てられる語（`$flag` の中身は見えない）
 #   - `nonomatch` / `null_glob` を設定済みのシェル（誤検知側。ACK で 1 手で通る）
 #   - 区切り語を引用しない heredoc（`<<EOF`）の本文に書いた `$(…)` の中のコマンド。zsh は
@@ -300,7 +310,15 @@ case "$input" in
   *'*'* | *'?'* | *'['*) : ;;
   *) glob_candidate=0 ;;
 esac
-[ "$glob_candidate" -eq 1 ] || [ -n "$expansion_deny" ] || [ -n "$expansion_warning" ] || exit 0
+# zsh の履歴修飾子（`$name:r` など。Issue `#2756`）の候補。判定は書き換え（try_rewrite）の走査が持ち、
+# ここは安価な前置フィルタ。equals / scalar の検出（zsh-expansion）を止めている回は扱わない。
+mod_candidate=0
+if [ "$ff_zsh_exp_skipped" != 1 ]; then
+  case "$input" in
+    *'$'[A-Za-z_]*:[aAcefFghlpPqQrstuwWx]*) mod_candidate=1 ;;
+  esac
+fi
+[ "$glob_candidate" -eq 1 ] || [ "$mod_candidate" -eq 1 ] || [ -n "$expansion_deny" ] || [ -n "$expansion_warning" ] || exit 0
 
 command -v jq >/dev/null 2>&1 || exit 0
 
@@ -363,7 +381,7 @@ try_rewrite() {
   # 引用の中の CR まで消えてデータが変わるので書き換えない。
   printf '%s' "$input" | jq -e '.tool_input.command | contains("\r") | not' >/dev/null 2>&1 || return 1
   [ "$asdd_unverifiable" -eq 0 ] || return 1
-  local helper fn stripped eq_on exp_hits fixes glob_fix eq_fix line word fix total n rest rewritten listed ordered out split_on has_heredoc context permission_mode warning_out
+  local helper fn stripped eq_on exp_hits fixes glob_fix eq_fix mod_fix mod_listed mod_rest line word fix total n rest rewritten listed ordered out split_on has_heredoc context permission_mode warning_out
   # 公式の hook 入力の共通フィールド（default / plan / acceptEdits / auto / dontAsk / bypassPermissions）。
   # 集約入口の再投入は tool_input だけを差し替えるので、再検査の入力にもそのまま残る。
   permission_mode="$(printf '%s' "$input" | jq -r '.permission_mode // empty | select(type == "string")' 2>/dev/null)" || permission_mode=""
@@ -383,6 +401,8 @@ try_rewrite() {
   [ "$stripped" = "$cmd" ] || has_heredoc=1
   glob_fix="$(ff_zsh_glob_scan "$stripped")" || return 1
   eq_fix=""
+  mod_fix=""
+  mod_listed=""
   eq_on=0
   split_on=0
   # equals / scalar の検出を止めている回（無効化・ACK）は、equals の語にも単語分割にも触れない。
@@ -417,10 +437,17 @@ try_rewrite() {
       fi
     fi
     eq_fix="$(ff_zsh_equals_fix_scan "$stripped")" || return 1
+    # 履歴修飾子（`$name:r` → `${name}:r`。Issue `#2756`）。走査関数が無い（古いヘルパ）回は修飾子だけを扱わず、
+    # glob / equals / 単語分割の書き換えは続ける。
+    if [ "$(type -t ff_zsh_modifier_fix_scan 2>/dev/null)" = function ]; then
+      mod_fix="$(ff_zsh_modifier_fix_scan "$stripped")" || return 1
+    fi
   fi
   fixes="$glob_fix"
   [ -z "$eq_fix" ] || fixes="${fixes:+$fixes
 }$eq_fix"
+  [ -z "$mod_fix" ] || fixes="${fixes:+$fixes
+}$mod_fix"
   [ -n "$fixes" ] || [ "$split_on" -eq 1 ] || return 1
   [ -z "$fixes" ] || [ "$has_heredoc" -eq 0 ] || return 1
   rewritten="$cmd"
@@ -444,6 +471,7 @@ EOF
     fix="${line#*"${tab}"}"
     case "$listed" in *"
 ${word} → "*) continue ;; esac
+    case "$mod_listed" in *"、${word} → "*) continue ;; esac
     total=0
     while IFS= read -r n; do
       [ "${n%%"${tab}"*}" != "$word" ] || total=$((total + 1))
@@ -453,6 +481,12 @@ EOF
     rest="${rewritten//"$word"/}"
     [ $(( (${#rewritten} - ${#rest}) / ${#word} )) -eq "$total" ] || return 1
     rewritten=${rewritten//"$word"/$fix}
+    case "
+$mod_fix
+" in
+      *"
+${word}${tab}"*) mod_listed="${mod_listed}、${word} → ${fix}"; continue ;;
+    esac
     listed="${listed}
 ${word} → ${fix}"
   done <<EOF
@@ -464,6 +498,11 @@ EOF
   [ -z "$(ff_zsh_glob_scan "$stripped")" ] || return 1
   if [ "$eq_on" -eq 1 ]; then
     [ -z "$(ff_zsh_equals_fix_scan "$stripped")" ] || return 1
+    if [ -n "$mod_fix" ]; then
+      # 走査の失敗（rc≠0 で stdout が空）を「残り 0 件」と読まない
+      mod_rest="$(ff_zsh_modifier_fix_scan "$stripped")" || return 1
+      [ -z "$mod_rest" ] || return 1
+    fi
     case "$(ff_zsh_expansion_scan "$stripped")" in *equals*) return 1 ;; esac
     # 単語分割を前置した回は scalar が解消済み（setopt で分割される）。前置していない回に一覧 scalar が残るなら書き換えない
     if ! ff_zsh_word_split_prefixed "$rewritten"; then
@@ -477,6 +516,9 @@ EOF
     listed="${listed//
 /、}"
     context="zsh ガード（zsh-nomatch-glob / equals 展開）: zsh で実行されない未引用の語を引用して書き換える候補を作成しました（${listed}）。次の呼び出しからは最初から引用して書いてください。"
+  fi
+  if [ -n "$mod_listed" ] && notice_first zsh-rewrite-modifier; then
+    context="${context}zsh 修飾子ガード: zsh は \`\$name:r\` などの \`:\` + 1 文字を履歴修飾子として値へ当てる（\`\"\$db:refs\"\` は \`:r\` で拡張子を落とす）ため、bash と同じ値になる波括弧の形へ書き換える候補を作成しました（${mod_listed#、}）。次の呼び出しからは \`\${name}:\` の形で書いてください。"
   fi
   # 書き換えを出せたときだけ expansion_warning を消す（jq が失敗して deny・警告へ戻る回は従来の警告を残す）
   if [ "$split_on" -eq 1 ]; then
@@ -507,6 +549,8 @@ cmd="${cmd//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `
 if [ "$jq_rc" -ne 0 ]; then
   # rc=5 は入力が JSON でない（対象外として素通し）。それ以外はフィルタ自体の失敗。
   [ "$jq_rc" -eq 5 ] && exit 0
+  # 修飾子の候補だけの呼び出し（glob / equals の候補ではない）は止めずに通す（冒頭の fail-open の面）
+  [ "$glob_candidate" -eq 0 ] && [ -z "$expansion_deny" ] && [ -z "$expansion_warning" ] && exit 0
   deny_unavailable "コマンド本文の取り出し（jq）が失敗しました（rc=${jq_rc}）"
 fi
 [ -n "$cmd" ] || exit 0
@@ -521,7 +565,7 @@ if ! [[ $cmd =~ $query_re ]]; then
     *) glob_candidate=0 ;;
   esac
 fi
-[ "$glob_candidate" -eq 1 ] || [ -n "$expansion_deny" ] || [ -n "$expansion_warning" ] || exit 0
+[ "$glob_candidate" -eq 1 ] || [ "$mod_candidate" -eq 1 ] || [ -n "$expansion_deny" ] || [ -n "$expansion_warning" ] || exit 0
 
 # ---- 抜け道: コマンドの先頭（先頭の空白・タブ・改行だけを剥がす）の FF_ZSH_GLOB_ACK=1 --------
 # 先頭の語そのものに限る（guard-exit-code.sh の ACK と同じリテラル判定）。先頭に連なる環境代入を
@@ -580,7 +624,8 @@ case "$scan_rc" in
 esac
 fi
 # 未引用 scalar の警告だけの呼び出しも、単語分割の書き換え（Issue `#2491`）を試すために先へ進める。
-[ -n "$hits" ] || [ -n "$expansion_deny" ] || [ -n "$expansion_warning" ] || exit 0
+# 修飾子の候補だけの呼び出しも、`${name}:` への書き換え（Issue `#2756`）を試すために進める（書き換えられなければ従来どおり無出力）。
+[ -n "$hits" ] || [ "$mod_candidate" -eq 1 ] || [ -n "$expansion_deny" ] || [ -n "$expansion_warning" ] || exit 0
 
 try_rewrite || true
 # 書き換えられなかった equals は、保留していた従来の deny をそのまま返す。

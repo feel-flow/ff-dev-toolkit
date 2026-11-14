@@ -239,6 +239,9 @@ printf '%s\n' in > "$TMP/claude-auth"
 [ "$(pc claude-code)" = "capability=auth state=authenticated " ] && ok "claude: ログイン済みは authenticated（利用可能とは言わない）" || bad "claude in: '$(pc claude-code)'"
 [ "$(pc grok-cli)" = "capability=none state=unknown " ] && ok "grok: 能力 none・常に unknown" || bad "grok: '$(pc grok-cli)'"
 [ "$(pc copilot-cli)" = "capability=none state=unknown " ] && ok "copilot: 能力 none・常に unknown" || bad "copilot: '$(pc copilot-cli)'"
+printf '#!/usr/bin/env bash\necho "unexpected agy launch"\nexit 1\n' > "$STUB/agy"
+chmod +x "$STUB/agy"
+[ "$(pc antigravity-cli)" = "capability=none state=unknown " ] && ok "antigravity: 能力 none・常に unknown" || bad "antigravity: '$(pc antigravity-cli)'"
 if [ "$(runs codex)" -eq 0 ] && [ "$(runs claude)" -eq 0 ] && [ "$(runs grok)" -eq 0 ]; then
   ok "--precheck はどの CLI でもモデルを起動しない（起動回数 0）"
 else

@@ -128,6 +128,7 @@ guard_outstanding_delegations() {
   case " ${outstanding}" in
     *" grok-cli/"*) resume_flag="--delegate-to-host=grok-cli" ;;
     *" codex-cli/"*) resume_flag="--delegate-to-host=codex-cli" ;;
+    *" antigravity-cli/"*) resume_flag="--delegate-to-host=antigravity-cli" ;;
   esac
   echo "       Either re-run with ${resume_flag} to finish the round trip, or abandon the" >&2
   echo "       delegation by removing its handoff files:" >&2

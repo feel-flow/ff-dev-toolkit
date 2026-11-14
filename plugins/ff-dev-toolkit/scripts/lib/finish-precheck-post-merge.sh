@@ -93,25 +93,35 @@ ff_precheck_post_merge_check_paths() { # <変更ファイル>
 
 # 語は文字どおりの部分一致で、英字の大文字小文字を区別しない。LC_ALL=C で bytes として比べる
 # （UTF-8 ロケールの tolower は実装により多バイト文字の途中の byte を書き換える）。
+# 一致した行を K または X、タブ、行 の形で返す。X は閉じたブロック内の根拠キーで、語に当たった行だけ。
+# 当たらない行は出さない。emit の HIT は、除外が 0 件なら従来と同じ行になる。
 ff_precheck_post_merge_lines() {
-  ff_precheck_scan_lines visible | LC_ALL=C awk '
+  ff_precheck_scan_lines visible-omit-effort | LC_ALL=C awk '
     BEGIN { n = split(tolower(ENVIRON["FF_POST_MERGE_TERMS"]), terms, ":") }
     {
-      low = tolower($0)
-      for (i = 1; i <= n; i++) if (index(low, terms[i])) { print; next }
+      kind = substr($0, 1, 1)
+      line = substr($0, 3)
+      low = tolower(line)
+      for (i = 1; i <= n; i++) if (index(low, terms[i])) { print kind "\t" line; next }
     }
   '
 }
 
 ff_precheck_post_merge_emit() { # <Issue> <body|report> : stdin の本文から一致行を出す
-  local tok="$1" source="$2" hits line
+  local tok="$1" source="$2" hits line kind text
   hits="$(ff_precheck_post_merge_lines)" \
     || die_env "Issue ${tok} の語の照合に失敗しました（awk）。一致なしとは読まない" "awk が PATH に在ることを確かめて finish.sh precheck を再実行する"
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
-    printf 'POST_MERGE_HIT=%s\t%s\t%s\n' "$tok" "$source" "$line"
-    pm_count=$((pm_count + 1))
-    pm_issue_hit=1
+    kind="${line%%$'\t'*}"
+    text="${line#*$'\t'}"
+    if [[ "$kind" == "X" ]]; then
+      printf 'POST_MERGE_EXCLUDED=%s\t%s\t%s\n' "$tok" "$source" "$text"
+    else
+      printf 'POST_MERGE_HIT=%s\t%s\t%s\n' "$tok" "$source" "$text"
+      pm_count=$((pm_count + 1))
+      pm_issue_hit=1
+    fi
   done <<<"$hits"
 }
 

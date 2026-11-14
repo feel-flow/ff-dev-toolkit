@@ -4,6 +4,7 @@
 検査 B/C は免除（件数ゲートが担保	allow	allow	allow
 estimation カテゴリファイルは未作成	allow	allow	allow
 enum 照合は対象外（grok-cli は受け付ける値の集合を公表していない）	allow	allow	allow
+^antigravity-cli: agy が PATH に無いため --sandbox の boolean 形を再確認していない	allow	allow	allow	plugins/ff-dev-toolkit/tests/adapter-sandbox-contract/verify.sh
 に対応する compare リンク行が無いためスキップ（公開タグ前の開発周期では正常	allow	allow	allow
 FF_MEDIA_RENDER=1 が未設定のため実レンダリングを行いません	allow	allow	allow
 Windows の Git Bash でだけ成立する検査のため未実行	stop	allow	allow	plugins/ff-dev-toolkit/tests/ace-curate-commit/verify.sh|plugins/ff-dev-toolkit/tests/guard-review-in-flight/verify.sh|plugins/ff-dev-toolkit/tests/guard-shell-save/verify.sh|plugins/ff-dev-toolkit/tests/knowledge-lookup/windows-acl.sh|plugins/ff-dev-toolkit/tests/merge-cleanup/windows-junctions.sh|plugins/ff-dev-toolkit/tests/multi-agent-stale-outputs/windows-boundary-cases.sh
@@ -156,3 +157,4 @@ W17 は PowerShell 7 を入れた Windows でだけ成立する検査のため�
 ln -s が symlink を作らない環境（Windows の Git Bash で MSYS=winsymlinks:nativestrict でない等）のため P-leaf / P-parent は未検査	stop	stop	stop
 repository docs/06-reference/DECISIONS.md が無い checkout のため ADR 相互照合のみ対象外（配布先 checkout。SKILL 側の針と実体 pin は上で実行済み）	stop	stop	stop
 リポジトリ直下の scripts/ が無い公開 checkout のため changelog 断片検査（F 系）をスキップ（除外集合の真実源 scripts/check-release-required.sh / scripts/release-dev-toolkit.sh は SSOT 限定。この節の検査は 1 件も実行していません）	stop	stop	stop
+node が無いため MCP stdio 疎通は未検査	stop	stop	stop

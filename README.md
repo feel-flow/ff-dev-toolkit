@@ -22,6 +22,24 @@ claude plugin marketplace add feel-flow/ff-dev-toolkit
 claude plugin install ff-dev-toolkit@ff-dev-toolkit
 ```
 
+### Google Antigravity での導入
+
+Google Antigravity（`AGENTS.md` / `.agents/skills/` / stdio MCP）では、同梱スクリプト（要 `jq`）で `~/.gemini/config/plugins/ff-dev-toolkit/` へネイティブ構成（対応メタデータのみの `plugin.json`・`skills` symlink・バンドル済み `mcp/dist/index.js` を実体物理パスで指し `ff-dev-toolkit-spec-docs` へ名前空間化した `mcp_config.json`）と `hooks.json`（双方向シム `scripts/antigravity/hook-shim.sh` 経由および Antigravity `transcript.jsonl` 振り返り対応）を展開します。プラグイン更新のたびに再実行してください。
+
+```bash
+# 単体プラグインを展開（公開リポジトリ直下から実行する場合。対象プロジェクトの SPEC_DOCS_PROJECT_ROOT を設定）
+bash plugins/ff-dev-toolkit/scripts/antigravity/sync-plugins.sh --project-root <対象プロジェクト>
+
+# hooks.json を展開（SessionStart / PreInvocation / PreToolUse / PostToolUse / Stop + 自動振り返り）
+bash plugins/ff-dev-toolkit/scripts/antigravity/sync-hooks.sh
+
+# 整合確認のみ（差分・リンク切れがあれば終了コード 1。導入済みプラグイン配下では bash scripts/antigravity/sync-*.sh ...）
+bash plugins/ff-dev-toolkit/scripts/antigravity/sync-plugins.sh --project-root <対象プロジェクト> --check
+bash plugins/ff-dev-toolkit/scripts/antigravity/sync-hooks.sh --check
+```
+
+`SubagentStart` / `SubagentStop` / `PermissionDenied` と `async: true` ハンドラ（`auto-update-marketplace.sh`）は Antigravity `hooks.json` スキーマ未対応のためスキップされます。`sync-hooks.sh` 未展開の場合は `/retrospective` を明示起動してください。
+
 ### 組織のプラグインディレクトリ（GitHubから同期）で配布する場合
 
 Claude（Web / デスクトップ）の管理画面にある「GitHubから同期」は、**Private / Internal リポジトリのみ**が同期対象です（2026年7月時点。最新の挙動は同ダイアログの注意書きを確認してください）。本リポジトリは Public のため、組織のプラグインディレクトリの同期元として登録できません。
@@ -31,7 +49,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 
 ## 収録内容
 
-### Skills（28）
+### Skills（29）
 
 | スキル | 用途 |
 |---|---|
@@ -64,6 +82,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 | `/ace-refine` | ACE Playbook の定期整理（stale アーカイブ・長大エントリ圧縮・重複統合）。dry-run → 承認 → 適用の 3 フェーズで原文を保全する |
 | `/retrospective` | ワークフローチェーン末尾（`/merge-cleanup` → `/ace-curate` → `/retrospective`）のセッション振り返り。対応ホストでは UserPromptSubmit で応答前に注入し、Stop hook は実行漏れ時だけ継続する（`RETROSPECTIVE_MODE=ask\|off` で制御）。実測した手戻り・無駄時間・Keep・過剰動作を作業中リポジトリの観測台帳（無ければテンプレートから作成）へ記録し、閾値に到達した再発からプロセス/ツール改善を最大 3 件提案（該当なしなら 1 行報告）。起票は同一 private 確認済み repo では既定で自動実行する（`RETROSPECTIVE_FILING=ask` で承認待ち式）。外部・公開・未確認の送り先は完成本文・送信先・公開範囲の承認後に書き込む（外部公開の承認境界） |
 | `/knowledge-lookup` | ACE Playbook と観測台帳（`docs/08-knowledge/OBSERVATIONS.md`）を同じキーワードで 1 回引き、状態（ACE の active / deprecated / archived、台帳の active / promoted / mitigated / archived）で切り分けて返す読み出し器。着手前の参照と `/retrospective` の promoted × open 突き合わせ（`--promoted-open`）に使う。書き込みはしない |
+| `/observation-refine` | 観測台帳の定期整理（既存 Issue への紐付け・同じ主張の統合・stale の archive・定着済み Keep の `mitigated` 化）。dry-run → 承認 → 適用の 3 フェーズで、観測履歴は消さず状態移行として追記する |
 | `/setup-ai-config` | AI 開発ツール設定の初期化 |
 | `/multi-explore` | マルチAI CLI による並列探索 |
 | `/multi-implement` | マルチAI CLI による並列実装 |

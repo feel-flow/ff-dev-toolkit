@@ -2,11 +2,11 @@
 # ────────────────────────────────────────────────────────────
 # multi-agent.sh — Multi-CLI Agent Orchestrator
 # ────────────────────────────────────────────────────────────
-# Orchestrates 4 AI CLIs (Claude Code, Codex, Copilot, Grok)
+# Orchestrates 5 AI CLIs (Claude Code, Codex, Copilot, Grok, Google Antigravity)
 # for review, explore, and implement tasks using tool-agnostic perspectives.
 #
-# NOTE: Metered CLIs (currently Copilot CLI / premium requests) are excluded
-# from every default task lineup. Opt in explicitly with --cli copilot-cli.
+# NOTE: Metered CLIs (Copilot CLI, Google Antigravity CLI) are excluded
+# from every default task lineup. Opt in explicitly with --cli <cli>.
 #
 # Compatible with bash 3.2+ (macOS default).
 #
@@ -101,8 +101,8 @@
 #   --include-diff          Include diff in implement prompts
 #   --delegate-to-host[=<cli>]
 #                           Review only. Start NO CLI for the host's own lane (default
-#                           claude-code; =codex-cli / =grok-cli when the host is Codex /
-#                           grok CLI): build its
+#                           claude-code; =codex-cli / =grok-cli / =antigravity-cli when
+#                           the host is Codex / grok CLI / Antigravity): build its
 #                           prompts as usual and hand execution back to the host, which runs
 #                           them in its own session (subagents) and writes each result to
 #                           generation-specific output-file named in the handoff. Re-run the SAME
@@ -166,9 +166,9 @@
 #   passes the same review-body acceptance gate, so the report cannot tell the two apart.
 #   Exit status: 3 while any delegated task is still pending (distinct from 1 = a task
 #   failed, so "waiting for the host" is never read as "the review failed").
-#   Scope: the host's own lane only — claude-code (default), codex-cli or grok-cli
+#   Scope: the host's own lane only — claude-code (default), codex-cli, grok-cli or antigravity-cli
 #   (--delegate-to-host=<cli>; the host runs each prompt in its own subagent: Claude Code's
-#   Agent tool, Codex's spawn_agent, grok's spawn_subagent). Routing a lane of a different model through the host would silently
+#   Agent tool, Codex's spawn_agent, grok's spawn_subagent, Antigravity's invoke_subagent). Routing a lane of a different model through the host would silently
 #   collapse the cross-model independence this tool exists to provide.
 #
 # Review round limit (review only):
@@ -436,7 +436,7 @@ source "$ADAPTER_COMMON"
 # ── All known CLI names ──
 # ↑ この見出し行は tests/lib/cli-registry-parser.sh が完全一致で registry 境界の開始に
 # 使う。文言を変えると両 suite が「境界が一意ではありません」で落ちる。
-ALL_CLIS="claude-code codex-cli copilot-cli grok-cli"
+ALL_CLIS="claude-code codex-cli copilot-cli grok-cli antigravity-cli"
 
 # ── Lookup Functions (bash 3.2 compatible — no associative arrays) ──
 #
@@ -448,20 +448,22 @@ ALL_CLIS="claude-code codex-cli copilot-cli grok-cli"
 
 get_cli_command() {
   case "$1" in
-    claude-code) echo "claude" ;;
-    codex-cli)   echo "codex" ;;
-    copilot-cli) echo "copilot" ;;
-    grok-cli)    echo "grok" ;;
+    claude-code)     echo "claude" ;;
+    codex-cli)       echo "codex" ;;
+    copilot-cli)     echo "copilot" ;;
+    grok-cli)        echo "grok" ;;
+    antigravity-cli) echo "agy" ;;
     *) echo "" ;;
   esac
 }
 
 get_cli_adapter() {
   case "$1" in
-    claude-code) echo "${SCRIPT_DIR}/adapters/claude-code-adapter.sh" ;;
-    codex-cli)   echo "${SCRIPT_DIR}/adapters/codex-cli-adapter.sh" ;;
-    copilot-cli) echo "${SCRIPT_DIR}/adapters/copilot-cli-adapter.sh" ;;
-    grok-cli)    echo "${SCRIPT_DIR}/adapters/grok-cli-adapter.sh" ;;
+    claude-code)     echo "${SCRIPT_DIR}/adapters/claude-code-adapter.sh" ;;
+    codex-cli)       echo "${SCRIPT_DIR}/adapters/codex-cli-adapter.sh" ;;
+    copilot-cli)     echo "${SCRIPT_DIR}/adapters/copilot-cli-adapter.sh" ;;
+    grok-cli)        echo "${SCRIPT_DIR}/adapters/grok-cli-adapter.sh" ;;
+    antigravity-cli) echo "${SCRIPT_DIR}/adapters/antigravity-cli-adapter.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -516,50 +518,55 @@ get_cli_adapter() {
 
 get_cli_perspectives_review() {
   case "$1" in
-    claude-code) echo "type-design-analysis code-simplification comment-analysis" ;;
-    codex-cli)   echo "code-review test-analysis acceptance-criteria" ;;
-    copilot-cli) echo "test-analysis comment-analysis" ;;  # metered — every task requires explicit --cli copilot-cli (see build_distributed_plan)
-    grok-cli)    echo "error-handler-hunt security-analysis" ;;
+    claude-code)     echo "type-design-analysis code-simplification comment-analysis" ;;
+    codex-cli)       echo "code-review test-analysis acceptance-criteria" ;;
+    copilot-cli)     echo "test-analysis comment-analysis" ;;  # metered — every task requires explicit --cli copilot-cli (see build_distributed_plan)
+    grok-cli)        echo "error-handler-hunt security-analysis" ;;
+    antigravity-cli) echo "code-review security-analysis" ;;  # metered — every task requires explicit --cli antigravity-cli (see build_distributed_plan)
     *) echo "" ;;
   esac
 }
 
 get_cli_perspectives_explore() {
   case "$1" in
-    claude-code) echo "architecture-analysis" ;;
-    codex-cli)   echo "dependency-mapping" ;;
-    copilot-cli) echo "api-surface-analysis" ;;  # metered — every task requires explicit --cli copilot-cli
-    grok-cli)    echo "tech-debt-assessment pattern-discovery" ;;
+    claude-code)     echo "architecture-analysis" ;;
+    codex-cli)       echo "dependency-mapping" ;;
+    copilot-cli)     echo "api-surface-analysis" ;;  # metered — every task requires explicit --cli copilot-cli
+    grok-cli)        echo "tech-debt-assessment pattern-discovery" ;;
+    antigravity-cli) echo "architecture-analysis" ;;  # metered — every task requires explicit --cli antigravity-cli
     *) echo "" ;;
   esac
 }
 
 get_cli_perspectives_implement() {
   case "$1" in
-    claude-code) echo "feature-implementation" ;;
-    codex-cli)   echo "refactoring documentation" ;;
-    copilot-cli) echo "test-writing" ;;  # metered — every task requires explicit --cli copilot-cli
-    grok-cli)    echo "migration" ;;
+    claude-code)     echo "feature-implementation" ;;
+    codex-cli)       echo "refactoring documentation" ;;
+    copilot-cli)     echo "test-writing" ;;  # metered — every task requires explicit --cli copilot-cli
+    grok-cli)        echo "migration" ;;
+    antigravity-cli) echo "test-writing" ;;  # metered — every task requires explicit --cli antigravity-cli
     *) echo "" ;;
   esac
 }
 
 get_cli_fallback() {
   case "$1" in
-    claude-code) echo "codex-cli" ;;
-    codex-cli)   echo "claude-code" ;;
-    copilot-cli) echo "codex-cli" ;;
-    grok-cli)    echo "codex-cli" ;;
+    claude-code)     echo "codex-cli" ;;
+    codex-cli)       echo "claude-code" ;;
+    copilot-cli)     echo "codex-cli" ;;
+    grok-cli)        echo "codex-cli" ;;
+    antigravity-cli) echo "codex-cli" ;;
     *) echo "" ;;
   esac
 }
 
 get_cli_cost_tier() {
   case "$1" in
-    claude-code) echo "premium" ;;
-    codex-cli)   echo "standard" ;;
-    copilot-cli) echo "metered" ;;
-    grok-cli)    echo "flat-rate" ;;
+    claude-code)     echo "premium" ;;
+    codex-cli)       echo "standard" ;;
+    copilot-cli)     echo "metered" ;;
+    grok-cli)        echo "flat-rate" ;;
+    antigravity-cli) echo "metered" ;;
     # 既定の "unknown" は metered ではないので、resolve_available_fallback の
     # 「最後の砦」に選ばれうる。tier の書き漏れは課金される側へ倒れるということ。
     # 書き漏れ自体は tests/cli-registry-completeness が既知の tier 語で弾く。
@@ -569,10 +576,11 @@ get_cli_cost_tier() {
 
 get_cli_model_env_vars() {
   case "$1" in
-    claude-code) echo "MULTI_AGENT_MODEL_CLAUDE_CODE MULTI_AGENT_CLAUDE_EFFORT" ;;
-    codex-cli)   echo "MULTI_AGENT_MODEL_CODEX_CLI MULTI_AGENT_CODEX_PROFILE MULTI_AGENT_CODEX_REASONING_EFFORT" ;;
-    copilot-cli) echo "MULTI_AGENT_MODEL_COPILOT_CLI" ;;
-    grok-cli)    echo "MULTI_AGENT_MODEL_GROK_CLI MULTI_AGENT_GROK_READONLY_PROFILE" ;;
+    claude-code)     echo "MULTI_AGENT_MODEL_CLAUDE_CODE MULTI_AGENT_CLAUDE_EFFORT" ;;
+    codex-cli)       echo "MULTI_AGENT_MODEL_CODEX_CLI MULTI_AGENT_CODEX_PROFILE MULTI_AGENT_CODEX_REASONING_EFFORT" ;;
+    copilot-cli)     echo "MULTI_AGENT_MODEL_COPILOT_CLI" ;;
+    grok-cli)        echo "MULTI_AGENT_MODEL_GROK_CLI MULTI_AGENT_GROK_READONLY_PROFILE" ;;
+    antigravity-cli) echo "MULTI_AGENT_MODEL_ANTIGRAVITY_CLI" ;;
     *) echo "" ;;
   esac
 }

@@ -45,7 +45,7 @@ import * as fs from "node:fs";
 import { KnowledgeReadBoundary, knowledgeReaderForSelection } from "./knowledge-read-boundary";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { scanChangelog, selectChangelog } from "./changelog-layout";
+import { scanChangelog, selectChangelog, type ScanOptions } from "./changelog-layout";
 import {
   analyzePlaybookMarkdown,
   declaresZeroEntries,
@@ -356,12 +356,13 @@ export function bumpMinor(version: string): string | null {
  */
 export function extractLatestChangelogVersion(
   content: string,
+  options: ScanOptions = {},
 ):
   | { readonly kind: "absent" }
   | { readonly kind: "empty" }
   | { readonly kind: "found"; readonly version: string; readonly count: number } {
   let scan;
-  try { scan = scanChangelog(content); }
+  try { scan = scanChangelog(content, options); }
   catch { return { kind: "absent" }; }
   if (scan.kind !== "found") return { kind: scan.kind };
   return { kind: "found", version: scan.headings[0].version, count: scan.headings.length };
@@ -581,7 +582,8 @@ export function computeSync(
     // 分割ファイル自身の frontmatter も走査から除く（YAML コメントの例示を節と誤認しない）
     const splitPart = splitFrontmatter(splitChangelogContent);
     const splitBody = splitPart ? splitPart.rest.slice(FRONT_BOUNDARY.length) : splitChangelogContent;
-    const splitExtract = extractLatestChangelogVersion(splitBody);
+    // 分割ファイルは `## Changelog` を持たず版見出しから始まる形も読む（selectChangelog と同じ解釈。Issue `#2587`）
+    const splitExtract = extractLatestChangelogVersion(splitBody, { headingless: true });
     if (splitExtract.kind !== "absent") {
       changelogExtract = splitExtract;
       changelogSource = "split";

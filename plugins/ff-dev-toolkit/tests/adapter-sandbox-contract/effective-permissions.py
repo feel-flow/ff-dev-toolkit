@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -43,7 +44,7 @@ def stub(cli):
     print("- Suggestion: fixture output\n  - verdict: severity=suggestion failure_scenario=no confidence=50")
 
 
-if Path(sys.argv[0]).name in ("grok", "codex", "copilot"):
+if Path(sys.argv[0]).name in ("grok", "codex", "copilot", "agy"):
     stub(Path(sys.argv[0]).name)
     sys.exit(0)
 
@@ -68,7 +69,7 @@ with tempfile.TemporaryDirectory(prefix=".ff-sandbox-probe.", dir=repo) as norma
     subprocess.run(["git", "init", "-q", str(temp)], check=True)
     bin_dir = temp / "bin"
     bin_dir.mkdir()
-    for cli in ("grok", "codex", "copilot"):
+    for cli in ("grok", "codex", "copilot", "agy"):
         (bin_dir / cli).symlink_to(Path(__file__).resolve())
     perspective = temp / "review.md"
     perspective.write_text("# Fixture\nReview this fixture only.\n")
@@ -88,8 +89,8 @@ with tempfile.TemporaryDirectory(prefix=".ff-sandbox-probe.", dir=repo) as norma
         home = temp / "home"
         home.mkdir(exist_ok=True)
         env = {"PATH": str(bin_dir) + os.pathsep + os.environ["PATH"], "HOME": str(home),
-               "TMPDIR": str(temp), "GROK_HOME": str(home / "grok"), "STUB_LOG": str(log),
-               "STUB_ARGV": str(argv_file), "NO_COLOR": "1"}
+               "USERPROFILE": "", "TMPDIR": str(temp), "GROK_HOME": str(home / "grok"),
+               "STUB_LOG": str(log), "STUB_ARGV": str(argv_file), "NO_COLOR": "1"}
         env.update(overrides)
         args = ["bash", str(adapters / (cli + "-cli-adapter.sh")), str(perspective), str(temp / "out.md"),
                 "--base", "HEAD", "--task-type", task, "--description", "fixture", "--timeout", "15"]
@@ -185,5 +186,148 @@ with tempfile.TemporaryDirectory(prefix=".ff-sandbox-probe.", dir=repo) as norma
     result, calls = invoke("copilot", task="implement")
     check(result.returncode == 0 and len(calls) == 1 and "--deny-tool" not in calls[0][1], "Copilot staged implement unchanged")
 
-check(passed == 52, "case census is nonempty and complete")
+    home = temp / "home"
+    def reset_agy():
+        for d in (home / ".gemini", work / ".agents", work / ".agent", work / "_agents", work / "_agent", work / ".gemini"):
+            if d.is_symlink():
+                d.unlink()
+            elif d.exists():
+                shutil.rmtree(d)
+
+    def invoke_agy(files=None, symlinks=None, task="explore", inline=False):
+        reset_agy()
+        try:
+            for p, content in (files or {}).items():
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(content, encoding="utf-8")
+            for link_path, target in (symlinks or {}).items():
+                link_path.parent.mkdir(parents=True, exist_ok=True)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("{}", encoding="utf-8")
+                link_path.symlink_to(target)
+            return invoke("antigravity", task=task, inline=inline)
+        finally:
+            reset_agy()
+
+    agy_cli_cfg = home / ".gemini" / "antigravity-cli" / "settings.json"
+    agy_shared_cfg = home / ".gemini" / "config" / "config.json"
+    agy_ws_cfg = work / ".agents" / "settings.json"
+
+    for task, inline in (("review", False), ("explore", False), ("implement", True)):
+        result, calls = invoke_agy(task=task, inline=inline)
+        args = calls[0][1] if len(calls) == 1 else []
+        check(result.returncode == 0 and len(calls) == 1 and "--sandbox" in args
+              and "--mode" in args and args[args.index("--mode") + 1] == "" and "--add-dir" not in args,
+              "Antigravity clean read-only " + task + str(inline))
+
+    for tp in ("request-review", "strict"):
+        result, calls = invoke_agy({agy_cli_cfg: json.dumps({"toolPermission": tp})})
+        check(result.returncode == 0 and len(calls) == 1, "Antigravity safe toolPermission " + tp)
+
+    for tp in ("always-proceed", "proceed-in-sandbox", "unknown-mode"):
+        result, calls = invoke_agy({agy_cli_cfg: json.dumps({"toolPermission": tp})})
+        check(result.returncode != 0 and not calls, "Antigravity unsafe toolPermission refuses prelaunch " + tp)
+
+    for rule in ("write_file(*)", "command(ls)", "unsandboxed(*)", "mcp(*)", "execute_url(*)", "download_url(*)", "future_tool(*)"):
+        result, calls = invoke_agy({agy_cli_cfg: json.dumps({"permissions": {"allow": [rule]}})})
+        check(result.returncode != 0 and not calls, "Antigravity unsafe allow refuses prelaunch " + rule)
+
+    result, calls = invoke_agy({agy_cli_cfg: json.dumps({"permissions": {"allow": ["read_file(*)", "read_url(*)"]}})})
+    check(result.returncode == 0 and len(calls) == 1, "Antigravity readonly allow rules pass")
+
+    result, calls = invoke_agy({agy_cli_cfg: json.dumps({"permissions": {"allow": ["write_file(*)"], "deny": ["write_file(*)"]}})})
+    check(result.returncode == 0 and len(calls) == 1, "Antigravity deny wildcard shadows allow")
+
+    result, calls = invoke_agy({agy_cli_cfg: json.dumps({"permissions": {"allow": ["command(ls)"], "ask": ["command(*)"]}})})
+    check(result.returncode == 0 and len(calls) == 1, "Antigravity ask wildcard shadows allow")
+
+    result, calls = invoke_agy({agy_cli_cfg: json.dumps({"permissions": {"allow": ["command(*)"], "deny": ["command(rm *)"]}})})
+    check(result.returncode != 0 and not calls, "Antigravity partial deny does not shadow command allow")
+
+    result, calls = invoke_agy({agy_shared_cfg: json.dumps({"permissions": {"allow": ["command(*)"]}})})
+    check(result.returncode != 0 and not calls, "Antigravity shared config command allow refuses prelaunch")
+
+    result, calls = invoke_agy({agy_shared_cfg: json.dumps({"permissions": {"allow": ["command(*)"]}}),
+                                agy_cli_cfg: json.dumps({"permissions": {"deny": ["command(*)"]}})})
+    check(result.returncode == 0 and len(calls) == 1, "Antigravity shared config command allow shadowed by deny passes")
+
+    result, calls = invoke_agy({agy_ws_cfg: json.dumps({"permissions": {"allow": ["write_file(*)"]}})})
+    check(result.returncode != 0 and not calls, "Antigravity workspace .agents write_file allow refuses prelaunch")
+
+    result, calls = invoke_agy({agy_cli_cfg: "{invalid"})
+    check(result.returncode != 0 and not calls, "Antigravity malformed JSON refuses prelaunch")
+
+    result, calls = invoke_agy({agy_cli_cfg: '{"toolPermission": "strict", "toolPermission": "strict"}'})
+    check(result.returncode != 0 and not calls, "Antigravity duplicate key refuses prelaunch")
+
+    result, calls = invoke_agy({agy_cli_cfg: '{"permissions":{"allow":["write\\u005ffile(*)"]}}'})
+    check(result.returncode != 0 and not calls, "Antigravity unicode escape in allow refuses prelaunch")
+
+    result, calls = invoke_agy(symlinks={agy_cli_cfg: temp / "symlink-target.json"})
+    check(result.returncode != 0 and not calls, "Antigravity symlink settings.json refuses prelaunch")
+
+    result, calls = invoke_agy({agy_cli_cfg: json.dumps({"toolPermission": "always-proceed"})}, task="implement", inline=False)
+    args = calls[0][1] if len(calls) == 1 else []
+    check(result.returncode == 0 and len(calls) == 1 and "--mode" in args and args[args.index("--mode") + 1] == "accept-edits"
+          and "--add-dir" in args and "--sandbox" in args,
+          "Antigravity staged implement ignores readonly boundary and passes accept-edits")
+
+    # Project scope overlap, `.`/`..`/symlink resolution, Windows drive normalization, and parser crash guard
+    proj_dir = home / ".gemini" / "config" / "projects"
+    proj_match = proj_dir / "match.json"
+    proj_nested = proj_dir / "group" / "nested.json"
+
+    result, calls = invoke_agy({proj_match: json.dumps({"folders": [str(work)], "permissions": {"allow": ["write_file(*)"]}})})
+    check(result.returncode != 0 and not calls, "Antigravity project matching folders write_file allow refuses prelaunch")
+
+    result, calls = invoke_agy({proj_match: json.dumps({"folders": ["/some/other/repo"], "toolPermission": "always-proceed"})})
+    check(result.returncode == 0 and len(calls) == 1, "Antigravity unrelated project folders always-proceed ignored")
+
+    result, calls = invoke_agy({proj_match: json.dumps({"folders": ["/some/other/repo", str(work.parent)], "toolPermission": "always-proceed"})})
+    check(result.returncode != 0 and not calls, "Antigravity multi-folder overlap refuses prelaunch")
+
+    result, calls = invoke_agy({proj_match: json.dumps({"folders": [str(work.parent) + "/unrelated/../" + work.name], "toolPermission": "always-proceed"})})
+    check(result.returncode != 0 and not calls, "Antigravity dotdot traversal folder refuses prelaunch")
+
+    ws_alias = temp / "ws-alias"
+    ws_alias.unlink(missing_ok=True)
+    ws_alias.symlink_to(work)
+    try:
+        result, calls = invoke_agy({proj_match: json.dumps({"folders": [str(ws_alias)], "toolPermission": "always-proceed"})})
+        check(result.returncode != 0 and not calls, "Antigravity symlink folder alias refuses prelaunch")
+    finally:
+        ws_alias.unlink(missing_ok=True)
+
+    result, calls = invoke_agy({proj_match: json.dumps({"toolPermission": "always-proceed"})})
+    check(result.returncode != 0 and not calls, "Antigravity project missing folders with always-proceed refuses prelaunch")
+
+    result, calls = invoke_agy({proj_match: json.dumps({"folders": "oops", "permissions": {}})})
+    check(result.returncode != 0 and not calls, "Antigravity project invalid folders with permissions refuses prelaunch")
+
+    result, calls = invoke_agy({proj_nested: json.dumps({"folders": [str(work)], "permissions": {"allow": ["command(*)"]}})})
+    check(result.returncode != 0 and not calls, "Antigravity nested project subdir command allow refuses prelaunch")
+
+    deep_json = '{"toolPermission":"always-proceed","deep":' + ("[" * 50000) + "0" + ("]" * 50000) + "}"
+    result, calls = invoke_agy({agy_cli_cfg: deep_json})
+    check(result.returncode != 0 and not calls, "Antigravity deeply nested valid JSON refuses fail-closed")
+
+    lib_path = Path(__file__).resolve().parents[2] / "scripts" / "lib" / "antigravity-cli-readonly-boundary.sh"
+    probe_cmd = (
+        f'. "{lib_path}" && '
+        '_ff_agy_folder_overlaps "C:\\\\winhome\\\\fixture\\\\repo" "/c/winhome/fixture/repo" "/c/winhome/fixture/repo" "" && '
+        '! _ff_agy_folder_overlaps "C:\\\\winhome\\\\fixture\\\\other" "/c/winhome/fixture/repo" "/c/winhome/fixture/repo" "" && '
+        f'HOME="{home}" && mkdir -p "$HOME/.gemini/antigravity-cli" && echo "{{}}" > "$HOME/.gemini/antigravity-cli/settings.json" && '
+        '_ff_agy_parse_json_file() { return 0; } && '
+        'out1=$(ff_antigravity_readonly_preflight "' + str(work) + '"); rc1=$?; '
+        '[ "$rc1" -ne 0 ] && [[ "$out1" == json_parse_incomplete:* ]] && '
+        '_ff_agy_parse_json_file() { echo "PARSED_OK"; return 2; } && '
+        'out2=$(ff_antigravity_readonly_preflight "' + str(work) + '"); rc2=$?; '
+        '[ "$rc2" -ne 0 ] && [[ "$out2" == json_parse_failed:* ]] && '
+        '_ff_agy_parse_json_file() { echo "PARSED_OK"; return 0; } && '
+        'out3=$(ff_antigravity_readonly_preflight "' + str(work) + '") && [ "$out3" = "confirmed" ]'
+    )
+    probe_res = subprocess.run(["bash", "-c", probe_cmd], capture_output=True, text=True, timeout=15)
+    check(probe_res.returncode == 0, "Antigravity Windows path overlap & independent parser failure modes refuse fail-closed")
+
+check(passed == 89, "case census is nonempty and complete")
 print("effective-permissions: PASS", passed)

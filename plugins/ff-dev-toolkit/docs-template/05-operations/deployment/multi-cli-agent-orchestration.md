@@ -622,6 +622,7 @@ kill -9 <PID> 2>/dev/null   # 残っていれば KILL
    ディレクトリへ分ける（2・4 と同じ理由）。ただし implement タスクの出力先は、
    `multi-agent.sh` がリポジトリルートの外を拒否するので、scratchpad ではなくリポジトリ
    ルート配下の固有のディレクトリにする（[Implement の書き込み境界](#implement-の書き込み境界)）。
+6. **レビューの `--output-dir` に scratchpad や共有の一時領域（`/tmp`、`%TEMP%`、`mktemp -d` の親）を使わない**。scratchpad は作業ファイルの置き場である。sticky でない共有書込の祖先は起動前に拒否される。sticky な一時ルート（`/tmp` など）の直下は祖先検査を通るが、OS の掃除対象であり作業ファイルと混ざるので、レビュー出力には使わない。既存 root の復旧手順が示す `$(mktemp -d)/output` は、その sticky なルートの下なら祖先検査は通る別の案内である。通る置き場は、拒否文がその場で祖先・私有権限・非空なら所有 marker まで検査して確かめたパスだけである（既定の `.review-results/`、またはこのリポジトリの marker と一致する本人専用の `~/.config/ff-dev-toolkit/tmp/review-output`）。どれも通らなければ、拒否文は通らないパスを名指ししない。
 
 ## 隔離 worktree の委譲先でのコマンド実行
 

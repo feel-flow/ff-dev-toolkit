@@ -1200,6 +1200,15 @@ LEGACY_ROOT_BEFORE=$((PASS + FAIL))
 run_legacy_root_cases
 [[ $((PASS + FAIL - LEGACY_ROOT_BEFORE)) -ge 15 ]] || { bad 'legacy root assertion collection empty'; exit 1; }
 
+PASSING_PLACE_CASES="$SCRIPT_DIR/passing-place-cases.sh"
+[[ ! -L "$PASSING_PLACE_CASES" && -s "$PASSING_PLACE_CASES" && -r "$PASSING_PLACE_CASES" ]] || { bad 'passing-place cases missing/unreadable/empty'; exit 1; }
+# shellcheck source=passing-place-cases.sh
+. "$PASSING_PLACE_CASES"
+[[ "$(type -t run_passing_place_cases)" == function ]] || { bad 'passing-place function missing'; exit 1; }
+PASSING_PLACE_BEFORE=$((PASS + FAIL))
+run_passing_place_cases
+[[ $((PASS + FAIL - PASSING_PLACE_BEFORE)) -ge 3 ]] || { bad 'passing-place assertion collection empty'; exit 1; }
+
 echo "== 結果 =="
 echo "PASS: $PASS"
 echo "FAIL: $FAIL"

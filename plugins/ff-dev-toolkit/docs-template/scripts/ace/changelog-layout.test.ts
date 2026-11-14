@@ -52,6 +52,51 @@ describe("fixed Changelog selection", () => {
     const f = fixture("## Changelog\nunknown history"); f.write("CHANGELOG.md", canonical);
     expect(selectChangelog(f.book).path).toBe(f.book);
   });
+  // Issue `#2587`: 導入先の実配置（説明文つきの誘導スタブ + `## Changelog` を持たない分割 CHANGELOG）。
+  const proseStub = ["# PLAYBOOK", "", "## Changelog", "",
+    "> **Changelog 本体は [playbook/CHANGELOG.md](playbook/CHANGELOG.md) へ移動した**。",
+    "> このセクションは誘導スタブであり、**バージョン記録を持たない — ここに版を追記しない**。", "",
+    "- 現行: [playbook/CHANGELOG.md](./playbook/CHANGELOG.md#top \"履歴\")",
+    "- 過去分: [playbook/CHANGELOG-archive-1.65.0-1.115.0.md](playbook/CHANGELOG-archive-1.65.0-1.115.0.md)（凍結）"].join("\n");
+  const headingless = ["# ACE Playbook Changelog", "", "### [1.158.0] - 2026-11-02", "", "#### 追加", "", "- ACE-9-1: summary",
+    "", "### [1.157.0] - 2026-11-01", "", "#### カウンター更新", "", "- ACE-1-1: Helpful +1（理由）"].join("\n");
+  it("hands a prose stub over to the fixed candidate it links to, and reads a heading-less candidate", () => {
+    const f = fixture(proseStub); const target = f.write("playbook/CHANGELOG.md", headingless);
+    const selected = selectChangelog(f.book);
+    expect(selected.path).toBe(target);
+    expect(selected.scan.headings.map((h) => h.version)).toEqual(["1.158.0", "1.157.0"]);
+    const parsed = parseHistory(f.book);
+    expect(parsed.versions.map((v) => [v.version, v.added.length, v.helpful.length])).toEqual([["1.158.0", 1, 0], ["1.157.0", 0, 1]]);
+  });
+  it.each([
+    ["a link to a file that is not a fixed candidate", "## Changelog\n履歴は [別の場所](docs/history.md) へ移した。"],
+    ["a candidate link next to a history-like row", `${proseStub}\n- ACE-1-1: 本体に残った行`],
+    ["a candidate link next to a broken Helpful row", `${proseStub}\n- Helpful +1: ACE-1-1 / ACE-1-2（理由）`],
+  ])("keeps the main Changelog when the stub has %s", (_label, main) => {
+    const f = fixture(main); f.write("playbook/CHANGELOG.md", headingless);
+    expect(selectChangelog(f.book).path).toBe(f.book);
+  });
+  it.each([
+    ["a ./ prefix, a fragment and a title", ["## Changelog", "> 履歴は [分割先](./playbook/CHANGELOG.md#top '履歴') へ移した。"]],
+    ["a link-only line next to prose", ["## Changelog", "履歴は分割した。", "[playbook/CHANGELOG.md](playbook/CHANGELOG.md)"]],
+    ["history-like text quoted as inline code", ["## Changelog", "> 履歴（`Helpful +1` と `- ACE-1-1: 例`）は [分割先](playbook/CHANGELOG.md) へ移した。"]],
+  ] as [string, string[]][])("hands the stub over when its only candidate link has %s", (_label, main) => {
+    const f = fixture(main.join(String.fromCharCode(10))); const target = f.write("playbook/CHANGELOG.md", headingless);
+    expect(selectChangelog(f.book).path).toBe(target);
+  });
+  it("keeps the main Changelog when the candidate link is only quoted as inline code", () => {
+    const f = fixture(["## Changelog", "- 現行: `[history](playbook/CHANGELOG.md)` と書いていた。"].join(String.fromCharCode(10))); f.write("playbook/CHANGELOG.md", headingless);
+    expect(selectChangelog(f.book).path).toBe(f.book);
+  });
+  it("does not read a heading-less candidate behind another level-2 heading, nor a heading-less main", () => {
+    const blocked = fixture(); blocked.write("CHANGELOG.md", headingless.replace("# ACE Playbook Changelog", "## Notes"));
+    expect(() => selectChangelog(blocked.book)).toThrow("版を読めません");
+    const dateless = fixture(); dateless.write("CHANGELOG.md", "# History\n### [1.0.0]\n#### 追加\n- ACE-1-1: summary");
+    expect(() => selectChangelog(dateless.book)).toThrow("版を読めません");
+    expect(selectChangelog(fixture(headingless).book).scan.kind).toBe("absent");
+    expect(scanChangelog(headingless).kind).toBe("absent");
+    expect(scanChangelog(headingless, { headingless: true }).kind).toBe("found");
+  });
   it("rejects a parent-directory symlink that leads outside the book area", () => {
     const f = fixture(); const outside = fixture(); outside.write("CHANGELOG.md", canonical);
     fs.symlinkSync(outside.root, path.join(f.root, "playbook")); expect(() => selectChangelog(f.book)).toThrow("outside-authority");

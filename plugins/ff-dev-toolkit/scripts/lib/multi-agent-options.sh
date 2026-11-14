@@ -596,7 +596,7 @@ parse_args() {
         DELEGATE_TO_HOST=true
         DELEGATION_LANE="${1#--delegate-to-host=}"
         if ! delegation_lane_allowed "$DELEGATION_LANE"; then
-          echo "ERROR: --delegate-to-host=${DELEGATION_LANE}: only the host's own lane can be delegated (claude-code, codex-cli or grok-cli)." >&2
+          echo "ERROR: --delegate-to-host=${DELEGATION_LANE}: only the host's own lane can be delegated (claude-code, codex-cli, grok-cli or antigravity-cli)." >&2
           exit 1
         fi
         shift ;;

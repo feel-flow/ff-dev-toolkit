@@ -61,6 +61,7 @@
 - `multi-explore`
 - `multi-implement`
 - `multi-review`
+- `observation-refine`
 - `out-of-scope-issue`
 - `pre-commit-check`
 - `refine-issue`
@@ -486,6 +487,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_PUBLIC_LAYOUT_ALLOWED_SKIP_SUITES`（`tests/public-layout/verify.sh` が公開配置の合成実行で公開 workflow `weekly-public-run-all.yml` の step へ渡す、skip 許容名簿へ足す suite 名。公開側の CI は設定しない）
 - `FF_REVIEW_LOCK_MAX_AGE_SECONDS`
 - `FF_REVIEW_OUTPUT`
+- `FF_REVIEW_OUTPUT_SUGGESTING`（出力境界の案内が、案内先の再検査から同じ案内を重ねて出さないための内部フラグ。利用者が設定する値ではない）
 - `FF_ROOT_SIDECAR_NAME`
 - `FF_ROOT_SIDECAR_PATH`
 - `FF_RUN_ALL_ALLOW_SKIP`
@@ -593,6 +595,7 @@ ACK（1 回だけ通す承認）の名前は、鍵から `FF_<鍵を大文字・
 - `MULTI_AGENT_MODEL_CODEX_CLI`
 - `MULTI_AGENT_MODEL_COPILOT_CLI`
 - `MULTI_AGENT_MODEL_GROK_CLI`
+- `MULTI_AGENT_MODEL_ANTIGRAVITY_CLI`
 - `MULTI_AGENT_REVIEW_CONFIDENCE_THRESHOLD`
 - `MULTI_AGENT_REVIEW_MAIN`
 - `MULTI_AGENT_REVIEW_SUB`

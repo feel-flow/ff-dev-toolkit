@@ -1402,6 +1402,10 @@ rm "$REPO/.review-results/codex-cli"
 mv "$TMP/codex-cli-before-new-series-setup-failure" "$REPO/.review-results/codex-cli"
 git switch -q feature/x
 
+# shellcheck source=merged-shelve-cases.sh
+. "$SCRIPT_DIR/merged-shelve-cases.sh"
+run_merged_shelve_cases
+
 # Guard call を外した変異は、同じ入力で部分再検証を通し、マーカーを
 # 最新レポートから消すことを実測する。
 MUTANT_PLUGIN="$TMP/mutant-plugin"

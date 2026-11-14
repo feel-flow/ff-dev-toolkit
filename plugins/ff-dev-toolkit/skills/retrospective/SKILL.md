@@ -127,7 +127,7 @@ printenv RETROSPECTIVE_MODE
 
 0. **台帳の実在確認と作成**: `docs/08-knowledge/OBSERVATIONS.md` が無ければ `${FF_DEV_TOOLKIT_ROOT}/docs-template/08-knowledge/OBSERVATIONS.md` をコピーして作成する（作成した事実を報告する）。書き込めないリポジトリでは作成せず、観測を報告に残す
 1. 台帳を grep し、同じ主張を探す。`FF_JEV_MODE=on` なら [triage](references/ledger.md#triage) で先に選別する。`off` は呼び出さず従来経路・出力とバイト同一。
-2. **既存エントリあり** → `Count` を +1、`Last` を今日へ、観測メモを 1 行追記（**1 行 = 1 回**・**同一セッション・同一エントリは 1 回**・**既存エントリは遡及しない**）。`archived` の再発は `active` へ戻す。`mitigated` は [references/promotion.md](references/promotion.md) の再発分岐と復帰条件で扱う
+2. **既存エントリあり** → `Count` を +1、`Last` を今日へ、観測メモを 1 行追記（**1 行 = 1 回**・**同一セッション・同一エントリは 1 回**・**既存エントリは遡及しない**）。`archived` の再発は `active` へ戻す（統合元は除く）。`mitigated` は [references/promotion.md](references/promotion.md) の再発分岐と復帰条件で扱う
 3. **既存エントリなし** → 台帳のエントリ形式（台帳ファイル冒頭に定義）で末尾へ追記する（script で当てるなら [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う）
 4. Keep は定着させる価値のある成功パターンだけを `Kind: keep` で記録し、アクションに繋がらない Keep は記録しない。Problem は「X すると Y の手戻りが起きる → Z せよ」の形。機微情報は引用しない
 

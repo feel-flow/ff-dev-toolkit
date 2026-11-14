@@ -18,6 +18,8 @@
 #   agent_id を外す形へ、集約入口が届かなかった回の記録を消さない・deny でも届いたと数える形へ変えた 10 変異が、どれも R20 で赤になる。
 #   無変異の対照は緑（2026-11-04 WSL・zsh あり実測）。
 # 変異検出: Issue `#2614` より前の cwd ガード（cd を含まない呼び出しへ systemMessage の警告を出す版）を当てると R19 の 3 つ目が赤になる（2026-11-04 実測）。
+# 変異検出: Issue `#2756` の修飾子の置換案を一覧へ入れない hook（mod_fix を空にする）は R21a が、同じ語の 2 回目を
+#   飛ばす判定（mod_listed）を消した hook は出現数の照合で書き換えを諦めて R21c が赤になる（2026-11-11 macOS・zsh あり実測）。
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd -P)"
 target="${ZSH_REWRITE_TARGET_OVERRIDE:-$root/hooks/guard-zsh-glob.sh}"
@@ -461,4 +463,73 @@ jq -nc --arg m "$dup_note" '{hookSpecificOutput:{hookEventName:"PreToolUse",addi
 printf '#!/usr/bin/env bash\ncat >/dev/null\ncat %q\n' "$tmp/passnote.json" > "$tmp/passnote.sh"
 out="$(bat 'grep -rn foo --include=*.sh .' "$target" "$tmp/passnote.sh")"
 check jq -e --arg n "$dup_note" '.hookSpecificOutput.updatedInput != null and ([.hookSpecificOutput.additionalContext | splits("\n") | select(contains($n))] | length) == 1' <<< "$out" >/dev/null
+# ---- R21: 履歴修飾子（Issue `#2756`）: `$name:X` を `${name}:X` へ書き換える -----------------------------------
+PM=""
+has_upd() { jq -e '.hookSpecificOutput.updatedInput != null' <<< "$1" >/dev/null 2>&1; }
+# R21a 陽性（二重引用の中）: refspec の `$db:r` だけを波括弧で閉じ、修飾子の通知を付ける。
+out="$(run 'git fetch origin "+refs/heads/$db:refs/remotes/origin/$db"')"
+check has_upd "$out"
+check test "$(rewritten "$out")" = 'git fetch origin "+refs/heads/${db}:refs/remotes/origin/$db"'
+check jq -e '.hookSpecificOutput.permissionDecision == null and (.hookSpecificOutput.additionalContext | contains("修飾子"))' <<< "$out" >/dev/null
+# R21b 陽性（未引用）: 未引用 scalar の警告と同居しても 1 つの JSON にまとまる（permission_mode なしは前置しない）。
+out="$(run 'cp $src:h/x .')"
+check test "$(rewritten "$out")" = 'cp ${src}:h/x .'
+check jq -se 'length == 1' <<< "$out" >/dev/null
+# R21c 同じ語の複数出現と、コマンド置換・バッククォートの中もすべて書き換える。
+out="$(run 'echo "$a:r" "$a:r" $(basename "$f:t") `echo $g:e`')"
+check test "$(rewritten "$out")" = 'echo "${a}:r" "${a}:r" $(basename "${f}:t") `echo ${g}:e`'
+# R21d glob の引用と同居しても 1 つの updatedInput にまとまり、両方の通知が付く。
+out="$(run 'grep -rn "$q:t" --include=*.md .')"
+check test "$(rewritten "$out")" = 'grep -rn "${q}:t" --include="*.md" .'
+check jq -e '(.hookSpecificOutput.additionalContext | contains("引用")) and (.hookSpecificOutput.additionalContext | contains("修飾子"))' <<< "$out" >/dev/null
+# R21e 陰性（書き換えない）: 利用者が明示した波括弧の形、修飾子でない `:` の後ろ、単一引用・`\$` の中、
+#   同じ綴りが単一引用の中にもある（出現数が合わない）、heredoc を含む、zsh-expansion の ACK / 無効化。
+for c in 'echo "${db}:r" "${db:r}"' 'echo "$host:8080" "$x:-y" "$x:/a"' "echo '\$db:r'" 'echo "\$db:r"' \
+  "echo \"\$db:r\" '\$db:r'" 'cat <<EOF
+$db:r
+EOF
+echo "$db:r"' 'FF_ZSH_EXPANSION_ACK=1 echo "$db:r"'; do
+  out="$(run "$c")"
+  check test -z "$(rewritten "$out")"
+done
+out="$(run 'echo "$db:r"' FF_DEV_TOOLKIT_SKIP=zsh-expansion)"
+check test -z "$out"
+# R21e2 陰性を陽性の語と同居させ、前置フィルタではなく awk の判定（修飾子の文字・波括弧・特殊パラメータの直後）で
+#   書き換えないことを固定する。`"$$a:r"` は PID の後ろにリテラルが続く形で、書き換えると値が変わる（レビュー指摘）。
+out="$(run 'echo "$db:r" "$x:-y" "$x:=y" "$x:/a" "${db:r}" "${db}:r" "$$a:r" "x$$tmp:t" "$host:8080" "$a:&"')"
+check test "$(rewritten "$out")" = 'echo "${db}:r" "$x:-y" "$x:=y" "$x:/a" "${db:r}" "${db}:r" "$$a:r" "x$$tmp:t" "$host:8080" "$a:&"'
+out="$(run 'echo "$$a:r"')"
+check test -z "$(rewritten "$out")"
+# R21e2b 特殊パラメータを 2 文字まとめて読んでも、後ろの文字の引用状態はずれない（フラグは 1 文字ぶん）。
+#   `$$` の直後の未引用 glob は、二重引用の中の `$$`（今回の変更で退行しかけた形）でも未引用の `$$`（以前からの取りこぼし）でも検出する。
+for c in 'grep --include="$$"*.md .' 'grep --include=$$*.md .'; do
+  out="$(run "$c")"
+  check is_deny "$out"
+done
+# R21e3 パラメータ展開だけで効く修飾子（`f` / `w`）も書き換える。
+out="$(run 'echo "$db:work" $p:foo')"
+check test "$(rewritten "$out")" = 'echo "${db}:work" ${p}:foo'
+# R21e4 bypassPermissions では単語分割の前置と波括弧の書き換えが 1 つの updatedInput にまとまる。
+out="$(PM=bypassPermissions run 'cp $src:h/x .')"
+check test "$(rewritten "$out")" = 'setopt SH_WORD_SPLIT; cp ${src}:h/x .'
+# R21e5 修飾子の走査関数が無い（古いヘルパ）回は、修飾子だけの呼び出しを無出力で通し、glob の引用は続ける。
+mkdir -p "$tmp/r21h/tests/lib"; cp -R "$root/hooks" "$tmp/r21h/hooks"; cp "$root/tests/lib/"*.sh "$tmp/r21h/tests/lib/"
+printf '\nunset -f ff_zsh_modifier_fix_scan\n' >> "$tmp/r21h/tests/lib/zsh-glob-nomatch.sh"
+out="$(payload 'echo "$db:r"' | env SHELL=/bin/zsh CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" bash "$tmp/r21h/hooks/guard-zsh-glob.sh")"
+check test -z "$out"
+out="$(payload 'grep "$q:t" --include=*.md .' | env SHELL=/bin/zsh CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" bash "$tmp/r21h/hooks/guard-zsh-glob.sh")"
+check test "$(rewritten "$out")" = 'grep "$q:t" --include="*.md" .'
+# R21f 未対応ホスト（CLAUDECODE なし）は修飾子だけの呼び出しを従来どおり無出力で通す（deny しない）。
+out="$(payload 'echo "$db:r"' | env SHELL=/bin/zsh bash "$target")"
+check test -z "$out"
+# R21g 書き換え後は zsh で bash と同じ値になる（zsh が無い環境は skip を明示する）。
+if command -v zsh >/dev/null 2>&1; then
+  cmd='db=develop; printf "%s|" "+refs/heads/$db:refs/x"'
+  out="$(run "$cmd")"
+  check test "$(zsh -fc "$(rewritten "$out")" 2>&1)" = '+refs/heads/develop:refs/x|'
+  check test "$(bash -c "$cmd" 2>&1)" = '+refs/heads/develop:refs/x|'
+  check test "$(zsh -fc "$cmd" 2>&1)" = '+refs/heads/developefs/x|'
+else
+  echo "SKIP R21g: zsh が無いため修飾子の書き換え後の値を実処理系で確認できません" >&2
+fi
 echo "zsh rewrite: $pass checks passed"

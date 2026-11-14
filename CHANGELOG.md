@@ -20,6 +20,38 @@
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-14
+
+### 追加
+
+- 観測台帳（`docs/08-knowledge/OBSERVATIONS.md`）を定期整理するスキル `observation-refine` を追加しました。昇格閾値に届かないまま溜まったエントリを、既存 Issue への紐付け・同じ主張の統合・再発のないエントリの archive・定着済みの Keep の `mitigated` 化で見直します。dry-run、承認、適用の 3 段で進み、利用者が依頼したときだけ実行します。
+- 整理は観測履歴を消しません。状態の移行は観測メモへの 1 行の追記で残し、同梱の `scripts/observation-refine.sh check` が適用の前後を照合して、既存の行の削除や書き換えがあれば違反として報告します。
+- `scripts/observation-refine.sh report` が整理の候補を出します。再発のないエントリの基準は既定で「最後の観測から 180 日を超え、かつ回数が 1 以下」で、`--stale-days` と `--stale-max-count` で変えられます。Issue の一覧を渡さなかった回や、一覧が取得の上限に達した回は「未確認」と表示し、「候補なし」とは表示しません。紐付けと統合の候補は語の重なりで絞った補助の信号で、採否は本文を読んで決めます。
+- `scripts/knowledge-lookup.sh` に、観測台帳の全エントリをタブ区切りで出力する読み取り専用のモード `--ledger-dump` を追加しました。
+- 統合したエントリは `archived` になり、`Issue` 列が台帳内の統合先を指します。同じ主張が再発したときは統合先へ計上します。`/knowledge-lookup` の `archived` の説明と、配布テンプレートの台帳冒頭にある `Status` の値域の行をこの読み方に合わせました。統合できるのは `Kind` が同じエントリ同士だけです。
+- 決定木が持てる葉の数の上限を 55 から 60 へ上げました。
+- Google Antigravity 向けに、プラグイン・スキル symlink および spec-docs MCP をネイティブ構成へ展開・検査するスクリプト（scripts/antigravity/sync-plugins.sh）を追加
+- Google Antigravity CLI（`agy` / `antigravity-cli`）アダプタ、環境変数 `MULTI_AGENT_MODEL_ANTIGRAVITY_CLI`、ホスト検出（`ANTIGRAVITY_AGENT=1`）・専用セキュリティゲート `antigravity-session`・ホスト委譲（`--delegate-to-host=antigravity-cli`）および `AGENTS.md` 24,000 バイト上限の機械検査を追加しました。
+- Google Antigravity 向けに `scripts/antigravity/sync-hooks.sh`（`~/.gemini/config/plugins/ff-dev-toolkit/hooks.json` 展開）と双方向変換シム `scripts/antigravity/hook-shim.sh`、`retrospective-chain-tail.mjs` の Antigravity `transcript.jsonl` 対応を追加しました。
+
+### 変更
+
+- `finish.sh precheck` のマージ後工程の判定が、閉じた工数ブロックの中の `effort_evidence` と `effort_basis` の行を語の一致から外すようにした。ブロックの境界は行全体が ff-effort の begin と end の HTML コメントである組。`effort_deploy` と受け入れ条件の行はこれまでどおり一致する。境界が閉じていない、前後が逆、入れ子の本文は除外せず可視の全行を見る。語に当たったのに外した行は `POST_MERGE_EXCLUDED=` に出す。`FF_POST_MERGE_TERMS` と `FF_POST_MERGE_PATHS` を設定していない導入先の出力は変わらない。
+- 同梱の sync-sha-contract 検査に、リリース受付 Issue の末尾へ置く更新告知のチェック項目を確かめるケースを追加した。新規作成で 1 回だけ付くこと、受付や担当の更新でチェック状態と投稿 URL がそのまま残ること、告知欄の無い旧 Issue には一度だけ足すこと、行末に CR が入っても重複しないこと、公開完了の close だけが告知を未投稿の作業として残し、not-needed の close は告知を求めないこと、公開後に Issue への記録だけが失敗した回も告知を未投稿として 1 回だけ示すこと、停止と dry-run では告知の行を出さないことを検査する。
+
+### 修正
+
+- cross-model で観点を 2 つ以上渡すと、プランを作る前に捨てられる観点を名指しして止まる。distributed で登録表のどの CLI も持たない観点も、その名前を出して止まる。1 つの CLI を明示した複数観点は従来どおりその CLI のプランに残る。
+- 前のブランチの PR が origin と同じ GitHub リポジトリでマージ済み（fork や GH_REPO の別リポジトリは見ない）で、そのリモート ref も無く、手元の commit（削除済みなら、そのブランチから離れたときの reflog）がその PR の head と一致するとき、残っている Critical の系列を自動で退避して新しいレビューを始める。系列 token は commit を含まない。マージ前、リモート ref が残っているとき、commit が一致しないとき、または照会できないときは、従来どおり止まって退避を案内する。
+- レビュー出力先の祖先が他者から書けるときの拒否文は、検査して通ったディレクトリだけを案内する。通るディレクトリが無いときは、通らないパスを出さない。レビューの出力先に scratchpad や共有の一時領域を使わない。
+- macOS の既定の一時領域（パスの末尾がスラッシュ）で、リリース受付の回帰テストが使う jq の差し替えが自分自身を呼び続け、プロセスを使い切って失敗する問題を直しました。同じ時間に走っていたほかの回帰テストが巻き込まれて失敗することもありました。
+- リリース受付 Issue の書き込み後の読み戻しは、本文に含まれる CR だけの差では失敗しない。token の不一致など CR 以外の差はこれまでどおり失敗する。jq の生出力に付く CR は組み立てた本文から除く。呼び出し側がコマンド置換で受け取る本文の末尾改行は、CR が無いときと同じになる。保存されている本文（CR を含む）と描画結果の比較は緩めず、CRLF の本文は一度 LF へ書き直す。同梱の sync-sha-contract 検査に、HEAD が変わったとき本文全体が CRLF でも終端行を見つけて告知欄を残した LF の本文へ更新するケースと、PATH 上の jq が生出力の各行へ CR を付けるケースを追加した。
+- 同梱の sync-sha-contract 検査に、リリース受付 Issue の本文が CRLF のときのケースを追加した。最終行だけ改行の無い CRLF の本文を LF と同じ状態として読み、受付の dry-run は書き直しを予定するだけで本文を変えず、本実行で CR の無い本文へ一度だけ書き直して末尾の告知欄を保つこと、担当の照合が CRLF の本文で止まらないこと、jq が CRLF を出すホストでも Issue の作成・更新で送る本文と、更新・読み戻しの URL と出力に使う Issue 番号に CR が入らないことを検査する。
+- `finish.sh knowledge-commit add` と `sync-playbook-frontmatter.ts` は、`PLAYBOOK.md` の `## Changelog` が説明文や箇条書きを持つ誘導スタブでも、節内のリンクが固定候補（`CHANGELOG.md` / `playbook/CHANGELOG.md`）を指していれば分割側の Changelog を読む。これまでは空行とリンク単独行だけのスタブしか分割側へ譲らず、説明文つきのスタブでは「Changelog の追加 / カウンター更新の行が 1 件も読めません」（rc 2）と「frontmatter version と Changelog 最新版が一致しません（Changelog 版見出しなし）」で毎回止まっていた。固定候補へのリンクが無い文章と、履歴らしい行（`- ACE-…` / `Helpful +1` など）が残る本体は、従来どおり本体の読めない Changelog として止める。
+- 分割側の `CHANGELOG.md` は、`## Changelog` 見出しを持たず `### [x.y.z] - YYYY-MM-DD` から始まる形も読む（最初の版見出しより前にレベル 2 見出しがある場合は読まない）。`PLAYBOOK.md` 本体は従来どおり `## Changelog` 節だけを読む。
+- `knowledge-commit add` は、出典 PR に closing Issue が無いとき、同じ PR の本文の `Ref` / `Refs #N`（出現順の最初の同一リポジトリ参照。`owner/repo#N` は数えない）、次に PR タイトルの最初の `#N` から件名の Issue 番号を補う。`Refs` だけで Issue を参照する PR でも、既定のブランチ名（`chore/ace-from-pr-` に PR 番号を続けた形）のまま commit-msg hook を通る（これまではブランチ名の末尾へ Issue 番号を足して付け替える必要があった）。closing Issue がある PR は従来どおりそれを優先し、どれも取れなければブランチ名の `#N` → rc 4 のまま。`--github-input` の `knowledge.subject-issue` も同じ順で、raw に `title` / `body` があれば使う。
+- zsh ホストの Bash ツール呼び出しで、zsh が履歴修飾子として値を書き換える `$name:r` などの形（二重引用の中を含む）を、入力書き換えに対応した Claude Code 環境では `${name}:r` へ書き換えて通す。文を足さず語の綴りだけを変え、bash では同じ値になるので、権限モードを問わない。これまでは既知の限界として素通しし、`"+refs/heads/$db:refs/..."` の `:r` で refspec が黙って壊れていた。書き換え案が一意に決まらない呼び出しと未対応の環境は従来どおり無出力で通す。
+
 ## [1.2.0] - 2026-11-11
 
 ### 追加

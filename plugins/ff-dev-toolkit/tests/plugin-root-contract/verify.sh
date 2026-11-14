@@ -35,12 +35,13 @@ GUARD_EXEMPT=(
 # （実測: skills を 1 件へ削った tree が緑のまま通った）。名簿が丸ごと縮む変異を赤に
 # するには、入力から独立した絶対値が要る。値は現時点で契約 fence を持つ skill の実数。
 # fence 付き skill を減らす変更（skill の統合・撤去）は、意図的ならこの値も同時に下げる。
-MIN_SKILLS=27
+# observation-refine を足して 28（2026-11-13 実測）。
+MIN_SKILLS=28
 
 # 実行時ガードを持つ skill の絶対下限。MIN_SKILLS と同じ理由で、母集団から導いた量
 # （母集団 - 除外数）を床にしても崩壊を検出できない。値は現時点でガードを持つ skill の
-# 実数（母集団のうち GUARD_EXEMPT に載らないもの）。
-MIN_GUARD_SKILLS=23
+# 実数（母集団のうち GUARD_EXEMPT に載らないもの）。observation-refine を足して 24（2026-11-13 実測）。
+MIN_GUARD_SKILLS=24
 
 SCANNED_COUNT=0
 
@@ -532,6 +533,7 @@ SCRIPT_EXPECT_RC=(
   "multi-agent.sh|2"
   "multi-review.sh|2"
   "mutation-harness.sh|3"
+  "observation-refine.sh|3"
   "review-route.sh|3"
   "setup-multi-agent.sh|2"
   "sweep-orphan-transcripts.sh|2"
@@ -560,8 +562,9 @@ script_expect_rc() {
 # 工数集計器）が構造的に母集団の外にあった。床を「同じ抽出から導いた 12」に置いていたため、
 # 漏れは部分集合を自分自身と比べるだけになって検出できなかった。
 # check-shebang-cr.sh を母集団へ入れたあとの live 実数（2026-10-19 実測 21）。gh-auth-doctor.sh を足して 22（2026-10-22 実測）。
-MIN_ROOT_SCRIPTS=22
-MIN_GUARDED_SCRIPTS=22
+# observation-refine.sh を足した時点の live 実数は 24（2026-11-13 実測。足す前は 23 で、床が 1 本ぶん遅れていた）。
+MIN_ROOT_SCRIPTS=24
+MIN_GUARDED_SCRIPTS=24
 
 script_guard_exempt_reason() {
   local name="$1" entry
@@ -1452,7 +1455,9 @@ fi
 # scripts/finish.sh の単一 handoff へ機械化し、各スキルが個別に持っていた起動行を畳んだ分だけ
 # 母集団の起動総数が減った。finish.sh 起動の直前に check-shebang-cr.sh を 1 行足した分を含む
 # live 実数ぴったり（130 行。2026-10-19 実測）。gh-auth-doctor の起動行 2 行を足して 132 行（2026-10-22 実測）。
-MIN_HANDOFF_LAUNCHES=132
+# observation-refine の起動行 2 行（report / check）を足した時点の live 実数は 138 行（2026-11-13 実測。
+# 足す前は 136 行で、床に 4 行の余裕が出来ていた）。
+MIN_HANDOFF_LAUNCHES=138
 
 handoff_launch_files() { # <tree root> → 対象 .md を列挙
   find "$1/skills" -name SKILL.md -type f 2>/dev/null

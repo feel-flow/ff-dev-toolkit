@@ -750,6 +750,13 @@ else
     # （scripts/grok/hook-shim.sh、Issue `#2116`）。生成物のイベント集合・置換・シム経由起動と、
     # grok 形式の入力で展開後の guard が deny することを一時領域で固定する。
     "$SCRIPT_DIR/grok-hooks-sync/verify.sh"
+    # Google Antigravity 向けプラグイン・MCP 展開（scripts/antigravity/sync-plugins.sh、
+    # Issue `#2784`）。単一/marketplace 展開・skills symlink（SKILL.md 非複製）・
+    # mcp_config.json 名前空間化と実パス展開・--project-root・--check・異常系・MCP stdio を固定する。
+    "$SCRIPT_DIR/antigravity-plugins-sync/verify.sh"
+    # Google Antigravity 向け hooks 展開・双方向シム・振り返り対応（scripts/antigravity/sync-hooks.sh、
+    # hook-shim.sh、retrospective-chain-tail.mjs、Issue `#2786`）。
+    "$SCRIPT_DIR/antigravity-hooks-sync/verify.sh"
     # PreToolUse（Bash）の cwd ガード（hooks/guard-background-cwd.sh）。linked worktree のある
     # repo で先頭が相対パスの cd を deny することと、deny の面を広げない線引き（絶対パス・
     # 置換・展開・オプション付きの cd、heredoc 本文）を stdin JSON fixture で固定する。
@@ -849,6 +856,10 @@ else
     # 見出し書式の変更・配置の曖昧さに対する既定を隔離 fixture で実測する。gh は stub に
     # 解決させ、ネットワークには出ない。
     "$SCRIPT_DIR/knowledge-lookup/verify.sh"
+    # 観測台帳の定期整理（scripts/observation-refine.sh。Issue `#2523`）。候補の算出（stale の境界・
+    # 母集団・類似の信号・Issue 一覧の不足を「未確認」に倒す既定）と、適用が履歴を消していないことの
+    # 照合を合成の台帳 fixture で実測する。通信しない。fixture の置き場を作れない回は skip せず赤。
+    "$SCRIPT_DIR/observation-refine/verify.sh"
     # 読み取り境界の Windows 経路のうち、ACL helper を常駐させる経路（W6 / W7 / W16。Issue `#2711`）。
     # coproc と動的 FD（bash 4 以上）でだけ成立するので、それらの無い shell では suite ごと ○ skip する
     # （`# run-all-required: no`。部分 skip を出さない）。stub は knowledge-lookup の fixture を共有する。
@@ -948,7 +959,7 @@ else
     "$SCRIPT_DIR/assess-impact/verify.sh"
     # 決定木 v0（scripts/decision-tree/tree.tsv + route.sh / hooks/decision-tree.sh /
     # effort-report.sh --unreached-leaves）の到達性と契約。実 tree の静的検査（葉の実在・
-    # 到達性・深さ ≤ 4・葉 ≤ 55・木に載っていないスキル / hook）を route.sh --check で通し、
+    # 到達性・深さ ≤ 4・葉 ≤ 60・木に載っていないスキル / hook）を route.sh --check で通し、
     # 合成 plugin root への変異注入で --check の検出力を毎回測る。根の規則（off / 未設定で
     # バイト同一・jev-decide を呼ばない）と FF_JEV_MODE=on の二段構え（偽 jev-decide の
     # exit 0 / 10 / 11 / 12 / 2）、hook の記録と fail-soft、読み手の (unmeasured) /
@@ -1742,7 +1753,6 @@ MISS_PROBE_BASELINE=(
   reviewer-pair
   roadmap-release-facts-selftest
   roadmap-release-facts
-  root-instructions-parity
   severity-parser-intersection
   shellcheck
   sweep-orphan-transcripts

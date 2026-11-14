@@ -617,7 +617,7 @@ echo "== 4 アダプタへのゲート常在（静的 pin） =="
 # 行順で固定する。検出できるのはゲート行の消失と、最後の rm -f より後ろへの移動で、
 # ゲートの分岐条件・fail_cli_task への引数・review_body_present 呼び出しの有無までは
 # この静的検査では見ない（そちらは claude-code の behavioral ケースが受け持つ）。
-for adapter in claude-code codex-cli copilot-cli grok-cli; do
+for adapter in antigravity-cli claude-code codex-cli copilot-cli grok-cli; do
   f="$ADAPTERS_DIR/${adapter}-adapter.sh"
   gate_line=""
   gate_line="$(grep -n 'record_timeout_reason missing-review-body' "$f" 2>/dev/null | head -1 | cut -d: -f1)" || true
@@ -1652,7 +1652,7 @@ echo "== 4 アダプタの書き込み失敗の受け止め（静的 pin） =="
 
 # behavioral ケース (e) は claude-code しか通らない。他 3 本が `write_output` の rc を
 # 捨てる旧形へ戻る退行は、呼び出しの直後に受け止めがあることを行順で固定して留める。
-for adapter in claude-code codex-cli copilot-cli grok-cli; do
+for adapter in antigravity-cli claude-code codex-cli copilot-cli grok-cli; do
   f="$ADAPTERS_DIR/${adapter}-adapter.sh"
   w_line=""
   w_line="$(grep -n '^write_output "\$OUTPUT_FILE" "\$CLI_NAME" "\$perspective_name" "\$result"' "$f" 2>/dev/null | tail -1 | cut -d: -f1)" || true

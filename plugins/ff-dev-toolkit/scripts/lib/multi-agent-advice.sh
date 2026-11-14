@@ -33,6 +33,18 @@ grok_host_delegable_perspectives() {
   [[ -z "$out" ]] || printf '%s\n' "$out"
 }
 
+antigravity_host_delegable_perspectives() {
+  [[ "$TASK_TYPE" == "review" && "$DELEGATE_TO_HOST" != "true" ]] || return 0
+  [[ "${ANTIGRAVITY_AGENT:-}" == "1" ]] || return 0
+  local entry task out=""
+  for entry in $FAILED_TASKS; do
+    task="${entry%:*}"
+    [[ "${task%%/*}" == "antigravity-cli" ]] || continue
+    case " ${out} " in *" ${task#*/} "*) ;; *) out="${out:+${out} }${task#*/}" ;; esac
+  done
+  [[ -z "$out" ]] || printf '%s\n' "$out"
+}
+
 # ホスト委譲で走らせ直せる claude-code の観点（空白区切り。無ければ空）。条件は 4 つ:
 # review であること、今回の実行が委譲していないこと（委譲中はそもそも CLI を起動しない）、
 # ホストが Claude Code であること（Claude Code は自身が起動するシェルへ CLAUDECODE=1 を
@@ -476,6 +488,27 @@ print_failure_advice() {
       echo "      output-file the handoff names, then re-run the same command with --resume added:" >&2
       echo "       ${host_self} --cli grok-cli${gp_args} --delegate-to-host=grok-cli" >&2
       echo "       ${host_self} --cli grok-cli${gp_args} --delegate-to-host=grok-cli --resume" >&2
+    fi
+  fi
+
+  local agy_persps
+  agy_persps="$(antigravity_host_delegable_perspectives)"
+  if [[ -n "$agy_persps" ]]; then
+    host_self="$(recovery_command "$self" "$recovery_base" 'host-antigravity-cli')"
+    local ap ap_args=""
+    for ap in $agy_persps; do ap_args="${ap_args} --perspective ${ap}"; done
+    echo "" >&2
+    echo "   🤝 antigravity-cli — this host is an Antigravity session. Run the lane in the host instead:" >&2
+    if [[ "$evidence_lineage" == true ]]; then
+      echo "      Prior/continued review evidence cannot be combined with --resume." >&2
+      echo "      Complete the failed perspective on another CLI in the same output directory." >&2
+      echo "      The re-run command is printed below." >&2
+    else
+      echo "      re-run with --delegate-to-host=antigravity-cli (never with --fresh), run each handoff" >&2
+      echo "      prompt in a read-only subagent (invoke_subagent), write its answer to the" >&2
+      echo "      output-file the handoff names, then re-run the same command with --resume added:" >&2
+      echo "       ${host_self} --cli antigravity-cli${ap_args} --delegate-to-host=antigravity-cli" >&2
+      echo "       ${host_self} --cli antigravity-cli${ap_args} --delegate-to-host=antigravity-cli --resume" >&2
     fi
   fi
 

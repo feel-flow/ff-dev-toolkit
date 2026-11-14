@@ -73,7 +73,7 @@ trap 'cd /; rm -rf "$TMP"' EXIT
 # （orchestrator が実際に何を base として名乗るかを一度も検査できない）。
 STUB="$TMP/stub-bin"
 mkdir -p "$STUB"
-for _cli in claude codex copilot grok; do
+for _cli in agy claude codex copilot grok; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 99' > "$STUB/$_cli"
   chmod +x "$STUB/$_cli"
 done

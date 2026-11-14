@@ -9,6 +9,15 @@ from urllib.parse import urlsplit
 
 state = Path(os.environ["RELEASE_RT_STATE"])
 file = state / "release-issues.json"
+
+def with_crlf(row):
+    # A stored CRLF body is already the wire form. Wrapping it again would
+    # turn each CRLF into CRCRLF, so only LF bodies are converted.
+    body = row.get("body")
+    if (state / "issue-readback-crlf").exists() and isinstance(body, str) and "\r" not in body:
+        return dict(row, body=body.replace("\n", "\r\n"))
+    return row
+
 args = sys.argv[1:]
 base = "repos/" + "feel-flow/feelflow-" + "plugins"
 if args[:3] != ["api", "--hostname", "github.com"]:
@@ -25,7 +34,7 @@ if path == base:
     print(json.dumps({"full_name": base[6:], "private": True, "visibility": "private"}))
     sys.exit(0)
 if path == base + "/issues" and method == "GET":
-    print(json.dumps([[row for row in rows if row["state"] == "open"]]))
+    print(json.dumps([[with_crlf(row) for row in rows if row["state"] == "open"]]))
     sys.exit(0)
 if path == base + "/issues" and method == "POST":
     if (state / "issue-race").exists():
@@ -41,7 +50,7 @@ else:
     if method == "GET":
         if (state / "issue-readback-mismatch").exists():
             row = dict(row, body=row["body"].replace('"token":"', '"token":"replaced-'))
-        print(json.dumps(row))
+        print(json.dumps(with_crlf(row)))
         sys.exit(0)
     if method == "PATCH":
         if "--input" in args:

@@ -23,6 +23,8 @@
 # 変異検出: knowledge-commit.sh の add から Changelog 判定の呼び出しを外すと 17 の束ね形ケース（直接・finish.sh 経由）が赤、lib の Helpful 正規表現から `×N` の選択肢を外すと 17 の契約形ケースが赤、節の判定を外して全見出しの配下を読むと 17 の `#### 変更` ケースが赤（2026-10-11 実測）。
 
 # 空振り検出: 18 は PR 問い合わせ失敗・空・不正値で branch #N のみを採り、解決元無しは version claim・ID・要約の数字を推測せず rc4 / stage・保留無しを確認する（2026-10-17 実測）。
+# 変異検出: 説明文つき誘導スタブの判定から固定候補リンクの条件を外す・履歴らしい行の条件を外す・版見出しで始まる分割側の読み取りを外す・レベル 2 見出しでの遮断を外す・選択後の判定を本体と同じ読み方へ戻す、の 5 変異は stub ケースで各 rc=1（2026-11-11 WSL 実測。無変異は 201 件 pass）。
+# 変異検出: 件名の Issue 解決から本文 Refs を外す・別リポジトリ参照の除外を外す・closing Issue の優先を外す・title の解決を外す、の 4 変異は 18 の Refs ケースで各 rc=1（2026-11-11 WSL 実測）。
 # 変異検出: PR 問い合わせを常に失敗へ変える・候補から chore/docs を外す・解決した Issue の保留保存を外すと、それぞれ 18 が赤（2026-10-17 実測）。
 # 空振り検出: 静的契約部分で現在ブランチの取得行を除去・既存知見ブランチの PR 分岐条件を反転・default 不変更の規定を反転・新規専用 PR の即 commit を保留へ反転すると各 rc=1（2026-10-22 実測）。針は各 1 行を要求し、0 件・重複を緑にしない。
 # 空振り検出: 呼出側の祖先・許可パス・件名と停止の実測を削る3変異と、helper の責務を誤保証へ変える変異は各 rc=1。通常追記は rc=0。保護判定で専用 Git fixture への移動を外すと、origin/HEAD の無い写しで14件が赤になる（2026-10-22 同梱 mutation-harness 実測）。
@@ -1133,8 +1135,8 @@ else
       echo "  ✗ prepare-commit-msg を通したドライラン・件名の出力が期待と違う（add rc=${rc} commit rc=${rc2} 件名=$(git log -1 --format=%s) add出力=${out} commit出力=${out2:-}）" >&2; exit 1
     fi
 
-    # 18. 元の件名が hook を通る回だけはバイト同一。拒否時は branch の出典 PR → closing Issue、
-    #     次に branch の #N を使う。ACE-ID と version claim には PR の根拠を求めない。
+    # 18. 元の件名が hook を通る回だけはバイト同一。拒否時は branch の出典 PR → closing Issue →
+    #     同じ PR の本文 Refs → title の番号、次に branch の #N を使う。ACE-ID と version claim には PR の根拠を求めない。
     S="$KC_TMP/subject-resolution"
     new_repo "$S" "Knowledge Test" "knowledge-test@example.com"
     cd "$S" || exit 1
@@ -1143,10 +1145,23 @@ else
     cat >"$KC_TMP/subject-bin/gh" <<'GH'
 #!/bin/sh
 printf '%s\n' "$*" >>"$SUBJECT_GH_LOG"
+# PR の応答（JSON）へ、呼び出し側が渡した --jq の式を実物の jq で適用する。式の配線（title / body を
+# 取り出す 3 部形式）を落とすと、下の Refs / title のケースが赤になる。番号記号は
+# JSON の Unicode エスケープ（u0023）で書く（公開側から辿れない番号の短縮形をソースに書かないため）。
+jq_filter=''; prev=''
+for arg in "$@"; do [ "$prev" = --jq ] && jq_filter="$arg"; prev="$arg"; done
+pr_json() { printf '%s' "$1" | jq -r "${jq_filter:-.}"; }
 case "$SUBJECT_GH_MODE" in
   ok) printf '5341\n' ;;
   empty) printf '\n' ;;
   malformed) printf 'not-an-issue\n' ;;
+  refs) pr_json '{"closingIssuesReferences":[],"title":"docs: 検証記録を追記","body":"\u0023\u0023 概要\n\nRefs: other/repo\u002377\nRefs \u00236147\nRef \u00239"}' ;;
+  closing-and-refs) pr_json '{"closingIssuesReferences":[{"number":5341}],"title":"fix: \u00231 title","body":"Refs \u00236147"}' ;;
+  body-closes) pr_json '{"closingIssuesReferences":[],"title":"docs: 記録","body":"Closes \u00235\nRefs \u00236147"}' ;;
+  refs-before-title) pr_json '{"closingIssuesReferences":[],"title":"fix: \u00231 title","body":"Refs \u00236147"}' ;;
+  cross) pr_json '{"closingIssuesReferences":[],"title":"docs: 記録","body":"Refs other/repo\u002377"}' ;;
+  cross-title) pr_json '{"closingIssuesReferences":[],"title":"docs: \u00235150 を記録","body":"Refs other/repo\u002377"}' ;;
+  title) pr_json '{"closingIssuesReferences":[],"title":"fix: repo\u002312 と x_\u002313 の後の \u00235150 を直す","body":"本文に参照なし"}' ;;
   fail) exit 1 ;;
   unavailable) exit 127 ;;
 esac
@@ -1193,6 +1208,34 @@ HOOK
       fi
     done
     echo '  ✓ claim 無しの OBS も branch #N を解決する（gh 失敗・空・不正値は番号を採らない）'
+
+    # Issue 2681: closing Issue が無い PR は、同じ PR の本文 Refs → title の最初の #N の順で補う。
+    # ブランチは既定名（#N 無し）のまま。別リポジトリの参照と、API が返さなかった本文の Closes は採らない。
+    refs_pr=6222
+    # 別リポジトリの Refs だけの PR でも、title に番号があればそれを採る（title は Refs の次の解決元）。
+    for refs_case in 'refs 6147' 'closing-and-refs 5341' 'body-closes 6147' 'refs-before-title 6147' 'title 5150' 'cross-title 5150'; do
+      refs_mode="${refs_case% *}" refs_want="${refs_case#* }"
+      refs_pr=$((refs_pr + 1))
+      git switch -q -c "chore/ace-from-pr-${refs_pr}"
+      export SUBJECT_GH_MODE="$refs_mode"
+      printf '%s\n' "- $refs_mode" >>docs/08-knowledge/OBSERVATIONS.md
+      rc=0; kc add --source obs --id "OBS-$refs_mode" --summary 'PR から解決' --type chore -- docs/08-knowledge/OBSERVATIONS.md >/dev/null 2>"$KC_TMP/refs.err" || rc=$?
+      [ "$rc" -ne 0 ] || kc commit >/dev/null
+      if [ "$rc" -ne 0 ] || [ "$(git log -1 --format=%s)" != "chore: #${refs_want} OBS-$refs_mode PR から解決" ] \
+        || ! grep -q "pr view ${refs_pr} --json closingIssuesReferences,title,body" "$SUBJECT_GH_LOG"; then
+        echo "  ✗ Refs だけの PR の Issue 解決（${refs_mode}）: rc=${rc} subject=$(git log -1 --format=%s) want=#${refs_want} err=$(cat "$KC_TMP/refs.err")" >&2; exit 1
+      fi
+    done
+    git switch -q -c chore/ace-from-pr-6230
+    export SUBJECT_GH_MODE=cross
+    printf '%s\n' '- cross' >>docs/08-knowledge/OBSERVATIONS.md
+    rc=0; out="$(kc add --source obs --id OBS-cross --summary '別リポジトリ' --type chore -- docs/08-knowledge/OBSERVATIONS.md 2>/dev/null)" || rc=$?
+    if [ "$rc" -ne 4 ] || ! grep -qx KNOWLEDGE_COMMIT=hook-rejected <<<"$out" \
+      || [[ "$(kc status)" != *KNOWLEDGE_PENDING=0* ]] || [ -n "$(git diff --cached --name-only)" ]; then
+      echo "  ✗ 別リポジトリの Refs を Issue 番号に使った・痕跡を残した（rc=${rc} out=${out}）" >&2; exit 1
+    fi
+    git checkout -q -- docs/08-knowledge/OBSERVATIONS.md
+    echo '  ✓ closing Issue が無い PR は本文 Refs（出現順の最初の同一リポジトリ参照）→ title の順で補い、closing は Refs より優先、別リポジトリの Refs だけで title にも番号が無ければ rc4'
 
     # version claim は PR origin を持たない。ID/要約中の数字も番号として流用しない。
     git switch -q -c chore/no-source
@@ -1315,6 +1358,8 @@ HOOK
     . "$SCRIPT_DIR/changelog-layout-cases.sh"
     declare -F run_knowledge_layout_cases >/dev/null || exit 1
     run_knowledge_layout_cases || exit 1
+    declare -F run_knowledge_stub_cases >/dev/null || exit 1
+    run_knowledge_stub_cases || exit 1
 
     # 特殊名も filesystem の literal。Git magic として別ファイルへ広げない。
     for pathspec_env in clean glob icase literal; do

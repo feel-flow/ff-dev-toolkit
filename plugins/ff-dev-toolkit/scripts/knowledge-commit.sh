@@ -52,8 +52,8 @@
 # prepare-commit-msg → commit-msg hook（`git rev-parse --git-path hooks/<名>` が指す実行可能ファイル。
 # core.hooksPath を反映するので husky の `.husky/_` も同じ経路で見つかる）へ `git commit -m` と同じ順で
 # 件名ファイルを渡して exit code を見る。元の件名が通れば変更しない。拒否された既定 knowledge は
-# chore → docs も同じ hook で検証する。Issue が必要なら branch の ace-from-pr-N → PR の closing Issue、
-# 次に branch 自身の #N を解決し、type ごとの `<type>: #<issue> <ID> <要約>` を検証する。
+# chore → docs も同じ hook で検証する。Issue が必要なら branch の ace-from-pr-N → PR の closing Issue →
+# 同じ PR の本文の Ref / Refs → title の最初の番号、次に branch 自身の #N を解決し、type ごとの `<type>: #<issue> <ID> <要約>` を検証する。
 # エラー文や commitlint 設定は独自解釈しない。解決した type/Issue は保留へ保存する。
 # 解決元が無い・どの候補も拒否された回は従来どおり hook の出力を示して exit 4。
 # `add` は stage も保留記録も作らない（finish.sh の `--claim` 経由では文書と claim の stage は残る）。
@@ -507,7 +507,32 @@ repo_hook() {
   if [[ -f "$p" && -x "$p" ]]; then printf '%s\n' "$p"; fi
   return 0
 }
-# 出典が branch に明記された PR の closing Issue、次に branch 自身の #N を解決する。
+# PR の応答 1 件を「1 行目 = closing Issue の番号（無ければ空）/ 2 行目 = 1 行へ畳んだ title / 3 行目以降 = body」へ
+# 写す jq 式。gh の --jq と --github-input の raw の両方へ同じ式を掛け、解決順を 1 か所で決める。
+SUBJECT_ISSUE_FILTER='(.closingIssuesReferences[0].number // ""), ((.title // "") | gsub("[\r\n]"; " ")), (.body // "")'
+# 上の 3 部を stdin から読み、closing Issue → 本文の Ref / Refs → title の最初の #N の順で 1 件を返す（Issue `#2681`）。
+# 本文の Refs は precheck の REFS 群と同じ抽出規則（lib/merge-message.sh）で、出現順の最初の同一リポジトリ参照
+# （裸の `#N`）だけを採る。`owner/repo#N` は別リポジトリの番号なので数えない。本文の closing keyword はここでは
+# 読まない（API が返さなかった closing を本文から推測しない）。title は `#` の直前が英数字か `_` の形を数えない。
+subject_issue_from_pr() {
+  local closing="" title="" body="" token lib="$self_dir/lib/merge-message.sh"
+  IFS= read -r closing || true
+  IFS= read -r title || true
+  body="$(cat)" || body=""
+  closing="${closing%$'\r'}"
+  if [[ "$closing" =~ ^[1-9][0-9]*$ ]]; then printf '%s\n' "$closing"; return 0; fi
+  if [[ -n "$body" && -r "$lib" ]]; then
+    # shellcheck source=lib/merge-message.sh
+    . "$lib"
+    while IFS= read -r token; do
+      if [[ "$token" =~ ^\#([1-9][0-9]*)$ ]]; then printf '%s\n' "${BASH_REMATCH[1]}"; return 0; fi
+    done < <(ff_merge_refs_tokens "$body" 2>/dev/null)
+  fi
+  if [[ "$title" =~ (^|[^A-Za-z0-9_])\#([1-9][0-9]*)([^0-9]|$) ]]; then printf '%s\n' "${BASH_REMATCH[2]}"; fi
+  return 0
+}
+
+# 出典が branch に明記された PR の closing Issue → 同じ PR の Refs → title、次に branch 自身の #N を解決する。
 # version claim は blob/version の記録で PR origin を持たない。ACE-ID・summary の数字は使わない。
 resolve_subject_issue() {
   local branch pr="" issue=""
@@ -527,14 +552,14 @@ resolve_subject_issue() {
             printf '{}\n' >"$gi_tmp/position"
             if github_file_read "$github_input" knowledge.subject-issue "$gi_tmp/scope" subject "$gi_tmp/position" >"$gi_tmp/raw" 2>/dev/null &&
                { [[ -z "$GITHUB_INPUT_HTTP_STATUS" || "$GITHUB_INPUT_HTTP_STATUS" == 200 ]]; }; then
-              issue="$(jq -r '.closingIssuesReferences[0].number // empty' "$gi_tmp/raw" 2>/dev/null)" || issue=""
+              issue="$(jq -r "$SUBJECT_ISSUE_FILTER" "$gi_tmp/raw" 2>/dev/null | subject_issue_from_pr)" || issue=""
             fi
           fi
           rm -rf "$gi_tmp"
         fi
       fi
     elif command -v gh >/dev/null 2>&1; then
-      issue="$(cd "$repo_root" && gh pr view "$pr" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty' 2>/dev/null)" || issue=""
+      issue="$( (cd "$repo_root" && gh pr view "$pr" --json closingIssuesReferences,title,body --jq "$SUBJECT_ISSUE_FILTER" 2>/dev/null) | subject_issue_from_pr)" || issue=""
     fi
     [[ ! "$issue" =~ ^[1-9][0-9]*$ ]] || { printf '%s\n' "$issue"; return 0; }
   fi

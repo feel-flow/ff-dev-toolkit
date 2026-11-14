@@ -88,9 +88,96 @@ ff_review_output_private() { # <dir> [root:true|false]
   }
 }
 
+# Quiet probe. A suggestion must not call back into the line that prints the
+# suggestion, or the refusal recurses. A nonempty directory also needs the
+# ownership marker prepare will require, or the named path is refused on retry.
+ff_review_output_dir_nonempty() { # <dir>
+  local entry
+  for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+    [[ -e "$entry" || -L "$entry" ]] || continue
+    return 0
+  done
+  return 1
+}
+
+ff_review_output_candidate_passes() { # <existing-dir> [repo]
+  local marker
+  [[ -n "$1" && "$1" != *$'\n'* && -d "$1" && ! -L "$1" ]] || return 1
+  FF_REVIEW_OUTPUT_SUGGESTING=true ff_review_output_ancestors "$1" >/dev/null 2>&1 || return 1
+  FF_REVIEW_OUTPUT_SUGGESTING=true ff_review_output_private "$1" true >/dev/null 2>&1 || return 1
+  ff_review_output_dir_nonempty "$1" || return 0
+  [[ -n "${2:-}" ]] || return 1
+  marker="$1/.multi-agent-output-owner"
+  ff_review_output_regular "$marker" || return 1
+  ff_review_output_marker_matches "$marker" "$2" "$1"
+}
+
+# Create one component at a time, and only after the nearest existing parent
+# already passes. Never mkdir under an ancestor the boundary refuses.
+ff_review_output_try_create_private() { # <absolute-path>
+  local path="$1" parent cur rest component
+  [[ "$path" == /* && "$path" != *$'\n'* ]] || return 1
+  [[ ! -e "$path" && ! -L "$path" ]] || return 1
+  parent="$path"
+  while [[ ! -d "$parent" || -L "$parent" ]]; do
+    [[ "$parent" != / ]] || return 1
+    parent="${parent%/*}"
+    [[ -n "$parent" ]] || parent=/
+  done
+  FF_REVIEW_OUTPUT_SUGGESTING=true ff_review_output_ancestors "${parent%/}/placeholder" >/dev/null 2>&1 || return 1
+  if [[ "$parent" == / ]]; then cur=""; rest="${path#/}"; else cur="$parent"; rest="${path#"$parent"/}"; fi
+  while [[ -n "$rest" ]]; do
+    component="${rest%%/*}"
+    [[ "$rest" == */* ]] && rest="${rest#*/}" || rest=""
+    [[ -n "$component" && "$component" != "." && "$component" != ".." ]] || return 1
+    cur="${cur}/${component}"
+    if [[ -d "$cur" && ! -L "$cur" ]]; then
+      continue
+    fi
+    [[ ! -e "$cur" && ! -L "$cur" ]] || return 1
+    (umask 077; mkdir -- "$cur") || return 1
+    [[ -d "$cur" && ! -L "$cur" && -O "$cur" ]] || return 1
+  done
+  [[ "$cur" == "$path" ]] || return 1
+  FF_REVIEW_OUTPUT_SUGGESTING=true ff_review_output_ancestors "$path" >/dev/null 2>&1 || return 1
+  FF_REVIEW_OUTPUT_SUGGESTING=true ff_review_output_private "$path" true >/dev/null 2>&1
+}
+
+# Name a directory this same boundary has just accepted, including the
+# ownership marker when the directory is not empty. May create an owner-only
+# candidate so the named path exists. Print no path when every candidate fails.
+# implement cannot use a path outside the repository, so the home candidate is
+# not offered for that task.
+ff_review_output_suggest_passing_dir() { # [repo] [task]
+  [[ "${FF_REVIEW_OUTPUT_SUGGESTING:-}" == true ]] && return 0
+  local repo="${1:-}" task="${2:-}" home_dir="${HOME:-}" chosen="" home_candidate=""
+  if [[ -n "$repo" ]]; then
+    repo="$(CDPATH='' cd -P -- "$repo" 2>/dev/null && pwd -P)" || repo=""
+  fi
+  if [[ -n "$repo" && -d "${repo}/.review-results" && ! -L "${repo}/.review-results" ]]; then
+    ff_review_output_candidate_passes "${repo}/.review-results" "$repo" && chosen="${repo}/.review-results"
+  fi
+  if [[ "$task" != implement && -z "$chosen" && -n "$home_dir" && "$home_dir" != *$'\n'* ]]; then
+    home_candidate="${home_dir}/.config/ff-dev-toolkit/tmp/review-output"
+    if [[ -d "$home_candidate" && ! -L "$home_candidate" ]]; then
+      ff_review_output_candidate_passes "$home_candidate" "$repo" && chosen="$home_candidate"
+    elif [[ ! -e "$home_candidate" && ! -L "$home_candidate" ]]; then
+      ff_review_output_try_create_private "$home_candidate" && chosen="$home_candidate"
+    fi
+  fi
+  if [[ -z "$chosen" && -n "$repo" && ! -e "${repo}/.review-results" && ! -L "${repo}/.review-results" ]]; then
+    ff_review_output_try_create_private "${repo}/.review-results" && chosen="${repo}/.review-results"
+  fi
+  if [[ -n "$chosen" ]]; then
+    printf '       Next: --output-dir %s passes the output boundary (checked before this line was printed).\n' "$chosen" >&2
+  else
+    echo '       Next: no directory that passes the output boundary could be named. The checked candidates were refused. Do not use scratchpad or a shared temporary directory as --output-dir.' >&2
+  fi
+}
+
 # An outer owner-only ancestor shields its descendants from other UIDs. Still
 # inspect above it: an unprotected writable parent can rename that anchor.
-ff_review_output_ancestors() { # <canonical-path>
+ff_review_output_ancestors() { # <canonical-path> [repo] [task]
   local path="$1" parent mode bits uid unsafe='' diagnosis
   local write_mask=$((8#022)) private_mask=$((8#077)) sticky_bit=$((8#1000))
   if ff_review_output_windows; then
@@ -101,7 +188,8 @@ ff_review_output_ancestors() { # <canonical-path>
       ff_review_output_error "cannot verify the Windows ACL of the ancestors here (the ACL helper is not loaded): ${parent}"; return 1
     }
     diagnosis="$(ff_knowledge_storage "$parent" dir 2>&1)" && return 0
-    ff_review_output_acl_refusal "$diagnosis" "$parent" 'an ancestor is not owned by you, an administrator or SYSTEM, or others can write it'
+    ff_review_output_acl_refusal "$diagnosis" "$parent" 'an ancestor is not owned by you, an administrator or SYSTEM, or others can write it' \
+      || ff_review_output_suggest_passing_dir "${2:-}" "${3:-}"
     return 1
   fi
   while :; do
@@ -123,8 +211,8 @@ ff_review_output_ancestors() { # <canonical-path>
     path="$parent"
   done
   [[ -z "$unsafe" ]] || {
-    ff_review_output_error "ancestor is writable by another user: ${unsafe}"
-    echo '       Next: choose an --output-dir whose every ancestor other users cannot write or rename, e.g. --output-dir "$(mktemp -d)/output" (a private dir under a sticky temp root).' >&2
+    ff_review_output_error "ancestor is writable by another user: ${unsafe}" || true
+    ff_review_output_suggest_passing_dir "${2:-}" "${3:-}"
     return 1
   }
 }
@@ -294,7 +382,7 @@ ff_review_output_prepare() { # <repo> <requested> <explicit:true|false> <task>
   fi
   parent="$path"
   while [[ ! -d "$parent" ]]; do parent="${parent%/*}"; [[ -n "$parent" ]] || parent=/; done
-  ff_review_output_ancestors "${parent%/}/placeholder" || return 1
+  ff_review_output_ancestors "${parent%/}/placeholder" "$repo" "$task" || return 1
   if [[ "$empty" == true ]]; then
     [[ ! -e "$path" || -O "$path" ]] || return 1
     # One component at a time, never mkdir -p: below a sticky shared parent another
@@ -334,7 +422,7 @@ ff_review_output_prepare() { # <repo> <requested> <explicit:true|false> <task>
       ff_review_output_marker_matches "$marker" "$repo" "$path" || return 1
     fi
   fi
-  ff_review_output_ancestors "$path" || return 1
+  ff_review_output_ancestors "$path" "$repo" "$task" || return 1
   printf '%s\n' "$path"
 }
 
@@ -369,7 +457,7 @@ ff_review_output_set_aside_legacy() { # <repo> <built-in-default-output>
   [[ "$found" == true ]] || return 0
   tracked="$(git -C "$repo" ls-files -- ":(literal)${name}" 2>/dev/null)" || return 0
   [[ -z "$tracked" ]] || return 0
-  ff_review_output_ancestors "$legacy" || return 1
+  ff_review_output_ancestors "$legacy" "$repo" || return 1
   ts="$(date -u +%Y%m%dT%H%M%SZ)" || { ff_review_output_error 'cannot read the clock to name the set-aside directory'; return 1; }
   staging="${legacy}.legacy-${ts}-$$"
   [[ ! -e "$staging" && ! -L "$staging" ]] || { ff_review_output_error "set-aside name already exists: ${staging}"; return 1; }

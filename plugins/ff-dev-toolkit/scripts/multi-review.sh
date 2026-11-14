@@ -22,7 +22,7 @@
 #                          省略は none と同じ。fast / full とレーン構成を決める `--mode` / `--cli` /
 #                          `--perspective` / `--exclude-cli` / `--exclude-perspective` の併用は exit 2
 #                          （fast は `--delegate-to-host` / `=<cli>` も exit 2 — fast はレーン構成を codex-cli の comprehensive-review に固定し、委譲フラグとは併用しない。`=codex-cli` も拒否する）。
-#                          full に `--delegate-to-host=<cli>`（codex-cli / grok-cli）を添えると主が
+#                          full に `--delegate-to-host=<cli>`（codex-cli / grok-cli / antigravity-cli）を添えると主が
 #                          ホストのレーンになり、主の 4 観点をホストのサブエージェントで走らせる。
 #                          副は codex-cli（ホストが Codex なら claude-code、無ければ grok-cli）（Issue `#2118`）。
 #                          拒否は何も起動しないので、前の実行の結果を読まないよう注記を stderr に添える。
@@ -294,7 +294,7 @@ route_rejects_lane_args() { # <route> <拒否する追加の引数...>
 case "$ROUTE" in
   '' | none) : ;;
   fast)
-    route_rejects_lane_args fast --delegate-to-host --delegate-to-host=claude-code --delegate-to-host=codex-cli --delegate-to-host=grok-cli
+    route_rejects_lane_args fast --delegate-to-host --delegate-to-host=claude-code --delegate-to-host=codex-cli --delegate-to-host=grok-cli --delegate-to-host=antigravity-cli
     if [[ "$ARCHIVE_OPERATION" != true ]]; then
     ARGS+=(--mode cross-model --cli codex-cli --perspective comprehensive-review)
     echo "ℹ️  --route fast: Codex 1 lane only (--mode cross-model --cli codex-cli --perspective comprehensive-review)" >&2
@@ -302,10 +302,9 @@ case "$ROUTE" in
     ;;
   full)
     route_rejects_lane_args full
-    # 主レーンはホスト自身のモデル。`--delegate-to-host=<cli>`（codex-cli / grok-cli）を渡すと主が
-    # そのレーンになり、主の 4 観点をホストのサブエージェントで走らせる（claude が無い環境でも
-    # full を組める。headless の `grok -p` は typed verdict を欠きやすいので、grok を主にするのは
-    # 委譲時だけ）。副は主と違うモデルにする（Issue `#2118`）
+    # 主レーンはホスト自身のモデル。`--delegate-to-host=<cli>`（codex-cli / grok-cli /
+    # antigravity-cli）を渡すと主がそのレーンになり、主の 4 観点をホストのサブエージェントで
+    # 走らせる（claude が無い環境でも full を組める）。副は主と違うモデルにする（Issue `#2118`）
     if [[ "$ARCHIVE_OPERATION" != true ]]; then
     full_main=claude-code
     for a in ${ARGS[@]+"${ARGS[@]}"}; do

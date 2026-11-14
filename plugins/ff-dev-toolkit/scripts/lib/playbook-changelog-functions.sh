@@ -50,8 +50,9 @@ ff_playbook_changelog_book() {
   printf '%s\n' "$book"
 }
 
+# 第 4 引数が 1 のときは固定候補として読む（`## Changelog` の無い、版見出しから始まる分割ファイルを受ける）。
 _ff_playbook_changelog_scan() {
-  local file="$1" job="$2" authority="$3" scanner="${BASH_SOURCE[0]%/*}/playbook-changelog-scan.awk" canonical stamp snapshot
+  local file="$1" job="$2" authority="$3" headingless="${4:-0}" scanner="${BASH_SOURCE[0]%/*}/playbook-changelog-scan.awk" canonical stamp snapshot
   FF_PLAYBOOK_CHANGELOG_VERDICT=unreadable-file
   FF_PLAYBOOK_CHANGELOG_OUTPUT=""
   [ -r "$scanner" ] || return 2
@@ -62,7 +63,7 @@ _ff_playbook_changelog_scan() {
     snapshot="$(ff_knowledge_snapshot "$file" "$authority" "$job")" || return 2
     printf '%s\t%s\t%s\n' "$canonical" "$stamp" "$snapshot" >>"$job/cache"
   fi
-  if ! FF_PLAYBOOK_CHANGELOG_OUTPUT="$(FF_READ_KEY="$file" LC_ALL=C awk -f "$scanner" "$snapshot" 2>/dev/null)"; then return 2; fi
+  if ! FF_PLAYBOOK_CHANGELOG_OUTPUT="$(FF_READ_KEY="$file" LC_ALL=C awk -v headingless="$headingless" -f "$scanner" "$snapshot" 2>/dev/null)"; then return 2; fi
   case "$FF_PLAYBOOK_CHANGELOG_OUTPUT" in
     *VERDICT=ok) FF_PLAYBOOK_CHANGELOG_VERDICT=ok; return 0 ;;
     *VERDICT=unreadable-helpful) FF_PLAYBOOK_CHANGELOG_VERDICT=unreadable-helpful; return 1 ;;
@@ -95,7 +96,7 @@ _ff_playbook_changelog_select() {
   if [ "$present" -eq 0 ]; then printf '%s\n' "$book"; return 0; fi
   if ! physical="$(ff_knowledge_authorize "$chosen" "$authority")"; then return 2; fi
   case "$physical" in "$root/"*) ;; *) printf '%s\n' "Changelog が PLAYBOOK の領域外です: $chosen"; return 2 ;; esac
-  if _ff_playbook_changelog_scan "$chosen" "$job" "$authority"; then :; fi
+  if _ff_playbook_changelog_scan "$chosen" "$job" "$authority" 1; then :; fi
   case "$FF_PLAYBOOK_CHANGELOG_VERDICT" in
     no-changelog|empty-stub|unreadable-file) printf '%s\n' "Changelog の版を読めません: $chosen"; return 2 ;;
   esac
@@ -111,7 +112,7 @@ ff_playbook_changelog_select() (
 )
 
 ff_playbook_changelog_helpful_check() {
-  local book="${1:-}" selected job authority result=2
+  local book="${1:-}" selected job authority result=2 headingless=0
   FF_PLAYBOOK_CHANGELOG_VERDICT=""
   authority="$(_ff_playbook_changelog_authority "$book" "${2:-}")" || { FF_PLAYBOOK_CHANGELOG_VERDICT=unreadable-file; return 2; }
   job="$(_ff_playbook_changelog_job)" || { FF_PLAYBOOK_CHANGELOG_VERDICT=unreadable-file; return 2; }
@@ -120,7 +121,9 @@ ff_playbook_changelog_helpful_check() {
     case "$selected" in *候補が複数*) FF_PLAYBOOK_CHANGELOG_VERDICT=ambiguous-changelog ;; esac
     printf '%s\n' "$selected"; rm -rf -- "$job"; return 2
   fi
-  if _ff_playbook_changelog_scan "$selected" "$job" "$authority"; then :; fi
+  # 選ばれたのが本体以外（固定候補）なら、選択時と同じ読み方で判定する
+  [ "$selected" = "$book" ] || headingless=1
+  if _ff_playbook_changelog_scan "$selected" "$job" "$authority" "$headingless"; then :; fi
   case "$FF_PLAYBOOK_CHANGELOG_VERDICT" in
     ok) result=0 ;;
     unreadable-helpful) printf '%s\n' "$FF_PLAYBOOK_CHANGELOG_OUTPUT" | sed '$d'; result=1 ;;

@@ -29,6 +29,7 @@ HOST_ROWS = (
     "| Claude Code | Agent ツール |",
     "| Codex | spawn_agent |",
     "| grok | spawn_subagent（explore 型） |",
+    "| Google Antigravity | invoke_subagent（research 型） |",
 )
 PROMPT_REQUIREMENTS = (
     "実装したメインとは別の担当",
@@ -178,7 +179,7 @@ def self_test(documents):
         mutation("host-row-removed:" + str(index), SELF_REVIEW, row, "")
     for index in range(1, len(HOST_ROWS)):
         cells = HOST_ROWS[index].split("|")
-        other_cells = HOST_ROWS[(index % 3) + 1].split("|")
+        other_cells = HOST_ROWS[(index % (len(HOST_ROWS) - 1)) + 1].split("|")
         cells[2] = other_cells[2]
         mutation("host-tool-swapped:" + str(index), SELF_REVIEW, HOST_ROWS[index], "|".join(cells))
     changed = copy.copy(documents)
@@ -242,7 +243,7 @@ def main():
         except (KeyError, ValueError) as error:
             print("native-self-review contract: " + str(error))
             return 1
-    print("native-self-review contract: 3 route scenarios, 3 host mappings, fixed handoff and completion contract verified (host execution is separate)")
+    print("native-self-review contract: 3 route scenarios, 4 host mappings, fixed handoff and completion contract verified (host execution is separate)")
     return 0
 
 

@@ -228,11 +228,12 @@ skipped() { echo "  ○ skip: $1"; SKIP=$((SKIP + 1)); }
 #                 層 2 で「まだ --sandbox を持たない」ことを再確認する。
 sandbox_shape() {
   case "$1" in
-    claude-code) echo "none" ;;
-    codex-cli)   echo "value" ;;
-    copilot-cli) echo "none" ;;
-    grok-cli)    echo "value" ;;
-    *)           echo "" ;;
+    claude-code)     echo "none" ;;
+    codex-cli)       echo "value" ;;
+    copilot-cli)     echo "none" ;;
+    grok-cli)        echo "value" ;;
+    antigravity-cli) echo "boolean" ;;
+    *)               echo "" ;;
   esac
 }
 
@@ -254,11 +255,12 @@ enum_live_checkable() {
 
 adapter_file() {
   case "$1" in
-    claude-code) echo "claude-code-adapter.sh" ;;
-    codex-cli)   echo "codex-cli-adapter.sh" ;;
-    copilot-cli) echo "copilot-cli-adapter.sh" ;;
-    grok-cli)    echo "grok-cli-adapter.sh" ;;
-    *)           echo "" ;;
+    claude-code)     echo "claude-code-adapter.sh" ;;
+    codex-cli)       echo "codex-cli-adapter.sh" ;;
+    copilot-cli)     echo "copilot-cli-adapter.sh" ;;
+    grok-cli)        echo "grok-cli-adapter.sh" ;;
+    antigravity-cli) echo "antigravity-cli-adapter.sh" ;;
+    *)               echo "" ;;
   esac
 }
 
@@ -267,15 +269,16 @@ adapter_file() {
 # stub を 1 つ置き忘れると**本物の CLI** に到達しうる — その形もここで落ちる）。
 cli_binary() {
   case "$1" in
-    claude-code) echo "claude" ;;
-    codex-cli)   echo "codex" ;;
-    copilot-cli) echo "copilot" ;;
-    grok-cli)    echo "grok" ;;
-    *)           echo "" ;;
+    claude-code)     echo "claude" ;;
+    codex-cli)       echo "codex" ;;
+    copilot-cli)     echo "copilot" ;;
+    grok-cli)        echo "grok" ;;
+    antigravity-cli) echo "agy" ;;
+    *)               echo "" ;;
   esac
 }
 
-DECLARED_CLIS="claude-code codex-cli copilot-cli grok-cli"
+DECLARED_CLIS="claude-code codex-cli copilot-cli grok-cli antigravity-cli"
 
 # 変数名を DECLARED_CLIS にしているのは必須の回避で、好みではない。共有 parser
 # （tests/lib/cli-registry-parser.sh）は **`ALL_CLIS` というグローバル名を自分で使う**
@@ -337,7 +340,7 @@ registry_check() {
 # ファイルから読むので、`-C/--cd` を持たない**旧版の help** も fixture として
 # 与えられる（= 能力確認の fail-loud を負例で測れる）。
 mkdir -p "$WORK/bin"
-for cli in claude codex copilot grok; do
+for cli in claude codex copilot grok agy; do
   {
     echo '#!/usr/bin/env bash'
     echo 'if [ "$(basename "$0")" = copilot ] && [ "${1:-}" = help ]; then echo "--deny-tool --disallow-temp-dir Denial rules always take precedence"; exit 0; fi'
@@ -404,7 +407,7 @@ HELP
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
 build_isolate_env MULTI_AGENT_MODEL_CLAUDE_CODE "$ADAPTERS_DIR"/*.sh
 
-mkdir -p "$WORK/argv" "$WORK/grok-home-empty" "$WORK/staging" "$WORK/codex"
+mkdir -p "$WORK/argv" "$WORK/grok-home-empty" "$WORK/staging" "$WORK/codex" "$WORK/home"
 
 # run_adapter <cli> <task-type> [staging|inline]
 # argv を "$WORK/argv" 以下に記録する。アダプタの終了コードは見ない — grok は
@@ -432,7 +435,7 @@ run_adapter() {
   fi
   ADAPTER_RC=0
   run_isolated \
-    PATH="$WORK/bin:$PATH" ARGV_DIR="$WORK/argv" CODEX_HOME="$WORK/codex" \
+    PATH="$WORK/bin:$PATH" ARGV_DIR="$WORK/argv" HOME="$WORK/home" USERPROFILE="" CODEX_HOME="$WORK/codex" \
     GROK_HOME="$WORK/grok-home-empty" \
     FF_STUB_CODEX_HELP="${STUB_CODEX_HELP:-$CODEX_HELP_MODERN}" \
     bash "$ADAPTERS_DIR/$adapter" "$PERSPECTIVE" "$WORK/out.md" \
@@ -494,7 +497,7 @@ argv_has() {
 
 argv_has_pair() {
   local first="$1" second="$2" i=0
-  while [ "$i" -lt "$ARGC" ]; do
+  while [ "$((i + 1))" -lt "$ARGC" ]; do
     if [ "$(arg_at "$i")" = "$first" ] && [ "$(arg_at "$((i + 1))")" = "$second" ]; then
       return 0
     fi
@@ -630,7 +633,7 @@ for cli in $DECLARED_CLIS; do
         ok "${cli}: declared_enum と enum_live_checkable が整合（checkable=${checkable}）"
       fi
       ;;
-    none)
+    none|boolean)
       if [ -n "$enum" ]; then
         bad "${cli}: shape=${shape} なのに declared_enum が埋まっている（値を取らない CLI に enum は無い）"
       else
@@ -712,10 +715,24 @@ expect_sandbox() {
     return
   fi
 
-  # boolean 形（旧 gemini-cli の `--sandbox` 単独）は issue #783 の gemini 削除で
-  # 宣言する CLI が消えたため分岐ごと撤去した。boolean 形の CLI を再登録するときは
-  # git 履歴（#783 以前）の boolean 分岐を復元し、fixture で真空 PASS 防止
-  # （等号形・末尾切れ）の検出力を再実測すること。
+  if [ "$want" = "boolean" ]; then
+    # boolean 単独。等号形は「値を取った」ことの直接の証拠。次の引数が値に見える
+    # （`-` 始まりでない）場合も同じ。末尾なら次が無いので、代わりに argv 末尾が
+    # そこで切れていないこと（後続フラグの存在）で真空 PASS を防ぐ。
+    if [ "$SB_FORM" = "inline" ]; then
+      bad "${label}: --sandbox=${SB_VALUE} の等号形で値を取っている（この CLI の --sandbox は boolean）"
+      dump_argv
+    elif [ "$SB_VALUE_PRESENT" -eq 0 ]; then
+      bad "${label}: --sandbox が argv の末尾にある — この CLI は --sandbox の後に必ず別の引数を渡すはずで、末尾は起動行が途中で切れた形"
+      dump_argv
+    elif [ "${SB_VALUE#-}" != "$SB_VALUE" ]; then
+      ok "${label}: --sandbox は値を取らない（次は別フラグ ${SB_VALUE}）"
+    else
+      bad "${label}: --sandbox が値 '${SB_VALUE}' を取っている（この CLI の --sandbox は boolean）"
+      dump_argv
+    fi
+    return
+  fi
 
   # value 形: 値そのものを固定する。
   if [ "$SB_VALUE_PRESENT" -eq 0 ]; then
@@ -749,6 +766,11 @@ echo "-- 層 1: アダプタが渡す argv の実測 --"
 for t in review explore implement; do
   expect_sandbox claude-code "$t" none
   expect_sandbox copilot-cli "$t" none
+done
+
+# antigravity-cli: --sandbox は boolean（値を取らない）として常に渡す。
+for t in review explore implement; do
+  expect_sandbox antigravity-cli "$t" boolean
 done
 
 # codex: review/explore は read-only、implement は書き込みが要るので workspace-write。
@@ -829,6 +851,33 @@ if argv_has_pair --deny-tool write && argv_has_pair --deny-tool shell \
   ok "copilot-cli/implement inline: write / shell / temp-dir を機械的に拒否"
 else
   bad "copilot-cli/implement inline: 書き込み permission deny が不足"
+  dump_argv
+fi
+
+for task in review explore; do
+  run_adapter antigravity-cli "$task"
+  if argv_has_pair --mode "" && ! argv_has --add-dir && argv_has --disable-slash-commands; then
+    ok "antigravity-cli/$task: --mode ''（read-only）かつ --add-dir なしで --disable-slash-commands"
+  else
+    bad "antigravity-cli/$task: --mode '' / --add-dir 不在 / --disable-slash-commands のいずれかが欠落"
+    dump_argv
+  fi
+done
+run_adapter antigravity-cli implement inline
+scan_sandbox
+if argv_has_pair --mode "" && ! argv_has --add-dir && argv_has --disable-slash-commands \
+   && [ "$SB_COUNT" -eq 1 ] && [ "$SB_FORM" = "separate" ] && [ "${SB_VALUE#-}" != "$SB_VALUE" ]; then
+  ok "antigravity-cli/implement inline: --mode ''・boolean --sandbox へ狭めて --add-dir を付けない"
+else
+  bad "antigravity-cli/implement inline: read-only 境界へ狭まっていない"
+  dump_argv
+fi
+run_adapter antigravity-cli implement
+if argv_has_pair --mode accept-edits && argv_has_pair --add-dir "$WORK/staging" \
+   && argv_has --disable-slash-commands; then
+  ok "antigravity-cli/implement staged: --mode accept-edits --add-dir staging --disable-slash-commands"
+else
+  bad "antigravity-cli/implement staged: --mode accept-edits / --add-dir staging のいずれかが欠落"
   dump_argv
 fi
 
@@ -961,6 +1010,7 @@ expect_net_pin explore   no
 # 既定枝は死んだコードではないので、安全側の値に落ちることを固定する。
 expect_sandbox codex-cli no-such-task-type read-only
 expect_sandbox grok-cli  no-such-task-type read-only 2
+expect_sandbox antigravity-cli no-such-task-type boolean
 
 # 層 1 の網羅確認。DECLARED_CLIS × 実 task-type の全組が検査されたか。
 uncovered=""
@@ -1133,6 +1183,28 @@ for pair in "claude-code claude" "copilot-cli copilot"; do
     skipped "${cli}: ${bin} が PATH に無いため none 宣言の前提を再確認していない"
   fi
 done
+
+LAYER2_TOTAL=$((LAYER2_TOTAL + 1))
+if command -v agy >/dev/null 2>&1; then
+  capture_help "$WORK/agy-help.txt" agy --help
+  if ! help_unusable "antigravity-cli" "$WORK/agy-help.txt"; then
+    LAYER2_RUN=$((LAYER2_RUN + 1))
+    if LC_ALL=C awk '
+      { gsub(/\033\[[0-9;]*[[:alpha:]]/, "") }
+      /--sandbox/ {
+        saw = 1
+        if ($0 ~ /--sandbox[[:space:]=]*<[^>]+>/ || $0 ~ /\[possible values:/) bad_val = 1
+      }
+      END { exit((saw && !bad_val) ? 0 : 1) }
+    ' "$WORK/agy-help.txt"; then
+      ok "antigravity-cli: --sandbox は実 CLI でも boolean（値引数を取らない）"
+    else
+      bad "antigravity-cli: --help の --sandbox が欠落または値付きになった — sandbox_shape の宣言を見直すこと"
+    fi
+  fi
+else
+  skipped "antigravity-cli: agy が PATH に無いため --sandbox の boolean 形を再確認していない"
+fi
 
 # codex: アダプタが pin する設定キーが今も認識されるか。
 #

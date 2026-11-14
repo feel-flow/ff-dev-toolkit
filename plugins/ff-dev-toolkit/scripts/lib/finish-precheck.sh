@@ -11,12 +11,20 @@ fi
 # Issue 本文・コメントの走査。フェンス（``` / ~~~）と HTML コメントの中は数えない。
 # mode=unchecked は行頭の空白のあとの「- [ ]」だけを原文のまま出す（「* [ ]」は対象外）。
 # mode=visible はコメントを剥がした後の空でない行を全部出す。
+# mode=visible-omit-effort は visible と同じ行を、閉じた ff-effort ブロックの中の
+# effort_evidence と effort_basis だけ X、それ以外を K の接頭辞付きで出す。
+# マーカーは行全体が <!-- ff-effort:begin --> / <!-- ff-effort:end --> のときだけ。
+# フェンスの中、開いたままの HTML コメントの中、字下げ、末尾の空白はマーカーにしない。
+# 完全一致しない行は broken にしない。数えた組が閉じていれば、その組の中は除外する。
+# 未閉鎖、end が begin より前、begin の入れ子は本文全体を K にする（除外しない）。
+# 整形式かどうかは末尾まで見ないと決まらないので、この mode だけ溜めてから出す。
+# unchecked と visible はその場で出す（出力は従来どおり）。
 # フェンスの中では HTML コメントを開かない。終了フェンスはコメントを剥がす前の行で見る。
 # 終了は開始と同じ文字で、開始以上の長さのときだけ閉じる。
 # インラインコードの中の開始記号はコメントにしない。
-ff_precheck_scan_lines() { # <unchecked|visible>
+ff_precheck_scan_lines() { # <unchecked|visible|visible-omit-effort>
   awk -v mode="$1" '
-    BEGIN { in_fence = 0; fence_ch = ""; fence_len = 0; in_comment = 0 }
+    BEGIN { in_fence = 0; fence_ch = ""; fence_len = 0; in_comment = 0; inblock = 0; broken = 0; bufn = 0 }
     function take_visible(raw,    i, n, out, rest, c) {
       out = ""
       i = 1
@@ -46,6 +54,14 @@ ff_precheck_scan_lines() { # <unchecked|visible>
       }
       return out
     }
+    function skip_key(line,    key, colon) {
+      if (line !~ /^-[ ]*[a-z_]+[ ]*:/) return 0
+      colon = index(line, ":")
+      key = substr(line, 1, colon - 1)
+      sub(/^-[ ]*/, "", key)
+      sub(/[ ]+$/, "", key)
+      return (key == "effort_evidence" || key == "effort_basis")
+    }
     {
       raw = $0
       sub(/\r$/, "", raw)
@@ -58,6 +74,14 @@ ff_precheck_scan_lines() { # <unchecked|visible>
         if (n >= fence_len && tail ~ /^[[:space:]]*$/) in_fence = 0
         next
       }
+      if (mode == "visible-omit-effort" && !in_comment && raw == "<!-- ff-effort:begin -->") {
+        if (inblock) broken = 1
+        inblock = 1
+      }
+      if (mode == "visible-omit-effort" && !in_comment && raw == "<!-- ff-effort:end -->") {
+        if (!inblock) broken = 1
+        else inblock = 0
+      }
       vis = take_visible(raw)
       rest = vis
       sub(/^[[:space:]]+/, "", rest)
@@ -66,8 +90,8 @@ ff_precheck_scan_lines() { # <unchecked|visible>
         fence_len = 0
         while (fence_len < length(rest) && substr(rest, fence_len + 1, 1) == fence_ch) fence_len++
         # バッククォートのフェンスの info string にバッククォートは書けない（その行はインラインコード）。
-        # unchecked は従来の判定のまま残す。
-        if (fence_len >= 3 && !(mode == "visible" && fence_ch == "`" && index(substr(rest, fence_len + 1), "`"))) {
+        # unchecked は従来の判定のまま残す。visible-omit-effort は visible と同じ行を出す。
+        if (fence_len >= 3 && !((mode == "visible" || mode == "visible-omit-effort") && fence_ch == "`" && index(substr(rest, fence_len + 1), "`"))) {
           in_fence = 1
           next
         }
@@ -75,7 +99,22 @@ ff_precheck_scan_lines() { # <unchecked|visible>
       if (mode == "unchecked") {
         if (vis ~ /^[[:space:]]*- \[ \]/) print raw
       } else if (vis ~ /[^[:space:]]/) {
-        print vis
+        if (mode == "visible-omit-effort") {
+          bufn++
+          buf[bufn] = vis
+          if (inblock && skip_key(vis)) drop[bufn] = 1
+        } else {
+          print vis
+        }
+      }
+    }
+    END {
+      if (mode == "visible-omit-effort") {
+        if (inblock) broken = 1
+        for (i = 1; i <= bufn; i++) {
+          if (!broken && drop[i]) print "X\t" buf[i]
+          else print "K\t" buf[i]
+        }
       }
     }
   '

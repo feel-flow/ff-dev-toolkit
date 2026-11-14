@@ -15,6 +15,7 @@ multi-review の本線（`../SKILL.md`）から、モデルを明示指定する
 | `MULTI_AGENT_CODEX_REASONING_EFFORT` | `-c model_reasoning_effort=<value>` | Codex の effort だけを単発指定。`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`。プロファイル併用時はこの値が明示上書きする |
 | `MULTI_AGENT_MODEL_COPILOT_CLI` | `--model` | Copilot。`auto` で Copilot 側の自動選択 |
 | `MULTI_AGENT_MODEL_GROK_CLI` | `-m` | Grok |
+| `MULTI_AGENT_MODEL_ANTIGRAVITY_CLI` | `--model` | Google Antigravity CLI（`agy`） |
 | `MULTI_AGENT_GROK_READONLY_PROFILE` | `--sandbox <name>`（read-only スロット = review / explore / implement `--inline-output` のみ。通常の implement の `workspace` には効かない） | Grok。`~/.grok/sandbox.toml` のカスタムプロファイル名。docker.sock が symlink の macOS で組み込み `read-only` が起動拒否されるときの差し替え。`workspace` / `devbox` / `strict` / `off` / `none` は拒否、実行後に `read_write_paths` が作業ツリー（祖先・配下含む）を含まないことを検証。ランタイムソケットの遮断は失う（実測。dispatch 前に通知） |
 
 ```bash

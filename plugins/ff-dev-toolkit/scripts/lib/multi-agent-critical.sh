@@ -212,11 +212,196 @@ is_unfiltered_full_review_plan() {
   # scripts/codex-review.sh always passes --cli codex-cli, and that is the
   # Git Workflow's full Codex review (Issue `#1025`). --perspective,
   # --exclude-perspective, and cross-model (typically one perspective across
-  # CLIs) still cannot start a new series, because they would drop unresolved
-  # perspectives from the previous series without reviewing them.
+  # CLIs) still cannot start a new series by themselves, because they would
+  # drop unresolved perspectives from the previous series without reviewing
+  # them. The one exception is previous_series_ready_to_shelve: origin's
+  # GitHub repository has one merged PR for that branch, its remote ref is
+  # gone, and that PR's head equals the local tip (or, when the branch was
+  # deleted, the commit HEAD was on when it left). The series token has no
+  # commit, so this does not prove the Critical reviewed that head.
   [[ "$MODE" != "cross-model" \
     && -z "$PERSPECTIVE_FILTER" \
     && -z "$EXCLUDE_PERSPECTIVES" ]]
+}
+
+# 系列 token はダイジェストなので逆算しない（ACE-1746-8）。知っているブランチ名を
+# 列挙して hash が一致するかだけを確かめる。0 件でも複数でも、origin が無い、
+# リモート ref が残る、PR が未マージ、head の commit が一致しない、照会が失敗、
+# のときは何も動かさず 1 を返す。
+shelve_candidate_refs() { # <repo>
+  local line rest short
+  git -C "$1" for-each-ref --format='%(refname)' refs/heads 2>/dev/null || true
+  while IFS= read -r line; do
+    case "$line" in
+      "checkout: moving from "*" to "*)
+        rest="${line#checkout: moving from }"
+        short="${rest% to *}"
+        case "$short" in
+          ""|*" "*|refs/*|detached:*) continue ;;
+        esac
+        printf 'refs/heads/%s\n' "$short"
+        ;;
+    esac
+  done < <(git -C "$1" reflog show -n 400 --format='%gs' HEAD 2>/dev/null || true)
+}
+
+# 削除済みブランチの先端は、その名前から離れたときの HEAD reflog の 1 つ前。
+# ブランチが残っているときは今の先端だけを見る（作り直した同名を reflog の古い
+# commit で通さない）。
+shelve_branch_tip() { # <repo> <short-name>
+  local repo="$1" short="$2" line sha msg pending=""
+  if sha="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/${short}" 2>/dev/null)"; then
+    printf '%s\n' "$sha"
+    return 0
+  fi
+  while IFS= read -r line; do
+    sha="${line%% *}"
+    msg="${line#* }"
+    if [[ -n "$pending" ]]; then
+      printf '%s\n' "$sha"
+      return 0
+    fi
+    case "$msg" in
+      "checkout: moving from ${short} to "*) pending=1 ;;
+    esac
+  done < <(git -C "$repo" reflog show -n 400 --format='%H %gs' HEAD 2>/dev/null || true)
+  return 1
+}
+
+# origin の設定 URL（insteadOf で書き換わる get-url ではない）。gh は GH_REPO を見ず、
+# この owner/name だけを照会する。
+shelve_origin_slug() { # <repo>
+  local url
+  url="$(git -C "$1" config --get remote.origin.url 2>/dev/null)" || return 1
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 -I -c '
+import re, sys
+url = sys.argv[1].strip()
+url = re.sub(r"\.git$", "", url)
+url = url.rstrip("/")
+owner = name = None
+for pattern in (
+    r"https?://[^/]+/([^/]+)/([^/]+)",
+    r"ssh://git@[^/]+/([^/]+)/([^/]+)",
+    r"git@[^:]+:([^/]+)/([^/]+)",
+):
+    matched = re.fullmatch(pattern, url)
+    if matched:
+        owner, name = matched.group(1), matched.group(2)
+        break
+if owner is None:
+    raise SystemExit(1)
+if re.fullmatch(r"[A-Za-z0-9._-]+", owner) is None or re.fullmatch(r"[A-Za-z0-9._-]+", name) is None:
+    raise SystemExit(1)
+sys.stdout.write(owner + "/" + name + "\n")
+' "$url"
+}
+
+shelve_exactly_one_merged_pr() { # <short-name> <repo>
+  local json oid slug owner
+  command -v gh >/dev/null 2>&1 || return 1
+  command -v python3 >/dev/null 2>&1 || return 1
+  slug="$(shelve_origin_slug "$2")" || return 1
+  owner="${slug%%/*}"
+  json="$(cd "$2" && gh pr list --repo "$slug" --head "$1" --state merged --json number,state,headRefName,headRefOid,isCrossRepository,headRepositoryOwner --limit 20 2>/dev/null)" || return 1
+  oid="$(printf '%s' "$json" | python3 -I -c '
+import json, re, sys
+name, owner = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+if not isinstance(data, list):
+    raise SystemExit(1)
+matched = [
+    item for item in data
+    if isinstance(item, dict) and item.get("state") == "MERGED" and item.get("headRefName") == name
+]
+if len(data) != 1 or len(matched) != 1:
+    raise SystemExit(1)
+item = matched[0]
+if item.get("isCrossRepository") is not False:
+    raise SystemExit(1)
+repo_owner = item.get("headRepositoryOwner")
+login = repo_owner.get("login") if isinstance(repo_owner, dict) else None
+if not isinstance(login, str) or login.lower() != owner.lower():
+    raise SystemExit(1)
+oid = item.get("headRefOid")
+if not isinstance(oid, str) or re.fullmatch(r"[0-9a-fA-F]{40}", oid) is None:
+    raise SystemExit(1)
+sys.stdout.write(oid.lower() + "\n")
+' "$1" "$owner")" || return 1
+  SHELVE_MERGED_HEAD="$oid"
+}
+
+previous_series_ready_to_shelve() { # <series-id>
+  local series="$1" repo current ref short seen="" matches="" expected remote_out tip
+  SHELVE_PREVIOUS_BRANCH=""
+  SHELVE_MERGED_HEAD=""
+  [[ "$series" =~ ^[0-9]+-[0-9]+$ ]] || return 1
+  repo="$(cd "$REPO_ROOT" && pwd -P 2>/dev/null)" || return 1
+  # 名前の付いたブランチでだけ退避する。detached は従来の中断案内のまま。
+  current="$(git -C "$repo" symbolic-ref --quiet HEAD 2>/dev/null)" || return 1
+  while IFS= read -r ref; do
+    [[ -n "$ref" ]] || continue
+    case "$ref" in
+      refs/heads/*) ;;
+      *) continue ;;
+    esac
+    [[ "$ref" == "$current" ]] && continue
+    git -C "$repo" check-ref-format "$ref" >/dev/null 2>&1 || continue
+    case " ${seen} " in
+      *" ${ref} "*) continue ;;
+    esac
+    seen="${seen} ${ref}"
+    expected="$(review_series_id_for "$repo" "$ref" "$BASE_BRANCH_IDENTITY" branch)" || continue
+    [[ "$expected" == "$series" ]] || continue
+    matches="${matches} ${ref}"
+  done < <(shelve_candidate_refs "$repo")
+  # shellcheck disable=SC2086
+  set -- $matches
+  [[ "$#" -eq 1 ]] || return 1
+  ref="$1"
+  short="${ref#refs/heads/}"
+  # origin が無いのに gh を呼ばない。fixture やオフラインをネットワーク照会にしない。
+  git -C "$repo" remote get-url origin >/dev/null 2>&1 || return 1
+  remote_out="$(git -C "$repo" ls-remote --heads origin "refs/heads/${short}" 2>/dev/null)" || return 1
+  [[ -z "$remote_out" ]] || return 1
+  shelve_exactly_one_merged_pr "$short" "$repo" || return 1
+  tip="$(shelve_branch_tip "$repo" "$short")" || return 1
+  tip="$(printf '%s' "$tip" | tr 'A-F' 'a-f')"
+  [[ "$tip" == "$SHELVE_MERGED_HEAD" ]] || return 1
+  SHELVE_PREVIOUS_BRANCH="$ref"
+  return 0
+}
+
+# run_archive_only は lock を取り直す。ここは execute_tasks が lock を持ったまま
+# 下位の検証と移動だけを使う。条件を証明したあとの失敗は、従来の「left untouched」
+# 案内を重ねず、archive 側のエラーを返す。
+shelve_previous_critical_outputs() {
+  local before
+  [[ -n "${SHELVE_PREVIOUS_BRANCH:-}" ]] || return 1
+  ARCHIVE_REPO="$(cd "$REPO_ROOT" && pwd -P)" || return 1
+  ARCHIVE_PREVIOUS_BRANCH="$SHELVE_PREVIOUS_BRANCH"
+  ARCHIVE_CURRENT_BRANCH="$(archive_current_identity)" || {
+    echo "ERROR: cannot archive previous review output: current branch cannot be identified" >&2
+    return 1
+  }
+  archive_collect_live || return 1
+  local item found=false
+  for item in ${ARCHIVE_ITEMS[@]+"${ARCHIVE_ITEMS[@]}"}; do
+    found=true
+    break
+  done
+  [[ "$found" == true ]] || return 1
+  archive_validate_inventory || return 1
+  archive_validate_report || return 1
+  before="$(archive_current_identity)" || return 1
+  [[ "$before" == "$ARCHIVE_CURRENT_BRANCH" ]] || {
+    echo "ERROR: cannot archive previous review output: branch changed before archive" >&2
+    return 1
+  }
+  archive_live_outputs archive-only
 }
 
 capture_and_guard_unresolved_critical_state() {
@@ -413,6 +598,18 @@ capture_and_guard_unresolved_critical_state() {
       return 0
     fi
     if [[ -n "$previous_series" ]]; then
+      # 条件は previous_series_ready_to_shelve。origin と同じ GitHub リポジトリの
+      # マージ済み PR で、リモート ref が無く、head が手元の先端と一致するときだけ。
+      if previous_series_ready_to_shelve "$previous_series"; then
+        if ! shelve_previous_critical_outputs; then
+          return 1
+        fi
+        PREVIOUS_UNRESOLVED_BLOCK=""
+        PREVIOUS_UNRESOLVED_NONBLOCK=""
+        PRESERVE_PREVIOUS_CRITICAL_REPORT=false
+        echo "ℹ️  Previous Critical state belonged to a merged branch on this origin whose remote ref is gone and whose head matches that PR; archived it and started a new series." >&2
+        return 0
+      fi
       echo "ERROR: the previous Critical state belongs to another branch/base/scope." >&2
       echo "       Run an unfiltered full review to start a new review series." >&2
       echo "       Full review = no --perspective / --exclude-perspective / --mode cross-model (--cli is allowed)." >&2

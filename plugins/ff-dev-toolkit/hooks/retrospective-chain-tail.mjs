@@ -226,6 +226,9 @@ const toolUseFromRaw = (name, raw) => {
   if ((name === "run_terminal_command" || name === "Bash") && typeof raw.command === "string") {
     return { type: "tool_use", name: "Bash", input: { command: raw.command } };
   }
+  if (name === "run_command" && typeof raw.CommandLine === "string") {
+    return { type: "tool_use", name: "Bash", input: { command: raw.CommandLine } };
+  }
   if ((name === "Skill" || name === "skill") && typeof raw.skill === "string") {
     return { type: "tool_use", name: "Skill", input: { skill: raw.skill } };
   }
@@ -233,7 +236,7 @@ const toolUseFromRaw = (name, raw) => {
     return { type: "tool_use", name: "SlashCommand", input: { command: raw.command } };
   }
   if (name === "read_file" || name === "Read") {
-    const filePath = ["target_file", "file_path", "path"]
+    const filePath = ["target_file", "file_path", "path", "Path"]
       .map((key) => raw[key])
       .find((value) => typeof value === "string");
     const segment = typeof filePath === "string" ? TAIL_SKILL_FILE.exec(filePath) : null;
@@ -307,6 +310,98 @@ const normalizeGrokChat = (entry) => {
   return { type: "assistant", message: { content: blocks } };
 };
 
+const findMatchedOpenTagStart = (text, tagName, closeIndex) => {
+  const openToken = `<${tagName}>`;
+  const closeToken = `</${tagName}>`;
+  let depth = 1;
+  let cursor = closeIndex;
+  while (cursor > 0) {
+    const prevOpen = text.lastIndexOf(openToken, cursor - 1);
+    const prevClose = text.lastIndexOf(closeToken, cursor - 1);
+    if (prevOpen < 0) return -1;
+    if (prevClose > prevOpen) {
+      depth += 1;
+      cursor = prevClose;
+    } else {
+      depth -= 1;
+      if (depth === 0) return prevOpen;
+      cursor = prevOpen;
+    }
+  }
+  return -1;
+};
+
+const extractAntigravityUserRequest = (content) => {
+  const openMatch = /^\s*<USER_REQUEST>/.exec(content);
+  if (!openMatch) return content;
+  const rest = content.slice(openMatch[0].length);
+  let work = rest.replace(/\s+$/, "");
+
+  for (let steps = 0; steps < 16; steps += 1) {
+    if (work.endsWith("</USER_REQUEST>")) {
+      return work.slice(0, work.length - "</USER_REQUEST>".length);
+    }
+    const closeTagMatch = /<\/([A-Z][A-Z0-9_]{1,63})>$/.exec(work);
+    if (!closeTagMatch) break;
+    const tagName = closeTagMatch[1];
+    if (tagName === "USER_REQUEST") break;
+    const closeStart = work.length - closeTagMatch[0].length;
+    const openStart = findMatchedOpenTagStart(work, tagName, closeStart);
+    if (openStart < 0) break;
+    const beforeTag = work.slice(0, openStart).replace(/\s+$/, "");
+    if (!beforeTag.endsWith("</USER_REQUEST>") && !/<\/[A-Z][A-Z0-9_]{1,63}>$/.test(beforeTag)) {
+      break;
+    }
+    work = beforeTag;
+  }
+
+  const metaIdx = rest.lastIndexOf("<ADDITIONAL_METADATA>");
+  if (metaIdx >= 0 && rest.indexOf("</ADDITIONAL_METADATA>", metaIdx) < 0) {
+    const beforeMeta = rest.slice(0, metaIdx).replace(/\s+$/, "");
+    if (beforeMeta.endsWith("</USER_REQUEST>")) {
+      return beforeMeta.slice(0, beforeMeta.length - "</USER_REQUEST>".length);
+    }
+  }
+
+  const lastClose = rest.lastIndexOf("</USER_REQUEST>");
+  if (lastClose >= 0) {
+    return rest.slice(0, lastClose);
+  }
+  return rest;
+};
+
+const normalizeAntigravityStep = (entry) => {
+  if (
+    entry.type === "GENERIC" ||
+    entry.type === "SYSTEM_MESSAGE" ||
+    entry.type === "CHECKPOINT" ||
+    entry.type === "ERROR_MESSAGE"
+  ) {
+    return null;
+  }
+  if (entry.type === "USER_INPUT") {
+    if (entry.source === "SYSTEM") return null;
+    if (typeof entry.content !== "string") return null;
+    const text = extractAntigravityUserRequest(entry.content);
+    if (text.trim() === "") return null;
+    return { type: "user", message: { content: text } };
+  }
+  if (entry.type !== "PLANNER_RESPONSE") return null;
+  const blocks = [];
+  if (typeof entry.content === "string" && entry.content !== "") {
+    blocks.push({ type: "text", text: entry.content });
+  }
+  const calls = Array.isArray(entry.tool_calls) ? entry.tool_calls : [];
+  for (const call of calls) {
+    const raw = parseToolArguments(call && (call.args !== undefined ? call.args : call.arguments));
+    const name = call && typeof call.name === "string" ? call.name : "";
+    const block = toolUseFromRaw(name, raw);
+    if (block) blocks.push(block);
+  }
+  if (blocks.length === 0) return null;
+  return { type: "assistant", message: { content: blocks } };
+};
+
 const normalizeRecord = (entry) => {
   if (!entry || typeof entry !== "object") return entry;
   // Claude JSONL. Presence of `message` is the discriminator, not absence of
@@ -315,6 +410,16 @@ const normalizeRecord = (entry) => {
   const update = entry.params && entry.params.update;
   if (update && typeof update === "object" && typeof update.sessionUpdate === "string") {
     return normalizeGrokUpdate(update);
+  }
+  if (
+    entry.type === "USER_INPUT" ||
+    entry.type === "PLANNER_RESPONSE" ||
+    entry.type === "GENERIC" ||
+    entry.type === "SYSTEM_MESSAGE" ||
+    entry.type === "CHECKPOINT" ||
+    entry.type === "ERROR_MESSAGE"
+  ) {
+    return normalizeAntigravityStep(entry);
   }
   if (
     entry.type === "user" ||
@@ -510,12 +615,26 @@ const reachedChainTail = (transcriptPath) => {
   }
 };
 
-let source = "";
-process.stdin.setEncoding("utf8");
+const MAX_STDIN_BYTES = 16 * 1024 * 1024;
+const stdinChunks = [];
+let stdinBytes = 0;
+let stdinExceeded = false;
 process.stdin.on("data", (chunk) => {
-  source += chunk;
+  if (stdinExceeded) return;
+  const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8");
+  stdinBytes += buf.length;
+  if (stdinBytes > MAX_STDIN_BYTES) {
+    stdinExceeded = true;
+    stdinChunks.length = 0;
+    const drainTimer = setTimeout(() => process.exit(2), 3000);
+    drainTimer.unref();
+    return;
+  }
+  stdinChunks.push(buf);
 });
 process.stdin.on("end", () => {
+  if (stdinExceeded) process.exit(2);
+  const source = Buffer.concat(stdinChunks, stdinBytes).toString("utf8");
   let input;
   try {
     input = JSON.parse(source);

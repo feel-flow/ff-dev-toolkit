@@ -140,8 +140,8 @@ Closes 対象の Issue 本文に未チェックの `- [ ]` が残る回は `PREC
 判定は Closes 対象ごとに行う。
 
 1. 変更ファイルが `FF_POST_MERGE_PATHS` に 1 つも一致しない回は判定せず、コメントも読まない（`POST_MERGE_GATE=no-path`）。Closes 対象が無い回も判定しない（`no-closes`）。一致したファイルは `POST_MERGE_PATH=` に出す
-2. 本文と、この PR の完了報告（`<!-- close-issue-report:PR-<PR番号> -->` を含むコメント）から、語を含む行を拾う。本文は可視の全行が対象で、チェック済みの行に限らない（番号付きの AC や背景の文も拾うので、語は工程を指す言い方へ絞る）。フェンスと HTML コメントの中は数えない。別の PR の報告と普通のコメントは見ない
-3. 拾った行は `POST_MERGE_HIT=<Issue><TAB>body|report<TAB><行>` と `POST_MERGE_HIT_COUNT` に出す。1 行も無ければ `clear`、ack の無い対象に 1 行でもあれば `blocked`、全対象が ack 済みなら `acked`
+2. 本文と、この PR の完了報告（`<!-- close-issue-report:PR-<PR番号> -->` を含むコメント）から、語を含む行を拾う。本文は可視の全行が対象で、チェック済みの行に限らない（番号付きの AC や背景の文も拾うので、語は工程を指す言い方へ絞る）。フェンスと HTML コメントの中は数えない。別の PR の報告と普通のコメントは見ない。行全体が `<!-- ff-effort:begin -->` と `<!-- ff-effort:end -->` の組で閉じたブロックの中では、行頭が `-` でキー名が `effort_evidence` か `effort_basis` の行だけを語の一致から外す（`-` の直後と `:` の直前の半角スペースはあってもよい。タブは受けない。キー名はこの 2 つだけ）。`effort_deploy`、受け入れ条件、ブロックの外、キーの形に合わない地の文は外さない。マーカーとして数えるのは、フェンスの外かつ開いた HTML コメントの外で、行全体がそれらのコメントと完全一致する行だけである。フェンスの中、開いた HTML コメントの中、字下げ、末尾の空白はマーカーにしない。数えたマーカーが閉じていない、end が begin より前、begin が入れ子のときは、本文全体を除外せず可視の全行を見る。完全一致しない行が間にあっても、数えた組が閉じていればその組の中は除外する
+3. 拾った行は `POST_MERGE_HIT=<Issue><TAB>body|report<TAB><行>` と `POST_MERGE_HIT_COUNT` に出す。外した行のうち語に当たったものは `POST_MERGE_EXCLUDED=<Issue><TAB>body|report<TAB><行>` に出し、HIT にも件数にも入れない。外した行が無ければこの行は出ない。HIT が 1 行も無ければ `clear`（EXCLUDED だけでも clear）、ack の無い対象に HIT が 1 行でもあれば `blocked`、全対象が ack 済みなら `acked`
 
 復帰の手段は 2 つ。
 

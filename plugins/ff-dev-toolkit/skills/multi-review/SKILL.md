@@ -82,7 +82,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ### 1. プラン確認（--dry-run）
 
-cold/clear の新ブランチは `--fresh` 無しで開始する。旧ブランチのCriticalが残るときは [退避専用経路](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#archive-only) で `--archive-only=<確認した旧ブランチ名>` を1回実行してから通常起動する。旧名・base identityは実測し、未回収requestや壊れたstateは保全停止する。**同じブランチの2回目以降にfreshや退避を足さず、未解消Criticalのcarryを守る**。退避はレビュー完了を意味しない。
+cold/clear の新ブランチは `--fresh` 無しで開始する。旧ブランチのCriticalが残るときは [退避専用経路](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#archive-only) で `--archive-only=<確認した旧ブランチ名>` を1回実行してから通常起動する。マージ済みかつref無しかつhead一致だけ自動退避し、他は止まる。旧名・base identityは実測し、未回収requestや壊れたstateは保全停止する。**同じブランチの2回目以降にfreshや退避を足さず**。
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --dry-run --route <REVIEW_ROUTE の値> $ARGUMENTS

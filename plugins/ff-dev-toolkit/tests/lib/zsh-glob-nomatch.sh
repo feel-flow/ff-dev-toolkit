@@ -62,12 +62,26 @@
 
 _FF_ZSH_GLOB_AWK_PROG='
 function addc(s, flag,   k) {
+  # flag は 1 文字ぶんを渡す（s の文字数だけ繰り返して連結する）。2 文字の s へ "11" を渡すと、
+  # 後ろの文字の引用状態が 2 文字ずれて未引用の glob を引用済みと読む（Issue `#2756` のレビュー）。
   # 空の引用（`ex""port` / `U""=`）は flag の文字を残さないので、引用を含む語かどうかと
   # 最初の引用より前の文字数を別に持つ
   if (flag == "1" && !wq[wc[D]]) { wq[wc[D]] = 1; fq[wc[D]] = length(wb[wc[D]]) }
   wb[wc[D]] = wb[wc[D]] s
   for (k = 1; k <= length(s); k++) wf[wc[D]] = wf[wc[D]] flag
   started[wc[D]] = 1
+}
+# 修飾子（Issue `#2756`）: zsh は引用の内外を問わず `$name:X` の `:X` を履歴修飾子として値へ当てる
+# （`"$db:refs"` は `:r` で拡張子を落とす）。bash では `$name:X` と `${name}:X` は同じ値なので、
+# 波括弧で閉じた案は bash の意味を変えない。`pos` は src 上の `$` の位置。
+# 文字の集合はパラメータ展開で効く修飾子（`f` / `F` / `w` / `W` を含む）。`&`（直前の置換の繰り返し）は
+# 入れない — 置換案に `&` が入ると、bash 5.2 以降の patsub_replacement で hook の置換が一致文字列へ展開される。
+function chk_mod(pos,   t, w) {
+  if (!mm) return
+  t = substr(src, pos)
+  if (!match(t, /^\$[A-Za-z_][A-Za-z0-9_]*:[aAcefFghlpPqQrstuwWx]/)) return
+  w = substr(t, 1, RLENGTH)
+  printf "%s\t${%s}:%s\n", w, substr(w, 2, RLENGTH - 3), substr(w, RLENGTH, 1)
 }
 function push(kind) {
   D++
@@ -146,6 +160,8 @@ function fin(d,   w, f, q, qp) {
     tsf[d] = !bpre[d] && !q && (w == "export" || w == "typeset" || w == "local" || w == "declare" || w == "readonly" || w == "integer" || w == "float")
     bpre[d] = 0
   }
+  # 修飾子モードは語の判定を出さない（検出は字句解析の `$` の位置で chk_mod が済ませる）
+  if (mm) return
   if (exm) { check_expansion(w, f); return }
   if (ng[d]) return
   cur_q = q
@@ -201,7 +217,7 @@ function check_query(w, f,   k, m) {
     return
   }
 }
-BEGIN { SQ = sprintf("%c", 39); exm = (mode == "expansion" || mode == "equals-fix") }
+BEGIN { SQ = sprintf("%c", 39); exm = (mode == "expansion" || mode == "equals-fix"); mm = (mode == "modifier-fix") }
 { src = src (NR > 1 ? "\n" : "") $0 }
 END {
   n = length(src)
@@ -244,6 +260,10 @@ END {
         if (substr(src, i, 3) == "$((") { addc("$", "1"); push("A"); ad[D] = 2; i += 3; continue }
         if (c2 == "(") { addc("$", exm ? "c" : "1"); push("U"); sub_[D] = 1; i += 2; continue }
         if (c2 == "{") { addc("$", "1"); push("P"); pd[D] = 1; i += 2; continue }
+        # 特殊パラメータ（`$$` / `$?` など）は 2 文字まとめて読む（未引用と同じ）。1 文字ずつ進むと
+        # `"$$a:r"` の 2 文字目の `$` から `$a:r` を拾い、値を変える書き換えになる（Issue `#2756` のレビュー）。
+        if (c2 != "" && index("*?@#$!-0123456789", c2) > 0) { addc("$" c2, "1"); i += 2; continue }
+        chk_mod(i)
       }
       addc(c, "1"); i++; continue
     }
@@ -256,6 +276,7 @@ END {
     if (c == SQ) { addc("", "1"); push("S"); i++; continue }
     if (c == "\"") { addc("", "1"); push("D"); i++; continue }
     if (c == "$") {
+      chk_mod(i)
       c2 = substr(src, i + 1, 1)
       if (c2 == SQ) { addc("", "1"); push("E"); i += 2; continue }
       if (substr(src, i, 3) == "$((") { addc("$", "1"); push("A"); ad[D] = 2; i += 3; continue }
@@ -273,7 +294,7 @@ END {
         match(tail, /^\$[A-Za-z_][A-Za-z0-9_]*/)
         addc(substr(tail, 1, RLENGTH), "v"); i += RLENGTH; continue
       }
-      if (c2 != "" && index("*?@#$!-0123456789", c2) > 0) { addc("$" c2, "11"); i += 2; continue }
+      if (c2 != "" && index("*?@#$!-0123456789", c2) > 0) { addc("$" c2, "1"); i += 2; continue }
       addc("$", "1"); i++; continue
     }
     if (c == "`") { addc("$", exm ? "c" : "1"); push("K"); i++; continue }
@@ -349,6 +370,16 @@ ff_zsh_expansion_scan() {
 # 入力書き換え（Issue `#2255`）専用で、ff_zsh_expansion_scan の出力契約は変えない。rc は glob と共通。
 ff_zsh_equals_fix_scan() {
   printf '%s\n' "$1" | "${FF_ZSH_GLOB_AWK:-awk}" -v mode=equals-fix "$_FF_ZSH_GLOB_AWK_PROG"
+}
+
+# stdout: zsh が履歴修飾子として値を書き換える `$name:X`（X は修飾子の文字）1 つにつき 1 行
+# `$name:X\t${name}:X`（Issue `#2756`）。未引用と二重引用の中（`$(…)` / バッククォート、`${…}` の中に入れ子にした
+# 二重引用・`$(…)` を含む）を数え、単一引用・`$'…'`・`${…}` の直下・`\$` でエスケープした形・特殊パラメータの直後
+# （`"$$a:r"`）は数えない。位置引数・特殊引数（`$1:t` / `"$@:r"`）は対象外。`${name}:X` / `${name:X}` は利用者が
+# 明示した形なので出さない。
+# 入力書き換え専用で、ff_zsh_glob_scan / ff_zsh_expansion_scan の出力契約は変えない。rc は glob と共通。
+ff_zsh_modifier_fix_scan() {
+  printf '%s\n' "$1" | "${FF_ZSH_GLOB_AWK:-awk}" -v mode=modifier-fix "$_FF_ZSH_GLOB_AWK_PROG"
 }
 
 # 単語分割の書き換え（Issue `#2491`）で前置する文。未引用の `$VAR` / `${VAR}` を bash と同じ規則で

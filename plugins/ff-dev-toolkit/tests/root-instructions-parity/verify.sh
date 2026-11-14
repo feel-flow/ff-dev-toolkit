@@ -63,6 +63,7 @@
 #   区間マーカーの `:end` を 1 つ消すと (3) が赤になり、記載一致の判定へ進まない。
 #   既存マーカーを除いて 2 文書とも全文を 1 区間で包むと (7) が赤になる（比較対象が 0 行）。
 #     既存マーカーを残したまま包んだ場合は (3) の入れ子検出が先に赤になる。
+# 空振り検出: 上の (1)〜(7) の実ファイル変異に加え、24,000 bytes 上限検査は `23999` bytes（pass=0）/`24000` bytes（fail=1）/ 展開後 `24000` bytes 超（fail=1）/ 壊れた `@[inc](missing.md)`（rc=2）の scratch 自己検証を毎回実測する（`AGENTS.md` 不在・読込不可・依存 `python3` 不在時は非 0 で失敗し skip しない）。
 
 set -euo pipefail
 
@@ -355,6 +356,203 @@ for rel in $TARGETS; do
     esac
   done
 done
+
+# ── (4) AGENTS.md 24,000 bytes 上限（Google Antigravity 切り詰め防止） ────────
+echo
+echo "-- AGENTS.md 24,000 bytes 上限 --"
+
+if ! command -v python3 >/dev/null 2>&1; then
+  bad "python3 が見つからないため AGENTS.md 24,000 bytes 上限検査を実行できません"
+else
+  check_agents_md_byte_cap() { # <agents_md> <repo_root> -> prints "<raw>\t<expanded>"
+    python3 - "$1" "$2" <<'PY'
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+CAP_BYTES = 24000
+AT_LINK_RE = re.compile(r"@\[[^\]\n]+\]\(([^)\s\n]+)\)")
+FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+CLOSE_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*\r?\n?$")
+
+
+def read_regular_text(path: Path, repo_real: Path) -> tuple[bytes, str]:
+    if path.is_symlink():
+        raise RuntimeError(f"symlink is not allowed: {path}")
+    if not path.exists() or not path.is_file():
+        raise RuntimeError(f"regular file missing: {path}")
+    info = path.stat()
+    if not stat.S_ISREG(info.st_mode):
+        raise RuntimeError(f"not a regular file: {path}")
+    if not os.access(path, os.R_OK):
+        raise RuntimeError(f"unreadable file: {path}")
+    real = path.resolve(strict=True)
+    try:
+        real.relative_to(repo_real)
+    except ValueError as exc:
+        raise RuntimeError(f"escapes repo root: {path} -> {real}") from exc
+    raw = path.read_bytes()
+    if not raw:
+        raise RuntimeError(f"empty file: {path}")
+    return raw, raw.decode("utf-8")
+
+
+def expand_line_outside_code(line: str, cur_dir: Path, repo_real: Path, stack: frozenset[Path]) -> str:
+    out = []
+    i = 0
+    n = len(line)
+    buf = []
+
+    def flush_plain(segment: str) -> None:
+        pos = 0
+        for m in AT_LINK_RE.finditer(segment):
+            out.append(segment[pos:m.start()])
+            rel = m.group(1)
+            candidate = (cur_dir / rel)
+            # Reject symlinks anywhere along relative link traversal before resolving
+            probe = cur_dir
+            for part in Path(rel).parts:
+                if part in ("", "."):
+                    continue
+                probe = probe / part
+                if probe.is_symlink():
+                    raise RuntimeError(f"symlink component in @-reference: {probe}")
+            out.append(expand_doc(candidate, repo_real, stack))
+            pos = m.end()
+        out.append(segment[pos:])
+
+    while i < n:
+        if line[i] == "`":
+            tick_len = 1
+            while i + tick_len < n and line[i + tick_len] == "`":
+                tick_len += 1
+            closer = "`" * tick_len
+            end = line.find(closer, i + tick_len)
+            if end != -1:
+                if buf:
+                    flush_plain("".join(buf))
+                    buf.clear()
+                out.append(line[i : end + tick_len])
+                i = end + tick_len
+                continue
+        buf.append(line[i])
+        i += 1
+    if buf:
+        flush_plain("".join(buf))
+    return "".join(out)
+
+
+def expand_doc(doc_path: Path, repo_real: Path, stack: frozenset[Path]) -> str:
+    _, text = read_regular_text(doc_path, repo_real)
+    real = doc_path.resolve(strict=True)
+    if real in stack:
+        raise RuntimeError(f"cycle in @-reference: {doc_path}")
+    next_stack = stack | {real}
+    cur_dir = real.parent
+
+    out_lines = []
+    fence_char = ""
+    fence_len = 0
+    for line in text.splitlines(keepends=True):
+        if not fence_char:
+            m = FENCE_RE.match(line)
+            if m:
+                marker = m.group(1)
+                info = m.group(2)
+                if marker[0] == "`" and "`" in info:
+                    pass
+                else:
+                    fence_char = marker[0]
+                    fence_len = len(marker)
+                    out_lines.append(line)
+                    continue
+        else:
+            cm = CLOSE_FENCE_RE.match(line)
+            if cm and cm.group(1)[0] == fence_char and len(cm.group(1)) >= fence_len:
+                fence_char = ""
+                fence_len = 0
+            out_lines.append(line)
+            continue
+        out_lines.append(expand_line_outside_code(line, cur_dir, repo_real, next_stack))
+    return "".join(out_lines)
+
+
+def main() -> int:
+    if len(sys.argv) != 3:
+        sys.stderr.write("usage: check_agents_md_byte_cap <agents_md> <repo_root>\n")
+        return 2
+    agents_md = Path(sys.argv[1])
+    repo_root = Path(sys.argv[2])
+    if not repo_root.is_dir():
+        sys.stderr.write(f"repo root not found: {repo_root}\n")
+        return 2
+    repo_real = repo_root.resolve(strict=True)
+    try:
+        raw_bytes_data, _ = read_regular_text(agents_md, repo_real)
+        expanded_text = expand_doc(agents_md, repo_real, frozenset())
+    except (RuntimeError, OSError, UnicodeDecodeError) as exc:
+        sys.stderr.write(f"agents-md-byte-cap error: {exc}\n")
+        return 2
+    raw_bytes = len(raw_bytes_data)
+    expanded_bytes = len(expanded_text.encode("utf-8"))
+    print(f"{raw_bytes}\t{expanded_bytes}")
+    if raw_bytes < CAP_BYTES and expanded_bytes < CAP_BYTES:
+        return 0
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+PY
+  }
+
+  cap_rc=0
+  cap_err_file="$(mktemp "${TMPDIR:-/tmp}/ff-agents-cap.XXXXXX")"
+  cap_out="$(check_agents_md_byte_cap "$REPO_ROOT/AGENTS.md" "$REPO_ROOT" 2>"$cap_err_file")" || cap_rc=$?
+  cap_err="$(cat "$cap_err_file" 2>/dev/null || true)"
+  rm -f "$cap_err_file"
+  if [ "$cap_rc" -eq 0 ]; then
+    raw_b="${cap_out%%	*}"
+    exp_b="${cap_out##*	}"
+    ok "AGENTS.md が Antigravity 上限未満（raw=${raw_b}B, expanded=${exp_b}B < 24,000B）"
+  else
+    bad "AGENTS.md が 24,000B 上限を超過または展開に失敗（rc=${cap_rc}, out='${cap_out}', err='${cap_err}'）"
+  fi
+
+  # Scratch self-tests verifying boundaries (23999 pass, 24000 fail, expanded>=24000 fail, broken fail, inline-code ignore)
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/ff-agents-cap-test.XXXXXX")"
+  sub_rc=0
+  (
+    set -euo pipefail
+    python3 -c 'from pathlib import Path; import sys; d = Path(sys.argv[1]); (d / "pass.md").write_bytes(b"a" * 23999); (d / "edge.md").write_bytes(b"a" * 24000); (d / "sub.md").write_bytes(b"b" * 23950); (d / "inc.md").write_text("# head\n@[inc](sub.md)\n" + "x" * 80, encoding="utf-8"); (d / "broken.md").write_text("@[inc](missing.md)\n", encoding="utf-8"); (d / "code.md").write_text("Example `@[label](missing.md)` only\n```\n@[fenced](missing.md)\n```\n", encoding="utf-8"); (d / "fence_longer.md").write_text("```\ncode\n````   \n@[inc](sub.md)\n" + "x" * 60, encoding="utf-8")' "$tmp"
+
+    rc_pass=0; check_agents_md_byte_cap "$tmp/pass.md" "$tmp" >/dev/null 2>&1 || rc_pass=$?
+    [ "$rc_pass" -eq 0 ] || exit 11
+
+    rc_edge=0; check_agents_md_byte_cap "$tmp/edge.md" "$tmp" >/dev/null 2>&1 || rc_edge=$?
+    [ "$rc_edge" -eq 1 ] || exit 12
+
+    rc_inc=0; check_agents_md_byte_cap "$tmp/inc.md" "$tmp" >/dev/null 2>&1 || rc_inc=$?
+    [ "$rc_inc" -eq 1 ] || exit 13
+
+    rc_broken=0; check_agents_md_byte_cap "$tmp/broken.md" "$tmp" >/dev/null 2>&1 || rc_broken=$?
+    [ "$rc_broken" -ne 0 ] || exit 14
+
+    rc_code=0; check_agents_md_byte_cap "$tmp/code.md" "$tmp" >/dev/null 2>&1 || rc_code=$?
+    [ "$rc_code" -eq 0 ] || exit 15
+
+    rc_fence_longer=0; check_agents_md_byte_cap "$tmp/fence_longer.md" "$tmp" >/dev/null 2>&1 || rc_fence_longer=$?
+    [ "$rc_fence_longer" -eq 1 ] || exit 16
+  ) || sub_rc=$?
+  rm -rf "$tmp"
+  if [ "$sub_rc" -eq 0 ]; then
+    ok "AGENTS.md 24,000 bytes 境界・展開・壊れたリンク・コードspan無視の自己検証 pass"
+  else
+    bad "AGENTS.md 24,000 bytes 自己検証が失敗しました (rc=${sub_rc})"
+  fi
+fi
 
 echo
 if [ "$FAIL" -gt 0 ]; then

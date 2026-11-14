@@ -4,7 +4,7 @@
 
 ## 概要
 
-複数のAI CLI（Claude Code、Codex、Copilot、Grok）をレビュワーとしてオーケストレーションし、設定駆動で統一的に管理する運用ガイドです。
+複数のAI CLI（Claude Code、Codex、Copilot、Grok、Google Antigravity）をレビュワーとしてオーケストレーションし、設定駆動で統一的に管理する運用ガイドです。
 
 **目的**: 各CLIの得意分野とコスト特性を活かし、高品質かつコスト効率の良いコードレビューを実現する
 
@@ -908,15 +908,16 @@ grep -A 5 "Critical" .review-results/integrated-report.md
 
 ## ホスト自身のレーンのホスト委譲（`--delegate-to-host[=<cli>]`）
 
-review 専用。**ホスト自身のモデルのレーン 1 本だけ**を **CLI を起動せず**、実行をホスト（このスキルを動かしている Claude Code / Codex / grok のセッション）へ返し、ホストの**サブエージェント**で走らせる選択肢。対象レーンはフラグの値で決まる（Issue `#2118` で `codex-cli` / `grok-cli` へ一般化）:
+review 専用。**ホスト自身のモデルのレーン 1 本だけ**を **CLI を起動せず**、実行をホスト（このスキルを動かしている Claude Code / Codex / grok / Google Antigravity のセッション）へ返し、ホストの**サブエージェント**で走らせる選択肢。対象レーンはフラグの値で決まる（Issue `#2118` で `codex-cli` / `grok-cli` へ一般化、Issue `#2785` で `antigravity-cli` を追加）:
 
 | ホスト | フラグ | 委譲レーン | サブエージェント |
 | --- | --- | --- | --- |
 | Claude Code | `--delegate-to-host`（= `--delegate-to-host=claude-code`） | `claude-code` | Agent ツール |
 | Codex | `--delegate-to-host=codex-cli` | `codex-cli` | `spawn_agent`（`multi_agent` 機能。codex 0.162 で stable・既定 ON） |
 | grok | `--delegate-to-host=grok-cli` | `grok-cli` | `spawn_subagent`（`explore` 型。深さ 1） |
+| Google Antigravity | `--delegate-to-host=antigravity-cli` | `antigravity-cli` | `invoke_subagent`（`research` 型 read-only） |
 
-それ以外の値は exit 1 で拒否する。**スクリプト直接呼び出し**の既定（フラグなし）は従来どおり CLI を spawn する。Claude Code / Codex / grok で標準セルフレビューを始める際の**スキル側の既定**は [主担当ホストのネイティブセルフレビュー](./self-review.md#主担当ホストのネイティブセルフレビュー)に従い、ホストの起動ツールへ直接渡す。このフラグは必要としない。対象固定・受け渡し・完了判定も同節を正本とする。
+それ以外の値は exit 1 で拒否する。**スクリプト直接呼び出し**の既定（フラグなし）は従来どおり CLI を spawn する。Claude Code / Codex / grok / Google Antigravity で標準セルフレビューを始める際の**スキル側の既定**は [主担当ホストのネイティブセルフレビュー](./self-review.md#主担当ホストのネイティブセルフレビュー)に従い、ホストの起動ツールへ直接渡す。このフラグは必要としない。対象固定・受け渡し・完了判定も同節を正本とする。
 
 ### いつ使うか
 
@@ -941,7 +942,7 @@ grok をホストにした場合は別の動機がある: `grok -p`（headless�
 
 | | 委譲経路 |
 | --- | --- |
-| 変わる | 委譲レーン（既定 `claude-code`、`=codex-cli` / `=grok-cli` で指定）で CLI プロセスを 1 つも起動しない。そのレーンのタスクは「委譲待ち（pending）」として報告される |
+| 変わる | 委譲レーン（既定 `claude-code`、`=codex-cli` / `=grok-cli` / `=antigravity-cli` で指定）で CLI プロセスを 1 つも起動しない。そのレーンのタスクは「委譲待ち（pending）」として報告される |
 | 変わらない | プラン構築・プロンプト生成・固定 diff・タイムアウトの受け渡し・他レーンの実行・統合レポートの生成・既定の挙動（フラグなし） |
 
 対象はホスト自身のレーン 1 本だけ。他レーンを同じ経路へ流すと「複数の**違う**モデルを同じ diff に当てる」という本ツールの目的が黙って失われる（レポート上は観点が埋まったまま、実体はホスト 1 モデルの多重実行になる）。ホストと違うモデルのレーンを指定しないこと（`--delegate-to-host=codex-cli` を Claude ホストで使う等）。ホスト種別の env は継承されうるので、案内の判定にだけ使い、実行経路は変えない。委譲するレーンの選択は運用の規範。
@@ -1127,7 +1128,7 @@ cold/clear の新ブランチではfreshは不要である。旧Criticalが残�
 
 ### レビューを起動しない退避（`--archive-only[=<previous-branch>]`）
 
-cold/clear の新ブランチは `--fresh` 無しで開始する。前ブランチの current-format Critical が残る場合は、旧ブランチ名を呼出側で確認し、先に退避だけを1回実行する。系列tokenは repo/branch/base/scope のダイジェストなので、旧名やマージ済みかを逆算しない。削除済みの旧ブランチ名も照合できる。
+cold/clear の新ブランチは `--fresh` 無しで開始する。前ブランチの current-format Critical が残るとき、絞り込みレビューは、手元のブランチ名と reflog の checkout 元のうち系列 token に一致するものがちょうど 1 件で、その GitHub PR が origin の設定 URL と同じ owner/name のマージ済み PR（fork や GH_REPO の指す別リポジトリは含めない）かつ origin のリモート ref が無く、手元に残るそのブランチの先端（削除済みなら、そのブランチから離れたときの HEAD reflog の commit）がマージ済み PR の head と一致するときだけ、その系列を自動退避して新しい系列を始める。系列 token は commit を含まないので、その head をこの Critical が見ていたことまでは証明しない。ダイジェストから旧名やマージ済みかを逆算はしない。一致が 0 件か複数、origin が無い、照会先が origin と違う、fork の PR、リモート ref が残る、PR が未マージ、head の commit が一致しないか取れない、または照会が失敗したときは、今までどおり中断する。そのときは旧ブランチ名を呼出側で確認し、先に退避だけを 1 回実行する。削除済みの旧ブランチ名も、手元の名前が token と一致すれば照合できる。
 
 ```bash
 # 確認した旧ブランチ名と、旧runと同じbase identityを渡す（developとorigin/developは同値）。

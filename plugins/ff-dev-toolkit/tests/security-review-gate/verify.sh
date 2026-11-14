@@ -55,7 +55,7 @@ run_gate() { # [VAR=値 ...] -- <review-route.sh の引数...>
   RC=0
   OUT="$(cd "$CWD" && env -u FF_JEV_MODE -u FF_JEV_POINTS -u FF_JEV_ENABLED \
     -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT \
-    -u CLAUDECODE -u GROK_AGENT -u GROK_SUBAGENTS -u CODEX_THREAD_ID -u CODEX_HOME -u MULTI_AGENT_CONFIG \
+    -u CLAUDECODE -u GROK_AGENT -u GROK_SUBAGENTS -u CODEX_THREAD_ID -u CODEX_HOME -u ANTIGRAVITY_AGENT -u MULTI_AGENT_CONFIG \
     -u MULTI_AGENT_SECURITY_GLOB -u MULTI_AGENT_SECURITY_GLOB_EXTRA -u MULTI_AGENT_SECURITY_REVIEW \
     -u WORKFLOW_TIER_BASE ${envs[@]+"${envs[@]}"} \
     bash "$REVIEW_ROUTE_SH" "$@" 2>"$TEST_TMP/stderr")" || RC=$?
@@ -222,7 +222,7 @@ mkdir -p "$NOROUTER/scripts" "$NOROUTER/.claude-plugin"
 cp "$REVIEW_ROUTE_SH" "$NOROUTER/scripts/"
 cp "$PLUGIN_ROOT/.claude-plugin/plugin.json" "$NOROUTER/.claude-plugin/"
 RC=0
-OUT="$(cd "$CWD" && env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT CLAUDECODE=1 bash "$NOROUTER/scripts/review-route.sh" --files src/auth/login.ts 2>/dev/null)" || RC=$?
+OUT="$(cd "$CWD" && env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT -u ANTIGRAVITY_AGENT CLAUDECODE=1 bash "$NOROUTER/scripts/review-route.sh" --files src/auth/login.ts 2>/dev/null)" || RC=$?
 [ "$RC" -eq 2 ] && [ "$(kv REVIEW_SECURITY_SENSITIVE)" = "unknown" ] && [ "$(kv REVIEW_SECURITY_GATE)" = "unverified" ] \
   && [ "$(kv REVIEW_SECURITY_REPORT_LINE)" = "専用セキュリティゲート: 未確認（判定不能: 決定木のルータがありません）" ] \
   && ok "B7 ルータが無い配置は unknown / unverified と「未確認」の 1 行で exit 2" \
@@ -477,6 +477,48 @@ assert_reason "M15a 報告行は空の値を名指しする（置き場違いと
 printf 'review: {security_glob_extra: "app/ledger/*"}\n' > "$CFG"
 run_gate CLAUDECODE=1 "MULTI_AGENT_CONFIG=$CFG" "PATH=$NOYQ_PATH" -- --files app/ledger/post.rb
 assert_gate "M16 yq が無い環境でフロー形式のキーがある → unknown（行頭一致で見落とさない）" unknown security-review
+
+echo "security-review-gate AG: 主担当 antigravity-cli の専用ゲート（ANTIGRAVITY_AGENT=1）"
+git -C "$REPO" checkout -q auth-change
+git -C "$REPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/base
+run_gate ANTIGRAVITY_AGENT=1 -- --files src/auth/login.ts
+if [ "$RC" -eq 0 ] && [ "$(kv REVIEW_PRIMARY_HOST)" = "antigravity-cli" ] && [ "$(kv REVIEW_SECURITY_GATE)" = "antigravity-session" ]; then
+  ok "AG1 ANTIGRAVITY_AGENT=1 で該当 → antigravity-cli / antigravity-session"
+else
+  bad "AG1 antigravity: rc=$RC host=[$(kv REVIEW_PRIMARY_HOST)] gate=[$(kv REVIEW_SECURITY_GATE)]"
+fi
+line="$(kv REVIEW_SECURITY_REPORT_LINE)"
+case "$line" in
+  "専用セキュリティゲート: Antigravity のセッション内レビューを実行する（担当: antigravity-cli。対象: --files の変更。根拠: src/auth/login.ts）")
+    case "$line" in *指摘なし*) bad "AG2 実行行が「指摘なし」を含む: [$line]" ;; *) ok "AG2 報告行は担当 antigravity-cli と対象を出し、「指摘なし」と書かない" ;; esac ;;
+  *) bad "AG2 報告行: [$line]" ;;
+esac
+run_gate ANTIGRAVITY_AGENT=1 -- --git --base origin/other
+line="$(kv REVIEW_SECURITY_REPORT_LINE)"
+if [ "$(kv REVIEW_SECURITY_BASE_CHECK)" = "mismatch" ] && [ "$(kv REVIEW_SECURITY_GATE)" = "antigravity-session" ]; then
+  case "$line" in
+    *"対象: origin/other...HEAD"*) ok "AG3 base が origin/HEAD と食い違っても antigravity-session（対象範囲は --base）" ;;
+    *) bad "AG3 報告行に origin/other...HEAD が無い: [$line]" ;;
+  esac
+else
+  bad "AG3 antigravity + mismatch: check=[$(kv REVIEW_SECURITY_BASE_CHECK)] gate=[$(kv REVIEW_SECURITY_GATE)]"
+fi
+run_gate CLAUDECODE=1 ANTIGRAVITY_AGENT=1 -- --files src/auth/login.ts
+if [ "$(kv REVIEW_PRIMARY_HOST)" = "unknown" ] && [ "$(kv REVIEW_SECURITY_GATE)" = "unsupported" ]; then
+  ok "AG4 CLAUDECODE=1 と ANTIGRAVITY_AGENT=1 の競合は unknown / unsupported"
+else
+  bad "AG4 競合: host=[$(kv REVIEW_PRIMARY_HOST)] gate=[$(kv REVIEW_SECURITY_GATE)]"
+fi
+run_gate ANTIGRAVITY_AGENT=1 -- --git --base no-such-branch
+line="$(kv REVIEW_SECURITY_REPORT_LINE)"
+if [ "$(kv REVIEW_SECURITY_GATE)" = "unverified" ]; then
+  case "$line" in
+    *"未確認（セッション内レビューの基点 no-such-branch を解決できません"*) ok "AG5 解決できない --base は unverified" ;;
+    *) bad "AG5 未解決 base の報告行: [$line]" ;;
+  esac
+else
+  bad "AG5 未解決 base: gate=[$(kv REVIEW_SECURITY_GATE)] line=[$line]"
+fi
 
 echo ""
 echo "security-review-gate: passed=${PASS} failed=${FAIL}"

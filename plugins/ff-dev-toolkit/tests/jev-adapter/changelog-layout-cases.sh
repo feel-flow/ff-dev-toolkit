@@ -81,5 +81,39 @@ run_h23_layout_cases() {
   h23_layout_check date-less unreadable-helpful
   h23_layout_make legacy-empty-space CHANGELOG.md; h23_layout_legacy
   printf '%s\n' '- 追加: ' >>"$layout_target"; h23_layout_check legacy-empty-space unreadable-format
-  if [[ "$layout_count" -eq 24 ]]; then ok 'H23 layout: 24ケースを実行した'; else bad "H23 layout: ケースが空または欠落（$layout_count / 24）"; fi
+  # Issue `#2587`: 説明文つきの誘導スタブと、`## Changelog` を持たず版見出しから始まる分割側（導入先の実配置）。
+  h23_layout_prose_stub() {
+    printf '%s\n' '' '## Changelog' '' \
+      '> **Changelog 本体は [playbook/CHANGELOG.md](playbook/CHANGELOG.md) へ移動した**。' \
+      '> このセクションは誘導スタブであり、ここに版を追記しない。' '' \
+      '- 現行: [playbook/CHANGELOG.md](playbook/CHANGELOG.md)' "$@" >>"$layout_case/PLAYBOOK.md"
+  }
+  h23_layout_make stub-prose playbook/CHANGELOG.md; h23_layout_prose_stub; h23_layout_check stub-prose ok
+  h23_layout_make headingless playbook/CHANGELOG.md; h23_layout_prose_stub
+  sed 's/^## Changelog$/# ACE Playbook Changelog/' "$layout_target" >"$layout_target.tmp"
+  mv "$layout_target.tmp" "$layout_target"; h23_layout_check headingless ok
+  h23_layout_make stub-nolink playbook/CHANGELOG.md
+  printf '%s\n' '' '## Changelog' '' '> 履歴は [別の場所](docs/history.md) へ移した。' >>"$layout_case/PLAYBOOK.md"
+  h23_layout_check stub-nolink no-rows
+  h23_layout_make stub-rows playbook/CHANGELOG.md; h23_layout_prose_stub '- ACE-10-1: 本体に残った行'
+  h23_layout_check stub-rows no-rows
+  h23_layout_make headingless-blocked playbook/CHANGELOG.md
+  sed 's/^## Changelog$/## Notes/' "$layout_target" >"$layout_target.tmp"
+  mv "$layout_target.tmp" "$layout_target"; h23_layout_check headingless-blocked unreadable-file
+  # 生成器はインラインコードを先に空白化する。書き込み口も同じ読み方でなければ判定が割れる。
+  h23_layout_make stub-code-quote playbook/CHANGELOG.md
+  h23_layout_prose_stub '> 履歴（追加と `Helpful +1`、`- ACE-10-1: 例`）は分割した。'
+  h23_layout_check stub-code-quote ok
+  h23_layout_make stub-code-link playbook/CHANGELOG.md
+  printf '%s\n' '' '## Changelog' '' '- 現行: `[history](playbook/CHANGELOG.md)` と書いていた。' >>"$layout_case/PLAYBOOK.md"
+  h23_layout_check stub-code-link no-rows
+  # リンク先は `./`・fragment・タイトルを外して固定候補と比べる（素のリンクを併記しない）。
+  h23_layout_make stub-normalized playbook/CHANGELOG.md
+  printf '%s\n' '' '## Changelog' '' '> 履歴は [分割先](./playbook/CHANGELOG.md#top "履歴") へ移した。' >>"$layout_case/PLAYBOOK.md"
+  h23_layout_check stub-normalized ok
+  # 版見出しから始まる読み方は固定候補だけ。本体に `## Changelog` が無ければ従来どおり節不在。
+  h23_layout_make main-headingless CHANGELOG.md
+  sed '/^## Changelog$/d' "$layout_target" >>"$layout_case/PLAYBOOK.md"; rm "$layout_target"
+  h23_layout_check main-headingless no-changelog
+  if [[ "$layout_count" -eq 33 ]]; then ok 'H23 layout: 33ケースを実行した'; else bad "H23 layout: ケースが空または欠落（$layout_count / 33）"; fi
 }

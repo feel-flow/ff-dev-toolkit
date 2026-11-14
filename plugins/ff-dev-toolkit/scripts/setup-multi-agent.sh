@@ -412,12 +412,13 @@ detect_ai_clis() {
     print_step 3 "AI CLI を検出中..."
 
     local found=0
-    local total=4
+    local total=5
 
     local clis="claude-code:claude:Premium
 codex-cli:codex:Standard
 copilot-cli:copilot:Metered
-grok-cli:grok:Flat-rate"
+grok-cli:grok:Flat-rate
+antigravity-cli:agy:Metered"
 
     while IFS=: read -r name cmd tier; do
         if command -v "$cmd" &>/dev/null; then
@@ -439,7 +440,8 @@ grok-cli:grok:Flat-rate"
         print_info "  Claude Code:  npm install -g @anthropic-ai/claude-code"
         print_info "  Codex CLI:    npm install -g @openai/codex"
         print_info "  Copilot CLI:  gh extension install github/gh-copilot"
-        print_info "  Grok CLI:     npm install -g @xai-official/grok"
+        print_info "  Grok CLI:        npm install -g @xai-official/grok"
+        print_info "  Antigravity CLI: agy (Google Antigravity CLI)"
         exit 1
     else
         print_success "${found}/${total} の AI CLI が利用可能です"
@@ -489,8 +491,15 @@ show_install_guides() {
         print_info "  npm install -g @xai-official/grok"
     fi
 
+    if ! command -v agy &>/dev/null; then
+        all_installed=false
+        echo ""
+        echo -e "  ${BOLD}Google Antigravity CLI (Metered — review 既定ラインナップ外・オプトイン)${NC}"
+        print_info "  Google Antigravity IDE / agy CLI を導入し、agy --version で確認"
+    fi
+
     if [[ "$all_installed" == "true" ]]; then
-        print_success "全4つの AI CLI がインストール済みです！"
+        print_success "全5つの AI CLI がインストール済みです！"
     fi
 }
 

@@ -1150,7 +1150,7 @@ else
   bad "完了後も output-dir lock が残っている"
 fi
 
-echo "== 全 4 アダプタのプロンプト受け渡し形（Issue #712） =="
+echo "== 全 5 アダプタのプロンプト受け渡し形 =="
 
 # fixture リポジトリの diff を約 240KB へ太らせる（この suite の後続検査は無いので
 # ここからの変異は安全）。プロンプト本文が argv から stdin / prompt-file へ移った
@@ -1169,7 +1169,7 @@ BOUNDARY_MARKER='## Execution Boundary (non-negotiable)'
 # stub: argv を 1 行 1 引数で、stdin を丸ごと記録する。--prompt-file の値がある
 # 場合はその実体も stdin ログへ写す（アダプタは実行後にファイルを消すため、
 # 実行中にしか読めない）。
-for cli in claude codex copilot grok; do
+for cli in claude codex copilot grok agy; do
   cat > "$DELIV_BIN/$cli" <<SH
 #!/usr/bin/env bash
 if [ "$cli" = copilot ] && [ "\${1:-}" = help ]; then echo '--deny-tool --disallow-temp-dir Denial rules always take precedence'; exit 0; fi
@@ -1197,7 +1197,8 @@ deliver_adapter() { # $1: cli 名 / $2: adapter ファイル名
   : > "$DELIV/${cli}-argv.log"
   : > "$DELIV/${cli}-stdin.log"
   set +e
-  ( cd "$REPO" && run_isolated PATH="$DELIV_BIN:$PATH" CODEX_HOME="$TMP/codex-home" GROK_HOME="$TMP/grok-home" \
+  mkdir -p "$TMP/home"
+  ( cd "$REPO" && run_isolated PATH="$DELIV_BIN:$PATH" HOME="$TMP/home" USERPROFILE="" CODEX_HOME="$TMP/codex-home" GROK_HOME="$TMP/grok-home" \
       bash "$ADAPTERS_DIR/$adapter" "$PERSPECTIVE" "$DELIV/out-${cli}.md" \
       --base develop --timeout 30 --task-type review --description "fixture" \
     ) >"$DELIV/${cli}.log" 2>&1
@@ -1235,6 +1236,7 @@ deliver_adapter claude claude-code-adapter.sh
 deliver_adapter codex codex-cli-adapter.sh
 deliver_adapter copilot copilot-cli-adapter.sh
 deliver_adapter grok grok-cli-adapter.sh
+deliver_adapter agy antigravity-cli-adapter.sh
 
 # CLI 固有の受け渡し形。実測で確定した契約が編集で崩れると、Windows の exit 126 か
 # 「stdin 無視で誤ったプロンプトに答える」（copilot の非空 -p）へ戻る。
@@ -1257,6 +1259,12 @@ if grep -qxF -- "-p" "$DELIV/claude-argv.log"; then
   ok "claude: -p + stdin（位置引数プロンプトなし）"
 else
   bad "claude: -p が argv に無い"
+fi
+if awk 'prev == "-p" && $0 == "" { found = 1 } { prev = $0 } END { exit found ? 0 : 1 }' "$DELIV/agy-argv.log" \
+   && awk 'prev == "--input-format" && $0 == "text" { found = 1 } { prev = $0 } END { exit found ? 0 : 1 }' "$DELIV/agy-argv.log"; then
+  ok "agy: -p '' --input-format text + stdin（位置引数プロンプトなし）"
+else
+  bad "agy: -p '' --input-format text が argv に無い"
 fi
 
 echo "== 失敗経路のプロンプト一時ファイル掃除（EXIT trap） =="

@@ -88,10 +88,12 @@
 #   AC_UNCHECKED=owner/repo#N<TAB>行（Closes 対象の本文にある未チェック。繰り返し）
 #   AC_UNCHECKED_COUNT=<件数>（Closes 対象があるとき） AC_ACKED=owner/repo#N（--ack-unchecked を渡したとき）
 #   POST_MERGE_ACKED=owner/repo#N<TAB>理由（--ack-post-merge を渡したとき。繰り返し）
-#   以下 4 つは FF_POST_MERGE_TERMS と FF_POST_MERGE_PATHS を設定した導入先だけ（未設定なら 1 行も出ない）:
+#   以下は FF_POST_MERGE_TERMS と FF_POST_MERGE_PATHS を設定した導入先だけ（未設定なら 1 行も出ない）:
 #   POST_MERGE_PATH=<パス>（FF_POST_MERGE_PATHS に一致した変更ファイル。繰り返し）
 #   POST_MERGE_HIT=owner/repo#N<TAB>body|report<TAB>行（語に一致した行。ack しても消えない。繰り返し）
-#   POST_MERGE_HIT_COUNT=<件数>（パスが一致して判定した回）
+#   POST_MERGE_EXCLUDED=owner/repo#N<TAB>body|report<TAB>行（閉じた ff-effort ブロックの
+#     effort_evidence / effort_basis で、語に当たったので判定から外した行。当たった行が無ければ出ない。繰り返し）
+#   POST_MERGE_HIT_COUNT=<件数>（パスが一致して判定した回。EXCLUDED は件数に入れない）
 #   POST_MERGE_GATE=no-closes|no-path|clear|acked|blocked
 #   以下は専用セキュリティゲートの記録（PR の変更ファイルを review-route.sh --files-from で分類する。
 #   API の一覧が上限 100 件に届いた回は git の差分で読み直す）:

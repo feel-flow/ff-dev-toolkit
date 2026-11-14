@@ -187,7 +187,8 @@ echo "- Important: 0"
 echo "- verdict: none"
 SH
 cp "$STUB/codex" "$STUB/copilot"
-chmod +x "$STUB/claude" "$STUB/codex" "$STUB/copilot"
+cp "$STUB/codex" "$STUB/agy"
+chmod +x "$STUB/claude" "$STUB/codex" "$STUB/copilot" "$STUB/agy"
 
 # 空ファイル（起動 0 回）でも必ず数値を返す。`cat` の素の結果を使うと空文字になり、
 # 比較が「0 と等しくない」へ倒れて、起動していないのに起動したと報告する。
@@ -1017,8 +1018,8 @@ if [ "$PARTIAL_OK" -eq 2 ]; then
   ok "受理した本文と書けた本文の一致まで確かめている（部分書き込みを成功にしない）"
 fi
 
-echo "-- (26) codex-cli / grok-cli ホストの委譲（Issue \`#2118\`） --"
-for LANE in codex-cli grok-cli; do
+echo "-- (26) codex-cli / grok-cli / antigravity-cli ホストの委譲（Issue \`#2118\` / \`#2785\`） --"
+for LANE in codex-cli grok-cli antigravity-cli; do
   LOD="$TMP/od-${LANE}"
   run_ma "host-${LANE}" --task review --cli "$LANE" --perspective code-review --base develop \
     --delegate-to-host="$LANE" --output-dir "$LOD"
@@ -1027,6 +1028,15 @@ for LANE in codex-cli grok-cli; do
     ok "--delegate-to-host=${LANE} は ${LANE} レーンを handoff する（rc=3）"
   else
     bad "--delegate-to-host=${LANE} が handoff しない: rc=${RUN_RC} / $(tail -3 "$RUN_ERR" | tr '\n' ' ')"
+  fi
+  if [ "$LANE" = "antigravity-cli" ]; then
+    run_ma "guard-${LANE}" --task review --cli "$LANE" --perspective code-review --base develop \
+      --output-dir "$LOD" --resume
+    if [ "$RUN_RC" -eq 1 ] && grep -qF -- '--delegate-to-host=antigravity-cli' "$RUN_ERR"; then
+      ok "未回収の antigravity-cli handoff が残るとき --delegate-to-host=antigravity-cli を案内して中断する"
+    else
+      bad "未回収の antigravity-cli handoff 保護・復旧案内が不足: rc=${RUN_RC}"
+    fi
   fi
 done
 run_ma host-bad --task review --cli codex-cli --perspective code-review --base develop \
@@ -1068,6 +1078,28 @@ for GA in 1 ""; do
     bad "grok ホストでない実行に grok-cli 委譲を案内した（委譲先のセッションが無い）"
   else
     ok "GROK_AGENT が無い実行では grok-cli 委譲を案内しない"
+  fi
+done
+
+AGYFAIL="$TMP/agyfail-bin"
+mkdir -p "$AGYFAIL"
+printf '#!/usr/bin/env bash\ncat >/dev/null 2>&1\necho "preamble only"\nexit 1\n' > "$AGYFAIL/agy"
+chmod +x "$AGYFAIL/agy"
+for AA in 1 ""; do
+  ARC=0
+  run_isolated -u ANTIGRAVITY_AGENT PATH="$AGYFAIL:$STUB_PATH" HOME="$TMP/home" ${AA:+ANTIGRAVITY_AGENT="$AA"} \
+    bash "$MULTI_AGENT" --task review --cli antigravity-cli --perspective code-review --base develop \
+    --output-dir "$TMP/od-agyfail-${AA:-none}" > "$TMP/out.agyfail" 2> "$TMP/err.agyfail" || ARC=$?
+  if [ -n "$AA" ]; then
+    if [ "$ARC" -ne 0 ] && grep -qF -- '--cli antigravity-cli --perspective code-review --delegate-to-host=antigravity-cli --resume' "$TMP/err.agyfail"; then
+      ok "Antigravity ホスト（ANTIGRAVITY_AGENT=1）で antigravity-cli が落ちると --delegate-to-host=antigravity-cli の手順を案内する"
+    else
+      bad "Antigravity ホストで antigravity-cli が落ちても委譲の案内が出ない: rc=${ARC}"
+    fi
+  elif grep -qF -- '--delegate-to-host=antigravity-cli' "$TMP/err.agyfail"; then
+    bad "Antigravity ホストでない実行に antigravity-cli 委譲を案内した（委譲先のセッションが無い）"
+  else
+    ok "ANTIGRAVITY_AGENT が無い実行では antigravity-cli 委譲を案内しない"
   fi
 done
 

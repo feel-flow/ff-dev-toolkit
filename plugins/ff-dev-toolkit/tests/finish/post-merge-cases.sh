@@ -129,6 +129,291 @@ BODY
     bad "P1g: 停止理由の併記が違う（rc=${RC}）: ${OUT} / ${ERR}"
   fi
 
+  # ── 閉じた工数ブロックの effort_evidence / effort_basis は語の一致から外す ──
+  cat >"$pm/effort-only.md" <<'BODY'
+# 背景
+<!-- ff-effort:begin -->
+- effort_unit: h
+- effort_basis: 本番適用の手順を根拠にした見積もり
+- effort_evidence: 本番への適用は未実施
+- effort_deploy: なし（コードのみ）
+- effort_ai_planned: 1.0h
+<!-- ff-effort:end -->
+- [x] migration を確かめる
+BODY
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/effort-only.md" run_finish "$WORK" precheck 7
+  if _ff_pm_passed && has_line "$OUT" "POST_MERGE_GATE=clear" && has_line "$OUT" "POST_MERGE_HIT_COUNT=0" \
+    && has_line "$OUT" "POST_MERGE_EXCLUDED=owner/repo#7	body	- effort_basis: 本番適用の手順を根拠にした見積もり" \
+    && has_line "$OUT" "POST_MERGE_EXCLUDED=owner/repo#7	body	- effort_evidence: 本番への適用は未実施" \
+    && ! has_line "$OUT" "POST_MERGE_HIT=" \
+    && ! has_line "$OUT" "POST_MERGE_EXCLUDED=owner/repo#7	body	- effort_deploy:" \
+    && ! has_line "$OUT" "POST_MERGE_EXCLUDED=owner/repo#7	body	- effort_unit:" \
+    && ! has_line "$OUT" "POST_MERGE_EXCLUDED=owner/repo#7	body	- effort_ai_planned:" \
+    && ! has_line "$OUT" "POST_MERGE_EXCLUDED=owner/repo#7	body	- [x] migration"; then
+    ok "P1h: 閉じた工数ブロックの effort_basis と effort_evidence だけを外し、通過する"
+  else
+    bad "P1h: 工数ブロックの除外が違う（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  cat >"$pm/effort-keep.md" <<'BODY'
+<!-- ff-effort:begin -->
+- effort_basis: 本番適用を見込む
+- effort_evidence: 本番への適用の記録
+- effort_deploy: 本番適用を行う
+<!-- ff-effort:end -->
+- [x] 本番適用する
+BODY
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/effort-keep.md" run_finish "$WORK" precheck 7
+  if _ff_pm_stopped && has_line "$OUT" "POST_MERGE_GATE=blocked" && has_line "$OUT" "POST_MERGE_HIT_COUNT=2" \
+    && has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	body	- effort_deploy: 本番適用を行う" \
+    && has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	body	- [x] 本番適用する" \
+    && has_line "$OUT" "POST_MERGE_EXCLUDED=owner/repo#7	body	- effort_basis: 本番適用を見込む" \
+    && has_line "$OUT" "POST_MERGE_EXCLUDED=owner/repo#7	body	- effort_evidence: 本番への適用の記録" \
+    && ! has_line "$OUT" "POST_MERGE_EXCLUDED=owner/repo#7	body	- effort_deploy:" \
+    && ! has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	body	- effort_basis:" \
+    && ! has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	body	- effort_evidence:"; then
+    ok "P1i: effort_deploy と受け入れ条件は止め、根拠の 2 行は除外として出す"
+  else
+    bad "P1i: 残す行と除外する行が違う（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  printf '%s\n' '<!-- ff-effort:begin -->' '- effort_basis: 本番適用のまま閉じない' >"$pm/effort-unclosed.md"
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/effort-unclosed.md" run_finish "$WORK" precheck 7
+  if _ff_pm_stopped && has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	body	- effort_basis: 本番適用のまま閉じない" \
+    && ! has_line "$OUT" "POST_MERGE_EXCLUDED="; then
+    ok "P1j: 閉じていないブロックは除外せず、根拠の行で止める"
+  else
+    bad "P1j: 未閉鎖を除外している（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  cat >"$pm/effort-end-first.md" <<'BODY'
+<!-- ff-effort:end -->
+<!-- ff-effort:begin -->
+- effort_basis: 本番適用が end より前
+- effort_evidence: 本番への適用
+<!-- ff-effort:end -->
+BODY
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/effort-end-first.md" run_finish "$WORK" precheck 7
+  if _ff_pm_stopped && has_line "$OUT" "POST_MERGE_HIT_COUNT=2" \
+    && has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	body	- effort_basis: 本番適用が end より前" \
+    && has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	body	- effort_evidence: 本番への適用" \
+    && ! has_line "$OUT" "POST_MERGE_EXCLUDED="; then
+    ok "P1k: end が begin より前の本文は、後の組が閉じても可視の全行を見る"
+  else
+    bad "P1k: 前後が逆の本文を除外している（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  cat >"$pm/effort-nested.md" <<'BODY'
+<!-- ff-effort:begin -->
+- effort_basis: 本番適用 a
+<!-- ff-effort:begin -->
+- effort_basis: 本番適用 b
+<!-- ff-effort:end -->
+BODY
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/effort-nested.md" run_finish "$WORK" precheck 7
+  if _ff_pm_stopped && has_line "$OUT" "POST_MERGE_HIT_COUNT=2" \
+    && has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	body	- effort_basis: 本番適用 a" \
+    && has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	body	- effort_basis: 本番適用 b" \
+    && ! has_line "$OUT" "POST_MERGE_EXCLUDED="; then
+    ok "P1l: begin が入れ子の本文は、後の end が 1 つでも両方の根拠行で止める"
+  else
+    bad "P1l: 入れ子を除外している（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  cat >"$pm/effort-outside.md" <<'BODY'
+- effort_basis: 本番適用はブロックの外
+<!-- ff-effort:begin -->
+- effort_basis: 本番適用はブロックの中
+<!-- ff-effort:end -->
+BODY
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/effort-outside.md" run_finish "$WORK" precheck 7
+  if _ff_pm_stopped && has_line "$OUT" "POST_MERGE_HIT_COUNT=1" \
+    && has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	body	- effort_basis: 本番適用はブロックの外" \
+    && has_line "$OUT" "POST_MERGE_EXCLUDED=owner/repo#7	body	- effort_basis: 本番適用はブロックの中" \
+    && ! has_line "$OUT" "POST_MERGE_EXCLUDED=owner/repo#7	body	- effort_basis: 本番適用はブロックの外"; then
+    ok "P1m: ブロックの外の根拠行は止め、中の根拠行は除外する"
+  else
+    bad "P1m: ブロックの内外が違う（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  cat >"$pm/effort-fence.md" <<'BODY'
+```
+<!-- ff-effort:begin -->
+- effort_basis: 本番適用はフェンスの中
+```
+- effort_basis: 本番適用はフェンスの外
+<!-- ff-effort:end -->
+BODY
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/effort-fence.md" run_finish "$WORK" precheck 7
+  if _ff_pm_stopped && has_line "$OUT" "POST_MERGE_HIT_COUNT=1" \
+    && has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	body	- effort_basis: 本番適用はフェンスの外" \
+    && ! has_line "$OUT" "POST_MERGE_EXCLUDED=" \
+    && ! has_text "$OUT" "フェンスの中"; then
+    ok "P1n: フェンスの中の begin は、後の end と組まず、外の根拠行で止める"
+  else
+    bad "P1n: フェンスの中のマーカーを見ている（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  printf '%s\n' ' <!-- ff-effort:begin -->' '- effort_basis: 本番適用は字下げのマーカー' '<!-- ff-effort:end -->' >"$pm/effort-indent.md"
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/effort-indent.md" run_finish "$WORK" precheck 7
+  if _ff_pm_stopped && has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	body	- effort_basis: 本番適用は字下げのマーカー" \
+    && ! has_line "$OUT" "POST_MERGE_EXCLUDED="; then
+    ok "P1o: 字下げしたマーカーはマーカーにせず、可視の全行を見る"
+  else
+    bad "P1o: 字下げしたマーカーを認めている（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  printf '%s\n' '<!-- ff-effort:begin --> ' '- effort_basis: 本番適用は末尾空白の begin' '<!-- ff-effort:end -->' >"$pm/effort-trail-begin.md"
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/effort-trail-begin.md" run_finish "$WORK" precheck 7
+  if _ff_pm_stopped && has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	body	- effort_basis: 本番適用は末尾空白の begin" \
+    && ! has_line "$OUT" "POST_MERGE_EXCLUDED="; then
+    ok "P1p: 末尾に空白のある begin はマーカーにせず、可視の全行を見る"
+  else
+    bad "P1p: 末尾空白の begin を認めている（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  printf '%s\n' '<!-- ff-effort:begin -->' '- effort_basis: 本番適用は末尾空白の end' '<!-- ff-effort:end --> ' >"$pm/effort-trail-end.md"
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/effort-trail-end.md" run_finish "$WORK" precheck 7
+  if _ff_pm_stopped && has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	body	- effort_basis: 本番適用は末尾空白の end" \
+    && ! has_line "$OUT" "POST_MERGE_EXCLUDED="; then
+    ok "P1p2: 末尾に空白のある end は閉じたブロックにせず、除外しない"
+  else
+    bad "P1p2: 末尾空白の end を閉じたと読んでいる（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  printf '%s\n' '<!-- ff-effort:begin -->' '- effort_basis: 本番適用はコメントに飲まれた end の前' '<!-- まだ' '<!-- ff-effort:end -->' >"$pm/effort-comment-end.md"
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/effort-comment-end.md" run_finish "$WORK" precheck 7
+  if _ff_pm_stopped && has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	body	- effort_basis: 本番適用はコメントに飲まれた end の前" \
+    && ! has_line "$OUT" "POST_MERGE_EXCLUDED="; then
+    ok "P1y: 開いた HTML コメントの中の end は閉じたブロックにせず、根拠行で止める"
+  else
+    bad "P1y: コメントの中の end を閉じたと読んでいる（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  printf '%s\n' '<!-- 下書き' '<!-- ff-effort:begin -->' '- effort_basis: 本番適用はコメントの外' '<!-- ff-effort:end -->' >"$pm/effort-comment-begin.md"
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/effort-comment-begin.md" run_finish "$WORK" precheck 7
+  if _ff_pm_stopped && has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	body	- effort_basis: 本番適用はコメントの外" \
+    && ! has_line "$OUT" "POST_MERGE_EXCLUDED="; then
+    ok "P1y2: 開いた HTML コメントの中の begin は、後の end と組まず、根拠行で止める"
+  else
+    bad "P1y2: コメントの中の begin を認めている（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  cat >"$pm/effort-orphan-begin.md" <<'BODY'
+<!-- ff-effort:begin -->
+- effort_basis: 本番適用は閉じた組のあと
+<!-- ff-effort:end -->
+<!-- ff-effort:begin -->
+BODY
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/effort-orphan-begin.md" run_finish "$WORK" precheck 7
+  if _ff_pm_stopped && has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	body	- effort_basis: 本番適用は閉じた組のあと" \
+    && ! has_line "$OUT" "POST_MERGE_EXCLUDED="; then
+    ok "P1z: 閉じた組のあとに begin が残る本文は、先頭の組も除外しない"
+  else
+    bad "P1z: 壊れた境界を組の中だけに閉じている（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  printf '%s\n' '<!-- ff-effort:begin -->' '- effort_basis: 本番適用は途中の非マーカー' '<!-- ff-effort:end --> ' '<!-- ff-effort:end -->' >"$pm/effort-near-end.md"
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/effort-near-end.md" run_finish "$WORK" precheck 7
+  if _ff_pm_passed && has_line "$OUT" "POST_MERGE_GATE=clear" && has_line "$OUT" "POST_MERGE_HIT_COUNT=0" \
+    && has_line "$OUT" "POST_MERGE_EXCLUDED=owner/repo#7	body	- effort_basis: 本番適用は途中の非マーカー" \
+    && ! has_line "$OUT" "POST_MERGE_HIT="; then
+    ok "P1z2: 末尾空白の end はマーカーにせず、後続の完全一致の end が組を閉じる"
+  else
+    bad "P1z2: 完全一致しない行で閉じた組を壊している（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  cat >"$pm/effort-two.md" <<'BODY'
+<!-- ff-effort:begin -->
+- effort_basis: 本番適用 one
+<!-- ff-effort:end -->
+<!-- ff-effort:begin -->
+- effort_evidence: 本番への適用 two
+<!-- ff-effort:end -->
+BODY
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/effort-two.md" run_finish "$WORK" precheck 7
+  if _ff_pm_passed && has_line "$OUT" "POST_MERGE_GATE=clear" && has_line "$OUT" "POST_MERGE_HIT_COUNT=0" \
+    && has_line "$OUT" "POST_MERGE_EXCLUDED=owner/repo#7	body	- effort_basis: 本番適用 one" \
+    && has_line "$OUT" "POST_MERGE_EXCLUDED=owner/repo#7	body	- effort_evidence: 本番への適用 two" \
+    && ! has_line "$OUT" "POST_MERGE_HIT="; then
+    ok "P1q: 閉じた組が二つあっても、それぞれの根拠行を外す"
+  else
+    bad "P1q: 二つ目のブロックの扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  cat >"$pm/effort-prose.md" <<'BODY'
+<!-- ff-effort:begin -->
+本番適用は後で行う
+<!-- ff-effort:end -->
+BODY
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/effort-prose.md" run_finish "$WORK" precheck 7
+  if _ff_pm_stopped && has_line "$OUT" "POST_MERGE_HIT_COUNT=1" \
+    && has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	body	本番適用は後で行う" \
+    && ! has_line "$OUT" "POST_MERGE_EXCLUDED="; then
+    ok "P1r: キーの形でない地の文はブロックの中でも止める"
+  else
+    bad "P1r: 地の文を除外している（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  cat >"$pm/effort-other-key.md" <<'BODY'
+<!-- ff-effort:begin -->
+- effort_ai_planned: 本番適用を含む
+- effort_basis_note: 本番適用の注記
+<!-- ff-effort:end -->
+BODY
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/effort-other-key.md" run_finish "$WORK" precheck 7
+  if _ff_pm_stopped && has_line "$OUT" "POST_MERGE_HIT_COUNT=2" \
+    && has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	body	- effort_ai_planned: 本番適用を含む" \
+    && has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	body	- effort_basis_note: 本番適用の注記" \
+    && ! has_line "$OUT" "POST_MERGE_EXCLUDED="; then
+    ok "P1s: 別名のキーはブロックの中でも止める"
+  else
+    bad "P1s: 別名のキーを除外している（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  cat >"$pm/effort-spaces.md" <<'BODY'
+<!-- ff-effort:begin -->
+- effort_basis:本番適用
+-  effort_evidence : 本番への適用
+<!-- ff-effort:end -->
+BODY
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/effort-spaces.md" run_finish "$WORK" precheck 7
+  if _ff_pm_passed && has_line "$OUT" "POST_MERGE_GATE=clear" && has_line "$OUT" "POST_MERGE_HIT_COUNT=0" \
+    && has_line "$OUT" "POST_MERGE_EXCLUDED=owner/repo#7	body	- effort_basis:本番適用" \
+    && has_line "$OUT" "POST_MERGE_EXCLUDED=owner/repo#7	body	-  effort_evidence : 本番への適用" \
+    && ! has_line "$OUT" "POST_MERGE_HIT="; then
+    ok "P1t: コロン前後の空白が違っても、二つの根拠キーは外す"
+  else
+    bad "P1t: 空白の違う根拠キーを残している（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  cat >"$pm/effort-noterm.md" <<'BODY'
+<!-- ff-effort:begin -->
+- effort_basis: 見積もりの根拠
+- effort_evidence: diff +1
+<!-- ff-effort:end -->
+- [x] done
+BODY
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/effort-noterm.md" run_finish "$WORK" precheck 7
+  if _ff_pm_passed && has_line "$OUT" "POST_MERGE_GATE=clear" && has_line "$OUT" "POST_MERGE_HIT_COUNT=0" \
+    && ! has_line "$OUT" "POST_MERGE_EXCLUDED=" && ! has_line "$OUT" "POST_MERGE_HIT="; then
+    ok "P1u: 語に当たらない根拠行は除外行も出さない"
+  else
+    bad "P1u: 語に当たらない行を出している（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  printf '%s\r\n' '<!-- ff-effort:begin -->' '- effort_basis: 本番適用' '<!-- ff-effort:end -->' >"$pm/effort-crlf.md"
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/effort-crlf.md" run_finish "$WORK" precheck 7
+  if _ff_pm_passed && has_line "$OUT" "POST_MERGE_GATE=clear" && has_line "$OUT" "POST_MERGE_HIT_COUNT=0" \
+    && has_line "$OUT" "POST_MERGE_EXCLUDED=owner/repo#7	body	- effort_basis: 本番適用" \
+    && ! has_line "$OUT" "POST_MERGE_HIT=" \
+    && [ "$(printf '%s' "$OUT" | tr -cd '\r' | wc -c | tr -d ' ')" = "0" ]; then
+    ok "P1v: 行末の CR を外したマーカーは閉じたブロックとして根拠行を外す"
+  else
+    bad "P1v: 行末の CR の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  _ff_pm_comments "$pm/effort-report-clear.json" "$(printf '%s\n' '<!-- close-issue-report:PR-7 -->' '<!-- ff-effort:begin -->' '- effort_basis: 本番適用を報告に書く' '- effort_evidence: 本番への適用の記録' '<!-- ff-effort:end -->')"
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/plain.md" STUB_ISSUE_COMMENTS_FILE="$pm/effort-report-clear.json" run_finish "$WORK" precheck 7
+  if _ff_pm_passed && has_line "$OUT" "POST_MERGE_GATE=clear" && has_line "$OUT" "POST_MERGE_HIT_COUNT=0" \
+    && has_line "$OUT" "POST_MERGE_EXCLUDED=owner/repo#7	report	- effort_basis: 本番適用を報告に書く" \
+    && has_line "$OUT" "POST_MERGE_EXCLUDED=owner/repo#7	report	- effort_evidence: 本番への適用の記録" \
+    && ! has_line "$OUT" "POST_MERGE_HIT="; then
+    ok "P1w: 完了報告の閉じた工数ブロックも、根拠の 2 行だけを外して通過する"
+  else
+    bad "P1w: 完了報告の除外が違う（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  _ff_pm_comments "$pm/effort-report-hit.json" "$(printf '%s\n' '<!-- close-issue-report:PR-7 -->' '<!-- ff-effort:begin -->' '- effort_basis: 本番適用を報告に書く' '<!-- ff-effort:end -->' '| 本番適用は承認を得て行う | 達成 |')"
+  FF_POST_MERGE_TERMS="$terms" FF_POST_MERGE_PATHS="$paths" STUB_ISSUE_BODY_FILE="$pm/plain.md" STUB_ISSUE_COMMENTS_FILE="$pm/effort-report-hit.json" run_finish "$WORK" precheck 7
+  if _ff_pm_stopped && has_line "$OUT" "POST_MERGE_HIT_COUNT=1" \
+    && has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	report	| 本番適用は承認を得て行う | 達成 |" \
+    && has_line "$OUT" "POST_MERGE_EXCLUDED=owner/repo#7	report	- effort_basis: 本番適用を報告に書く" \
+    && ! has_line "$OUT" "POST_MERGE_HIT=owner/repo#7	report	- effort_basis:"; then
+    ok "P1x: 完了報告でも地の文は止め、根拠行は除外として出す"
+  else
+    bad "P1x: 完了報告の地の文の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+
   # ── パスの条件 ──
   : >"$STUB_LOG"
   PR_FILES_JSON='[{"path":"docs/a.md"}]'
@@ -352,6 +637,12 @@ BODY
     ok "P6: 設定が無ければ語とパスが揃っても出力へ何も足さず、コメントも取りに行かない（AC4）"
   else
     bad "P6: 設定なしの出力が変わっている（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  STUB_ISSUE_BODY_FILE="$pm/effort-only.md" run_finish "$WORK" precheck 7
+  if _ff_pm_passed && ! has_text "$OUT" "POST_MERGE" && ! has_text "$ERR" "POST_MERGE"; then
+    ok "P6d: 工数ブロックに語があっても、設定が無い導入先は除外行を出さない"
+  else
+    bad "P6d: 設定なしで工数ブロックの行が出ている（rc=${RC}）: ${OUT} / ${ERR}"
   fi
   STUB_ISSUE_BODY_FILE="$pm/hit.md" run_finish "$WORK" precheck 7 --ack-post-merge 'owner/repo#7' --ack-post-merge-reason '理由'
   if _ff_pm_passed && has_line "$OUT" "POST_MERGE_ACKED=owner/repo#7	理由" && ! has_line "$OUT" "POST_MERGE_GATE="; then

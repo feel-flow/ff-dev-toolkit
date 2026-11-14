@@ -921,7 +921,7 @@ parse_adapter_args() {
     if [[ "${ADAPTER_SUPPORTS_DELEGATION:-false}" != "true" ]]; then
       echo "ERROR: --delegate-dir is not supported by $(basename "$0")." >&2
       echo "       Host delegation exists only for a lane the host itself can run (claude-code /" >&2
-      echo "       codex-cli / grok-cli); routing another lane through it would silently lose" >&2
+      echo "       codex-cli / grok-cli / antigravity-cli); routing another lane through it would silently lose" >&2
       echo "       model independence." >&2
       return 2
     fi

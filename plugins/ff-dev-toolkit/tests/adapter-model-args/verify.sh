@@ -95,7 +95,7 @@ mkdir -p "$WORK/bin"
 #
 # ENV_LOG が設定されているときだけ、子プロセスに届いた環境変数も記録する。argv とは
 # 別ファイルに出すのは、常時記録すると全 argv ケースの期待文字列に混ざるため。
-for cli in claude codex copilot grok; do
+for cli in claude codex copilot grok agy; do
   {
     echo '#!/usr/bin/env bash'
     echo 'if [ "$(basename "$0")" = copilot ] && [ "${1:-}" = help ]; then echo "--deny-tool --disallow-temp-dir Denial rules always take precedence"; exit 0; fi'
@@ -133,7 +133,7 @@ build_isolate_env MULTI_AGENT_MODEL_CLAUDE_CODE "$ADAPTERS_DIR"/*.sh
 # NAME=VALUE の代入を後に適用するため、ケース固有の上書き（"$@"）はそのまま効く。
 # GROK_HOME も同じクラスの実行環境つまみ（未設定だと grok アダプタが $HOME 配下へ
 # fallback し、ホストの実イベントログを読む）なので、常にスクラッチへ向ける。
-mkdir -p "$WORK/grok-home-empty"
+mkdir -p "$WORK/grok-home-empty" "$WORK/home"
 RUN_ARGV=""
 RUN_RC=0
 run_adapter() {
@@ -150,7 +150,7 @@ run_adapter() {
     task_args=(--staging-dir "$WORK/staging")
   fi
   if ( cd "$WORK/repo" && run_isolated \
-         PATH="$WORK/bin:$PATH" ARGV_LOG="$WORK/argv.log" CODEX_HOME="$WORK/codex" \
+         PATH="$WORK/bin:$PATH" ARGV_LOG="$WORK/argv.log" HOME="$WORK/home" USERPROFILE="" CODEX_HOME="$WORK/codex" \
          GROK_HOME="${RUN_GROK_HOME:-$WORK/grok-home-empty}" "$@" \
          bash "$ADAPTERS_DIR/$adapter" "$PERSPECTIVE" "$WORK/out.md" \
          --base HEAD --timeout 30 --task-type "${RUN_TASK_TYPE:-review}" \
@@ -203,7 +203,7 @@ expect_launched() {
 # unbound variable になると、呼び出し側から rc=0 に見える実測があるため、関数単体
 # ではなく4アダプタの直叩きで検査する。全6フラグを直積で回し、非0だけでなく
 # stderr が欠落したフラグそのものを名指しすること、CLI が未起動であることも固定する。
-MISSING_VALUE_ADAPTERS="claude-code-adapter.sh codex-cli-adapter.sh copilot-cli-adapter.sh grok-cli-adapter.sh"
+MISSING_VALUE_ADAPTERS="claude-code-adapter.sh codex-cli-adapter.sh copilot-cli-adapter.sh grok-cli-adapter.sh antigravity-cli-adapter.sh"
 MISSING_VALUE_FLAGS="--changed-files --base --timeout --task-type --description --staging-dir"
 MISSING_VALUE_CASES=0
 for adapter in $MISSING_VALUE_ADAPTERS; do
@@ -226,10 +226,10 @@ for adapter in $MISSING_VALUE_ADAPTERS; do
     fi
   done
 done
-if [ "$MISSING_VALUE_CASES" -eq 24 ]; then
-  ok "値付き6フラグ × 4アダプタの全24経路を検査した"
+if [ "$MISSING_VALUE_CASES" -eq 30 ]; then
+  ok "値付き6フラグ × 5アダプタの全30経路を検査した"
 else
-  bad "値欠落の検査件数が24でない（実測: ${MISSING_VALUE_CASES}）"
+  bad "値欠落の検査件数が30でない（実測: ${MISSING_VALUE_CASES}）"
 fi
 
 # 末尾欠落だけでなく、次の既知フラグを値として吸収する経路も同じ欠落として扱う。
@@ -289,6 +289,12 @@ expect_argv_lacks "grok-cli: env 未設定ならモデルフラグを渡さな�
 # プロファイルが workspace なら CWD へ書けるので、フラグの有無だけでは足りない。
 expect_argv_has "grok-cli: review では --sandbox read-only を渡す" "<--sandbox><read-only>"
 
+run_adapter antigravity-cli-adapter.sh
+expect_launched "antigravity-cli: 既定ケースで CLI が起動している"
+expect_argv_lacks "antigravity-cli: env 未設定ならモデルフラグを渡さない" "<--model>"
+expect_argv_has "antigravity-cli: review では --mode ''（read-only）・--sandbox・--disable-slash-commands を渡す" "<--mode><><--sandbox><--disable-slash-commands>"
+expect_argv_lacks "antigravity-cli: review では --add-dir を渡さない" "<--add-dir>"
+
 # ---- 分離の自己検証 ---------------------------------------------------------------
 # run_adapter から ISOLATE_ENV の適用が落ちる退行を検出する。ホスト環境の汚染を
 # 意図的に再現し、除去されることを固定する（Issue #374 の再発は「設定済み環境で
@@ -318,6 +324,16 @@ else
   sed 's/^/    | /' "$WORK/env.log" >&2
 fi
 
+: > "$WORK/env.log"
+RETROSPECTIVE_MODE=host-sentinel run_adapter antigravity-cli-adapter.sh ENV_LOG="$WORK/env.log"
+expect_launched "antigravity-cli: 振り返り抑止ケースで CLI が起動している"
+if grep -qx 'RETROSPECTIVE_MODE=off' "$WORK/env.log"; then
+  ok "antigravity-cli: 子プロセスの環境に RETROSPECTIVE_MODE=off が載る（ホストの値を上書き）"
+else
+  bad "antigravity-cli: 子プロセスの環境に RETROSPECTIVE_MODE=off が無い"
+  sed 's/^/    | /' "$WORK/env.log" >&2
+fi
+
 # ---- env による上書き ------------------------------------------------------------
 run_adapter claude-code-adapter.sh MULTI_AGENT_MODEL_CLAUDE_CODE=opus
 expect_argv_has "claude-code: MULTI_AGENT_MODEL_CLAUDE_CODE が --model に届く" "<--model><opus>"
@@ -333,6 +349,21 @@ expect_argv_has "copilot-cli: MULTI_AGENT_MODEL_COPILOT_CLI が --model に届�
 
 run_adapter grok-cli-adapter.sh MULTI_AGENT_MODEL_GROK_CLI=some-model
 expect_argv_has "grok-cli: MULTI_AGENT_MODEL_GROK_CLI が -m に届く" "<-m><some-model>"
+
+run_adapter antigravity-cli-adapter.sh MULTI_AGENT_MODEL_ANTIGRAVITY_CLI=some-model
+expect_argv_has "antigravity-cli: MULTI_AGENT_MODEL_ANTIGRAVITY_CLI が --model に届く" "<--model><some-model>"
+
+run_adapter antigravity-cli-adapter.sh "MULTI_AGENT_MODEL_ANTIGRAVITY_CLI=model with spaces"
+expect_argv_has "antigravity-cli: 空白を含むモデル名が 1 引数に保たれる" "<--model><model with spaces>"
+
+RUN_TASK_TYPE=implement run_adapter antigravity-cli-adapter.sh
+expect_launched "antigravity-cli: implement では CLI が起動している"
+expect_argv_has "antigravity-cli: implement では --mode accept-edits・--add-dir staging・--sandbox を渡す" "<--mode><accept-edits><--add-dir><$WORK/staging><--sandbox><--disable-slash-commands>"
+
+RUN_TASK_TYPE=implement RUN_INLINE_OUTPUT=true run_adapter antigravity-cli-adapter.sh
+expect_launched "antigravity-cli: implement inline では CLI が起動している"
+expect_argv_has "antigravity-cli: implement inline では --mode ''（read-only）・--sandbox へ狭める" "<--mode><><--sandbox><--disable-slash-commands>"
+expect_argv_lacks "antigravity-cli: implement inline では --add-dir を渡さない" "<--add-dir>"
 
 # 空白入りの値が 1 引数に保たれること。文字列連結 + 非クォート展開への退化は
 # ここでしか検出できない（静的検査は形が同じなので通る）。

@@ -28,6 +28,15 @@
 #                       2 = 不在・曖昧・読み取り失敗）。/ace-curate・/ace-refine の「配置先の解決」が
 #                       この出力を読む — キーワード検索と同じ関数で解決するので、規則が食い違わない。
 #                       --with-index-mode は検証済みの ACE_INDEX_MODE=inline|omit を追加する。
+#   台帳の全件出力     knowledge-lookup.sh --ledger-dump [--root <dir>] [--ledger <path>]
+#                       観測台帳の全エントリ（`archived` を含む）を 1 行 1 エントリの TSV で出す。列は
+#                       `id / status / kind / count / first / last / issue / location / title / text`
+#                       （text はエントリのブロック全体。行の区切りは RS〈0x1e〉、タブは空白へ置換）。末尾に
+#                       `SUMMARY ledger=<相対パス> entries=<n> state=<ok|empty>` を出す。Issue の state は
+#                       引かない（gh を使わない）。台帳の定期整理（scripts/observation-refine.sh）が候補を
+#                       算出する入力で、台帳の解決・読み取り境界・見出しの認識を本スクリプトと共有する
+#                       （別の読み出し器を作ると、フェンス内の記入例の扱いや書式変更の検出が片側だけ変わる）。
+#                       台帳が無い・曖昧・読めない・見出しを 1 件も認識できない回は 2。
 #
 # オプション:
 #   --root <dir>        対象リポジトリのルート（既定: cwd から git rev-parse --show-toplevel、無ければ cwd）
@@ -54,7 +63,7 @@
 #   （TSV の status は unreflected）で返す。RECORD へ unreflected=… を足す。設定が無ければ出力は従来どおり。
 #   本体は lib/knowledge-lookup-unreflected.sh。
 # 状態ラベル（台帳）: active=未対策（蓄積中） / promoted=対策 Issue あり（open / closed / 未確認）/
-#   mitigated=対策済み（所在は Issue 列） / archived=休眠。
+#   mitigated=対策済み（所在は Issue 列） / archived=休眠、または統合元（Issue 列が統合先を指す）。
 # 状態ラベル（ACE）: active / deprecated / archived（archive 配下。--include-archived 時のみ）。
 #
 # 終了コード: 0 = 検索を実施した（0 件ヒットを含む）/ 1 = 引数エラー / 2 = 検索不成立
@@ -241,6 +250,7 @@ usage() {
                       [--include-archived] [--offline] [--github-input INDEX_ABS] [--format text|tsv] <キーワード>...
   knowledge-lookup.sh --promoted-open [--root DIR] [--ledger PATH] [--offline] [--format text|tsv]
   knowledge-lookup.sh --resolve-playbook [--with-index-mode] [--root DIR] [--playbook PATH]
+  knowledge-lookup.sh --ledger-dump [--root DIR] [--ledger PATH]
 USAGE
 }
 
@@ -268,6 +278,7 @@ while [ $# -gt 0 ]; do
     --format) [ $# -ge 2 ] || { usage; exit 1; }; FORMAT="$2"; shift 2 ;;
     --promoted-open) MODE="promoted-open"; shift ;;
     --resolve-playbook) MODE="resolve-playbook"; shift ;;
+    --ledger-dump) MODE="ledger-dump"; shift ;;
     --with-index-mode) WITH_INDEX_MODE=1; shift ;;
     -h|--help) usage; exit 1 ;;
     --) shift; while [ $# -gt 0 ]; do KEYWORDS+=("$1"); shift; done ;;
@@ -282,7 +293,7 @@ if [ "$WITH_INDEX_MODE" -eq 1 ] && [ "$MODE" != resolve-playbook ]; then
   exit 1
 fi
 if [ "${MODE}" = "search" ] && [ "${#KEYWORDS[@]}" -eq 0 ]; then
-  printf '%s\n' "キーワードが 1 つも指定されていません（--promoted-open 以外はキーワードが必須）" >&2
+  printf '%s\n' "キーワードが 1 つも指定されていません（--promoted-open / --ledger-dump 以外はキーワードが必須）" >&2
   usage
   exit 1
 fi
@@ -669,10 +680,10 @@ fi
 searched=0
 case "${ACE_STATE}" in ok|empty) searched=1 ;; esac
 case "${OBS_STATE}" in ok|empty) searched=1 ;; esac
-if [ "${MODE}" = "promoted-open" ]; then
+if [ "${MODE}" = "promoted-open" ] || [ "${MODE}" = "ledger-dump" ]; then
   case "${OBS_STATE}" in
     ok|empty) ;;
-    absent) printf '観測台帳がありません（root=%s）。--promoted-open は台帳が必要です\n' "${ROOT}" >&2; exit 2 ;;
+    absent) printf '観測台帳がありません（root=%s）。--%s は台帳が必要です\n' "${ROOT}" "${MODE}" >&2; exit 2 ;;
     ambiguous) printf '観測台帳の配置を確定できません（--ledger で指定してください）\n' >&2; exit 2 ;;
     unreadable) printf '観測台帳を読めません: %s\n' "${OBS_FILE}" >&2; exit 2 ;;
     noentry) printf '観測台帳のエントリ見出し（### OBS-NNN:）を 1 件も認識できません（書式変更の可能性）: %s\n' "${OBS_FILE}" >&2; exit 2 ;;
@@ -874,7 +885,7 @@ obs_status_label() {
     active) printf '%s' "未対策（active。蓄積中の落とし穴 — 回避策はエントリ本文の → 以降）" ;;
     promoted) printf '%s' "対策 Issue あり（promoted。Issue 列の state を見る: open = 対応中 / closed = 完了照合前または対策後の再発（最新メモで区別））" ;;
     mitigated) printf '%s' "対策済み（mitigated。元 Issue と所在は Issue 列。最新メモの未解消再発も確認する）" ;;
-    archived) printf '%s' "休眠（archived。180 日以上再発なし）" ;;
+    archived) printf '%s' "休眠（archived。再発なしで archive 済み、または統合元 — Issue 列が統合先を指す）" ;;
     *) printf '%s' "状態不明（$1）" ;;
   esac
 }
@@ -947,6 +958,37 @@ record_word() { # <state> <ids file> <不在の語>
     *) printf '%s\n' "読み取り失敗（${state}）" ;;
   esac
 }
+
+# ── --ledger-dump: 台帳の全エントリを TSV で出して終える ─────────────────────
+# メタは entries_meta（検索・突き合わせと同じ取り出し規則）で先に取り、ブロック本文と行番号で
+# 突き合わせる。どちらも OBS_ENTRIES と同じ順・同じ件数で並ぶ。件数や ID が食い違ったら、列が
+# ずれた出力を返さず 2 で止める（消費側は列の位置で読む）。
+if [ "${MODE}" = "ledger-dump" ]; then
+  dump_n=0
+  if [ -s "${OBS_ENTRIES}" ]; then
+    entries_meta "${OBS_ENTRIES}" Status Kind Count First Last Issue >"${OBS_ENTRIES}.meta"
+    awk -F '\037' -v root="${ROOT}/" '
+      NR == FNR { meta[FNR] = $0; nmeta = FNR; next }
+      {
+        if (!(FNR in meta)) { bad = 1; exit }
+        n = split(meta[FNR], m, "\037")
+        if (n < 11 || m[1] != $1) { bad = 1; exit }
+        rel = m[3]; if (index(rel, root) == 1) rel = substr(rel, length(root) + 1)
+        text = $4; gsub(/\t/, " ", text)
+        for (i = 1; i <= 10; i++) gsub(/\t/, " ", m[i])
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s#%s\t%s\t%s\n", m[1], m[5], m[6], m[7], m[8], m[9], m[10], rel, m[4], m[2], text
+        rows++
+      }
+      END { if (bad || rows != nmeta) exit 2 }
+    ' "${OBS_ENTRIES}.meta" "${OBS_ENTRIES}" || {
+      printf '観測台帳のメタと本文を突き合わせられません（エントリ件数の不一致）: %s\n' "${OBS_FILE}" >&2
+      exit 2
+    }
+    dump_n="$(awk 'END { print NR }' "${OBS_ENTRIES}")"
+  fi
+  printf 'SUMMARY ledger=%s entries=%s state=%s\n' "${OBS_FILE#"${ROOT}"/}" "${dump_n}" "${OBS_STATE}"
+  exit 0
+fi
 
 if [ "${MODE}" = "promoted-open" ]; then
   # promoted を取得した state / 修飾なしの未確認で絞る。表示注記の state は判定に使わない。

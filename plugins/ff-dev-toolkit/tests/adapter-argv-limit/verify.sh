@@ -153,7 +153,7 @@ GROK_HOME_DIR="$TMP/grok-home"
 mkdir -p "$BIN" "$GROK_HOME_DIR"
 # grok のサンドボックス肯定確認はイベントログを見る。stub は実行のたびに
 # ProfileApplied を追記する（workspace はアダプタの CWD = `pwd -P` で相関される）。
-for cli in claude codex copilot grok; do
+for cli in claude codex copilot grok agy; do
   cat > "$BIN/$cli" <<SH
 #!/usr/bin/env bash
 if [ "\${1:-}" = help ] && [ "\${2:-}" = permissions ]; then
@@ -187,7 +187,8 @@ check_adapter() { # $1: stub 名 / $2: アダプタファイル名
   : > "$TMP/${cli}-argv.log"
   : > "$TMP/${cli}-stdin.log"
   set +e
-  ( cd "$REPO" && run_isolated PATH="$BIN:$PATH" CODEX_HOME="$TMP/codex-home" GROK_HOME="$GROK_HOME_DIR" \
+  mkdir -p "$TMP/home"
+  ( cd "$REPO" && run_isolated PATH="$BIN:$PATH" HOME="$TMP/home" USERPROFILE="" CODEX_HOME="$TMP/codex-home" GROK_HOME="$GROK_HOME_DIR" \
       bash "$ADAPTERS_DIR/$adapter" "$PERSPECTIVE" "$out" \
       --base develop --timeout 60 --task-type review \
   ) >"$TMP/${cli}.log" 2>&1
@@ -251,6 +252,7 @@ check_adapter claude  claude-code-adapter.sh
 check_adapter codex   codex-cli-adapter.sh
 check_adapter copilot copilot-cli-adapter.sh
 check_adapter grok    grok-cli-adapter.sh
+check_adapter agy     antigravity-cli-adapter.sh
 
 echo ""
 if [ "$FAIL" -eq 0 ]; then
