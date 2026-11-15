@@ -206,7 +206,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 
 - `FF_EXIT_CODE_GUARD_GATES`（終了コードガードへ追加する導入先ゲート。改行区切りの literal command prefix。hook プロセスの環境へ export する。未設定時は既定互換）
 
-- `FF_DEV_TOOLKIT_STATE_DIR`（工数の実測記録と finish.sh cleanup のログの親。既定 `$HOME/.config/ff-dev-toolkit`）
+- `FF_DEV_TOOLKIT_STATE_DIR`（工数の実測記録、Antigravity 管理クローンと `auto-update` の日次スタンプ、finish.sh cleanup のログの親。既定 `$HOME/.config/ff-dev-toolkit`）
 - `FF_DEV_TOOLKIT_UPDATE_TTL_NOTIFIED`
 - `FF_LONG_GATE_FOREGROUND_TIMEOUT_MS`
 - `FF_REVIEW_ROUND_LIMIT`（レビュー巡回の上限。既定 2、0 で無効）
@@ -452,6 +452,8 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_BASH_HOOKS_NOTICE_LOG`（集約入口 `hooks/run-bash-hooks.sh` が、`hooks/guard-zsh-glob.sh` がその呼び出しで作った通知の記録を受け取るファイル）
 - `FF_CHANGELOG_DIGEST_FILE`
 - `FF_CHANGELOG_DIGEST_WIDTH`
+- `FF_DEV_TOOLKIT_AGY_AUTO_UPDATE_STAMP`
+- `FF_DEV_TOOLKIT_AGY_HOOK_EVENT`
 - `FF_DEV_TOOLKIT_AUTO_UPDATE_STAMP`
 - `FF_DEV_TOOLKIT_PROJECT_ROOT`
 - `FF_DEV_TOOLKIT_REF`
@@ -522,7 +524,7 @@ L4 宣言をまとめる前の個別の名前（旧名）は、内部の別名�
 
 | 鍵 | 種別 | 担当する実体 | 包含 | 撤去した旧名 |
 | --- | --- | --- | --- | --- |
-| `auto-update` | 自動更新 | `hooks/auto-update-marketplace.sh` | - | `AUTO_UPDATE` |
+| `auto-update` | 自動更新 | `hooks/auto-update-marketplace.sh` / `scripts/antigravity/auto-update.sh` | - | `AUTO_UPDATE` |
 | `background-cwd` | ガード | `hooks/guard-background-cwd.sh` | - | `BACKGROUND_CWD_GUARD` |
 | `checkout` | ガード | `hooks/guard-checkout-restore.sh` | `discard-uncommitted` | `CHECKOUT_GUARD` |
 | `codex-auto-update` | 自動更新 | `scripts/lib/multi-agent-codex-update.sh` | - | `CODEX_AUTO_UPDATE` |

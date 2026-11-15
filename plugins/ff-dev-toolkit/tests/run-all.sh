@@ -3510,6 +3510,13 @@ fi
 if [[ ${#NOT_RUN[@]} -gt 0 ]]; then
   echo "✗ not run (suite を起動できなかった): ${NOT_RUN[*]}" >&2
 fi
+ff_emit_stale_guidance() {
+  local _stale_ref
+  echo "✗ stale (base が先行しているための赤を含む): ${STALE[*]}" >&2
+  _stale_ref="$(git -C "$SCRIPT_DIR" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" || _stale_ref="origin/<default-branch>"
+  echo "  取り込んでから回し直してください: git merge ${_stale_ref}（履歴を畳んでよいなら git rebase ${_stale_ref}）" >&2
+  echo "  取り込んでも同じ suite が赤いままなら、それは変更起因の赤です。" >&2
+}
 if [[ ${#FAILED[@]} -gt 0 ]]; then
   echo "✗ failed: ${FAILED[*]}" >&2
   # 直した後に通しを丸ごと回し直す前に、落ちた suite だけを緑にできるようにする（Issue `#2533`）。
@@ -3530,20 +3537,37 @@ if [[ ${#FAILED[@]} -gt 0 ]]; then
     esac
     _rerun_cmd="${_rerun_cmd} $(printf '%q' "$_fs")"
   done
-  echo "  落ちた suite だけを回し直す（部分実行。合格の証拠には通しの 1 回が別に要る）:" >&2
-  echo "    ${_rerun_cmd}" >&2
+  _stale_only=0
+  if [[ ${#NOT_RUN[@]} -eq 0 && -z "${REQUIRED_SKIPPED[*]:-}" && -n "${STALE[*]:-}" ]]; then
+    _stale_only=1
+    for _sf in "${FAILED[@]}"; do
+      _sf_hit=0
+      for _ss in "${STALE[@]}"; do
+        [[ "$_sf" == "$_ss" ]] && { _sf_hit=1; break; }
+      done
+      [[ "$_sf_hit" -eq 1 ]] || { _stale_only=0; break; }
+    done
+  fi
+  if [[ "$_stale_only" -eq 1 ]]; then
+    ff_emit_stale_guidance
+    _full_rerun_cmd="${_rerun_prefix}bash $(printf '%q' "$SELF_PATH")"
+    echo "  base を取り込んで通しで 1 回回し直す（マージの根拠になる）:" >&2
+    echo "    ${_full_rerun_cmd}" >&2
+    echo "  落ちた suite だけを回し直す（確認用・部分実行。マージの根拠にならない）:" >&2
+    echo "    ${_rerun_cmd}" >&2
+  else
+    echo "  落ちた suite だけを回し直す（部分実行。合格の証拠には通しの 1 回が別に要る）:" >&2
+    echo "    ${_rerun_cmd}" >&2
+  fi
 fi
 # 鮮度由来の赤は failed の内訳として**別行で**名指しする（failed からは外さない — 赤は赤のまま）。
 # 次の一手が変更起因の赤とは違う（コードを直すのではなく base を取り込む）ので、行を分けないと
 # 読み手は failed 一覧の中からそれを毎回自分で切り分けることになる。
-if [[ ${#STALE[@]} -gt 0 ]]; then
+if [[ ${#STALE[@]} -gt 0 && "${_stale_only:-0}" -ne 1 ]]; then
   # 分類は suite 粒度で、鮮度と変更起因は**同じ suite で同時に立ちうる**（shared-version-convergence は
   # 100 件超の検査を持つ）。「変更起因ではない」と言い切ると、この節が自分で名指しした 2 番目の
   # 誤読方向（本物の赤を鮮度で片付ける）をランナー自身が助長する。「含む」に留める。
-  echo "✗ stale (base が先行しているための赤を含む): ${STALE[*]}" >&2
-  _stale_ref="$(git -C "$SCRIPT_DIR" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" || _stale_ref="origin/<default-branch>"
-  echo "  取り込んでから回し直してください: git merge ${_stale_ref}（履歴を畳んでよいなら git rebase ${_stale_ref}）" >&2
-  echo "  取り込んでも同じ suite が赤いままなら、それは変更起因の赤です。" >&2
+  ff_emit_stale_guidance
 fi
 
 # node_modules 不在に起因する必須 skip / FULL での fail は、markdownlint 系 / mcp-* 系 /

@@ -261,18 +261,40 @@ else
   bad "fixture: 呼び出し元 HEAD と base 先端の差が作れていない — 判定基準の検証が空振りになる"
 fi
 
-# (d) [gone] + clean worktree（既に [gone]。通常実行では削除される）
+# (d) [gone] + clean worktree（MERGED 一覧に一致しない。ignored ファイルごと保護されること）
 add_clean_gone_worktree 'feature/dry-gone-clean' "$TMP/wt-dry-gone"
+printf '%s\n' 'dry-ignored.env' 'stale-ignored.env' >> "$(git -C "$CALLER" rev-parse --git-path info/exclude)"
+printf 'DRY_SECRET=1\n' > "$TMP/wt-dry-gone/dry-ignored.env"
+# (d2) [gone] のワークツリーなしブランチ（通常実行・dry-run ともに削除対象）
+DRY_GONE_BRANCH='feature/dry-gone-branch-only'
+git branch -q "$DRY_GONE_BRANCH" "$OID_DEVELOP_BEFORE"
+git push -q --no-verify -u origin "$DRY_GONE_BRANCH"
+git push -q --no-verify origin --delete "$DRY_GONE_BRANCH"
 # (e) [gone] + dirty worktree（保護。dry-run でも同じ判定になること）
 add_clean_gone_worktree 'feature/dry-gone-dirty' "$TMP/wt-dry-dirty"
 echo work-in-progress > "$TMP/wt-dry-dirty/wip.txt"
 # (f) origin からは消えているが、ローカルの追跡 ref だけが残っている（prune 前の状態）。
 #     add_clean_gone_worktree の push --delete は追跡 ref も消すので、書き戻して再現する。
+#     MERGED 一覧に一致しないため、prune 後も clean worktree ごと保護されること。
 DRY_STALE='feature/dry-stale-upstream'
 add_clean_gone_worktree "$DRY_STALE" "$TMP/wt-dry-stale"
+printf 'STALE_SECRET=1\n' > "$TMP/wt-dry-stale/stale-ignored.env"
 git update-ref "refs/remotes/origin/${DRY_STALE}" "$(git rev-parse "refs/heads/${DRY_STALE}")"
+# (f2) 同じく stale 追跡 ref のワークツリーなしブランチ（base 先端で作るため HEAD からは未到達）
+DRY_STALE_BRANCH='feature/dry-stale-branch-only'
+git branch -q "$DRY_STALE_BRANCH" develop
+git push -q --no-verify -u origin "$DRY_STALE_BRANCH"
+git push -q --no-verify origin --delete "$DRY_STALE_BRANCH"
+git update-ref "refs/remotes/origin/${DRY_STALE_BRANCH}" "$(git rev-parse "refs/heads/${DRY_STALE_BRANCH}")"
 
-if [ "$(git for-each-ref --format='%(upstream:track)' "refs/heads/${DRY_STALE}")" != '[gone]' ] \
+if [ -z "$(git -C "$TMP/wt-dry-gone" status --porcelain)" ] \
+  && [ -z "$(git -C "$TMP/wt-dry-stale" status --porcelain)" ]; then
+  ok "fixture: 未一致 [gone] / stale worktree は ignored ファイルを抱えた clean 状態（保護対象。self-test）"
+else
+  bad "fixture: wt-dry-gone または wt-dry-stale が clean でない"
+fi
+
+if [ "$(git for-each-ref --format='%(upstream:track)' "refs/heads/${DRY_STALE_BRANCH}")" != '[gone]' ] \
   && [ "$(git for-each-ref --format='%(upstream:track)' "refs/heads/${DRY_TARGET}")" != '[gone]' ]; then
   ok "fixture: 連鎖対象の 2 本は今は [gone] ではない（予告が連鎖を予測できているかを観測できる。self-test）"
 else
@@ -344,7 +366,7 @@ repo_state_snapshot() {
 guard_verdict_lines() {
   # $1: 実行ログ。ガードの判定行だけを取り出す（削除 push の成否は含めない）。
   # dry-run と通常実行でここが 1 行でも違えば、dry-run だけ判定が緩んでいる。
-  grep -E 'skip \(保護ブランチ\)|skip \(設定保護パターン|worktree に未コミット変更があります' "$1" || true
+  grep -E 'skip \(保護ブランチ\)|skip \(設定保護パターン|worktree に未コミット変更があります|worktree が残っていますが、.*削除をスキップします|worktree の削除をスキップします' "$1" || true
 }
 
 predicted_branches() { sed -nE 's/^  ✓ \(dry-run\) 削除対象のブランチ: //p' "$1" | LC_ALL=C sort -u; }
@@ -433,11 +455,14 @@ repo_state_snapshot "$TMP/state-after-dry.txt"
 if exit_is_complete "$EXIT_DRY" \
   && grep -q 'マージ後 Cleanup 結果' "$TMP/run-dry-63.log" \
   && grep -qF "リモートブランチ削除（対象）: ${DRY_TARGET}" "$TMP/run-dry-63.log" \
-  && grep -qF '削除対象のブランチ: feature/dry-gone-clean' "$TMP/run-dry-63.log" \
-  && grep -qF "削除対象の worktree: ${WT_GONE_REAL}" "$TMP/run-dry-63.log" \
+  && grep -qF "削除対象のブランチ: ${DRY_GONE_BRANCH}" "$TMP/run-dry-63.log" \
+  && grep -qF "削除対象の worktree: ${WT_CHAIN_REAL}" "$TMP/run-dry-63.log" \
+  && ! grep -qF '削除対象のブランチ: feature/dry-gone-clean' "$TMP/run-dry-63.log" \
+  && ! grep -qF "削除対象の worktree: ${WT_GONE_REAL}" "$TMP/run-dry-63.log" \
+  && grep -qF "worktree が残っていますが、(名前, OID) が MERGED PR の head と一致しないため削除をスキップします: ${WT_GONE_REAL}" "$TMP/run-dry-63.log" \
   && grep -qF '✓ (dry-run) 削除対象の取り残し:' "$TMP/run-dry-63.log" \
   && grep -qF 'は Step 4 の削除対象です' "$TMP/run-dry-63.log"; then
-  ok "--dry-run は削除対象（リモートブランチ / ローカルブランチ / worktree / 取り残し）を一覧表示する"
+  ok "--dry-run は削除対象（一致 worktree / ワークツリーなしブランチ / 取り残し）を一覧表示し、未一致 [gone] worktree を保護する"
 else
   bad "--dry-run の一覧表示が期待どおりでない (exit=${EXIT_DRY})"
   { tail -30 "$TMP/run-dry-63.log" | sed 's/^/     /' >&2 || true; }
@@ -445,15 +470,18 @@ fi
 
 # 46.3b 見送った prune / リモート削除の**連鎖**も予告に入る。ここが落ちると、
 #       dry-run に出ていないブランチ・worktree が実行すると消える（最も危険な壊れ方）。
+#       一方、未一致 worktree を持つ stale ブランチは prune 連鎖後でも保護される。
 if grep -qF "削除対象のブランチ: ${DRY_TARGET}" "$TMP/run-dry-63.log" \
   && grep -qF "削除対象の worktree: ${WT_CHAIN_REAL}" "$TMP/run-dry-63.log" \
-  && grep -qF "削除対象のブランチ: ${DRY_STALE}" "$TMP/run-dry-63.log" \
-  && grep -qF "削除対象の worktree: ${WT_STALE_REAL}" "$TMP/run-dry-63.log" \
+  && grep -qF "削除対象のブランチ: ${DRY_STALE_BRANCH}" "$TMP/run-dry-63.log" \
+  && ! grep -qF "削除対象のブランチ: ${DRY_STALE}" "$TMP/run-dry-63.log" \
+  && ! grep -qF "削除対象の worktree: ${WT_STALE_REAL}" "$TMP/run-dry-63.log" \
+  && grep -qF "worktree が残っていますが、(名前, OID) が MERGED PR の head と一致しないため削除をスキップします: ${WT_STALE_REAL}" "$TMP/run-dry-63.log" \
   && grep -q '新たに \[gone\] になるブランチを予告へ含めます' "$TMP/run-dry-63.log"; then
-  ok "--dry-run は「リモート削除 / prune → 新たに [gone] → その worktree」の連鎖も予告する"
+  ok "--dry-run は「リモート削除 / prune → 新たに [gone]」の連鎖を予告しつつ未一致 stale worktree を保護する"
 else
-  bad "--dry-run が prune 連鎖で消えるブランチ / worktree を予告していない"
-  { grep -nE '削除対象|gone' "$TMP/run-dry-63.log" | head -20 | sed 's/^/     /' >&2 || true; }
+  bad "--dry-run が prune 連鎖で消えるブランチ / worktree を予告していないか未一致を誤予告した"
+  { grep -nE '削除対象|削除をスキップ|gone' "$TMP/run-dry-63.log" | head -20 | sed 's/^/     /' >&2 || true; }
 fi
 
 if cmp -s "$TMP/state-before-dry.txt" "$TMP/state-after-dry.txt"; then
@@ -567,12 +595,12 @@ else
   bad "mutant（OID 照合なし）の過剰予告が観測できない — 46.6 の検出力は主張できない"
 fi
 
-if grep -qF "${DRY_STALE} はマージ済み PR の head と OID 一致しません" "$TMP/run-dry-63-mut-baseref.log" \
-  && ! grep -qF "削除対象のブランチ: ${DRY_STALE}" "$TMP/run-dry-63-mut-baseref.log"; then
+if grep -qF "${DRY_STALE_BRANCH} はマージ済み PR の head と OID 一致しません" "$TMP/run-dry-63-mut-baseref.log" \
+  && ! grep -qF "削除対象のブランチ: ${DRY_STALE_BRANCH}" "$TMP/run-dry-63-mut-baseref.log"; then
   ok "mutant（-d の基準を現在 HEAD へ）は base 先端でマージ済みのブランチを予告から落とす = 判定基準の検証が mutant を赤にできる"
 else
   bad "mutant（-d の基準を現在 HEAD へ）の退行が観測できない"
-  { grep -nE "${DRY_STALE}" "$TMP/run-dry-63-mut-baseref.log" | head -10 | sed 's/^/     /' >&2 || true; }
+  { grep -nE "${DRY_STALE_BRANCH}" "$TMP/run-dry-63-mut-baseref.log" | head -10 | sed 's/^/     /' >&2 || true; }
 fi
 
 # 46.8 --dry-run を外した通常実行は従来どおり削除し、終了コード契約も変わらない。
@@ -584,18 +612,32 @@ EXIT_REAL=$?
 set -e
 repo_state_snapshot "$TMP/state-after-real.txt"
 
+WT_LIST_AFTER_REAL="$(git worktree list --porcelain)"
+WT_LIST_OK=0
+case $'\n'"$WT_LIST_AFTER_REAL"$'\n' in
+  *$'\n'"worktree ${WT_GONE_REAL}"$'\n'*)
+    case $'\n'"$WT_LIST_AFTER_REAL"$'\n' in
+      *$'\n'"worktree ${WT_STALE_REAL}"$'\n'*) WT_LIST_OK=1 ;;
+    esac
+    ;;
+esac
 if exit_is_complete "$EXIT_REAL" \
   && ! remote_has "$DRY_TARGET" \
-  && ! git show-ref -q "refs/heads/feature/dry-gone-clean" \
   && ! git show-ref -q "refs/heads/${DRY_TARGET}" \
-  && ! git show-ref -q "refs/heads/${DRY_STALE}" \
-  && [ ! -d "$TMP/wt-dry-gone" ] \
+  && ! git show-ref -q "refs/heads/${DRY_GONE_BRANCH}" \
+  && ! git show-ref -q "refs/heads/${DRY_STALE_BRANCH}" \
   && [ ! -d "$TMP/wt-dry-chain" ] \
-  && [ ! -d "$TMP/wt-dry-stale" ] \
+  && [ -d "$TMP/wt-dry-gone" ] \
+  && [ -f "$TMP/wt-dry-gone/dry-ignored.env" ] \
+  && git show-ref -q 'refs/heads/feature/dry-gone-clean' \
+  && [ -d "$TMP/wt-dry-stale" ] \
+  && [ -f "$TMP/wt-dry-stale/stale-ignored.env" ] \
+  && git show-ref -q "refs/heads/${DRY_STALE}" \
+  && [ "$WT_LIST_OK" -eq 1 ] \
   && [ -d "$TMP/wt-dry-dirty" ] \
-  && git show-ref -q "refs/heads/feature/dry-gone-dirty" \
+  && git show-ref -q 'refs/heads/feature/dry-gone-dirty' \
   && ! cmp -s "$TMP/state-before-dry.txt" "$TMP/state-after-real.txt"; then
-  ok "通常実行は従来どおり削除し、dry-run では不変だった状態が実際に変わる（snapshot の self-test）"
+  ok "通常実行は一致 worktree・ワークツリーなしブランチを削除しつつ未一致 [gone] worktree と ignored ファイルを保護する（snapshot の self-test）"
 else
   bad "--dry-run なしの通常実行が期待どおりでない (exit=${EXIT_REAL})"
   { tail -30 "$TMP/run-real-63.log" | sed 's/^/     /' >&2 || true; }
@@ -685,6 +727,103 @@ if [ "$PUSH_CALLS_65" -eq 0 ] \
   ok "通常実行の削除前の照合は dry-run と同じ判定関数を通る（常時 match の mutant だけが消えた ref へ push する）"
 else
   bad "通常実行と dry-run の実在判定が同じ関数を通っていない、または mutant の差が観測できない (original=${PUSH_CALLS_65} mutant=${PUSH_CALLS_65M})"
+fi
+
+# 46.11 clean かつ unlocked な [gone] worktree の保護契約（先祖 OID 不一致 / GUARDS_OK=0 fail-closed / 変異テスト）
+#       未一致クリーン [gone] worktree の基本保護（AC 1）は 46.3 / 46.8 で検証済み。
+#       ここでは名前一致・headRefOid 先祖でもローカル先行コミットがあれば保護する（AC 2）、
+#       一覧取得失敗時は条件一致 worktree でも fail-closed で残す（AC 4）、および変異テストを追加検証する。
+DRY_ADV='feature/dry-gone-advanced'
+git worktree add -q -b "$DRY_ADV" "$TMP/wt-dry-advanced" develop
+echo adv-merged > "$TMP/wt-dry-advanced/adv.txt"
+git -C "$TMP/wt-dry-advanced" add adv.txt
+git -C "$TMP/wt-dry-advanced" commit -qm "merged commit on advanced gone branch"
+git -C "$TMP/wt-dry-advanced" push -q --no-verify -u origin "$DRY_ADV"
+register_merged_branch "$DRY_ADV"
+git -C "$TMP/wt-dry-advanced" push -q --no-verify origin --delete "$DRY_ADV"
+echo adv-unmerged > "$TMP/wt-dry-advanced/adv-unmerged.txt"
+git -C "$TMP/wt-dry-advanced" add adv-unmerged.txt
+git -C "$TMP/wt-dry-advanced" commit -qm "unmerged local commit ahead of merged PR"
+printf '%s\n' 'adv-ignored.env' 'fc-ignored.env' >> "$(git -C "$CALLER" rev-parse --git-path info/exclude)"
+printf 'ADV_SECRET=1\n' > "$TMP/wt-dry-advanced/adv-ignored.env"
+WT_ADV_REAL="$(cd "$TMP/wt-dry-advanced" && pwd -P)"
+
+DRY_FC='feature/dry-gone-matched-fc'
+add_merged_clean_gone_worktree "$DRY_FC" "$TMP/wt-dry-fc"
+printf 'FC_SECRET=1\n' > "$TMP/wt-dry-fc/fc-ignored.env"
+WT_FC_REAL="$(cd "$TMP/wt-dry-fc" && pwd -P)"
+
+if [ -z "$(git -C "$TMP/wt-dry-advanced" status --porcelain)" ] \
+  && [ -z "$(git -C "$TMP/wt-dry-fc" status --porcelain)" ]; then
+  ok "46.11 fixture: 先行コミット付き・一覧失敗テスト用 worktree ともに clean かつ unlocked（self-test）"
+else
+  bad "46.11 fixture が clean でない"
+fi
+
+# 46.11a GUARDS_OK=0 の通常実行: 一致するはずの worktree も fail-closed で残す（AC 4）
+: > "$TMP/ghfail-merged.enabled"
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" 63 > "$TMP/run-real-63-failclosed.log" 2>&1
+EXIT_REAL_FC=$?
+set -e
+rm -f "$TMP/ghfail-merged.enabled"
+
+if [ "$EXIT_REAL_FC" -eq 2 ] \
+  && grep -qF 'マージ済み PR 一覧の取得に失敗しました（fail-closed で縮退）' "$TMP/run-real-63-failclosed.log" \
+  && grep -qF "マージ済み PR 一覧と照合できないため（fail-closed）、worktree の削除をスキップします: ${WT_FC_REAL}" "$TMP/run-real-63-failclosed.log" \
+  && [ -d "$TMP/wt-dry-fc" ] \
+  && [ -f "$TMP/wt-dry-fc/fc-ignored.env" ] \
+  && git show-ref -q "refs/heads/${DRY_FC}" \
+  && [ -d "$TMP/wt-dry-advanced" ] \
+  && [ -f "$TMP/wt-dry-advanced/adv-ignored.env" ] \
+  && git show-ref -q "refs/heads/${DRY_ADV}" \
+  && [ -d "$TMP/wt-dry-gone" ] \
+  && [ -f "$TMP/wt-dry-gone/dry-ignored.env" ] \
+  && git show-ref -q 'refs/heads/feature/dry-gone-clean'; then
+  ok "GUARDS_OK=0 の通常実行は一致候補を含めて clean [gone] worktree を fail-closed で保護する（exit=2）"
+else
+  bad "GUARDS_OK=0 の通常実行が期待どおりに worktree を保護していない (exit=${EXIT_REAL_FC})"
+  { tail -30 "$TMP/run-real-63-failclosed.log" | sed 's/^/     /' >&2 || true; }
+fi
+
+# 46.11b GUARDS_OK=1 の通常実行: (名前, OID) 一致は削除し、先祖 OID 不一致は保護する（AC 2 + 陽性対照）
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" 63 > "$TMP/run-real-63-ac2.log" 2>&1
+EXIT_REAL_AC2=$?
+set -e
+
+if exit_is_complete "$EXIT_REAL_AC2" \
+  && [ ! -d "$TMP/wt-dry-fc" ] \
+  && ! git show-ref -q "refs/heads/${DRY_FC}" \
+  && [ -d "$TMP/wt-dry-advanced" ] \
+  && [ -f "$TMP/wt-dry-advanced/adv-ignored.env" ] \
+  && git show-ref -q "refs/heads/${DRY_ADV}" \
+  && grep -qF "worktree が残っていますが、(名前, OID) が MERGED PR の head と一致しないため削除をスキップします: ${WT_ADV_REAL}" "$TMP/run-real-63-ac2.log" \
+  && [ -d "$TMP/wt-dry-gone" ] \
+  && [ -f "$TMP/wt-dry-gone/dry-ignored.env" ] \
+  && git show-ref -q 'refs/heads/feature/dry-gone-clean'; then
+  ok "GUARDS_OK=1 は (名前, OID) 一致を削除しつつ、先祖 OID・未一致 [gone] worktree とブランチを保護する"
+else
+  bad "先祖 OID 不一致保護または一致対照の削除が期待どおりでない (exit=${EXIT_REAL_AC2})"
+  { tail -30 "$TMP/run-real-63-ac2.log" | sed 's/^/     /' >&2 || true; }
+fi
+
+# 46.11c 変異テスト: WT_MERGED_MATCH ガードを無効化した mutant は未一致・先祖不一致を削除対象に出す
+stage_cleanup_mutant "$TMP/mutant-wtmatch"
+sed 's|if \[ "\$WT_MERGED_MATCH" != "1" \]; then|if false; then|' \
+  "$TMP/mutant-wtmatch/lib/merge-cleanup-local.sh" > "$TMP/mutant-wtmatch/lib/merge-cleanup-local.new"
+mv "$TMP/mutant-wtmatch/lib/merge-cleanup-local.new" "$TMP/mutant-wtmatch/lib/merge-cleanup-local.sh"
+MUTANT_WTMATCH="$TMP/mutant-wtmatch/merge-cleanup.sh"
+set +e
+PATH="$MOCK:$PATH" bash "$MUTANT_WTMATCH" --dry-run 63 > "$TMP/run-dry-63-mut-wtmatch.log" 2>&1
+set -e
+if ! cmp -s "$PLUGIN_ROOT/scripts/lib/merge-cleanup-local.sh" "$TMP/mutant-wtmatch/lib/merge-cleanup-local.sh" \
+  && grep -qF "削除対象の worktree: ${WT_GONE_REAL}" "$TMP/run-dry-63-mut-wtmatch.log" \
+  && grep -qF "削除対象の worktree: ${WT_ADV_REAL}" "$TMP/run-dry-63-mut-wtmatch.log"; then
+  ok "mutant（WT_MERGED_MATCH ガード無効化）は未一致・先祖一致 [gone] worktree を削除対象に出す = 46.11 が mutant を赤にできる"
+else
+  bad "mutant（WT_MERGED_MATCH ガード無効化）の退行が観測できない"
+  { tail -30 "$TMP/run-dry-63-mut-wtmatch.log" | sed 's/^/     /' >&2 || true; }
 fi
 
 # suite-cases-end: cwd-and-dry-run.sh

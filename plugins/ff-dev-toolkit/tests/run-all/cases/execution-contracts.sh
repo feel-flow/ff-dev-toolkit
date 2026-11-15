@@ -479,6 +479,113 @@ case "$(_rr_extract)" in
   "FF_RUN_ALL_FULL=1 bash /"*"/fixtures/fail/verify.sh") ok "51-F: 全件モードの回は再実行コマンドに FF_RUN_ALL_FULL=1 を前置する" ;;
   *) bad "51-F: 全件モードの再実行コマンドに前置が無い: '$(_rr_extract)'" ;;
 esac
+# 51-G: 失敗 suite がすべて STALE に含まれるときは、部分再実行より先に通しの案内を出し、
+#       部分再実行の行に確認用・マージの根拠にならないことを明示する（OBS-101）
+RUN_JOBS=1 run_runner "$FIXTURES/stale/verify.sh" "$FIXTURES/pass/verify.sh"
+_so_full_line="$(printf '%s\n' "$RUN_OUT" | awk '/^  base を取り込んで通しで 1 回回し直す（マージの根拠になる）:$/ { print NR; exit }')"
+_so_part_line="$(printf '%s\n' "$RUN_OUT" | awk '/^  落ちた suite だけを回し直す（確認用・部分実行。マージの根拠にならない）:$/ { print NR; exit }')"
+_so_full_cmd="$(printf '%s\n' "$RUN_OUT" | awk 'f { sub(/^    /, ""); print; exit } /^  base を取り込んで通しで 1 回回し直す（マージの根拠になる）:$/ { f = 1 }')"
+if [ -n "$_so_full_line" ] && [ -n "$_so_part_line" ] && [ "$_so_full_line" -lt "$_so_part_line" ]; then
+  ok "51-G: 鮮度だけの赤では部分再実行より先に通しの案内を出し、部分側は同じ行で確認用・根拠外を明示する"
+else
+  bad "51-G: 鮮度だけの赤の案内順・文言が仕様と一致しない（full=${_so_full_line:-なし}, part=${_so_part_line:-なし}）"
+fi
+case "$_so_full_cmd" in
+  "bash /"*"/tests/run-all.sh") ok "51-G2: 鮮度だけの赤で案内する通しコマンドが run-all.sh 本体である" ;;
+  *) bad "51-G2: 通しコマンドの形が期待と違う: '${_so_full_cmd:-空}'" ;;
+esac
+case "$(_rr_extract)" in
+  "bash /"*"/fixtures/stale/verify.sh") ok "51-G3: 鮮度だけの赤でも後置の部分再実行コマンドは引き続き抽出できる" ;;
+  *) bad "51-G3: 後置の部分再実行コマンドが期待と違う: '$(_rr_extract)'" ;;
+esac
+_so_stale_cnt="$(printf '%s\n' "$RUN_OUT" | grep -c '^✗ stale (' || true)"
+if [ "$_so_stale_cnt" -eq 1 ]; then
+  ok "51-G4: 鮮度だけの赤で ✗ stale ( 行が 1 回だけ出る（重複出力を抑止）"
+else
+  bad "51-G4: 鮮度だけの赤で ✗ stale ( 行の出現回数が 1 ではない: ${_so_stale_cnt}"
+fi
+# 51-H: 鮮度以外の赤が 1 つでも混ざるときは、従来どおり部分再実行を先に出し通しの案内を出さない
+RUN_JOBS=1 run_runner "$FIXTURES/stale/verify.sh" "$FIXTURES/fail/verify.sh"
+_mix_part_line="$(printf '%s\n' "$RUN_OUT" | awk '/^  落ちた suite だけを回し直す（部分実行。合格の証拠には通しの 1 回が別に要る）:$/ { print NR; exit }')"
+_mix_stale_line="$(printf '%s\n' "$RUN_OUT" | awk '/^✗ stale \(/ { print NR; exit }')"
+if [ -n "$_mix_part_line" ] && [ -n "$_mix_stale_line" ] && [ "$_mix_part_line" -lt "$_mix_stale_line" ]; then
+  ok "51-H: 鮮度以外の赤が混ざる回は従来どおり部分再実行を先に案内する"
+else
+  bad "51-H: 混在の赤で案内順が変わっている（part=${_mix_part_line:-なし}, stale=${_mix_stale_line:-なし}）"
+fi
+expect_lacks 'base を取り込んで通しで 1 回回し直す（マージの根拠になる）' "51-H2: 混在の赤では鮮度専用の通し案内を出さない"
+# 51-I: 全件モードの鮮度だけの赤は、通しのコマンドにも FF_RUN_ALL_FULL=1 を前置する
+RUN_FULL=1 RUN_JOBS=1 run_runner "$FIXTURES/stale/verify.sh"
+_so_full_mode_cmd="$(printf '%s\n' "$RUN_OUT" | awk 'f { sub(/^    /, ""); print; exit } /^  base を取り込んで通しで 1 回回し直す（マージの根拠になる）:$/ { f = 1 }')"
+case "$_so_full_mode_cmd" in
+  "FF_RUN_ALL_FULL=1 bash /"*"/tests/run-all.sh") ok "51-I: 全件モードの鮮度だけの赤は通しコマンドに FF_RUN_ALL_FULL=1 を前置する" ;;
+  *) bad "51-I: 全件モードの鮮度専用通しコマンドに前置が無い: '${_so_full_mode_cmd:-空}'" ;;
+esac
+# 51-J: NOT_RUN が混ざる回は failed が STALE のみでも従来どおり部分再実行を先に出し通し案内を出さない
+RUN_JOBS=1 run_runner "$FIXTURES/stale/verify.sh" "$FIXTURES/not-executable/verify.sh"
+_nr_part_line="$(printf '%s\n' "$RUN_OUT" | awk '/^  落ちた suite だけを回し直す（部分実行。合格の証拠には通しの 1 回が別に要る）:$/ { print NR; exit }')"
+_nr_stale_line="$(printf '%s\n' "$RUN_OUT" | awk '/^✗ stale \(/ { print NR; exit }')"
+if [ -n "$_nr_part_line" ] && [ -n "$_nr_stale_line" ] && [ "$_nr_part_line" -lt "$_nr_stale_line" ]; then
+  ok "51-J: NOT_RUN を伴う stale では従来どおり部分再実行を先に案内する"
+else
+  bad "51-J: NOT_RUN を伴う stale で案内順が変わっている（part=${_nr_part_line:-なし}, stale=${_nr_stale_line:-なし}）"
+fi
+expect_lacks 'base を取り込んで通しで 1 回回し直す（マージの根拠になる）' "51-J2: NOT_RUN を伴う stale では鮮度専用の通し案内を出さない"
+# 51-K: REQUIRED_SKIPPED が混ざる回も failed が STALE のみでも従来どおり部分再実行を先に出し通し案内を出さない
+if ! command -v git >/dev/null 2>&1; then
+  bad "51-K: git が無いため必須 skip + stale の回帰を実測できない"
+else
+  _sr_fx="$RUN_WORK/ff-run-all-stale-required-skip"
+  rm -rf "$_sr_fx"
+  mkdir -p "$_sr_fx/repo/tests/stale" "$_sr_fx/repo/tests/so-required-probe" "$_sr_fx/repo/scripts"
+  cp "$FIXTURES/stale/verify.sh" "$_sr_fx/repo/tests/stale/verify.sh"
+  cat > "$_sr_fx/repo/tests/so-required-probe/verify.sh" <<'PROBE'
+#!/usr/bin/env bash
+echo "○ skip: 必須 skip と stale の混在を測る疑似 suite"
+exit 0
+PROBE
+  chmod +x "$_sr_fx/repo/tests/stale/verify.sh" "$_sr_fx/repo/tests/so-required-probe/verify.sh"
+  awk '
+    /^  SCRIPTS=\($/ {
+      print
+      print "    \"$SCRIPT_DIR/stale/verify.sh\""
+      print "    \"$SCRIPT_DIR/so-required-probe/verify.sh\""
+      in_scripts = 1
+      next
+    }
+    in_scripts && /^  \)$/ { in_scripts = 0; print; next }
+    in_scripts { next }
+    /^REQUIRED_SUITES=\($/ { print; print "  so-required-probe"; in_required = 1; next }
+    in_required && /^\)$/ { in_required = 0; print; next }
+    in_required { next }
+    /^MISS_PROBE_BASELINE=\($/ { print; print "  stale"; print "  so-required-probe"; in_baseline = 1; next }
+    in_baseline && /^\)$/ { in_baseline = 0; print; next }
+    in_baseline { next }
+    { print }
+  ' "$RUNNER" > "$_sr_fx/repo/tests/run-all.sh"
+  cp "$TESTS_DIR/../scripts/record-gate-head.sh" "$_sr_fx/repo/scripts/record-gate-head.sh"
+  _sr_setup_rc=0
+  git -c commit.gpgsign=false -c user.email=t@example.invalid -c user.name=T -c init.defaultBranch=main -C "$_sr_fx/repo" init -q . >/dev/null 2>&1 || _sr_setup_rc=1
+  git -c commit.gpgsign=false -c user.email=t@example.invalid -c user.name=T -C "$_sr_fx/repo" add -A >/dev/null 2>&1 || _sr_setup_rc=1
+  git -c commit.gpgsign=false -c user.email=t@example.invalid -c user.name=T -C "$_sr_fx/repo" commit -qm "fixture" >/dev/null 2>&1 || _sr_setup_rc=1
+  if [ "$_sr_setup_rc" -ne 0 ]; then
+    bad "51-K: 必須 skip + stale の複製リポジトリを用意できず実測できない（空振り）"
+  else
+    if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_ALLOW_SKIP \
+      -u FF_RUN_ALL_ELAPSED_RECORD -u FF_RUN_ALL_PROBE_LOG FF_RUN_ALL_FULL=1 FF_RUN_ALL_JOBS=1 \
+      FF_GATE_RECORD_FILE="$_sr_fx/gate-record" bash "$_sr_fx/repo/tests/run-all.sh" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+    expect_rc nz "51-K: 必須 skip + stale の既定実行が非 0"
+    expect_has '^✗ 環境都合で消してはいけない suite が skip しました: so-required-probe$' "51-K: 必須 skip が記録される"
+    _rq_part_line="$(printf '%s\n' "$RUN_OUT" | awk '/^  落ちた suite だけを回し直す（部分実行。合格の証拠には通しの 1 回が別に要る）:$/ { print NR; exit }')"
+    _rq_stale_line="$(printf '%s\n' "$RUN_OUT" | awk '/^✗ stale \(/ { print NR; exit }')"
+    if [ -n "$_rq_part_line" ] && [ -n "$_rq_stale_line" ] && [ "$_rq_part_line" -lt "$_rq_stale_line" ]; then
+      ok "51-K: 必須 skip を伴う stale では従来どおり部分再実行を先に案内する"
+    else
+      bad "51-K: 必須 skip を伴う stale で案内順が変わっている（part=${_rq_part_line:-なし}, stale=${_rq_stale_line:-なし}）"
+    fi
+    expect_lacks 'base を取り込んで通しで 1 回回し直す（マージの根拠になる）' "51-K2: 必須 skip を伴う stale では鮮度専用の通し案内を出さない"
+  fi
+fi
 
 # case 53: ゲートの記録の制御（FF_GATE_RECORD_FILE / FF_GATE_RECORD）を suite へ継承しない（OBS-414）。
 suite_cases_source "$SCRIPT_DIR/cases" gate-record-scope.sh

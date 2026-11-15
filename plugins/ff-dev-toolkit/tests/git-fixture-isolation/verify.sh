@@ -495,6 +495,7 @@ adapter-model-args/verify.sh
 adapter-prompt-guard/verify.sh
 adapter-prompt-utf8/verify.sh
 antigravity-hooks-sync/verify.sh
+antigravity-plugins-sync/verify.sh
 changelog-fragments/cases/attribution.sh
 changelog-fragments/cases/footer.sh
 changelog-fragments/cases/parallel-branches.sh

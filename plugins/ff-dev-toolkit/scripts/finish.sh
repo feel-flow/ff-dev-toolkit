@@ -59,7 +59,11 @@
 #      clean で同一ブランチの `STATUS=unverified` は `see-action` で、再実行は案内しない
 #      （汚れた木・別ブランチは、その前の判定不能のまま）。それ以外の理由も
 #      `see-action`（ACTION に従う）
-#   7. merge コマンドを生成する（2 の抵触で止める回・worktree の一覧が取れない回は生成しない）。
+#   6b. 読み直した PR の `mergeable` / `mergeStateStatus` を確認する（`MERGEABLE` かつ `DIRTY` で
+#      なければ従来と同じ出力。`UNKNOWN` のときは `--github-input` 以外かつ未停止なら数秒おきに
+#      最大 3 回読み直し、なお決まらなければ `PRECHECK=undetermined` と理由を出して rc 2 で止める。
+#      `CONFLICTING` / `DIRTY` は `PRECHECK=blocked` と競合解消・ゲート再実行の次の一手を出し rc 1）
+#   7. merge コマンドを生成する（2 / 4b / 6b の抵触・競合や 6b の未確定で止める回・worktree の一覧が取れない回は生成しない）。
 #      方式は `--merge-method`（squash / merge。省略時は squash）で、`--squash` / `--merge` の
 #      どちらかだけを載せる。不正値・空値・2 回目の指定は gh を呼ぶ前に rc 2 で拒否する。
 #      base ブランチまたは head ブランチが別の worktree に保持されていれば `--delete-branch` を
@@ -141,11 +145,14 @@
 #      コミットが Refs 運用の Issue を閉じる / 返信の無いレビュースレッドがある / Closes 対象の本文に
 #      未チェックの受け入れ条件が残り、その Issue が --ack-unchecked されていない / 設定したパスを含む PR の
 #      Closes 対象の本文か完了報告に設定した語の行があり、その Issue が --ack-post-merge されていない /
-#      セキュリティに関わる変更（判定不能を含む）なのに PR 本文に専用セキュリティゲートの記録行が無い）。理由と次の一手を stderr へ
+#      セキュリティに関わる変更（判定不能を含む）なのに PR 本文に専用セキュリティゲートの記録行が無い /
+#      6b: PR が base ブランチと競合している（CONFLICTING または mergeStateStatus=DIRTY））。理由と次の一手を stderr へ
 #   2  判定不能・検査不成立（`--merge-method` の不正値・空値・重複（PR を読む前）/ PR 不在 / gh 不通（checks の取得を含む）/
-#      jq 不在 / 鮮度照合の検査不成立、および
-#      FRESH_STATUS=2 で RERUN_FULL_GATE が no でない回）。判定できなかった項目を名指しし、
-#      復帰手段（何を直して再実行するか）を stderr へ出す。後者は MERGE_COMMAND も出す —
+#      jq 不在 / 鮮度照合の検査不成立 /
+#      FRESH_STATUS=2 で RERUN_FULL_GATE が no でない回 /
+#      6b: mergeable が再計算中または未確定のまま決まらない（PRECHECK=undetermined、MERGE_COMMAND 無し））。
+#      判定できなかった項目を名指しし、復帰手段（何を直して再実行するか）を stderr へ出す。
+#      FRESH_STATUS=2 で RERUN_FULL_GATE が no でない回だけは MERGE_COMMAND も出す —
 #      記録の仕組みを持たないプロジェクトでは判定不能が常態で、止めるかどうかは skill 側の判断
 #
 # cleanup: PR の実在と gh の到達を確かめてから scripts/merge-cleanup.sh へ委譲する（終了コードは

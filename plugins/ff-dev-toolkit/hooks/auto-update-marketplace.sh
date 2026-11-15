@@ -61,6 +61,15 @@ asdd_hook_enabled hooks || exit 0
 # L4 宣言（ADR-087）。lib を読めない配置では止めない側（自動更新は効いたまま）に倒し、stderr も汚さない
 { [ -r "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh" ] && . "${BASH_SOURCE[0]%/*}/../scripts/lib/l4-declarations.sh"; } 2>/dev/null || ff_l4_skipped() { return 1; }
 if ff_l4_skipped 'auto-update' 'retired-stop'; then exit 0; fi
+if [ "${FF_DEV_TOOLKIT_AGY_HOOK_EVENT:-}" = "SessionStart" ]; then
+  if [ -r "${BASH_SOURCE[0]%/*}/../scripts/antigravity/auto-update.sh" ]; then
+    (
+      unset FF_DEV_TOOLKIT_AGY_HOOK_EVENT || true
+      bash "${BASH_SOURCE[0]%/*}/../scripts/antigravity/auto-update.sh" --hook
+    ) >/dev/null 2>&1 || true
+  fi
+  exit 0
+fi
 command -v claude >/dev/null 2>&1 || exit 0
 
 stamp="${FF_DEV_TOOLKIT_AUTO_UPDATE_STAMP:-$HOME/.claude/.ff-dev-toolkit-auto-update-stamp}"

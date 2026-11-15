@@ -95,7 +95,7 @@ release/*     ← リリース準備ブランチ（developから分岐）
 
 raw `gh issue create` を直接使う前に、`.github/ISSUE_TEMPLATE/<種別>.md` があれば `cat` して節見出しを本文の骨子へ写す（`/create-issue` はこの確認を起票手順 `references/filing.md` の pre-flight として自動化している）。
 
-**1. 本文を一時ファイルへ書く。** Write ツール（無ければエディタ）で作業ツリー**外**の一時ファイル（セッションの scratchpad 等）へ本文を書く。ファイル名は Issue ごとに一意にする（`mktemp` か Issue の slug を含める — 共有一時領域の汎用名は並列セッションが相互上書きし、別 Issue の本文で起票する）。Bash の `mktemp` で作ったパスを Write ツールへ渡すときは、[一時ファイルの置き場所](./markdown-patch-discipline.md#一時ファイルの置き場所)のとおり `cygpath -m`（Windows の Git Bash だけに在る）で変換した値を Write ツールと `gh` の両方へ渡す — `/tmp/…` のまま渡すと Write ツールは別の場所へ書き、`gh` は `mktemp` が作った空のファイルを送る。heredoc でシェル変数へ組み立てない。空のファイルを渡さない（空の本文は「作成済みだが中身の無い」Issue を黙って生む）。
+**1. 本文を一時ファイルへ書く。** Write ツール（無ければエディタ）で作業ツリー**外**の永続作業ディレクトリ（`${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/<Issue 番号 or 識別子>/`。消えても困らない使い捨ての小片だけならセッションの scratchpad も可）へ本文を書く。ファイル名は Issue ごとに一意にする（`mktemp` か Issue の slug を含める — 共有一時領域の汎用名は並列セッションが相互上書きし、別 Issue の本文で起票する）。Bash の `mktemp` で作ったパスを Write ツールへ渡すときは、[一時ファイルの置き場所](./markdown-patch-discipline.md#一時ファイルの置き場所)のとおり `cygpath -m`（Windows の Git Bash だけに在る）で変換した値を Write ツールと `gh` の両方へ渡す — `/tmp/…` のまま渡すと Write ツールは別の場所へ書き、`gh` は `mktemp` が作った空のファイルを送る。heredoc でシェル変数へ組み立てない。空のファイルを渡さない（空の本文は「作成済みだが中身の無い」Issue を黙って生む）。
 
 ```markdown
 ## 概要
@@ -468,7 +468,9 @@ post-merge 検証（本ファイルの「PR タイトルと Issue 参照の規�
 
 ```bash
 # 変異表を回す（非 0 なら PR を作らず、変異表か検査を直して回し直す）
-body_dir="$(mktemp -d)"
+# 検証ログや PR 本文の下書きは scratchpad ではなく永続作業ディレクトリへ保存する
+body_dir="${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/<Issue 番号 or エージェント固有 ID>"
+mkdir -p "$body_dir"
 if ! FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/mutation-harness.sh" \
   --table <変異表.tsv> --suite '<対象 suite の実行コマンド>' --out "$body_dir/mutation.md"; then
   echo "変異表が期待どおりではありません（SURVIVED / FALSE-POSITIVE / NOT-APPLIED / 対照の赤）" >&2
@@ -476,7 +478,7 @@ if ! FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/s
 fi
 # 結果表を本文へ組み込んでから push して PR を作る
 git push -u origin "<ブランチ名>"
-{ cat <PR 本文の下書き.md>; printf '\n## 変異注入の結果\n\n'; cat "$body_dir/mutation.md"; } > "$body_dir/body.md"
+{ cat "$body_dir/pr-body-draft.md"; printf '\n## 変異注入の結果\n\n'; cat "$body_dir/mutation.md"; } > "$body_dir/body.md"
 gh pr create --base develop --title "<タイトル>" --body-file "$body_dir/body.md"
 ```
 
@@ -661,7 +663,7 @@ Claude Code / Codex / grok は [主担当ホストのネイティブセルフレ
 
 **PR 作成直後は、レビューの起動と、同じ head SHA に対する baseline ゲートの背景起動を同じターンで行う（既定）。** baseline の結果を待ってからレビューを起動すると、baseline 1 周分の待ちがレビューの前にそのまま直列に積まれる。並走させるのは既定（高速）モードのゲートだけで、`FF_RUN_ALL_FULL=1` の全件モードは並走させない（CPU を奪い合ってレビューレーンが上限時間に当たる。出典は本テンプレートのソースリポジトリの観測台帳 OBS-215）。両方が終端したら、baseline の赤とレビュー指摘を 1 つの fix commit に束ね、その後に下の「重い検証ゲート」を 1 回回す。fix commit や base の取り込みで HEAD が動いたら、baseline が緑でも最終ゲートは省かない — baseline は動く前のツリーの実測で、最終ゲートを代替しない。指摘 0 件で HEAD が baseline の時点から動いておらず、baseline が緑なら、その実行が下の「指摘 0 件でも終端後に 1 回」を兼ねる（同一スナップショットの重複実行はしない）。ここでの baseline はレビューと並走させるゲートを指し、下の段落の「実装直後のベースライン計測」（変更前後の比較）とは別である。走行中は親も作業ツリーを編集しない（「長時間の読み取りゲートにも凍結を適用する」）。
 
-**凍結中にやる準備作業はレビュー起動の前に列挙し、起動と同じターンで着手する**: 起動コマンドを出す前に、作業ツリーを触らない準備作業（PR 本文・完了報告の下書きを scratchpad へ、`/close-issue` の材料として `gh issue view` で Issue 本文と AC を取得、参照文書の確認）を書き出し、起動と同じメッセージの並列 tool call で始める。起動してから次のターンで考え始めると、完了通知を待つだけの状況報告ターンが残る（導入先の観測台帳で 12 回の再発を実測）。列挙した作業が尽きたら、状況報告だけのターンを重ねずに Monitor を armed して停止し、完了通知で再開する（`sleep` や自作の待機ループは代わりにならない）。この手当ては空転の中身を減らすもので、待ちのターンを 0 にはしない。凍結中に許される作業の範囲と通る書き込み先は [multi-review の「レビュー待ち時間の使い方」](../../../skills/multi-review/SKILL.md#レビュー待ち時間の使い方) を正本とする。
+**凍結中にやる準備作業はレビュー起動の前に列挙し、起動と同じターンで着手する**: 起動コマンドを出す前に、作業ツリーを触らない準備作業（PR 本文・完了報告の下書きを `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/` 配下の固有ディレクトリへ、`/close-issue` の材料として `gh issue view` で Issue 本文と AC を取得、参照文書の確認）を書き出し、起動と同じメッセージの並列 tool call で始める。起動してから次のターンで考え始めると、完了通知を待つだけの状況報告ターンが残る（導入先の観測台帳で 12 回の再発を実測）。列挙した作業が尽きたら、状況報告だけのターンを重ねずに Monitor を armed して停止し、完了通知で再開する（`sleep` や自作の待機ループは代わりにならない）。この手当ては空転の中身を減らすもので、待ちのターンを 0 にはしない。凍結中に許される作業の範囲と通る書き込み先は [multi-review の「レビュー待ち時間の使い方」](../../../skills/multi-review/SKILL.md#レビュー待ち時間の使い方) を正本とする。
 
 **終端とは応答・失敗・タイムアウトのいずれかに達すること**であり、「そろそろ終わっただろう」という体感ではない。応答しないエージェントを無期限に待って凍結が明けない状態を避けるため、打ち切る判断はしてよい。ただし打ち切ったエージェントは**「指摘なし」ではなく「未確認」として数える**。レビューエージェントの応答は遅れて届くことがあり、終端が揃う前に直し始めると次が起きる（本ツールキットの開発時に実測した 1 回の事故で、以下 3 つが同時に起きた）:
 
@@ -1489,7 +1491,7 @@ ACE 完了後、チェーンの末尾として `/retrospective` を毎回実行�
 tracking Issue / Epic 配下に多数の sub-issue がぶら下がっていて 1 セッションでまとめて消化するときは、Issue 単位のコアサイクルをそのまま並列に走らせず、次の 4 点で束ねる。実測 4 回（19 / 15 / 24 / 5 sub-issue をいずれも 1 セッションで完遂、意味的競合ゼロ。出典は本テンプレートのソースリポジトリの観測台帳 OBS-038）に基づく手順で、衝突は「起きたら解消する」ではなく**構造的に起こさない**側へ倒す。
 
 1. **バッチは対象ファイル集合が互いに素になるように組む。** 着手前に sub-issue ごとの対象ファイルを列挙し、同一ファイルを触る Issue は同一バッチに入れず、依存として先行バッチのマージ後に開始する。対象が重なる Issue 同士を並列 PR に割ると、rebase で解消できる textual conflict ではなく、同じ節を別々に書き換えた意味的競合になる
-2. **実装は worktree 隔離のサブエージェントで並列に行い、レビュー・マージは親が直列に行う。** 並列側が触るのは自分の worktree だけなので、マージ順を親が制御すれば衝突が構造的に起きない。親は PR ごとに PR 作成（ステップ5）→ セルフレビュー（ステップ6）→ `/close-issue` → マージ（ステップ8）を 1 本ずつ進め、次の PR は直前のマージ後の base へ rebase してから同じ手順に入れる。委譲先の作法は [Multi-CLI Agent Orchestration の「長時間タスクの委譲契約（こまめコミット）」](./multi-cli-agent-orchestration.md#長時間タスクの委譲契約こまめコミット) に従う。worktree の中でゲート・テストを回させるなら、起動プロンプトへ [依存プリフライトの一文](./multi-cli-agent-orchestration.md#worktree-委譲の依存プリフライト) も常置する（親が毎回思い出して書く形にしない。省くと最初のゲート実行 1 回分が環境都合の skip / fail で捨てられる）。各サブエージェントの完了報告を受けたら、[委譲先の完了後に残る background 子プロセス](./multi-cli-agent-orchestration.md#委譲先の完了後に残る-background-子プロセス) に従って取り残しを確認して回収する（worktree の回収と同じタイミング。確認しないと気付けない — エージェント一覧・worktree 一覧・未コミット差分はすべて正常に見える）。起動プロンプトへ事実主張を書くときと、受け取った完了報告を Issue コメント・PR 本文・別の委譲プロンプトへ転記するときは、[委譲プロンプトへ載せる事実主張の一次情報確認](./multi-cli-agent-orchestration.md#委譲プロンプトへ載せる事実主張の一次情報確認) に従って渡す前に一次情報で確認する（ホストの Agent / Task ツールで直接起こすサブエージェントも対象。規定はここへ複製しない）。起動プロンプトには [委譲先に長時間コマンドを foreground で待たせる契約](./multi-cli-agent-orchestration.md#委譲先に長時間コマンドを-foreground-で待たせる契約) の文言を実値ごと常置する（「長時間コマンドは Bash ツールの `timeout` へ `600000`（ミリ秒）を明示して foreground で待つ / background 実行オプションを使わない」。既定のタイムアウトのまま全件ゲートを叩かせるとホストが自動 background 化し、委譲先は完了を追わずに停止する。実値はリンクで代替しない — 貼られたプロンプトの中では相対リンクが解決しない）。worktree の回収は [生存中の委譲先の worktree を回収しない](./multi-cli-agent-orchestration.md#生存中の委譲先の-worktree-を回収しない) に従い、成果の確認と生存判定の実測が揃ってから行う（未コミット差分 0 件を根拠にしない。規定と判定手順はここへ複製しない）
+2. **実装は worktree 隔離のサブエージェントで並列に行い、レビュー・マージは親が直列に行う。** 並列側が触るのは自分の worktree だけなので、マージ順を親が制御すれば衝突が構造的に起きない。親は PR ごとに PR 作成（ステップ5）→ セルフレビュー（ステップ6）→ `/close-issue` → マージ（ステップ8）を 1 本ずつ進め、次の PR は直前のマージ後の base へ rebase してから同じ手順に入れる。委譲先の作法は [Multi-CLI Agent Orchestration の「長時間タスクの委譲契約（こまめコミット）」](./multi-cli-agent-orchestration.md#長時間タスクの委譲契約こまめコミット) に従う。worktree の中でゲート・テストを回させるなら、起動プロンプトへ [依存プリフライトの一文](./multi-cli-agent-orchestration.md#worktree-委譲の依存プリフライト) も常置する（親が毎回思い出して書く形にしない。省くと最初のゲート実行 1 回分が環境都合の skip / fail で捨てられる）。各サブエージェントの完了報告を受けたら、[委譲先の完了後に残る background 子プロセス](./multi-cli-agent-orchestration.md#委譲先の完了後に残る-background-子プロセス) に従って取り残しを確認して回収する（worktree の回収と同じタイミング。確認しないと気付けない — エージェント一覧・worktree 一覧・未コミット差分はすべて正常に見える）。起動プロンプトへ事実主張を書くときと、受け取った完了報告を Issue コメント・PR 本文・別の委譲プロンプトへ転記するときは、[委譲プロンプトへ載せる事実主張の一次情報確認](./multi-cli-agent-orchestration.md#委譲プロンプトへ載せる事実主張の一次情報確認) に従って渡す前に一次情報で確認する（ホストの Agent / Task ツールで直接起こすサブエージェントも対象。規定はここへ複製しない）。起動プロンプトには [委譲先に長時間コマンドを foreground で待たせる契約](./multi-cli-agent-orchestration.md#委譲先に長時間コマンドを-foreground-で待たせる契約) の文言を実値ごと常置する（「長時間コマンドは Bash ツールの `timeout` へ `600000`（ミリ秒）を明示して foreground で待つ / background 実行オプションを使わない」。既定のタイムアウトのまま全件ゲートを叩かせるとホストが自動 background 化し、委譲先は完了を追わずに停止する。実値はリンクで代替しない — 貼られたプロンプトの中では相対リンクが解決しない）。worktree の回収は [生存中の委譲先の worktree を回収しない](./multi-cli-agent-orchestration.md#生存中の委譲先の-worktree-を回収しない) に従い、成果の確認と生存判定の実測が揃ってから行う（未コミット差分 0 件を根拠にしない。規定と判定手順はここへ複製しない）。作業ファイルの置き場は [委譲先の作業ファイルを scratchpad の固有の置き場へ分ける](./multi-cli-agent-orchestration.md#委譲先の作業ファイルを-scratchpad-の固有の置き場へ分ける) に従い、作り直しに時間がかかる検証ログ・下書き・指示書は `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/` 配下の固有ディレクトリへ分けて直接渡す
 3. **Issue 本文が順序制約を持つ場合（Epic の「順序制約」節、「A の完了が B の前提」等）は、それをバッチ境界として採用する。** 制約を無視して並列化すると、同じ節を触る PR 同士が意味的に競合する。順序制約が書かれていない Epic では、1 の列挙で見つけた重なりを Epic 本文へ制約として追記しておくとよい（次に同じ Epic を扱うセッションが同じ列挙をやり直さずに済む）
 4. **changelog は fragment 方式（`changelog.d/` への 1 断片追加）にする。** 本体ファイルを直接編集する方式だと、並列マージのたびに同じ箇所で衝突する。断片の集約はリリース準備の側で 1 回だけ行う
 

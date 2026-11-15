@@ -8,7 +8,7 @@
 作業場所: <確認した repository/worktree の絶対パス、branch/base>
 所有境界: <修正を許可する指摘とパス、触らない領域>
 依存・衝突: <他担当との順序、共有ファイル/共有契約の担当>
-作業ファイル: <scratchpad 配下の Issue 別・担当固有の絶対パス>
+作業ファイル: <${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/ 配下の Issue 別・担当固有の絶対パス>
 commit 方針: <共有ツリーは commit しない・親がまとめる / 独立ブランチの既存契約>
 
 [修正 / 棄却 / 文書化 / 判断委任 のうち1つ] <検出元 CLI/観点>:<元の C/W/S ID> <file:line>

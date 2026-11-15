@@ -163,13 +163,15 @@ git diff --name-only -- <1) で得た staged パス>
 | D. docs 仕様文書 | リポジトリ直下の `docs/**/*.md`（`plugins/ff-dev-toolkit/docs-template/` は含まない）または `.version-claims/**` | `docs-version-changelog` / `docs-frontmatter-repo` |
 | E. 断片内容（Bへの条件付き追加） | `changelog.d/*.md` が staged（ACMR）。README.md と下位ディレクトリは除く | `changelog-fragments` |
 | F. fixture consumer（判定器で決まる条件付き追加。削除だけの回も判定する） | staged（ACDMRT）の `*.sh` のうち、index か HEAD の内容が fixture lib（`tests/lib/git-fixture.sh`）の consumer であるもの、または判定器自身。判定は下の「fixture consumer の判定」 | `git-fixture-isolation` |
+| G. 新規 suite の追加（Cへの条件付き追加） | `plugins/ff-dev-toolkit/tests/<名>/verify.sh` が新規追加（`--no-renames --diff-filter=A`、1 階層のみ。既存の `M` や削除の `D` は含まない） | `docs-fact-drift` / `adapter-env-isolation-selftest` |
 
 - 種別 B の `skill-count-consistency` は、公開面の正本 `PUBLIC-SURFACE.md` が列挙する skills / hooks / `FF_*` 環境変数と実体の一致を見る。新しい `FF_*` 名を足して公開面へ分類し忘れた状態を commit 前に拾う
 - 種別 D は frontmatter の `version` を bump したときの随伴漏れ（Changelog 節の `### [x.y.z]` 欠落 = `docs-version-changelog`、bump 幅と `changeImpact` の不一致 = `docs-frontmatter-repo`）を拾う（OBS-259 / OBS-142）。version claim の再生成漏れは suite ではなく下の「version claim と changelog 断片」で見る
+- 種別 G は、新規 suite を追加した回に発生する docs の登録 suite 数記載のずれ（`docs-fact-drift`）と試験隔離ヘルパーの callsite 名簿漏れ（`adapter-env-isolation-selftest`）を commit 前に拾う（OBS-041）。既存 suite の修正（`M`）や削除（`D`）だけの回はこの 2 本を追加せず、A〜F の判定も変えない
 
 #### プリフライトの実行手順
 
-まず `git diff --cached --name-only --diff-filter=ACMR` で staged パスの一覧を取る（手順 7 と同じ入力）。一覧を上表の 6 種別へ振り分ける（F だけは一覧のパスではなく内容で決まるので、下の判定器の結果で振り分ける）。1 ファイルが複数種別に該当してよい（`plugins/ff-dev-toolkit/skills/<名>/SKILL.md` は A と B、`plugins/ff-dev-toolkit/tests/<名>/verify.sh` は B と C に該当する）。該当した種別の suite を、重複を除いて 1 回ずつ単体で実行する:
+まず `git diff --cached --name-only --diff-filter=ACMR` で staged パスの一覧を取る（手順 7 と同じ入力）。一覧を上表の 7 種別へ振り分ける（F は一覧のパスではなく内容で決まるので下の判定器の結果で振り分け、G は `git diff --cached --name-only --no-renames --diff-filter=A` のうち `plugins/ff-dev-toolkit/tests/<名>/verify.sh`（`<名>` は `/` を含まない 1 階層）に一致するものがある回だけ当てる）。1 ファイルが複数種別に該当してよい（`plugins/ff-dev-toolkit/skills/<名>/SKILL.md` は A と B、`plugins/ff-dev-toolkit/tests/<名>/verify.sh` は B と C に該当する）。該当した種別の suite を、重複を除いて 1 回ずつ単体で実行する:
 
 ```bash
 bash plugins/ff-dev-toolkit/tests/docs-gates/verify.sh
@@ -184,6 +186,9 @@ bash plugins/ff-dev-toolkit/tests/docs-frontmatter-repo/verify.sh
 bash plugins/ff-dev-toolkit/tests/changelog-fragments/verify.sh
 # F が当たった回だけ（判定器が git-fixture-isolation: none の回は C に追加しない）
 bash plugins/ff-dev-toolkit/tests/git-fixture-isolation/verify.sh
+# G が当たった回だけ（新規の tests/<名>/verify.sh が A で無い回は C に追加しない）
+bash plugins/ff-dev-toolkit/tests/docs-fact-drift/verify.sh
+bash plugins/ff-dev-toolkit/tests/adapter-env-isolation-selftest/verify.sh
 ```
 
 判定順序は手順 7 と同じで、**実行できなかった**を先に切り分ける。suite ファイルが存在しない・依存コマンドが無い・suite 自身が「skip」と報告した場合は、終了コードが 0 でも**違反なしへ倒さない**。「実行できなかった」と「違反なし」を別の状態として報告し、緑扱いにせず commit へ進まない側の判定にする（fail-closed）。実行できた suite だけを終了コードで緑赤に分ける。`tests/run-all/verify.sh` が終了コード 2 で、別の `run-all.sh` の並走、またはプロセス一覧を取得できないことを名指しした回は「実行できなかった」とする。製品の違反でも緑でもない。並走を名指した回の次の一手は、その全件ゲートが終わってから同じ suite を回すこと。プロセス一覧を取得できない回の次の一手は、一覧が取れる状態で同じ suite を回すこと。

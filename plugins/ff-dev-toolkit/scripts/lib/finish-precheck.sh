@@ -308,7 +308,7 @@ cmd_precheck() {
   need_bundled review-route.sh
   need_bundled lib/branch-issue.sh
 
-  local PR_JSON PR_FIELDS="number,state,isDraft,headRefName,headRefOid,baseRefName,baseRefOid,title,body,closingIssuesReferences,commits,statusCheckRollup,additions,deletions,files,isCrossRepository"
+  local PR_JSON PR_FIELDS="number,state,isDraft,headRefName,headRefOid,baseRefName,baseRefOid,title,body,closingIssuesReferences,commits,statusCheckRollup,additions,deletions,files,isCrossRepository,mergeable,mergeStateStatus"
   PR_JSON="$(gh_pr_view_or_die "$PR_NUMBER" "$PR_FIELDS" initial)" || exit $?
   local pr_state head_ref base_ref head_oid pr_title is_draft is_cross
   pr_state="$(printf '%s' "$PR_JSON" | jq -r '.state // ""')"
@@ -853,11 +853,56 @@ cmd_precheck() {
     echo "RERUN_REASON=${rerun_reason}"
   fi
 
+  # ── 6b. PR のマージ可否（mergeable / mergeStateStatus）の確認 ──
+  # checks / threads 後の読み直し PR_JSON_AGAIN から取り、正常（MERGEABLE かつ
+  # mergeStateStatus != DIRTY）なら追加の gh 呼出しも余分な stdout 出力も行わない。
+  # UNKNOWN のときだけ短く再読込し、競合は blocked、未確定残りは undetermined（rc 2）で
+  # 止める（Obsidian/導入先の OBS-180）。jq.exe の CRLF 出力対策として \r を除く。
+  local pr_mergeable pr_merge_state mergeable_attempt=0 mergeable_json undetermined_next
+  pr_mergeable="$(printf '%s' "$PR_JSON_AGAIN" | jq -r '.mergeable // ""' | tr -d '\r')" \
+    && pr_merge_state="$(printf '%s' "$PR_JSON_AGAIN" | jq -r '.mergeStateStatus // ""' | tr -d '\r')" \
+    || die_env "PR #${PR_NUMBER} の mergeable / mergeStateStatus を読めません（jq）" "gh pr view ${PR_NUMBER} --json mergeable,mergeStateStatus の出力を確かめる"
+  if [[ -z "$github_input" && -z "$blocked_reason" && "$pr_merge_state" != "DIRTY" \
+    && ( "$pr_mergeable" == "UNKNOWN" || -z "$pr_mergeable" ) ]]; then
+    while [[ "$mergeable_attempt" -lt 3 ]]; do
+      mergeable_attempt=$((mergeable_attempt + 1))
+      sleep 2
+      mergeable_json="$(gh_pr_view_or_die "$PR_NUMBER" "mergeable,mergeStateStatus" "mergeable-retry")" || exit $?
+      pr_mergeable="$(printf '%s' "$mergeable_json" | jq -r '.mergeable // ""' | tr -d '\r')" \
+        && pr_merge_state="$(printf '%s' "$mergeable_json" | jq -r '.mergeStateStatus // ""' | tr -d '\r')" \
+        || die_env "PR #${PR_NUMBER} の mergeable / mergeStateStatus を再読込後に読めません（jq）" "gh pr view ${PR_NUMBER} --json mergeable,mergeStateStatus の出力を確かめる"
+      if [[ "$pr_merge_state" == "DIRTY" ]] || [[ "$pr_mergeable" != "UNKNOWN" && -n "$pr_mergeable" ]]; then
+        break
+      fi
+    done
+  fi
+  if [[ "$pr_mergeable" == "CONFLICTING" || "$pr_merge_state" == "DIRTY" ]]; then
+    local conflict_reason="PR #${PR_NUMBER} が base ブランチ（${base_ref}）と競合しています（mergeable=${pr_mergeable:-不明}, mergeStateStatus=${pr_merge_state:-不明}）"
+    local conflict_next="base（$(ff_shell_quote "$base_ref")）を取り込んで競合を解き、ゲートを回し直してから finish.sh precheck ${PR_NUMBER} を再実行する"
+    if [[ -z "$blocked_reason" ]]; then
+      blocked_reason="$conflict_reason"
+      blocked_next="$conflict_next"
+    else
+      blocked_reason="${blocked_reason}／さらに${conflict_reason}"
+      blocked_next="${blocked_next}。あわせて${conflict_next}"
+    fi
+  fi
+
   # ── 7. merge コマンドの生成 ──
-  # 2 の抵触で止める回は、停止判定より先にコマンドを出さない（出した時点で「貼れば通る」形になる）
+  # 2 / 4b / 6b の抵触・競合や 6b の未確定で止める回は、停止判定より先にコマンドを出さない（出した時点で「貼れば通る」形になる）
   if [[ -n "$blocked_reason" ]]; then
     echo "PRECHECK=blocked"
     die_stop "$blocked_reason" "$blocked_next"
+  fi
+  if [[ "$pr_mergeable" != "MERGEABLE" ]]; then
+    echo "PRECHECK=undetermined"
+    if [[ -n "$github_input" ]]; then
+      undetermined_next="mergeable / mergeStateStatus を含む最新の PR JSON で --github-input を取り直してから finish.sh precheck ${PR_NUMBER} を再実行する"
+    else
+      undetermined_next="数秒待ってから finish.sh precheck ${PR_NUMBER} を再実行し、mergeable が MERGEABLE または CONFLICTING に決まってから進む"
+    fi
+    die_env "PR #${PR_NUMBER} のマージ可否（mergeable）が再計算中または未確定のまま決まりませんでした（mergeable=${pr_mergeable:-不明}, mergeStateStatus=${pr_merge_state:-不明}）" \
+      "$undetermined_next"
   fi
   # base / head が別 worktree に保持されていれば、既存の互換経路として separate-push にする。
   # この経路では照合済み head OID の lease を明示する。--repo を明示した gh v2.102.0 はローカル

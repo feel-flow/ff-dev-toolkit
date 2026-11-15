@@ -20,6 +20,30 @@
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-15
+
+### 追加
+
+- close-issue スキルの手順 7 に MERGE_COMMAND を単独の Bash 呼び出しで実行して読み戻しを次呼び出しに分ける規律を追記し、PR を伴わない検証完了 close モード（prless-close.md）を追加
+- `plugins/ff-dev-toolkit/skills/pre-commit-check/SKILL.md`: 手順 8 の静的 suite プリフライト固定表に種別 G（新規 suite の `verify.sh` が `--diff-filter=A` で追加されたときに `docs-fact-drift` と `adapter-env-isolation-selftest` を単体実行する規定）を追加し、`plugins/ff-dev-toolkit/tests/skill-frontmatter/verify.sh` に種別 G の契約 pin と最低行数 7 の照合を追加
+- **precheck の競合・再計算中ガード**: `finish.sh precheck` が `PR_JSON_AGAIN` から `mergeable` / `mergeStateStatus` を確認し、`CONFLICTING` または `DIRTY` は `PRECHECK=blocked`（base 取り込み・競合解消・ゲート再実行を次の一手として出力、終了コード 1）で停止し、`UNKNOWN`（または未取得）はライブ取得時のみ 2 秒おきに最大 3 回再読込して確定しなければ `PRECHECK=undetermined`（終了コード 2、理由を出力し `MERGE_COMMAND` 未生成）で停止、`MERGEABLE` 時は従来と同一の出力を保つよう変更しました
+- Google Antigravity 向け利用・運用ガイド `USING_WITH_ANTIGRAVITY.md` を同梱し、`sync-plugins.sh` に管理クローン取得・追従（`--repo` / `--clone-dir`）と同期状態ファイル（`sync-state.json`）への保存を追加
+- Google Antigravity 向け自動更新コマンド `scripts/antigravity/auto-update.sh`（クリーンな既定ブランチのみの安全な fast-forward 更新・`hooks.json` オプトイン追従・`--dry-run` / `--force`・日次 `--hook` モード）および `hook-shim.sh --async` による `SessionStart` 非同期自動更新を追加
+
+### 変更
+
+- `plugins/ff-dev-toolkit/tests/run-all.sh`: 失敗した suite がすべて `STALE`（base 先行）に含まれている場合は、部分再実行コマンドより先に「base を取り込んで通しで 1 回回し直す（マージの根拠になる）」と通しコマンドを案内し、部分再実行は同じ行で確認用・マージの根拠にならないことを明示するよう変更（混在・鮮度以外の赤では従来案内を維持）
+- `plugins/ff-dev-toolkit/docs-template/05-operations/deployment/multi-cli-agent-orchestration.md`・`plugins/ff-dev-toolkit/docs-template/05-operations/deployment/git-workflow.md`・`plugins/ff-dev-toolkit/docs-template/05-operations/deployment/self-review.md`・`plugins/ff-dev-toolkit/skills/multi-implement/SKILL.md`・`plugins/ff-dev-toolkit/skills/multi-review/SKILL.md`・`plugins/ff-dev-toolkit/skills/multi-review/references/waiting-work.md`・`plugins/ff-dev-toolkit/skills/multi-review/references/fix-handoff.md`・`plugins/ff-dev-toolkit/skills/create-issue/references/filing.md`・`plugins/ff-dev-toolkit/skills/out-of-scope-issue/references/filing.md`・`plugins/ff-dev-toolkit/tests/docs-gates/verify.sh`・`plugins/ff-dev-toolkit/tests/markdown-patch-discipline-refs/verify.sh`: セッション途中で scratchpad が消えても検証用スクリプト・長時間ゲートのログ・PR/Issue 本文の下書き・指示書が失われないよう保存先を `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/` 配下へ分離し、scratchpad を消えても困らない使い捨て用途に限定
+
+### 修正
+
+- `/merge-cleanup` の Step 5 において、clean かつ unlocked な `[gone]` linked worktree でもマージ済み PR 一覧の `(名前, OID)` がローカルブランチの HEAD と完全一致する場合のみ削除対象とし、未一致や一覧取得失敗（fail-closed）時は worktree とローカルブランチを保護するよう修正した
+
+### ドキュメント
+
+- `plugins/ff-dev-toolkit/skills/create-issue/references/estimation.md`: AI 工数の目安表に ADR を伴う複数コンポーネント横断の機能追加、記事・レポート（一次ソース確定）、流用可能な Native / UI 変更、一次公式仕様を事前確認済みの新規プラットフォーム・外部仕様統合 bundle の 4 行を追加し、並列サブエージェント実装での畳み込み（0.33〜0.37 倍）と固定費の別建て関係、起票後に範囲が広がった補正元の扱い、および bundle 固定費を全件ゲート回数・レビューの層・専用セキュリティゲート巡回の和で見積もる式を明記
+- `plugins/ff-dev-toolkit/skills/close-issue/references/effort.md`: サブエージェントを使った回の `task-notification` の `duration_ms` を担当別合算・統括の「約」分離・上限/中断除外で記録する手順と、起票後に範囲が広がった Issue の記録方法を追記
+
 ## [1.3.0] - 2026-11-14
 
 ### 追加

@@ -436,6 +436,38 @@ cat > "$MOCK/pr_list_merged.json" <<JSON
 ]
 JSON
 
+register_merged_branch() {
+  # $1: branch。ローカルブランチの現 OID を mock の MERGED PR 一覧へ追加する。
+  local b="$1" oid
+  oid="$(git rev-parse "refs/heads/${b}")"
+  jq --arg n "$b" --arg o "$oid" \
+    '. + [{"headRefName": $n, "headRefOid": $o, "isCrossRepository": false}]' \
+    "$MOCK/pr_list_merged.json" > "$TMP/pr_list_merged.reg.json"
+  mv "$TMP/pr_list_merged.reg.json" "$MOCK/pr_list_merged.json"
+}
+
+add_merged_clean_gone_worktree() {
+  # $1: branch / $2: worktree path。
+  # トランスクリプト回収用など「マージ済み PR と (名前, OID) が一致し削除されるべき」
+  # clean [gone] worktree を作る。未マージ扱い（不一致で残すべき）は add_clean_gone_worktree のままにする。
+  add_clean_gone_worktree "$1" "$2"
+  register_merged_branch "$1"
+}
+
+for _wt_merged_b in \
+  'feature/#20-wt-match' \
+  'feature/#21-wt-mismatch' \
+  'feature/#22-wt-nojsonl' \
+  'feature/#39-wt-nocwd' \
+  'feature/#23-wt-opaque' \
+  'feature/#24-wt-symlink' \
+  'feature/#28-wt-multicwd' \
+  'feature/#29-wt-variant-b' \
+  'feature/#30-wt-scanerr' \
+  'feature/#38-wt-unreadable'; do
+  register_merged_branch "$_wt_merged_b"
+done
+
 cat > "$MOCK/pr_list_open.json" <<JSON
 [
   {"headRefName": "feature/#3-open-reuse"}

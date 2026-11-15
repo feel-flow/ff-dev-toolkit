@@ -273,6 +273,23 @@ else
         continue
       fi
 
+      # [gone] な linked worktree は clean であっても、今回の MERGED PR 一覧と (名前, OID) が
+      # 一致する作業ツリーだけを削除対象にする。unmerged/別セッション作業ツリーを保護し、
+      # ガード一覧を取れないときは fail-closed で残す（ブランチ -d/-D もスキップ）。
+      if [ "$WT_MERGED_MATCH" != "1" ]; then
+        if [ "$GUARDS_OK" != "1" ]; then
+          echo "  ⚠️ マージ済み PR 一覧と照合できないため（fail-closed）、worktree の削除をスキップします: ${WORKTREE_PATH}"
+          FAILED_ITEMS+=("${branch}: マージ済み PR 一覧と照合できないため worktree を保護 (${WORKTREE_PATH})")
+        elif grep -qxF "$(printf '%s\tnull' "$branch")" "$MERGED_LIST"; then
+          echo "  ⚠️ worktree が残っていますが、MERGED 一覧側の OID が null で照合材料がないため削除をスキップします: ${WORKTREE_PATH}"
+          FAILED_ITEMS+=("${branch}: [gone] だが MERGED 一覧側の OID が null のため worktree を保護 (${WORKTREE_PATH})")
+        else
+          echo "  ⚠️ worktree が残っていますが、(名前, OID) が MERGED PR の head と一致しないため削除をスキップします: ${WORKTREE_PATH}"
+          FAILED_ITEMS+=("${branch}: [gone] だが MERGED PR と OID 不一致のため worktree を保護 (${WORKTREE_PATH})")
+        fi
+        continue
+      fi
+
       WT_AGENT_NOTES=""
       if [ "$WT_AGENT_PATH" = "1" ] && [ "$DRY_RUN" = "1" ]; then
         # 3 条件（OID 照合 / claude agent ロック / 残置物が使い捨てパスのみ）は

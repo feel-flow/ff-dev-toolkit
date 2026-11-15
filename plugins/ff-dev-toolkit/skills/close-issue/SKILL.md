@@ -42,9 +42,9 @@ fi
 
 <!-- ff-dev-toolkit-plugin-root-guard:end -->
 
-`$ARGUMENTS` は PR 番号（省略時は `gh pr view --json number` で現在のブランチの PR を検出する）。
+`$ARGUMENTS` は PR 番号（省略時は `gh pr view --json number` で検出）。Issue 番号のみの検証完了 close は [prless-close.md](references/prless-close.md) へ。
 
-<!--2e25a7d7f950de06-->
+<!--9d783baf15ce896a-->
 MCP: 取得値: MCPでPR number/headRefName。形式: 一意の PR JSON。渡し先: PR_NUMBER → precheck argv。不足時: MCP 必須不足は停止。
 
 ## 手順
@@ -96,7 +96,7 @@ MCP: 取得値: MCPでPR title/headRefOid。形式: 新 title 原文の構造化
 
 ### 2c. 未返信のレビュースレッド
 
-script は checks の待機の後に GraphQL `reviewThreads` を全件読み、未 resolve・返信なし・起点が PR 作者でないスレッドを `REVIEW_THREADS_UNANSWERED=<件数>` と `REVIEW_THREAD=` 行で列挙し、1 件でもあれば `PRECHECK=blocked`（rc 1）。**内容は見ない** — 各スレッドへ判定（この PR で直す / follow-up Issue #N / 退ける理由）を返信してから手順 1 へ戻る。取得失敗は rc 2。MCP の返信（thread node ID か実取得した数値 ID。node ID を `comment_id` に推測変換しない）と能力 / ID 不足時の停止は references/merge-gate.md 2c。
+`REVIEW_THREADS_UNANSWERED=<件数>` が 1 以上なら `PRECHECK=blocked`（rc 1）。**内容は見ない** — 各スレッドへ判定（直す / follow-up 番号 / 退ける理由）を返信してから手順 1 へ戻る。取得失敗は rc 2。詳細・MCP 対応は [merge-gate.md](references/merge-gate.md) 2c。
 
 ### 3. AC 照合（判断）
 
@@ -176,9 +176,9 @@ MCP: 取得値: MCPで全 comments id/body と report marker。形式: 全 page 
 <!--989c5d2cba23219f-->
 MCP: 取得値: MCPでPR title/headRefOid。形式: title 原文の構造化引数。渡し先: update_pull_request.title → fresh後読 → precheck。不足時: MCP 必須不足は停止。
 
-gh 経路は `MERGE_COMMAND_BEGIN` 〜 `END` の出力をそのまま実行し、手順 8 へ貼る。**書き写さない**（2b は何も保証しなくなる）。MCP 経路は[同じ最終 precheck の元値を6引数へ渡す契約](references/merge-gate.md#mcp-merge)に従い、生成 shell を parse/eval/unquote せず実行する。merge commit 規約の回は precheck 全回に `--merge-method merge`（[方式](references/merge-gate.md#merge-method)）。`HEAD_DELETE_RESULT` と非 0 の読み方は [Git Workflow](../../docs-template/05-operations/deployment/git-workflow.md#ステップ8-マージmerge) に従う。
+gh 経路は `MERGE_COMMAND_BEGIN` 〜 `END` の出力をそのまま**単独の Bash 呼び出しで実行**し（`cd`・リダイレクト・変数・終了コード受け・読み戻しを同じ呼び出しに入れず、読み戻しは別呼び出しで行う）、手順 8 へ貼る。**書き写さない**（2b は何も保証しなくなる）。MCP 経路は[同じ最終 precheck の元値を6引数へ渡す契約](references/merge-gate.md#mcp-merge)に従い、生成 shell を parse/eval/unquote せず実行する。merge commit 規約の回は precheck 全回に `--merge-method merge`（[方式](references/merge-gate.md#merge-method)）。`HEAD_DELETE_RESULT` と非 0 の読み方は [Git Workflow](../../docs-template/05-operations/deployment/git-workflow.md#ステップ8-マージmerge) に従う。
 
-<!--1c6d170a7caa37ae-->
+<!--7016d2ea39b06c43-->
 MCP: 取得値: MCPで最終 headRefOid と元 subject/body。形式: merge_pull_request の6引数。渡し先: 同じ TARGET_REPO/PR/方式のMCP merge → fresh merged/state。不足時: MCP 必須不足は停止。
 
 ### 8. 完了報告
@@ -206,4 +206,4 @@ MCP: 取得値: MCPでfresh PR merged/SHA と Issue state。形式: repo/number 
 
 ## 注意事項
 
-- このコマンドは **Issue をクローズしない**（マージ時の `Closes #N` に任せる。Refs 運用の Issue は post-merge 検証を実測した人が閉じる）。自動クローズは (1) クローズリンク (2) squash メッセージの closing keyword の 2 経路で、空 API を「閉じない」と読まない
+- 通常 PR では **Issue をクローズしない**（マージ時の `Closes #N` 任せ。PR なし検証完了 close は [prless-close.md](references/prless-close.md)）。自動クローズは (1) クローズリンク (2) squash メッセージの closing keyword で、空 API を「閉じない」と読まない

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 空振り検出: 断片内容の条件行Eを消すと208件中2件、条件付き実行例の注記を消すと1件が赤。正常対照と無害なhelperコメントの追加は緑（2026-10-23、変異ハーネス実測）。
 # 空振り検出: 読み直しWARNの規定だけ/最終報告だけを別内容へ変える各変異もrc1で検出（2026-10-24実測、正常210件pass）。
+# 空振り検出: 種別 G の固定表行削除（3 件失敗）・docs-fact-drift 除去（1 件）・adapter-env-isolation-selftest 除去（1 件）・非実在 suite 名置換（2 件、実在照合含む）・既存 M/D 非追加規定削除（1 件）・diff-filter=A を ACMR へ弱める変異（1 件）・実行手順 G コメント削除（1 件）の 7 変異がすべて rc=1、無害追記 1 件のみ rc=0（SURVIVED=0 / FALSE-POSITIVE=0 / NOT-APPLIED=0、正常 227 件 pass、2026-11-14 mutation-harness 実測）。
 #
 # Skill frontmatter と単一正本のポリシー検査（Issue #141 / #145 / #996 / ACE-147-1）。
 #
@@ -296,13 +297,27 @@ else
   bad "pre-commit-check — 手順 8 が読む fixture consumer 判定器がありません: tests/lib/precommit-git-fixture.sh"
 fi
 
+# 手順 8 の種別 G（新規 suite の追加。OBS-041）。G 行が docs-fact-drift /
+# adapter-env-isolation-selftest を名指しすること、M/D だけの回に非追加であること、
+# --no-renames --diff-filter=A の判定条件と手順コードの条件コメントを pin する。
+check_pre_commit_shell_step "$PRE_COMMIT_TABLE_HEADING" '| G. 新規 suite の追加（Cへの条件付き追加） |' \
+  '固定表の種別 G（新規 suite 追加の条件付き追加）'
+check_pre_commit_shell_step "$PRE_COMMIT_TABLE_HEADING" '| `docs-fact-drift` / `adapter-env-isolation-selftest` |' \
+  '種別 G が docs-fact-drift と adapter-env-isolation-selftest を名指しする'
+check_pre_commit_shell_step "$PRE_COMMIT_TABLE_HEADING" '既存 suite の修正（`M`）や削除（`D`）だけの回はこの 2 本を追加せず' \
+  '種別 G が既存 suite の M/D だけの回に追加しない規定'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" '`git diff --cached --name-only --no-renames --diff-filter=A`' \
+  '種別 G の追加判定コマンド（--no-renames --diff-filter=A）'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" '# G が当たった回だけ（新規の tests/<名>/verify.sh が A で無い回は C に追加しない）' \
+  '新規 suite で無い回に C へ追加しない実行例'
+
 # 固定表（| 種別 | staged パスの条件 | 単体で回す suite |）の 3 列目が名指しする suite 名を
 # 実体（tests/<name>/verify.sh）と機械照合する。表が空・行が減った・suite 名を 1 つも
 # 持たない行があるときは「照合対象ゼロで緑」にならないよう fail-closed で赤にする。
 # 外部コマンドは awk だけを使う（本 suite は一時領域も jq 以外の外部コマンドも要らない
 # 純粋なファイル検査である。here-doc / here-string は一時ファイルを要求するので使わない）。
-# 種別 A〜F（断片内容の追加は対象断片をstageした回だけ、fixture consumer の追加は判定器が当てた回だけ）。
-PRE_COMMIT_TABLE_MIN_ROWS=6
+# 種別 A〜G（断片内容の追加は対象断片をstageした回だけ、fixture consumer の追加は判定器が当てた回だけ、新規 suite 追加は A のみ）。
+PRE_COMMIT_TABLE_MIN_ROWS=7
 
 # want=rows: データ行数 / want=empty: suite 名を 1 つも持たない行番号 / want=names:
 # 重複除去した suite 名（空白区切り）。いずれも 1 行だけを返す。

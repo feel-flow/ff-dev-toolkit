@@ -62,6 +62,7 @@
 # 空振り検出: create-issue の雛形から配備の行を消す・ブロックを切り出せない形にすると 検査 5b が「切り出せません」で赤になる。既存 fixture へ配備の行を 1 件も注入できない（マーカーの綴りが変わった）ときも「注入が成立していない」で赤にし、集計が変わらないことを空の比較で緑にしない。
 # 空振り検出: --issue-metrics に存在しない記録ディレクトリを与えると (unmeasured) を出して exit 0 することを 検査 13a が固定し、0 を出す変異（mutation/mut-metrics-zero.py）で 13a が赤になる。
 # 空振り検出: scripts/lib/branch-issue.sh の接頭辞一覧から grok を外すと 15a / 15b が、年-月の判定を外すと 15a が、record-instruction-bytes.sh の docs-template の分岐を外すと 15e が赤になる（2026-11-05 実測）。入力表の空振りは件数 19 の固定が拾う。
+# 空振り検出: estimation.md の目安表 4 行（OBS-531 / OBS-033 / OBS-042 / OBS-559）・固定費の和の式・旧 1 巡固定への逆戻し・並列 bundle 畳み込み・範囲拡大の補正元除外・優先順位/非重複句・close-issue effort.md の task-notification duration_ms 集計・範囲拡大記録（追加分の所要目安 h を含む）を mutation-harness 26 件で検査し、欠落・反転の 25 変異すべて赤（detected 25 / fail 1〜7）・無害追記 1 件緑（green-ok 1 / SURVIVED 0 / FALSE-POSITIVE 0 / NOT-APPLIED 0、正常 439/0/2、2026-11-14 実測）。
 #
 # 検査の書き方の規律（レビュー由来）:
 #   - 否定アサーション（「〜が無いこと」）で `if grep -q …; then bad; else ok; fi` を
@@ -769,6 +770,44 @@ contains "$CREATE_ESTIMATION" "再置換の既定を当ててよいのは、書�
 contains "$CREATE_ESTIMATION" "| 文書同期・決定記録の docs Issue（ADR 1 件 + 複数文書の注記） |" "文書同期・決定記録の docs Issue の行"
 contains "$CREATE_ESTIMATION" "和が最小値 1.0h を下回るときは最小値を置く" "文書同期の行も最小値 1.0h を下回らない"
 contains "$CREATE_ESTIMATION" "未決の論点数を数え直して AI 予定を見直す" "決定 Issue は着手時に未決の論点数で見直す"
+contains "$CREATE_ESTIMATION" "| ADR を伴う複数コンポーネント横断の機能追加 |" "ADR を伴う複数コンポーネント横断の機能追加の行"
+contains "$CREATE_ESTIMATION" "下限（**40h**）" "ADR 横断変更の人間換算下限 40h"
+contains "$CREATE_ESTIMATION" "8.0h → 4.3h / 乖離率 0.54、6.3h → 4.3h / 0.68、13.5h → 8.3h / 0.61" "ADR 横断変更の実測 3 件と乖離率"
+contains "$CREATE_ESTIMATION" "bundle の固定費と子の内訳」の式で別建てにする" "ADR 横断変更でも固定費は別建て式を使う"
+contains "$CREATE_ESTIMATION" "観測台帳 OBS-531（実測 3 件" "ADR 横断変更の根拠（OBS-531 実測 3 件と乖離率）"
+contains "$CREATE_ESTIMATION" "| 記事・レポート（一次ソース・調査結果が起票時点で確定している） |" "記事・レポート（材料確定）の行"
+contains "$CREATE_ESTIMATION" "1.0〜1.5h + レビュー対応分は実装分の **1/3**" "記事・レポートの実装分 1.0〜1.5h とレビュー対応 1/3"
+contains "$CREATE_ESTIMATION" "予約公開・本番反映・SNS 告知を DoD に含む場合は別項目で 0.5h" "記事・レポートの反映・告知 0.5h 別項目"
+contains "$CREATE_ESTIMATION" "再置換の既定・同額の表を重ねない" "記事・レポートの 1/3 と既定値表の非重複"
+contains "$CREATE_ESTIMATION" "追加分を除いた起票時スコープ相当の値で \`補正元\` の実績比を優先して差し替える" "記事・レポートの補正元優先と追加分除外"
+contains "$CREATE_ESTIMATION" "材料が揃っていない（調査から始める）記事には当てず" "記事・レポートの適用除外（材料未確定）"
+contains "$CREATE_ESTIMATION" "導入先の観測台帳 OBS-033（実測 3 件、乖離率 0.50 / 0.50 / 0.36）" "記事・レポートの出所（OBS-033 実測 3 件と乖離率）"
+contains "$CREATE_ESTIMATION" "| 既存の回帰 suite・fixture・検証環境を流用できる Native / UI 変更 |" "流用できる Native / UI 変更の行"
+contains "$CREATE_ESTIMATION" "**差分の物量**だけで実装分を積む" "流用できる Native / UI 変更は差分の物量で積む"
+contains "$CREATE_ESTIMATION" "直列見積もりから補正する場合と先行成果物の減算」と二重に差し引かない" "流用できる Native / UI 変更の二重減算防止"
+contains "$CREATE_ESTIMATION" "導入先の観測台帳 OBS-042（実測 3 件はいずれも過大側、乖離率 0.37 / 0.375 / 0.33）" "流用できる Native / UI 変更の出所（OBS-042）"
+contains "$CREATE_ESTIMATION" "| 新規プラットフォーム・外部仕様統合 bundle（一次公式仕様を実装着手前に実地確認済み） |" "一次仕様事前確認済み bundle の行"
+contains "$CREATE_ESTIMATION" "read-only で確認してから" "一次仕様事前確認済み bundle は着手に先立ち read-only で確認"
+contains "$CREATE_ESTIMATION" "過度な探索バッファ（2 倍超の上乗せや 8.0h 以上の一括見積もり）を積まず" "一次仕様事前確認済み bundle で過大バッファを積まない"
+contains "$CREATE_ESTIMATION" "おおよそ **1:0.8〜1.0**" "一次仕様事前確認済み bundle の実態比 1:0.8〜1.0"
+contains "$CREATE_ESTIMATION" "既定値の表［1 倍・1.5 倍］より先に見て重ねず" "一次仕様事前確認済み bundle と既定値表の先勝ち・非重複"
+contains "$CREATE_ESTIMATION" "観測台帳 OBS-559（連続 3 bundle の実測、乖離率 0.89〜1.03" "一次仕様事前確認済み bundle の出所（OBS-559 実測 3 件と 0.89〜1.03）"
+contains "$CREATE_ESTIMATION" "**起票後に範囲が広がった補正元の扱い**" "補正元選定で起票後の範囲拡大を除外する規定"
+contains "$CREATE_ESTIMATION" "その追加分を除いた起票時スコープ相当の値（追加分を実績に含めず記録したものはそのままの値）で比べる" "範囲拡大時の追加分除外と未混入値の保持"
+contains "$CREATE_ESTIMATION" "導入先の観測台帳 OBS-290、4 件の実測" "起票後の範囲拡大除外の出所（OBS-290 実測 4 件）"
+contains "$CREATE_ESTIMATION" "**並列サブエージェントで実装する bundle における子の実装分と固定費**" "並列実装 bundle での子実装と固定費の関係"
+contains "$CREATE_ESTIMATION" "実測 **0.33〜0.37 倍**" "並列実装で子の実装分が 0.33〜0.37 倍へ畳み込まれる"
+contains "$CREATE_ESTIMATION" "観測台帳 OBS-516" "並列実装での畳み込みが OBS-516（共有判定差し引き）と整合"
+contains "$CREATE_ESTIMATION" "固定費は並列化で縮まないため別建てで積む" "並列実装 bundle でも固定費は別建てで積む"
+contains "$CLOSE" "task-notification" "close-issue effort.md: task-notification 完了通知の参照"
+contains "$CLOSE" "duration_ms" "close-issue effort.md: 完了通知の duration_ms を担当別合算"
+contains "$CLOSE" '完了済みの担当ごとに足して `effort_evidence` に並べ' "close-issue effort.md: 完了済み担当別に合算し effort_evidence へ記録"
+contains "$CLOSE" "統括の分を「約」として分けて書く" "close-issue effort.md: 統括の分を「約」で分離"
+contains "$CLOSE" "API の上限・エラー・中断などで途中で止まった回の通知は数えない" "close-issue effort.md: 上限や中断で停止した回は除外"
+contains "$CLOSE" "**起票後に範囲が広がった Issue の書き戻し**" "close-issue effort.md: 起票後の範囲拡大時の書き戻し規定"
+contains "$CLOSE" '`effort_ai_actual` に何を含めたか' "close-issue effort.md: effort_ai_actual の対象範囲と追加内訳を明記"
+contains "$CLOSE" '追加分の所要目安 `h` も記す' "close-issue effort.md: 追加分を含めた場合は所要目安 h も記録"
+contains "$CLOSE" '追加分の内訳（追加分を含めた場合は後から差し引けるよう追加分の所要目安 `h` も記す）を `effort_evidence` に書く' "close-issue effort.md: 追加分の内訳を effort_evidence に記載"
 
 echo "検査 9e: 先勝ちは補正元より先（references/estimation.md）"
 contains "$CREATE_ESTIMATION" "条件が真になる最初の行だけを採る" "先勝ちは条件が真になる最初の行だけ"
@@ -824,7 +863,14 @@ bundle_rule_once() {
   count="$(grep -Fc -- "$2" "$1")" || rc=$?
   if [ "$rc" -le 1 ] && [ "$count" = 1 ]; then ok "$3"; else bad "$3: 一致行数=${count:-未取得} rc=$rc"; fi
 }
-bundle_rule_once "$CREATE_ESTIMATION" '固定費（ブランチ作成・PR 作成・レビュー 1 巡・全件ゲート・cleanup）は bundle 全体で 1 回分だけ積む' 'bundle 固定費 1 回'
+bundle_rule_once "$CREATE_ESTIMATION" '固定費（ブランチ作成・PR 作成・全件ゲート・レビュー・cleanup）は、次の和で積む式を使い、bundle では共通固定費として親へ 1 回だけ置く（子へ二重計上しない）' 'bundle 固定費を式で積み親へ 1 回だけ置く'
+absent "$CREATE_ESTIMATION" 'レビュー 1 巡・全件ゲート・cleanup' \
+  '旧 1 巡固定の bundle 固定費文言が残っていない' \
+  '旧 1 巡固定の bundle 固定費文言（レビュー 1 巡・全件ゲート・cleanup）が estimation.md に残っている'
+bundle_rule_once "$CREATE_ESTIMATION" '**全件ゲートの回数（見込むレビュー巡回数 + 1）× 1 回の所要**' '固定費の式: 全件ゲートの回数×所要'
+bundle_rule_once "$CREATE_ESTIMATION" '**レビューの層（照合役・セルフレビュー・差分の再レビュー）の数**' '固定費の式: レビューの層の数'
+bundle_rule_once "$CREATE_ESTIMATION" '同じ再レビューを親や単独の固定費へ重ねて二重計上しない' '固定費の式: 再レビュー起動の二重計上禁止'
+bundle_rule_once "$CREATE_ESTIMATION" '**セキュリティに関わる変更なら、専用セキュリティゲートの巡回**' '固定費の式: 専用セキュリティゲートの巡回'
 bundle_rule_once "$CREATE_ESTIMATION" '子は実装分 + レビュー対応分に留める' '子の見積もり範囲'
 bundle_rule_once "$CREATE_ESTIMATION" '子のレビュー対応分は、束ねた PR のレビュー対応 1 回分を子の実装の比で配って決める' '子のレビュー対応は束ねた 1 回分を配る'
 bundle_rule_once "$CREATE_ESTIMATION" '1 巡目の起動と読み取りは固定費として親に置き、2 巡目以降の起動と読み取り・各巡の指摘の修正を 1 回分に入れる' 'レビュー 1 巡目は固定費のまま親に置く'

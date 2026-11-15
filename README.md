@@ -24,21 +24,24 @@ claude plugin install ff-dev-toolkit@ff-dev-toolkit
 
 ### Google Antigravity での導入
 
-Google Antigravity（`AGENTS.md` / `.agents/skills/` / stdio MCP）では、同梱スクリプト（要 `jq`）で `~/.gemini/config/plugins/ff-dev-toolkit/` へネイティブ構成（対応メタデータのみの `plugin.json`・`skills` symlink・バンドル済み `mcp/dist/index.js` を実体物理パスで指し `ff-dev-toolkit-spec-docs` へ名前空間化した `mcp_config.json`）と `hooks.json`（双方向シム `scripts/antigravity/hook-shim.sh` 経由および Antigravity `transcript.jsonl` 振り返り対応）を展開します。プラグイン更新のたびに再実行してください。
+Google Antigravity（`AGENTS.md` / `.agents/skills/` / stdio MCP）では、同梱スクリプト（要 `jq`）で `~/.gemini/config/plugins/ff-dev-toolkit/` へネイティブ構成（対応メタデータのみの `plugin.json`・`skills` symlink・バンドル済み `plugins/ff-dev-toolkit/mcp/dist/index.js` を実体物理パスで指し `ff-dev-toolkit-spec-docs` へ名前空間化した `mcp_config.json`）と `hooks.json`（双方向シム `plugins/ff-dev-toolkit/scripts/antigravity/hook-shim.sh` 経由および Antigravity `transcript.jsonl` 振り返り対応）を展開します。詳細ガイド（アンインストール手順含む）は [USING_WITH_ANTIGRAVITY.md](USING_WITH_ANTIGRAVITY.md) を参照してください。
 
 ```bash
-# 単体プラグインを展開（公開リポジトリ直下から実行する場合。対象プロジェクトの SPEC_DOCS_PROJECT_ROOT を設定）
-bash plugins/ff-dev-toolkit/scripts/antigravity/sync-plugins.sh --project-root <対象プロジェクト>
+# 推奨: GitHub 管理クローンから展開（以後の自動更新対象に登録）
+bash plugins/ff-dev-toolkit/scripts/antigravity/sync-plugins.sh \
+  --repo feel-flow/ff-dev-toolkit \
+  --project-root <対象プロジェクト>
 
-# hooks.json を展開（SessionStart / PreInvocation / PreToolUse / PostToolUse / Stop + 自動振り返り）
-bash plugins/ff-dev-toolkit/scripts/antigravity/sync-hooks.sh
+# hooks.json を展開（管理クローン上のスクリプトから実行して自動更新を有効化）
+bash "${HOME}/.config/ff-dev-toolkit/antigravity/repos/feel-flow__ff-dev-toolkit/plugins/ff-dev-toolkit/scripts/antigravity/sync-hooks.sh"
 
-# 整合確認のみ（差分・リンク切れがあれば終了コード 1。導入済みプラグイン配下では bash scripts/antigravity/sync-*.sh ...）
-bash plugins/ff-dev-toolkit/scripts/antigravity/sync-plugins.sh --project-root <対象プロジェクト> --check
-bash plugins/ff-dev-toolkit/scripts/antigravity/sync-hooks.sh --check
+# 整合確認のみ（差分・リンク切れがあれば終了コード 1）
+bash "${HOME}/.config/ff-dev-toolkit/antigravity/repos/feel-flow__ff-dev-toolkit/plugins/ff-dev-toolkit/scripts/antigravity/sync-plugins.sh" \
+  --repo feel-flow/ff-dev-toolkit --project-root <対象プロジェクト> --check
+bash "${HOME}/.config/ff-dev-toolkit/antigravity/repos/feel-flow__ff-dev-toolkit/plugins/ff-dev-toolkit/scripts/antigravity/sync-hooks.sh" --check
 ```
 
-`SubagentStart` / `SubagentStop` / `PermissionDenied` と `async: true` ハンドラ（`auto-update-marketplace.sh`）は Antigravity `hooks.json` スキーマ未対応のためスキップされます。`sync-hooks.sh` 未展開の場合は `/retrospective` を明示起動してください。
+`SessionStart` の `auto-update-marketplace.sh` は `hook-shim.sh --async` 経由で `plugins/ff-dev-toolkit/scripts/antigravity/auto-update.sh --hook` を切り離し実行し、クリーンな既定ブランチの管理クローンを 1 日 1 回 `--ff-only` 更新してプラグインと既存の `hooks.json` を再同期します。`SubagentStart` / `SubagentStop` / `PermissionDenied` と `SessionStart` 以外の `async: true` ハンドラは Antigravity `hooks.json` スキーマ未対応のためスキップされます。`sync-hooks.sh` 未展開の場合は `/retrospective` を明示起動してください。
 
 ### 組織のプラグインディレクトリ（GitHubから同期）で配布する場合
 
@@ -181,6 +184,7 @@ Windows の Git Bash 上で Claude Code を使っていると、セッション�
 セッション開始時に、登録済みマーケットプレイスの更新（`claude plugin marketplace update` 引数なし）と本プラグイン本体の更新を、バックグラウンド（async）で自動実行します。サードパーティマーケットプレイスは既定では自動更新されないため、この hook を含む版へ一度更新すれば、以降は各自の `autoUpdate` 設定に依存せず最新へ追従します。
 
 - 実行は 1 日 1 回に間引かれます。`claude` CLI が無い環境・オフラインでもセッション起動を妨げません（fail-silent）
+- Google Antigravity で `--repo` 指定の `sync-plugins.sh` と `sync-hooks.sh` を展開している場合も、`SessionStart` の `--async` シム経由で `scripts/antigravity/auto-update.sh --hook` が 1 日 1 回管理クローンを `--ff-only` 更新し、プラグインと既存の `hooks.json` を自動再同期します（次回セッションから反映）
 - 本体更新の登録 ID（`プラグイン名@marketplace名` 形式）は `claude plugin list` から拾うため、導入経路によるマーケットプレイス登録名の違いを吸収します
 - 反映は次回以降のセッション起動時です（Claude Code の仕様）
 - 止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP=auto-update` を設定してください

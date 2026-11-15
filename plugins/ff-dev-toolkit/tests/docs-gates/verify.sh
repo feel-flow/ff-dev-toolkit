@@ -11,6 +11,7 @@
 # 空振り検出: 見出し末尾追加は旧検査で緑。19条件と見出し・リンク完全一致では、末尾追加・起動時の実測/停止削除・両型の引用外移動・拒否/未実行削除・契約行欠落・3入口のリンク末尾変更を公式harnessで11赤、無害1緑と実測（2026-10-25）。
 # 空振り検出: en_US.UTF-8でも上の12変異は11赤/無害1緑。LC_ALL=Cだけを除去する変異も赤、正常対照は296件pass。docsコピー/偽rootを含むruntime295件も同ロケールで緑（2026-10-25）。
 # 空振り検出: 進捗表示の節改名・空化・不明rcの成功化・契約TSV不在/空・skillリンク変更を各1変異で赤と実測（2026-10-24）。契約行の1件欠落も件数照合で赤。
+# 空振り検出: 永続作業ディレクトリ分離（OBS-149）は、正本節（項1のscratchpad戻し・使い捨て限定削除・項6矛盾再出現）・定型文（旧共通欄）・multi-implement/SKILL.md（別行への移動・永続パス削除・Issue下書き削除）・AGENTS.md/CLAUDE.md（同一行からの義務分離・永続パス削除・使い捨て限定削除・isolated-command-form省略）・TSV行削除を mutation-harness.sh で全赤・無害コメント追記を緑と実測（2026-11-14。SURVIVED 0）。
 #
 # docs-template 内のゲート例（pre-push フック / CI / 判定スクリプト）が
 # fail-silent へ退行していないことの drift 検査（Issue #154）。
@@ -1661,6 +1662,12 @@ deleg_must_contain_section_file() {
 # SKILL.md は ${DOCS}（docs-template）の外にあるため絶対パスで渡す。
 # 針は「重要ルール」節スコープで当てる（到達点 1 と同じ理由 — 同一ファイル内で手順の外へ
 # 移されると、参照は文書に残るのに委譲手順を読む側には届かない）。
+deleg_scratchpad_contract="$SCRIPT_DIR/contracts/delegation-scratchpad.tsv"
+if [ -r "$deleg_scratchpad_contract" ] && deleg_scratchpad_count="$(awk '!/^[[:space:]]*($|#)/ { n++ } END { print n+0 }' "$deleg_scratchpad_contract")" && [ "$deleg_scratchpad_count" = 8 ]; then
+  ok "作業ファイル置き場契約の8条件が揃う"
+else
+  bad "作業ファイル置き場契約が欠落・読取不能・条件数不一致"
+fi
 DELEG_SKILL="$PLUGIN_ROOT/skills/multi-implement/SKILL.md"
 DELEG_SKILL_HEADING='## 重要ルール'
 deleg_must_contain_section_file "$DELEG_SKILL" "$DELEG_SKILL_HEADING" \
@@ -1671,9 +1678,29 @@ deleg_must_contain_section_file "$DELEG_SKILL" "$DELEG_SKILL_HEADING" \
   "multi-implement SKILL.md の委譲手順から親側（生存中の worktree を回収しない）の正本節へ到達できる"
 deleg_must_contain_section_file "$DELEG_SKILL" "$DELEG_SKILL_HEADING" "$DELEG_TIMEOUT_VALUE" \
   "multi-implement SKILL.md の委譲手順がタイムアウトの実値を持つ（リンクだけだと消費地点に届かない）"
-deleg_must_contain_section_file "$DELEG_SKILL" "$DELEG_SKILL_HEADING" \
-  "](../../docs-template/${DELEG_DOC}#委譲先の作業ファイルを-scratchpad-の固有の置き場へ分ける)" \
-  "multi-implement SKILL.md の委譲手順から作業ファイルの置き場の正本節へ到達できる"
+# 作業ファイルの置き場: アンカーと同じ1行の中に永続ディレクトリ・Issue本文下書き・scratchpad限定が揃うことを固定する（別行へ逃がしても通さない）。
+deleg_skill_rules="$(section_scope_extract "$DELEG_SKILL" "$DELEG_SKILL_HEADING" 2>/dev/null)" || deleg_skill_rules=""
+deleg_skill_workfile_anchor="](../../docs-template/${DELEG_DOC}#委譲先の作業ファイルを-scratchpad-の固有の置き場へ分ける)"
+deleg_skill_workfile_line="$(printf '%s\n' "$deleg_skill_rules" | awk -v a="$deleg_skill_workfile_anchor" 'index($0, a) > 0 { n++; line = $0 } END { if (n == 1) print line; else printf "LINE_HITS=%d\n", n+0 }')"
+case "$deleg_skill_workfile_line" in
+  LINE_HITS=*)
+    bad "multi-implement SKILL.md の作業ファイル置き場参照行が ${deleg_skill_workfile_line#LINE_HITS=} 行（期待 1 行）"
+    ;;
+  *)
+    ok "multi-implement SKILL.md の委譲手順から作業ファイルの置き場の正本節へ到達できる"
+    for _skill_pair in \
+      '${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/` 配下の Issue 別・エージェント固有ディレクトリの解決済み実パス|永続作業ディレクトリの具体的保存先' \
+      'Issue 本文の下書き|対象への Issue 本文の下書きの明記' \
+      'scratchpad には消えても困らない使い捨てのファイルだけを置き|scratchpad の使い捨て用途限定'; do
+      _needle="${_skill_pair%%|*}"
+      _desc="${_skill_pair#*|}"
+      case "$deleg_skill_workfile_line" in
+        *"$_needle"*) ok "multi-implement SKILL.md の同一行が${_desc}を持つ" ;;
+        *) bad "multi-implement SKILL.md の参照行に${_desc}がありません（別行への退避を含め拒否）" ;;
+      esac
+    done
+    ;;
+esac
 
 # 到達点 3: リポジトリ入口の AGENTS.md。スキルも配布文書も読まずにホストの Agent / Task
 # ツールで直接委譲するオーケストレータへ届く唯一の経路。節名だけを見ると、正本パスを
@@ -1705,13 +1732,24 @@ else
       "$DELEG_DOC" "親側（生存中の worktree を回収しない）" \
       '未コミット差分 0 件（clean）を回収の根拠にせず' \
       '義務本文そのもの'
-    # 作業ファイルの置き場（OBS-039）。正本節の文言は contracts/delegation-scratchpad.tsv が
-    # 固定し、ここは入口の参照行（正本パス + 節名 + 義務本文）とパスの実測だけを受け持つ。
-    deleg_agents_reference_check "$deleg_agents_rules" '委譲先の作業ファイルを scratchpad の固有の置き場へ分ける' \
-      '## 委譲先の作業ファイルを scratchpad の固有の置き場へ分ける' \
-      "$DELEG_DOC" "作業ファイルの置き場" \
-      '親の作業ファイルと同名の汎用名（`pr-body.md` 等）を共有の置き場の直下に使わせない' \
-      '義務本文そのもの'
+    # 作業ファイルの置き場（OBS-039 / OBS-149）。正本節の文言は contracts/delegation-scratchpad.tsv が
+    # 固定し、ここは入口（AGENTS.md / CLAUDE.md）の単一参照行に正本パス + 節名 + 3義務が揃うこととパスの実測を受け持つ。
+    for _wf_entry in AGENTS.md CLAUDE.md; do
+      _wf_rules="$(section_scope_extract "$REPO_ROOT_DIR/$_wf_entry" "$DELEG_AGENTS_HEADING" 2>/dev/null)" || _wf_rules=""
+      if [ -z "$_wf_rules" ]; then
+        bad "${_wf_entry} の開発ルール節を切り出せません（作業ファイル置き場契約の到達点を測れません）"
+      else
+        deleg_agents_reference_check "$_wf_rules" '委譲先の作業ファイルを scratchpad の固有の置き場へ分ける' \
+          '## 委譲先の作業ファイルを scratchpad の固有の置き場へ分ける' \
+          "$DELEG_DOC" "${_wf_entry} 作業ファイルの置き場" \
+          '親の作業ファイルと同名の汎用名（`pr-body.md` 等）を共有の置き場の直下に使わせない' \
+          '汎用名禁止の義務' \
+          '${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/<Issue 番号 or エージェント固有 ID>/' \
+          '永続作業ディレクトリの保存先' \
+          'scratchpad には消えても困らない使い捨てのファイルだけを置く' \
+          'scratchpadの使い捨て用途限定'
+      fi
+    done
     # 「タイムアウトの実値を書く」と述べるだけでは、その実値がここには無い。到達点 1・2 と
     # 同じ針で、入口にも値そのものが残ることを固定する。
     deleg_must_contain_section_file "$REPO_AGENTS" "$DELEG_AGENTS_HEADING" "$DELEG_TIMEOUT_VALUE" \
@@ -1754,12 +1792,14 @@ fi
 command_form_anchor='multi-cli-agent-orchestration.md#隔離-worktree-の委譲先でのコマンド実行'
 deleg_must_contain_section_file "$PLUGIN_ROOT/skills/multi-implement/SKILL.md" '## 重要ルール'   "](../../docs-template/05-operations/deployment/$command_form_anchor)"   'multi-implement が隔離先コマンド契約の正確な節を参照する'
 deleg_must_contain_section_file "$PLUGIN_ROOT/skills/multi-implement/SKILL.md" '## 重要ルール'   '実値へ置き換えて委譲プロンプトへ載せる。呼出形式の変更後も'   'multi-implement が隔離先コマンド定型文の転記を義務にする'
+deleg_must_contain_section_file "$PLUGIN_ROOT/skills/multi-implement/SKILL.md" '## 重要ルール'   '配下の固有作業ディレクトリを含む'   'multi-implement が隔離先コマンド定型文に永続作業ディレクトリの実値展開を含める'
 if [ ! -f "$REPO_AGENTS" ] && [ ! -f "$REPO_TESTING" ]; then
   ok '隔離先コマンド契約のroot両入口検査は適用外（リポジトリ正本docsを持たない配布先）'
 else
   for command_form_entry in AGENTS.md CLAUDE.md; do
     deleg_must_contain_section_file "$REPO_ROOT_DIR/$command_form_entry" "$DELEG_AGENTS_HEADING"       "](plugins/ff-dev-toolkit/docs-template/05-operations/deployment/$command_form_anchor)"       "$command_form_entry が隔離先コマンド契約の正確な節を参照する"
     deleg_must_contain_section_file "$REPO_ROOT_DIR/$command_form_entry" "$DELEG_AGENTS_HEADING"       '実値へ置き換えて委譲プロンプトへ載せる**。呼出形式を変えても'       "$command_form_entry が隔離先コマンド定型文の転記を義務にする"
+    deleg_must_contain_section_file "$REPO_ROOT_DIR/$command_form_entry" "$DELEG_AGENTS_HEADING"       '配下の固有作業ディレクトリを含む'       "$command_form_entry が隔離先コマンド定型文に永続作業ディレクトリの実値展開を含める"
   done
 fi
 

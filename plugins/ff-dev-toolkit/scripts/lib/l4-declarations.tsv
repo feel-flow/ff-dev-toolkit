@@ -25,7 +25,7 @@
 # 変数の名前から鍵を導いて照合する（接頭辞 FF_DEV_TOOLKIT_SKIP_ と末尾の _GUARD を外し、英大文字を
 # 小文字、_ を - にしたもの。ADR-087 決定 1 の規則の逆）。`all` は置かない。
 key	kind	owner	covers	legacy	legacy_value_rule	remove_after
-auto-update	skip	hooks/auto-update-marketplace.sh	-	-	retired-stop	-
+auto-update	skip	hooks/auto-update-marketplace.sh,scripts/antigravity/auto-update.sh	-	-	retired-stop	-
 background-cwd	skip	hooks/guard-background-cwd.sh	-	-	-	-
 checkout	skip	hooks/guard-checkout-restore.sh	discard-uncommitted	-	-	-
 codex-auto-update	skip	scripts/lib/multi-agent-codex-update.sh	-	-	retired-stop	-

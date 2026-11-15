@@ -39,7 +39,7 @@
 ~ 迷ったら medium。
 
 ;; --- ステップ 1: 本文の body-file 化（後続の文が両ファイルで違うため部分一致） ---
-~ 本文は Write ツールで作業ツリー外の一時ファイル（セッションの scratchpad 等）へ書き、`--body-file` で渡す（heredoc でシェル変数へ組み立てない。空のファイルを渡さない — 空の本文は「作成済みだが中身の無い」Issue を黙って生む）。
+~ 本文は Write ツールで作業ツリー外の永続作業ディレクトリ（`${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/<Issue 番号 or 識別子>/`。使い捨て小片だけならセッションの scratchpad 等）へ書き、`--body-file` で渡す（heredoc でシェル変数へ組み立てない。空のファイルを渡さない — 空の本文は「作成済みだが中身の無い」Issue を黙って生む）。
 
 ;; --- ステップ 2: ラベル実在確認の単独コマンドと判定規則 ---
 expected_repo="OWNER/REPO"

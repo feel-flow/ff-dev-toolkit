@@ -14,6 +14,9 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH='' cd -P -- "$(dirname -- "$0")" && pwd -P)"
 PLUGIN_ROOT="$(CDPATH='' cd -P -- "$SCRIPT_DIR/../.." && pwd -P)"
 SYNC_SH="$PLUGIN_ROOT/scripts/antigravity/sync-plugins.sh"
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
+ff_git_fixture_unset_env
 
 [ -f "$SYNC_SH" ] || { echo "✗ sync-plugins.sh が見つかりません: $SYNC_SH" >&2; exit 1; }
 if ! command -v jq >/dev/null 2>&1; then
@@ -27,6 +30,7 @@ ok() { PASS=$((PASS + 1)); echo "  ✓ $1"; }
 bad() { FAIL=$((FAIL + 1)); echo "  ✗ $1" >&2; }
 
 TMP_WORK="$(mktemp -d)"
+TMP_WORK="$(CDPATH='' cd -P -- "$TMP_WORK" && pwd -P)"
 REACHED_END=0
 cleanup() {
   local rc=$?
@@ -38,6 +42,10 @@ cleanup() {
   exit "$rc"
 }
 trap cleanup EXIT
+
+export HOME="$TMP_WORK/home"
+export FF_DEV_TOOLKIT_STATE_DIR="$TMP_WORK/state"
+mkdir -p "$HOME" "$FF_DEV_TOOLKIT_STATE_DIR"
 
 OUT_SINGLE="$TMP_WORK/out-single"
 
@@ -342,6 +350,155 @@ if command -v node >/dev/null 2>&1; then
   fi
 else
   echo "  ○ skip: node が無いため MCP stdio 疎通は未検査"
+fi
+
+# (10) --repo 単体プラグイン展開（plugin.json + skills/ が marketplace.json より優先され、sync-state.json へ記録される）
+SRC_SINGLE="$TMP_WORK/src-single"
+BARE_SINGLE="$TMP_WORK/remote-single.git"
+OUT_REPO_SINGLE="$TMP_WORK/out-repo-single"
+ff_git_fixture_init "$SRC_SINGLE"
+mkdir -p "$SRC_SINGLE/.claude-plugin" "$SRC_SINGLE/skills/hello" "$SRC_SINGLE/plugins/mkt-only/.claude-plugin" "$SRC_SINGLE/plugins/mkt-only/skills/m"
+printf '{"name":"solo-plugin","version":"1.0.0","description":"standalone"}\n' > "$SRC_SINGLE/.claude-plugin/plugin.json"
+printf -- '---\nname: hello\ndescription: hi\n---\n' > "$SRC_SINGLE/skills/hello/SKILL.md"
+printf '{"name":"mkt-shadow","plugins":[{"name":"mkt-only","source":"./plugins/mkt-only"}]}\n' > "$SRC_SINGLE/.claude-plugin/marketplace.json"
+printf '{"name":"mkt-only","version":"0.1.0"}\n' > "$SRC_SINGLE/plugins/mkt-only/.claude-plugin/plugin.json"
+printf -- '---\nname: m\ndescription: m\n---\n' > "$SRC_SINGLE/plugins/mkt-only/skills/m/SKILL.md"
+git -C "$SRC_SINGLE" add .
+git -C "$SRC_SINGLE" commit -q -m "init solo"
+git clone --bare -q "$SRC_SINGLE" "$BARE_SINGLE"
+
+STATE_FILE="$FF_DEV_TOOLKIT_STATE_DIR/antigravity/sync-state.json"
+if GIT_TERMINAL_PROMPT=0 bash "$SYNC_SH" --repo "file://$BARE_SINGLE" --out-dir "$OUT_REPO_SINGLE" >/dev/null 2>&1 \
+  && [ -f "$OUT_REPO_SINGLE/solo-plugin/plugin.json" ] \
+  && [ ! -e "$OUT_REPO_SINGLE/mkt-only" ] \
+  && [ -L "$OUT_REPO_SINGLE/solo-plugin/skills" ] \
+  && [ -f "$STATE_FILE" ] \
+  && jq -e --arg out "$OUT_REPO_SINGLE" --arg url "file://$BARE_SINGLE" '
+    (.targets[$out].sources | to_entries | map(.value) | length) == 1
+    and (.targets[$out].sources | to_entries[0].value.managedClone == true)
+    and (.targets[$out].sources | to_entries[0].value.repoUrl == $url)
+    and (.targets[$out].sources | to_entries[0].value.syncedPlugins == ["solo-plugin"])
+  ' "$STATE_FILE" >/dev/null 2>&1; then
+  ok "(10) --repo 単体展開・plugin.json+skills/ 優先・sync-state.json 記録"
+else
+  bad "(10) --repo 単体展開または precedence/state 記録に失敗"
+fi
+
+# (11) --repo マーケットプレイス + --plugin 絞り込み + --clone-dir 指定
+SRC_MKT="$TMP_WORK/src-mkt"
+BARE_MKT="$TMP_WORK/remote-mkt.git"
+OUT_REPO_MKT="$TMP_WORK/out-repo-mkt"
+CUSTOM_CLONE="$TMP_WORK/custom-mkt-clone"
+ff_git_fixture_init "$SRC_MKT"
+mkdir -p "$SRC_MKT/.claude-plugin" \
+  "$SRC_MKT/plugins/alpha/.claude-plugin" "$SRC_MKT/plugins/alpha/skills/a" \
+  "$SRC_MKT/plugins/beta/.claude-plugin" "$SRC_MKT/plugins/beta/skills/b"
+printf '{"name":"sample-mkt","plugins":[{"name":"alpha","source":"./plugins/alpha"},{"name":"beta","source":"./plugins/beta"}]}\n' > "$SRC_MKT/.claude-plugin/marketplace.json"
+printf '{"name":"alpha","version":"1.0.0"}\n' > "$SRC_MKT/plugins/alpha/.claude-plugin/plugin.json"
+printf -- '---\nname: a\ndescription: a\n---\n' > "$SRC_MKT/plugins/alpha/skills/a/SKILL.md"
+printf '{"name":"beta","version":"1.0.0"}\n' > "$SRC_MKT/plugins/beta/.claude-plugin/plugin.json"
+printf -- '---\nname: b\ndescription: b\n---\n' > "$SRC_MKT/plugins/beta/skills/b/SKILL.md"
+git -C "$SRC_MKT" add .
+git -C "$SRC_MKT" commit -q -m "init mkt"
+git clone --bare -q "$SRC_MKT" "$BARE_MKT"
+
+if GIT_TERMINAL_PROMPT=0 bash "$SYNC_SH" --repo "file://$BARE_MKT" --clone-dir "$CUSTOM_CLONE" --plugin alpha --out-dir "$OUT_REPO_MKT" >/dev/null 2>&1 \
+  && [ -d "$CUSTOM_CLONE/.git" ] \
+  && [ -f "$OUT_REPO_MKT/alpha/plugin.json" ] \
+  && [ ! -e "$OUT_REPO_MKT/beta" ] \
+  && [ "$(readlink "$OUT_REPO_MKT/alpha/skills")" = "$CUSTOM_CLONE/plugins/alpha/skills" ] \
+  && jq -e --arg out "$OUT_REPO_MKT" --arg cd "$CUSTOM_CLONE" '
+    (.targets[$out].sources | length) == 1
+    and (.targets[$out].sources | to_entries[0].value.sourceRoot == $cd)
+    and (.targets[$out].sources | to_entries[0].value.selectedPlugins == ["alpha"])
+    and (.targets[$out].sources | to_entries[0].value.syncedPlugins == ["alpha"])
+  ' "$STATE_FILE" >/dev/null 2>&1; then
+  ok "(11) --repo マーケットプレイス + --plugin alpha + --clone-dir 反映"
+else
+  bad "(11) --repo マーケットプレイス --plugin 絞り込みに失敗"
+fi
+
+# (12) 同一ターゲットの複数ソース共存と重複プラグイン再同期時の旧ソース pruning
+OUT_MULTI_STATE="$TMP_WORK/out-multi-state"
+SRC_OVERRIDE="$TMP_WORK/src-override"
+ff_git_fixture_init "$SRC_OVERRIDE"
+mkdir -p "$SRC_OVERRIDE/.claude-plugin" "$SRC_OVERRIDE/skills/hello2"
+printf '{"name":"solo-plugin","version":"9.9.9"}\n' > "$SRC_OVERRIDE/.claude-plugin/plugin.json"
+printf -- '---\nname: hello2\ndescription: h2\n---\n' > "$SRC_OVERRIDE/skills/hello2/SKILL.md"
+git -C "$SRC_OVERRIDE" add .
+git -C "$SRC_OVERRIDE" commit -q -m "override"
+
+if GIT_TERMINAL_PROMPT=0 bash "$SYNC_SH" --repo "file://$BARE_SINGLE" --out-dir "$OUT_MULTI_STATE" >/dev/null 2>&1 \
+  && GIT_TERMINAL_PROMPT=0 bash "$SYNC_SH" --repo "file://$BARE_MKT" --clone-dir "$CUSTOM_CLONE" --plugin alpha --out-dir "$OUT_MULTI_STATE" >/dev/null 2>&1 \
+  && jq -e --arg out "$OUT_MULTI_STATE" '
+    (.targets[$out].sources | keys | length) == 2
+  ' "$STATE_FILE" >/dev/null 2>&1 \
+  && bash "$SYNC_SH" --plugin-root "$SRC_OVERRIDE" --out-dir "$OUT_MULTI_STATE" >/dev/null 2>&1 \
+  && jq -e --arg out "$OUT_MULTI_STATE" --arg ov "$SRC_OVERRIDE" '
+    (.targets[$out].sources | keys | length) == 2
+    and ([.targets[$out].sources[].syncedPlugins[]] | sort) == ["alpha", "solo-plugin"]
+    and ([.targets[$out].sources[].sourceRoot] | index($ov) != null)
+  ' "$STATE_FILE" >/dev/null 2>&1; then
+  ok "(12) sync-state.json 複数ソース保持および重複ソース置換 prune"
+else
+  bad "(12) sync-state.json の保持または重複 prune に失敗"
+fi
+
+# (13) --repo 再実行で remote の新規コミットを --ff-only 取得・反映する
+printf '{"name":"solo-plugin","version":"1.1.0","description":"updated"}\n' > "$SRC_SINGLE/.claude-plugin/plugin.json"
+mkdir -p "$SRC_SINGLE/skills/v2"
+printf -- '---\nname: v2\ndescription: v2\n---\n' > "$SRC_SINGLE/skills/v2/SKILL.md"
+git -C "$SRC_SINGLE" add .
+git -C "$SRC_SINGLE" commit -q -m "bump to 1.1.0"
+git -C "$SRC_SINGLE" push -q "$BARE_SINGLE" master:master
+
+if GIT_TERMINAL_PROMPT=0 bash "$SYNC_SH" --repo "file://$BARE_SINGLE" --out-dir "$OUT_REPO_SINGLE" >/dev/null 2>&1 \
+  && [ "$(jq -r '.version' "$OUT_REPO_SINGLE/solo-plugin/plugin.json")" = "1.1.0" ] \
+  && [ -f "$OUT_REPO_SINGLE/solo-plugin/skills/v2/SKILL.md" ]; then
+  ok "(13) --repo 再実行で --ff-only 更新および新スキル・新版を反映"
+else
+  bad "(13) --repo 再実行の --ff-only 更新反映に失敗"
+fi
+
+# (14) --repo --check はオフライン・読み取り専用で整合確認し、未クローン時は新規クローンしない
+rm -rf "$BARE_SINGLE"
+if GIT_TERMINAL_PROMPT=0 bash "$SYNC_SH" --repo "file://$BARE_SINGLE" --out-dir "$OUT_REPO_SINGLE" --check >/dev/null 2>&1 \
+  && { printf '{"tampered":true}\n' > "$OUT_REPO_SINGLE/solo-plugin/plugin.json"; \
+       ! GIT_TERMINAL_PROMPT=0 bash "$SYNC_SH" --repo "file://$BARE_SINGLE" --out-dir "$OUT_REPO_SINGLE" --check >/dev/null 2>&1; } \
+  && ! GIT_TERMINAL_PROMPT=0 bash "$SYNC_SH" --repo "file://$BARE_MKT" --clone-dir "$TMP_WORK/never-cloned" --out-dir "$OUT_REPO_MKT" --check >/dev/null 2>&1 \
+  && [ ! -e "$TMP_WORK/never-cloned" ]; then
+  ok "(14) --repo --check のオフライン検査・ドリフト検知・未クローン非生成"
+else
+  bad "(14) --repo --check のオフライン/読み取り専用動作に失敗"
+fi
+
+# (15) セキュリティ検証（http://・-oホスト・.. traversal・symlink out-dir 拒否、および .. slug 非脱出）
+sec_ok=1
+OUT_SEC="$TMP_WORK/out-sec"
+! bash "$SYNC_SH" --repo "http://github.com/example/sample.git" --out-dir "$OUT_SEC" >/dev/null 2>&1 || sec_ok=0
+! bash "$SYNC_SH" --repo "ssh://-oProxyCommand=id/repo" --out-dir "$OUT_SEC" >/dev/null 2>&1 || sec_ok=0
+! bash "$SYNC_SH" --repo "git@-oProxyCommand=id:repo" --out-dir "$OUT_SEC" >/dev/null 2>&1 || sec_ok=0
+
+DOTDOT_SRC="$TMP_WORK/dotdot-mcp"
+mkdir -p "$DOTDOT_SRC/.claude-plugin" "$DOTDOT_SRC/skills/s1"
+printf '{"name":"dotdot-mcp","version":"0.1.0","description":"x"}\n' > "$DOTDOT_SRC/.claude-plugin/plugin.json"
+printf -- '---\nname: s1\ndescription: s1\n---\n' > "$DOTDOT_SRC/skills/s1/SKILL.md"
+printf '{"mcpServers":{"srv":{"command":"node","args":["${CLAUDE_PLUGIN_ROOT}/../escape.js"]}}}\n' > "$DOTDOT_SRC/.mcp.json"
+! bash "$SYNC_SH" --plugin-root "$DOTDOT_SRC" --out-dir "$OUT_SEC" >/dev/null 2>&1 || sec_ok=0
+
+mkdir -p "$TMP_WORK/real-out"
+ln -s "$TMP_WORK/real-out" "$TMP_WORK/link-out"
+! bash "$SYNC_SH" --plugin-root "$MKT/plugins/beta" --out-dir "$TMP_WORK/link-out" >/dev/null 2>&1 || sec_ok=0
+
+GIT_TERMINAL_PROMPT=0 bash "$SYNC_SH" --repo "file://..." --out-dir "$OUT_SEC" >/dev/null 2>&1 || true
+if [ -e "$FF_DEV_TOOLKIT_STATE_DIR/antigravity/.git" ]; then
+  sec_ok=0
+fi
+
+if [ "$sec_ok" -eq 1 ]; then
+  ok "(15) http://・-oホスト・..traversal・symlink 出力先を拒否し .. slug 脱出を起こさない"
+else
+  bad "(15) セキュリティ境界チェックのいずれかが抜けた"
 fi
 
 echo "=== antigravity-plugins-sync: $PASS passed, $FAIL failed ==="

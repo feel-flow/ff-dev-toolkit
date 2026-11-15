@@ -3,6 +3,7 @@
 # 空振り検出: 2026-10-22 macOSで17種を実測。case不在/読めない/空集合/書式変更/名前だけ残す、source不在/空/名前だけ残す、helper読めない、MCP fixture不在、親/worker早期exit0、scalar抽出0、ready集合0は全てrc1。
 # 空振り検出: scratchのsource写しで最終PR phaseをinitialへ戻す・必須field検査を迂回する・次thread cursorを捨てる変異も全てrc1。正常8 goldenは6面bytes一致。抽出0/重複の負対照は完全なready出力を起点にする。
 # 空振り検出: 2026-11-05（Issue `#2636`）macOSで正常92件。マージ後工程の判定の停止の設定行を消す → 2件赤、file入力でrawのfilesを信じる → 10件赤（decoyだけの一覧でgitの差分を読まなくなる）、http_statusの検査を外す → 1件赤。コメントのpage/last欠落・配列でない応答の各ケースはrc2とdiagnosticを照合する。
+# 空振り検出: 2026-11-15（Issue `#2788`）macOSで正常96件（file モード負例 mergeable-conflicting-dirty / mergeable-unknown-undetermined と PRECHECK=undetermined アサーション含む）。conflict 条件を外す変異は 95/1、!= MERGEABLE 停止を外す変異は 94/2、github-input 向け回復案内を外す変異は 95/1 で各赤（SURVIVED 0）、無害コメント対照は 96/0。
 # Optional arguments: plugin root, case manifest, evidence directory.
 # run-all-required: yes — 必須raw不足の停止とgh/file6面一致を検証し、取得失敗を成功へ倒さない
 # 空振り検出: 2026-10-23 R1で明示incomplete/non200 guardの逆変異は4件だけ赤、attemptを常時1へ戻す逆変異もCheckRun/StatusContextの成功・失敗4件だけ赤。正常69件・ready8件はrc0。
@@ -174,7 +175,7 @@ while IFS=$'\t' read -r name refs separate checks pages fork thread_kind; do
     isCrossRepository:$cross,title:"work",body:$body,closingIssuesReferences:[],
     commits:[{oid:$head,messageHeadline:"work",messageBody:""}],
     statusCheckRollup:(if $checks then [{name:"gate",conclusion:"SUCCESS"}] else [] end),
-    additions:20,deletions:0,files:[{path:"feature"}]}' >"$TMP/pr.json"
+    additions:20,deletions:0,files:[{path:"feature"}],mergeable:"MERGEABLE",mergeStateStatus:"CLEAN"}' >"$TMP/pr.json"
   jq -n --argjson pages "$pages" '{data:{repository:{pullRequest:{author:{login:"author"},reviewThreads:{
     nodes:[],pageInfo:{hasNextPage:$pages,endCursor:(if $pages then "next" else null end)}}}}}}' >"$TMP/threads1.json"
   if [ "$thread_kind" != empty ]; then
@@ -349,6 +350,14 @@ BASE_OID="$(g -C "$WORK" rev-parse origin/develop)"
 sed "s/^COMMIT=.*/COMMIT=$BASE_OID/" "$gate" >"$TMP/gate-old"; cp "$TMP/gate-old" "$gate"
 negative gate-head-mismatch 1 "$TMP/base-index.json" FRESH_STATUS=1
 cp "$TMP/gate-saved" "$gate"
+
+jq '.mergeable="CONFLICTING" | .mergeStateStatus="DIRTY"' "$TMP/pr.json" >"$TMP/final.json"
+jq --arg body "$TMP/final.json" '(.responses[] | select(.phase=="after-threads") | .body)=$body' "$TMP/base-index.json" >"$TMP/bad.json"
+negative mergeable-conflicting-dirty 1 "$TMP/bad.json" PRECHECK=blocked
+jq '.mergeable="UNKNOWN" | .mergeStateStatus="UNKNOWN"' "$TMP/pr.json" >"$TMP/final.json"
+jq --arg body "$TMP/final.json" '(.responses[] | select(.phase=="after-threads") | .body)=$body' "$TMP/base-index.json" >"$TMP/bad.json"
+negative mergeable-unknown-undetermined 2 "$TMP/bad.json" "mergeable / mergeStateStatus を含む最新の PR JSON"
+if grep -qxF 'PRECHECK=undetermined' "$TMP/negative.out"; then ok "mergeable-unknown-undetermined emits PRECHECK=undetermined"; else bad "mergeable-unknown-undetermined missing PRECHECK=undetermined"; fi
 
 # Cleanup required identity is separate from deletion guard evidence; no real deletion.
 jq '.state="MERGED" | .isCrossRepository=false' "$TMP/pr.json" >"$TMP/cleanup.json"

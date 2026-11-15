@@ -7,6 +7,7 @@
 # 空振り検出: msys の core.longpaths=true を外した mutant は long-paths.sh の呼び出し記録の照合で赤になる。Windows の実機では、深い node_modules の削除が git の「Filename too long」で失敗して赤になる（2026-10-30 実測、Issue `#2479`）。
 # 空振り検出: msys で ignored のリンクを外す工程を除いた mutant は、long-paths.sh の「worktree remove の時点のリンク数」が 1 になって赤になる（リンクを数えられない回は印の行で 0 にならない）。Windows の実機では windows-junctions.sh の outside の回が参照先の keep.txt の消失で、pnpm の回が単独でも「Directory not empty」で赤になる。残ったリンクの確認を除いた mutant は long-paths.sh の hidden-untracked の回が赤にする。ジャンクションを作れない回と、登録の照合が実行前に当たらない回も赤（2026-10-31 実測、Issue `#2557`）。
 # 空振り検出: 入口の「ファイルが無い」分岐を外した写しを与えると、「構成ファイルを読めない入口が削除前に止まっていない（mode=missing）」の 1 件だけが赤になる（2026-10-21 実測。成功は残り全部。判定は exit 1 のまま、針「がありません」が外れ、次の分岐の「が 0 バイトです」になる。削除へは進まない）。
+# 空振り検出: merge-cleanup-local.sh の WT_MERGED_MATCH != 1 ガードを `if false; then` に無効化した変異では、46.3 / 46.3b / 46.8 / 46.11a (GUARDS_OK=0) / 46.11b (先祖 OID 不一致) / 46.11c (mutant 対照) の 6 件が失敗し rc=1 になる（2026-11-14 macOS 実測、`#2791`）。
 # worktree一覧の不在・空・警告とremote照合失敗はfixtureでskip理由と残存を実測する。
 #
 # 一時 git リポジトリ（bare origin + clone）と mock gh で以下を検証する:

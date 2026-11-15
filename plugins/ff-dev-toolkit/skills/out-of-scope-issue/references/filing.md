@@ -101,7 +101,7 @@ MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形
 
 #### ステップ 1: 本文を一時ファイルへ書く
 
-本文は Write ツールで作業ツリー外の一時ファイル（セッションの scratchpad 等）へ書き、`--body-file` で渡す（heredoc でシェル変数へ組み立てない。空のファイルを渡さない — 空の本文は「作成済みだが中身の無い」Issue を黙って生む）。§3.5 で取得した発見元情報を埋める:
+本文は Write ツールで作業ツリー外の永続作業ディレクトリ（`${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/<Issue 番号 or 識別子>/`。使い捨て小片だけならセッションの scratchpad 等）へ書き、`--body-file` で渡す（heredoc でシェル変数へ組み立てない。空のファイルを渡さない — 空の本文は「作成済みだが中身の無い」Issue を黙って生む）。§3.5 で取得した発見元情報を埋める:
 
 ```markdown
 ## 概要

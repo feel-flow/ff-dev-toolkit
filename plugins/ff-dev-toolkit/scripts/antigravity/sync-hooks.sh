@@ -9,6 +9,8 @@
 #     read_file / invoke_subagent / manage_subagents / manage_task）
 #   - handler に async / onFailure / statusMessage / env を持てず、CLAUDE_PLUGIN_ROOT も自動設定されないため
 #     --plugin-root を hook-shim.sh へ渡し、${CLAUDE_PLUGIN_ROOT} は生成時に展開せず実行時環境へ委ねる
+#   - SessionStart の async: true ハンドラは hook-shim.sh --async（timeout: 10）でデタッチ起動し、
+#     それ以外のイベントの async: true ハンドラはブロッキング回避のためスキップする
 #   - SubagentStart / SubagentStop / PermissionDenied は Antigravity hooks.json に存在しないためスキップして明示通知する
 #
 # 使い方: sync-hooks.sh [--plugin-root <dir>] [--out-dir <dir> | --out <file>] [--check]
@@ -27,7 +29,7 @@ OUT_FILE=""
 CHECK=0
 
 usage() {
-  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR > 1 { if (/^#/) { sub(/^# ?/, ""); print } else exit }' "$0"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -102,7 +104,7 @@ skipped_events="$(jq -r '
 skipped_async="$(jq -r '
   [ .hooks
     | to_entries[]
-    | select(.key == "SessionStart" or .key == "UserPromptSubmit" or .key == "PreToolUse" or .key == "PostToolUse" or .key == "Stop")
+    | select(.key == "UserPromptSubmit" or .key == "PreToolUse" or .key == "PostToolUse" or .key == "Stop")
     | .key as $ev
     | (.value // [])[]
     | (.hooks // [])[]
@@ -112,16 +114,20 @@ skipped_async="$(jq -r '
 ' "$HOOKS_JSON" 2>/dev/null || true)"
 
 rendered="$(jq --arg root "$PLUGIN_ROOT" --arg shim "$SHIM" '
-  def wrap_cmd($shim; $proot; $ev; $cmd; $on_fail):
+  def wrap_cmd($shim; $proot; $ev; $cmd; $on_fail; $is_async):
     (
       [ "bash", $shim, "--plugin-root", $proot, "--event", $ev ]
+      + (if ($ev == "SessionStart" and $is_async == true) then [ "--async" ] else [] end)
       + (if ($ev == "PreToolUse" and ($on_fail // "") == "block") then [ "--on-failure", "block" ] else [] end)
       + [ "--", "bash", "-c", $cmd ]
     ) | map(@sh) | join(" ");
   def clean_handler($shim; $proot; $ev):
-    select((.type // "") == "command" and (.command | type) == "string" and (.command | length > 0) and ((.async // false) != true))
-    | { type: "command", command: wrap_cmd($shim; $proot; $ev; .command; (.onFailure // "")) }
-      + (if (.timeout | type) == "number" then { timeout: .timeout } else {} end);
+    select((.type // "") == "command" and (.command | type) == "string" and (.command | length > 0) and (((.async // false) != true) or $ev == "SessionStart"))
+    | ((.async // false) == true and $ev == "SessionStart") as $is_async
+    | { type: "command", command: wrap_cmd($shim; $proot; $ev; .command; (.onFailure // ""); $is_async) }
+      + (if $is_async then { timeout: 10 }
+         elif (.timeout | type) == "number" then { timeout: .timeout }
+         else {} end);
   def map_tool_token($tok):
     if $tok == "Bash" then ["run_command"]
     elif $tok == "Write" then ["write_file"]

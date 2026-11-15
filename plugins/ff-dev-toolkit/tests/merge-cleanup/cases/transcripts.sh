@@ -136,7 +136,7 @@ else
 fi
 
 # 14. FF_MERGE_CLEANUP_TRANSCRIPTS=off なら worktree を消しても回収しない
-add_clean_gone_worktree 'feature/#25-wt-off' "$TMP/wt-25"
+add_merged_clean_gone_worktree 'feature/#25-wt-off' "$TMP/wt-25"
 NAME_OFF="$(transcript_name_of "$TMP/wt-25")"
 make_transcript_dir "$NAME_OFF" "$(cd "$TMP/wt-25" && pwd -P)"
 set +e
@@ -152,7 +152,7 @@ else
 fi
 
 # 15. 値が不正なら黙って無効化せず fail-loud にする
-add_clean_gone_worktree 'feature/#26-wt-bogus' "$TMP/wt-26"
+add_merged_clean_gone_worktree 'feature/#26-wt-bogus' "$TMP/wt-26"
 NAME_BOGUS="$(transcript_name_of "$TMP/wt-26")"
 make_transcript_dir "$NAME_BOGUS" "$(cd "$TMP/wt-26" && pwd -P)"
 set +e
@@ -168,7 +168,7 @@ else
 fi
 
 # 16. アーカイブに失敗したら元ディレクトリを残し、書きかけの成果物も残さない
-add_clean_gone_worktree 'feature/#27-wt-tarfail' "$TMP/wt-27"
+add_merged_clean_gone_worktree 'feature/#27-wt-tarfail' "$TMP/wt-27"
 NAME_TARFAIL="$(transcript_name_of "$TMP/wt-27")"
 make_transcript_dir "$NAME_TARFAIL" "$(cd "$TMP/wt-27" && pwd -P)"
 set +e
@@ -186,7 +186,7 @@ else
 fi
 
 # 16.5 tar が成功を名乗っても、読み直せないアーカイブを根拠に元を消さない
-add_clean_gone_worktree 'feature/#31-wt-corrupt' "$TMP/wt-31"
+add_merged_clean_gone_worktree 'feature/#31-wt-corrupt' "$TMP/wt-31"
 NAME_CORRUPT="$(transcript_name_of "$TMP/wt-31")"
 make_transcript_dir "$NAME_CORRUPT" "$(cd "$TMP/wt-31" && pwd -P)"
 set +e
@@ -204,7 +204,7 @@ else
 fi
 
 # 16.6 既存のアーカイブを黙って上書きしない
-add_clean_gone_worktree 'feature/#32-wt-collide' "$TMP/wt-32"
+add_merged_clean_gone_worktree 'feature/#32-wt-collide' "$TMP/wt-32"
 NAME_COLLIDE="$(transcript_name_of "$TMP/wt-32")"
 make_transcript_dir "$NAME_COLLIDE" "$(cd "$TMP/wt-32" && pwd -P)"
 mkdir -p "$FF_MERGE_CLEANUP_TRANSCRIPT_ARCHIVE_DIR"
@@ -227,7 +227,7 @@ fi
 
 # 16.65 アーカイブ中に元へ書き足されたら、その分を失うので削除しない。
 #       件数照合だけでは「既存ファイルへの追記」を検出できない
-add_clean_gone_worktree 'feature/#36-wt-append' "$TMP/wt-36"
+add_merged_clean_gone_worktree 'feature/#36-wt-append' "$TMP/wt-36"
 NAME_APPEND="$(transcript_name_of "$TMP/wt-36")"
 make_transcript_dir "$NAME_APPEND" "$(cd "$TMP/wt-36" && pwd -P)"
 set +e
@@ -245,7 +245,7 @@ fi
 
 # 16.655 内容が変わっていない未来 mtime は、アーカイブ中の変更ではない。
 # marker との時刻比較へ戻ると必ず誤検出する、Issue `#1050` の決定的な回帰 fixture。
-add_clean_gone_worktree 'feature/#40-wt-future-mtime' "$TMP/wt-40"
+add_merged_clean_gone_worktree 'feature/#40-wt-future-mtime' "$TMP/wt-40"
 NAME_FUTURE_MTIME="$(transcript_name_of "$TMP/wt-40")"
 make_transcript_dir "$NAME_FUTURE_MTIME" "$(cd "$TMP/wt-40" && pwd -P)"
 touch -t 203701010000 "$FF_MERGE_CLEANUP_PROJECTS_DIR/$NAME_FUTURE_MTIME/session.jsonl"
@@ -263,7 +263,7 @@ else
 fi
 
 # 16.66 アーカイブ名の位置に壊れた symlink があっても、辿らず上書きもしない
-add_clean_gone_worktree 'feature/#37-wt-brokenlink' "$TMP/wt-37"
+add_merged_clean_gone_worktree 'feature/#37-wt-brokenlink' "$TMP/wt-37"
 NAME_BROKEN="$(transcript_name_of "$TMP/wt-37")"
 make_transcript_dir "$NAME_BROKEN" "$(cd "$TMP/wt-37" && pwd -P)"
 mkdir -p "$FF_MERGE_CLEANUP_TRANSCRIPT_ARCHIVE_DIR"
@@ -282,7 +282,7 @@ else
 fi
 
 # 16.7 アーカイブ先を作れないときは Step を中断し、「対象なし」と誤報しない
-add_clean_gone_worktree 'feature/#33-wt-nodir' "$TMP/wt-33"
+add_merged_clean_gone_worktree 'feature/#33-wt-nodir' "$TMP/wt-33"
 NAME_NODIR="$(transcript_name_of "$TMP/wt-33")"
 make_transcript_dir "$NAME_NODIR" "$(cd "$TMP/wt-33" && pwd -P)"
 echo "not a directory" > "$TMP/blocking-file"
@@ -303,7 +303,7 @@ fi
 
 # 16.75 容量計測に失敗しても、回収そのものは止めない。
 #       pipefail + errexit の下では、代入内のパイプ失敗が Step 全体を落としうる
-add_clean_gone_worktree 'feature/#35-wt-dufail' "$TMP/wt-35"
+add_merged_clean_gone_worktree 'feature/#35-wt-dufail' "$TMP/wt-35"
 NAME_DUFAIL="$(transcript_name_of "$TMP/wt-35")"
 make_transcript_dir "$NAME_DUFAIL" "$(cd "$TMP/wt-35" && pwd -P)"
 set +e
@@ -321,7 +321,7 @@ fi
 # 16.8 本番の設定パス（CLAUDE_CONFIG_DIR 由来）でも動く。
 #      テストが常に FF_* で上書きしていると、実ユーザーが通る唯一の経路が
 #      一度も実行されないまま緑になる
-add_clean_gone_worktree 'feature/#34-wt-realconf' "$TMP/wt-34"
+add_merged_clean_gone_worktree 'feature/#34-wt-realconf' "$TMP/wt-34"
 CONFIG_HOME="$TMP/claude-config"
 mkdir -p "$CONFIG_HOME/projects"
 NAME_REALCONF="$(transcript_name_of "$TMP/wt-34")"

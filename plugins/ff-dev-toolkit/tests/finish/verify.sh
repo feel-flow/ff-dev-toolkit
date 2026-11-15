@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: PR の mergeable / mergeStateStatus 判定（Issue `#2788`、mergeable-cases.sh の MG 15 件）は対照 493/0。PR_FIELDS から mergeable,mergeStateStatus を落とす変異（gh pr view --json 射影ラッパで検出）は 483/10、conflict 条件を外す変異は 487/6、DIRTY 分岐を外す変異は 492/1、UNKNOWN 再読込を外す変異は 488/5、再読込回数を 1 回へ減らす変異は 491/2、!= MERGEABLE 停止を外す変異は 492/1、pr_snapshot に mergeable を足す変異は 492/1、初回・再読込側の CR 除去を外す変異（MG10）は各 492/1 で各赤（SURVIVED 0）、無害コメント対照は 493/0（2026-11-15 macOS 実測、bash 構文 rc 0）。
 # 空振り検出: 専用セキュリティゲートの記録（Issue `#2684`、security-record-cases.sh の R subset 34 件）を足した通常は421/0。scripts/lib/finish-precheck-security-record.sh と finish-precheck.sh（ff_precheck_pr_files）への単独変異 20 種は、欠落でも止めない 19件（R1/R3×12/R3b/R6/R6b/R6e/R7/R8）、最初の一致で読むのをやめる 1件（R2b。本文 112979 B で SIGPIPE）、値のどこかの語で認める 5件（R3）、行頭の検査を外す 1件（R3 の地の文の記入例）、引用（>）を行頭に許す 1件（R3d。引用の中のフェンスの記入例）、「未実施」を認める 1件（R3）、括弧で値の頭を切らない 8件（R2×5/R2b/R3c/R6c）、可視行の絞り込みを外す 1件（R3b）、コロン必須を外す 1件（R3）、判定不能を該当なしへ倒す 4件（R6/R6b/R6c/R6e）、off を無視する 17件（R5/R5b/R6d と P 系）、変更 0 件を判定できたことにする 1件（R6e）、fetch の案内を外す 1件（R6b）、先着の理由を上書きする 1件（R8）、停止理由を blocked_reason へ置かない 19件（欠落でも止めないと同じ）、off の回に理由を出さない 1件（R6d）、読めない回に review-route.sh を呼ばない 2件（R6d/P6c）、変更ファイルの CR を残す 1件（P2d3）、100件の一覧を信じる 8件（R6b/R6c/R6d/R7 と P 系）、常に git で読む 55件（R7b ほか）で赤（2026-11-07 macOS実測、全変異のbash構文rc0）。初版（R 23 件）は主担当の印なし・CLAUDECODE・CODEX_THREAD_ID・GROK_AGENT の 4 通りで 410/0 を確認した。針が当たらない入力の既定: 変更 0 件は R6e（unknown・記録要求）、ルータ不在は scripts/review-route.sh を判定行を出さないスタブ（rc 0 と rc 3）へ差し替えた複製で 75 件赤（precheck の全呼び出しが SECURITY_SENSITIVE=unknown・SECURITY_UNKNOWN_REASON=review-route.sh の判定行…がありません（rc=N: stderr）・missing になり、R4 / R5 の off も通らない）、本文を読めない回は PR の JSON を読めない回なのでこの検査より前に rc 2（B1 / B2 / B2b）。既存の P 系は fixture の migrations/*.sql が分類に当たるので MULTI_AGENT_SECURITY_REVIEW=off で隔離している。
 # 空振り検出: 工数根拠の除外（Issue `#2647`）で、end が begin より前でも broken にしない変異は P1k が赤（成功 476 / 失敗 1。根拠 2 行が POST_MERGE_EXCLUDED になり POST_MERGE_GATE=clear）。開いた HTML コメントの中の begin をマーカーにする変異は P1y2 が赤（成功 476 / 失敗 1。根拠行が POST_MERGE_EXCLUDED になり POST_MERGE_GATE=clear）。正しい実装は 477/0（2026-11-11 Linux、gawk 5.2.1。両変異とも bash 構文は通り、赤は狙った 1 件だけ）。
 # 空振り検出: マージ後工程の判定（Issue `#2636`、post-merge-cases.sh の P subset）は通常362/0（P68件）。修正前は同じ入力で52件赤（P1はrc2のままMERGE_COMMANDまで通過）。scripts/lib/finish-precheck-post-merge.sh と finish-precheck.sh への単独変異は、停止の設定行を消す15件、ackの照合を外す2件、ackを無視する6件、パス条件を外す1件（P2）、コメント取得失敗を0件へ倒す1件（P7b）、100件の一覧を信じる3件（P2d/P2f/P2i）、空の一覧を信じる1件（P2d2）、markerを番号なしへ緩める1件（P1c）、全コメントを対象にする1件（P1c）、理由の制御文字検査を外す3件（P5b）、片方だけの設定を未設定へ倒す2件（P8）、空要素を読み飛ばす7件（P8）、大文字小文字を区別する1件（P1d）、可視行の絞り込みを外す1件（P1e）、インライン三連をフェンスへ戻す1件（P1e2）、未チェックの走査へ例外を広げる1件（P1e4）、報告を連結して走査する1件（P1e3）、停止理由の併記を消す1件（P1g）、gitの出力を引用付きで読む1件（P2i）、当たらない要素の検査を外す4件（P2h）、追跡一覧をcwd基準で読む1件（P2h2）、gitの差分の設定固定を外す1件（P2h3）、CRを残す1件（P2d3）、設定なしで変更ファイルを読む67件で赤（2026-11-05 macOS実測、全変異のbash構文rc0。bash 3.2でも全件緑）。macOSで G6c は TMPDIR を物理パスにしないと赤（`/var` の symlink と `/private/var` の表記差。変更と無関係）、環境に FF_MERGE_DELETE_SEPARATE=1 があると C4 / E / M の13件が赤（suite が隔離していない。変更と無関係）。
@@ -478,6 +479,7 @@ cat >"$BIN/gh" <<'STUB'
 #   STUB_PR_UNKNOWN_FIELD=1 … pr view が未知の JSON field で失敗（古い gh）
 #   --version              … 常に stub の版を出す（STUB_GH_DOWN=1 ではこの前に失敗する）
 #   STUB_PR_JSON=<path>… pr view が返す JSON（--jq があればそれで引く）
+#   STUB_MERGEABLE_SEQ_DIR=<dir> … pr view --json mergeable,mergeStateStatus の呼び出しごとに count+1 番目の <n>.json を返す
 #   STUB_CHECKS_FAIL=1 … pr checks --watch が失敗（実値は PR JSON に従う）
 #   STUB_CHECKS_DOWN=1 … pr checks と checks の再取得が失敗（取得不能）
 #   STUB_CHECKS_TIMEOUT=1 … watch が通信エラーで失敗（実値は PR JSON に従う）
@@ -511,6 +513,18 @@ case "$1 $2" in
     if [ "${STUB_PR_MISSING:-0}" = "1" ]; then
       echo "GraphQL: Could not resolve to a PullRequest with the number of $3. (repository.pullRequest)" >&2
       exit 1
+    fi
+    if [ -n "${STUB_MERGEABLE_SEQ_DIR:-}" ] && [ "${5:-}" = "mergeable,mergeStateStatus" ]; then
+      seq_n=0
+      [ -f "$STUB_MERGEABLE_SEQ_DIR/count" ] && seq_n="$(cat "$STUB_MERGEABLE_SEQ_DIR/count")"
+      seq_n=$((seq_n + 1))
+      printf '%s\n' "$seq_n" >"$STUB_MERGEABLE_SEQ_DIR/count"
+      if [ -f "$STUB_MERGEABLE_SEQ_DIR/${seq_n}.fail" ]; then
+        cat "$STUB_MERGEABLE_SEQ_DIR/${seq_n}.fail" >&2
+        exit 1
+      fi
+      cat "$STUB_MERGEABLE_SEQ_DIR/${seq_n}.json"
+      exit 0
     fi
     jq_expr=""
     while [ $# -gt 0 ]; do
@@ -617,12 +631,14 @@ write_pr_json() {
   jq -n --arg body "$1" --arg head "$HEAD_OID" --arg base "$BASE_OID" --argjson rollup "$2" --argjson number "$PRN" --argjson cross "${PR_CROSS:-false}" \
     --argjson files "$files_json" \
     --arg title "feat(#${PRN}): x" --arg headline "${PR_HEADLINE:-fix: #${REFN} x}" --arg cbody "${PR_COMMIT_BODY:-body}" \
-    --arg head_ref "${PR_HEAD_REF:-feature/#7-x}" --arg base_ref "${PR_BASE_REF:-develop}" '{
+    --arg head_ref "${PR_HEAD_REF:-feature/#7-x}" --arg base_ref "${PR_BASE_REF:-develop}" \
+    --arg mergeable "${PR_MERGEABLE:-MERGEABLE}" --arg merge_state "${PR_MERGE_STATE_STATUS:-CLEAN}" '{
     number: $number, state: "OPEN", isDraft: false, headRefName: $head_ref, headRefOid: $head, baseRefOid: $base, isCrossRepository: $cross,
     baseRefName: $base_ref, title: $title, body: $body,
     closingIssuesReferences: (if ($body | test("Closes")) then [{url: ("https://github.com/owner/repo/issues/" + ($number | tostring))}] else [] end),
     commits: [{oid: $head, messageHeadline: $headline, messageBody: $cbody}],
-    statusCheckRollup: $rollup, additions: 20, deletions: 3, files: $files
+    statusCheckRollup: $rollup, additions: 20, deletions: 3, files: $files,
+    mergeable: $mergeable, mergeStateStatus: $merge_state
   }' >"$TMP/pr.json"
 }
 export STUB_PR_JSON="$TMP/pr.json"
@@ -643,6 +659,8 @@ run_finish() { # <cwd> <args...>
 . "$SCRIPT_DIR/post-merge-cases.sh"
 # shellcheck source=security-record-cases.sh
 . "$SCRIPT_DIR/security-record-cases.sh"
+# shellcheck source=mergeable-cases.sh
+. "$SCRIPT_DIR/mergeable-cases.sh"
 _ff_finish_precheck_guards
 _ff_finish_repository_url_guards
 
@@ -2652,6 +2670,18 @@ if ! check_skill_bytes "$TMP/skills-over" 2>/dev/null; then ok "L2: 1 本だけ�
 make_synthetic_roster "$TMP/skills-missing"
 rm -rf "$TMP/skills-missing/retrospective"
 if ! check_skill_bytes "$TMP/skills-missing" 2>/dev/null; then ok "L3: 1 本だけ不在の合成名簿は赤になる（不在を 0 バイトの緑にしない）"; else bad "L3: 名簿のスキル不在が緑で通る"; fi
+
+# ── MG. PR の mergeable / mergeStateStatus 判定（Obsidian/導入先 OBS-180） ──────
+echo
+echo "== MG. PR の mergeable / mergeStateStatus 判定 =="
+_mg_before=$((PASS + FAIL))
+_ff_finish_mergeable_cases
+_mg_count=$((PASS + FAIL - _mg_before))
+if [ "$_mg_count" -ge 10 ]; then
+  ok "MG0: mergeable ケース群を実行した（${_mg_count} 件）"
+else
+  bad "MG0: mergeable ケース群が空または不足（${_mg_count} 件）"
+fi
 
 echo
 if [ "$FAIL" -gt 0 ]; then

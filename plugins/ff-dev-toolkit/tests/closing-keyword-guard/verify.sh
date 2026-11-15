@@ -10,6 +10,7 @@
 # 空振り検出: mc_stop の本体を return 0 だけにすると（関数名は残し、MC_STOP_REASON も同じセグメントの ACK 通知も出さない）、未解決変数・env/command option・path gh・先行 cwd・代入と先行 cd・global flag・別セグメントの ACK・timeout wrapper・cwd/環境の遷移・wrapper 後続・GH_HOST・引用した pr の未解決変数・builtin と grouping の先行 cd・bash -c・bash -lc・bash -c の複文・bash -o の後続・squash の未知 flag の停止検査 61 件が赤になる（363 件成功、suite rc=1。2026-10-31 macOS 実測。説明文字列・別サブコマンドの引数・引用した pr の照会・bash -lc の echo・複文 echo・bash -o の説明文字列は緑のまま）。
 # 空振り検出: Issue `#2599` の例外の文言更新を 2 回目に送る検査 15 件（基準 439 件緑）。ac-judgement.md の新しい節をアンカーごと消すと 11 件、節の見出しだけを変えると 10 件、SKILL.md 手順 5 の「（例外は 5b）」と 5b の順序・リンクを元へ戻すと 2 件、順序の文を 5b から 5a へ移すと 1 件、弱める書き換えの禁止から経路の限定を外す・2 回目の範囲からスコープ変更の削除と追加を外す・送らずに止めた回の扱いを消す・report.md の「AC 文言の更新」の行を消すとそれぞれ 1 件が赤になり、report.md を空にすると必須ファイルの確認で中断する（2026-11-06 WSL 実測）。
 # 空振り検出: Refs 運用の判定（基準 467 件緑）。判定の節の見出しを変えてフェンスを抜き出せなくすると赤、印の正規表現をチェック済みも数える形・文中の語にも当たる形・字下げを拒む形へ変えるとそれぞれ赤、本文をパイプで grep -q へ渡す形は pipefail と大きな本文の検査で赤、gh の失敗を飲む形・別の Issue を読む形・Refs と Closes を取り違える形もそれぞれ赤、`fix(#N):` を抵触へ倒す検査器と全角括弧が続く `Refs #N（…）` を読めない抽出器も赤になる。bundle の子の扱い・複数 Refs の書き方・gh の無いホストの経路を消す変更も赤。等価な printf への置換と文言の言い換えは緑のまま（2026-11-08 macOS 実測。mutation-harness 29 件で期待 red 27 件を検出、SURVIVED 0）。
+# 空振り検出: MERGE_COMMAND 単独実行と PR なし検証完了 close の節スコープ針（基準 491 件緑）。SKILL / merge-gate の単独呼び出し・読み戻し分離、prless-close 参照・ISSUE_NUMBER 正規化・open PR 照会・既 CLOSED 停止・sub_issues 確認・0 件時スキップ・diff 判定器・sed 禁止・rc 分岐・FRESH_UPDATED_AT・marker・1 件上書き / 2 件以上重複停止・--reason completed・stateReason・404 と API 失敗区別の 20 変異が各 1 件 red（490/1・rc=1）で detected、無害コメント 1 件は green-ok（2026-11-14 macOS 実測、mutation-harness 19 red + 1 green 緑、および FRESH_UPDATED_AT replace-all 単独 1 件 detected、SURVIVED 0 / FALSE-POSITIVE 0）。
 #
 # closing keyword 抵触検査の回帰テスト。
 #
@@ -50,6 +51,7 @@ COLLECTION="$PLUGIN_ROOT/scripts/lib/merge-message.sh"
 GATE_REF="$PLUGIN_ROOT/skills/close-issue/references/merge-gate.md"
 AC_REF="$PLUGIN_ROOT/skills/close-issue/references/ac-judgement.md"
 REPORT_REF="$PLUGIN_ROOT/skills/close-issue/references/report.md"
+PRLESS_REF="$PLUGIN_ROOT/skills/close-issue/references/prless-close.md"
 WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
 
 # 2a（供給源のスキャン）と 2b（マージへ渡す文字列の検査）は役割が違い、片方の規定を
@@ -147,14 +149,14 @@ echo "== closing keyword 抵触検査 =="
 
 # ファイルが 1 つ欠けただけで後続の contains が全部個別に落ちると、1 つの事実が
 # 数十行のノイズになる。存在検査は即座に打ち切る。
-for file in "$GUARD" "$SKILL" "$FINISH" "$COLLECTION" "$GATE_REF" "$AC_REF" "$REPORT_REF" "$WORKFLOW"; do
+for file in "$GUARD" "$SKILL" "$FINISH" "$COLLECTION" "$GATE_REF" "$AC_REF" "$REPORT_REF" "$PRLESS_REF" "$WORKFLOW"; do
   if [[ ! -s "$file" ]]; then
     echo "  ✗ 必須ファイルが存在し非空: $file" >&2
     echo "✗ closing-keyword-guard verify: 必須ファイル欠落のため中断" >&2
     exit 1
   fi
 done
-ok "必須ファイルが 6 件とも存在し非空"
+ok "必須ファイルが 9 件とも存在し非空"
 
 # ---- 系統1: 抵触あり ---------------------------------------------------------
 echo
@@ -596,6 +598,28 @@ contains "$COLLECTION" '"$quoted_merge_subject" "$quoted_merge_body"' "生成に
 contains "$SKILL" "finish.sh precheck が出力した MERGE_COMMAND をそのまま貼る" "報告テンプレートが生成物を貼る形になっている"
 section_contains "$GATE_REF" "$STEP2B_HEADING" '文字列を打ち直さずそのまま手順 7 へ持ち越す' "2b が検査した文字列が打ち直されずに生成側へ渡る"
 contains "$SKILL" "書き写さない" "報告の merge コマンドを書き写させない"
+section_contains "$SKILL" '### 7. ゲート実測鮮度の照合（マージ直前）' "単独の Bash 呼び出しで実行" "手順 7 が MERGE_COMMAND の単独 Bash 呼び出しを指示している"
+section_contains "$SKILL" '### 7. ゲート実測鮮度の照合（マージ直前）' "読み戻しは別呼び出しで行う" "手順 7 が読み戻しを別呼び出しに分けるよう指示している"
+section_contains "$GATE_REF" '#### merge コマンドの生成' "単独の Bash 呼び出しでそのまま実行する" "merge-gate.md も MERGE_COMMAND の単独 Bash 呼び出しを指示している"
+section_contains "$GATE_REF" '#### merge コマンドの生成' "読み戻しは次の呼び出しで行う" "merge-gate.md も読み戻しを次の呼び出しへ分けるよう指示している"
+contains "$SKILL" "references/prless-close.md" "SKILL.md が PR なし検証完了 close 手順を参照している"
+contains "$PRLESS_REF" "Issue 番号のみ" "prless-close が PR 番号なし Issue 番号のみ起動を説明している"
+section_contains "$PRLESS_REF" '## 前提と対象判定' "ISSUE_NUMBER" "prless-close 前提節が ISSUE_NUMBER 正規化を要求している"
+section_contains "$PRLESS_REF" '## 前提と対象判定' "gh pr list" "prless-close 前提節が open 作業 PR 不在照合を持つ"
+section_contains "$PRLESS_REF" '### 1. 残 AC / 完了条件の実環境 read-back' '既に `CLOSED` の場合は重複更新・重複クローズを行わず' "prless-close 手順 1 が既に CLOSED の Issue で停止する"
+section_contains "$PRLESS_REF" '### 1. 残 AC / 完了条件の実環境 read-back' "sub_issues" "prless-close 手順 1 が親 Issue の sub_issues 全件確認を持つ"
+section_contains "$PRLESS_REF" '### 2. `check-issue-body-diff.sh` と楽観ロックによるチェックボックス更新' "変更対象が 0 件のときはスキップする" "prless-close 手順 2 が未チェック 0 件時の check-issue-body-diff スキップを明記している"
+section_contains "$PRLESS_REF" '### 2. `check-issue-body-diff.sh` と楽観ロックによるチェックボックス更新' "scripts/check-issue-body-diff.sh" "prless-close 手順 2 が check-issue-body-diff.sh で検証している"
+section_contains "$PRLESS_REF" '### 2. `check-issue-body-diff.sh` と楽観ロックによるチェックボックス更新' '`sed` での直接差し替えは禁止' "prless-close 手順 2 が手書きの sed 置換を禁じている"
+section_contains "$PRLESS_REF" '### 2. `check-issue-body-diff.sh` と楽観ロックによるチェックボックス更新' 'case $? in' "prless-close 手順 2 が判定器の終了コード分岐を持つ"
+section_contains "$PRLESS_REF" '### 2. `check-issue-body-diff.sh` と楽観ロックによるチェックボックス更新' "FRESH_UPDATED_AT" "prless-close 手順 2 が送信直前 updatedAt 楽観ロックを持つ"
+section_contains "$PRLESS_REF" '### 3. marker 付き完了報告コメントの投稿・更新（再実行でも重複させない）' "close-issue-report:" "prless-close 手順 3 が marker 付き完了報告を持つ"
+section_contains "$PRLESS_REF" '### 3. marker 付き完了報告コメントの投稿・更新（再実行でも重複させない）' "marker がちょうど 1 件存在する場合はそのコメント ID を" "prless-close 手順 3 が既存 1 件時の PATCH 上書きで重複を防いでいる"
+section_contains "$PRLESS_REF" '### 3. marker 付き完了報告コメントの投稿・更新（再実行でも重複させない）' "同一 marker を持つコメントが 2 件以上" "prless-close 手順 3 が重複 marker 2 件以上で停止する"
+section_contains "$PRLESS_REF" '### 4. Issue クローズ（`completed`）' "gh issue close" "prless-close 手順 4 が gh issue close によるクローズ手順を持つ"
+section_contains "$PRLESS_REF" '### 4. Issue クローズ（`completed`）' "--reason completed" "prless-close 手順 4 が completed でクローズするよう固定している"
+section_contains "$PRLESS_REF" '### 5. クローズ後 `state` の read-back（省略禁止）' "stateReason" "prless-close 手順 5 が close 後の state / stateReason read-back を持つ"
+section_contains "$PRLESS_REF" '### 6. 親 Issue がある場合のチェック更新' '*"404"*' "prless-close 手順 6 が HTTP 404 のみを親不在として扱い API エラーと区別する"
 contains "$SKILL" "gh issue view 46 --json state" "マージ直後の read-back を手順として残す"
 contains "$SKILL" "read-back は検査を追加しても省略しない" "検査追加を理由に実測を省かせない"
 contains "$SKILL" "2b は何も保証しなくなる" "検査とマージの間に人手の継ぎ目を作らせない"

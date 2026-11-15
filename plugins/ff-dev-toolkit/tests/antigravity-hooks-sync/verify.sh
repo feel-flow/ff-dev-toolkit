@@ -88,29 +88,85 @@ if jq -e '
   and (."ff-dev-toolkit" | has("PermissionDenied") | not)
   and (."ff-dev-toolkit" | has("SubagentStart") | not)
   and (."ff-dev-toolkit" | has("SubagentStop") | not)
-  and (."ff-dev-toolkit".SessionStart | type == "array" and length == 3)
+  and (."ff-dev-toolkit".SessionStart | type == "array" and length == 4)
   and (."ff-dev-toolkit".PreInvocation | type == "array" and length == 2)
   and (."ff-dev-toolkit".Stop | type == "array" and length == 2)
   and (."ff-dev-toolkit".SessionStart + ."ff-dev-toolkit".PreInvocation + ."ff-dev-toolkit".Stop
        | all((.hooks | not) and .type == "command" and (.command | type == "string")
              and (has("async") | not) and (has("onFailure") | not) and (has("statusMessage") | not)))
-  and (."ff-dev-toolkit".SessionStart | all(.command | contains("auto-update-marketplace.sh") | not))
+  and (."ff-dev-toolkit".SessionStart
+       | any((.command | contains("auto-update-marketplace.sh"))
+             and (.command | contains("--async"))
+             and .timeout == 10))
   and (."ff-dev-toolkit".PreToolUse | all(has("matcher") and (.hooks | type == "array")
        and (.hooks | all(.type == "command" and (has("async") | not) and (has("onFailure") | not) and (has("statusMessage") | not)))))
   and (."ff-dev-toolkit".PostToolUse | all(has("matcher") and (.hooks | type == "array")
        and (.hooks | all(.type == "command" and (has("async") | not) and (has("onFailure") | not) and (has("statusMessage") | not)))))
 ' "$default_out" >/dev/null 2>&1; then
-  ok "A3: トップレベルラップ・フラット/グループ配列・非同期除外・非対応キー除去が契約通り"
+  ok "A3: トップレベルラップ・フラット/グループ配列・SessionStart async変換・非対応キー除去が契約通り"
 else
   bad "A3: 展開後 JSON 構造が Antigravity 仕様と一致しない"
 fi
 
-if grep -Fq "Antigravity 非同期非対応のためスキップ:" "$sync_log" && \
-   grep -Fq "auto-update-marketplace.sh" "$sync_log"; then
-  ok "A8: async:true ハンドラ（auto-update-marketplace.sh）を除外して明示通知"
+a8_plugin="$TMP_ROOT/a8-plugin"
+a8_out="$TMP_ROOT/a8-out.json"
+a8_log="$TMP_ROOT/a8.log"
+mkdir -p "$a8_plugin/hooks" "$a8_plugin/.claude-plugin" "$a8_plugin/scripts/antigravity"
+cp "$HOOK_SHIM" "$a8_plugin/scripts/antigravity/hook-shim.sh"
+printf '{"name":"ff-dev-toolkit","version":"0.0.1"}\n' > "$a8_plugin/.claude-plugin/plugin.json"
+cat > "$a8_plugin/hooks/hooks.json" <<'EOF'
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/auto-update-marketplace.sh",
+            "async": true,
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/non-ss-async.sh",
+            "async": true,
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/sync-stop.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
+EOF
+a8_rc=0
+bash "$SYNC_HOOKS" --plugin-root "$a8_plugin" --out "$a8_out" >"$a8_log" 2>&1 || a8_rc=$?
+if [ "$a8_rc" -eq 0 ] && \
+   grep -Fq "Antigravity 非同期非対応のためスキップ:" "$a8_log" && \
+   grep -Fq "Stop:non-ss-async.sh" "$a8_log" && \
+   ! grep -Fq "auto-update-marketplace.sh" "$a8_log" && \
+   jq -e '
+     (."ff-dev-toolkit".SessionStart | length == 1)
+     and (."ff-dev-toolkit".SessionStart[0].command | contains("--async"))
+     and (."ff-dev-toolkit".SessionStart[0].timeout == 10)
+     and (."ff-dev-toolkit".Stop | length == 1)
+     and (."ff-dev-toolkit".Stop[0].command | contains("non-ss-async.sh") | not)
+   ' "$a8_out" >/dev/null 2>&1; then
+  ok "A8: SessionStart の async:true は --async 保持、非 SessionStart の async:true は除外通知"
 else
-  bad "A8: async ハンドラのスキップ通知が不足"
-  sed 's/^/    /' "$sync_log" >&2 || true
+  bad "A8: async ハンドラの変換/スキップ境界が不整合 (rc=${a8_rc})"
+  sed 's/^/    /' "$a8_log" >&2 || true
 fi
 
 if jq -e '
@@ -743,6 +799,281 @@ if [ "$(run_chain_tail "$tr_meta_spoof")" = "no-tail" ] && \
   ok "E8: ADDITIONAL_METADATA 内 </USER_REQUEST> 誤爆防止・他タグ終端・16 MiB 上限 fail-open を検証"
 else
   bad "E8: chain-tail 境界検出失敗: spoof=$(run_chain_tail "$tr_meta_spoof") other_tail=$(run_chain_tail "$tr_other_tag_tail") other_plain=$(run_chain_tail "$tr_other_tag_plain") cap_rc=${e8_cap_rc}"
+fi
+
+# E9: hook-shim.sh --async (SessionStart 切り離し実行 + 非 SessionStart 拒否 + FD 漏洩なし)
+e9_nonss_rc=0
+printf '{"conversationId":"c-bad","workspacePaths":["/tmp"]}' | bash "$HOOK_SHIM" --event PreToolUse --async -- true >/dev/null 2>&1 || e9_nonss_rc=$?
+
+e9_done="$TMP_ROOT/e9-async.done"
+stub_e9="$TMP_ROOT/stub-e9-async.sh"
+cat >"$stub_e9" <<EOF
+#!/usr/bin/env bash
+in="\$(cat)"
+ev="\${FF_DEV_TOOLKIT_AGY_HOOK_EVENT:-unset}"
+conv="\$(printf '%s' "\$in" | jq -r '.session_id // ""')"
+sleep 2
+printf '%s|%s\n' "\$ev" "\$conv" > "$e9_done"
+EOF
+chmod +x "$stub_e9"
+
+e9_t0="$(node -e 'console.log(Date.now())')"
+e9_out="$(
+  exec 3>&1
+  printf '{"conversationId":"c-async","workspacePaths":["/tmp"]}' | bash "$HOOK_SHIM" --event SessionStart --async -- bash "$stub_e9"
+)"
+e9_t1="$(node -e 'console.log(Date.now())')"
+e9_elapsed=$((e9_t1 - e9_t0))
+
+e9_waited=0
+while [ ! -f "$e9_done" ] && [ "$e9_waited" -lt 60 ]; do
+  sleep 0.1
+  e9_waited=$((e9_waited + 1))
+done
+e9_done_val="$(cat "$e9_done" 2>/dev/null || true)"
+
+if [ "$e9_nonss_rc" -eq 2 ] && \
+   [ "$e9_out" = "{}" ] && \
+   [ "$e9_elapsed" -lt 1500 ] && \
+   [ "$e9_done_val" = "SessionStart|c-async" ]; then
+  ok "E9: --async が非 SessionStart を拒否し、SessionStart で即時 {} 返却 + FD非継承の切り離し実行 (${e9_elapsed}ms)"
+else
+  bad "E9: --async 動作不整合 (nonss_rc=${e9_nonss_rc} elapsed=${e9_elapsed}ms out=${e9_out} done=${e9_done_val})"
+fi
+
+# E10: Antigravity 自動更新 E2E (auto-update.sh + auto-update-marketplace.sh SessionStart 中継)
+AUTO_UPDATE_SH="$PLUGIN_ROOT/scripts/antigravity/auto-update.sh"
+AUTO_UPDATE_HOOK="$PLUGIN_ROOT/hooks/auto-update-marketplace.sh"
+e10_src="$TMP_ROOT/src-e10"
+e10_bare="$TMP_ROOT/remote-e10.git"
+e10_out="$TMP_ROOT/e10-out"
+e10_stamp="$TMP_ROOT/e10-stamp"
+ff_git_fixture_init "$e10_src"
+mkdir -p "$e10_src/.claude-plugin" "$e10_src/skills/s1" "$e10_src/hooks" "$e10_src/scripts/antigravity" "$e10_src/scripts/lib"
+cp -R "$PLUGIN_ROOT/.claude-plugin/." "$e10_src/.claude-plugin/"
+cp "$PLUGIN_ROOT/scripts/antigravity/sync-plugins.sh" "$PLUGIN_ROOT/scripts/antigravity/sync-hooks.sh" "$PLUGIN_ROOT/scripts/antigravity/hook-shim.sh" "$PLUGIN_ROOT/scripts/antigravity/auto-update.sh" "$e10_src/scripts/antigravity/"
+cp "$PLUGIN_ROOT/scripts/lib/l4-declarations.sh" "$PLUGIN_ROOT/scripts/lib/l4-declarations.tsv" "$e10_src/scripts/lib/"
+cp "$PLUGIN_ROOT/hooks/hooks.json" "$PLUGIN_ROOT/hooks/auto-update-marketplace.sh" "$e10_src/hooks/"
+if [ -f "$PLUGIN_ROOT/.mcp.json" ]; then
+  cp "$PLUGIN_ROOT/.mcp.json" "$e10_src/.mcp.json"
+fi
+if [ -d "$PLUGIN_ROOT/mcp/dist" ]; then
+  mkdir -p "$e10_src/mcp"
+  cp -R "$PLUGIN_ROOT/mcp/dist" "$e10_src/mcp/dist"
+fi
+printf '{"name":"ff-dev-toolkit","version":"1.0.0","description":"e2e"}\n' > "$e10_src/.claude-plugin/plugin.json"
+printf -- '---\nname: s1\ndescription: s1\n---\n' > "$e10_src/skills/s1/SKILL.md"
+git -C "$e10_src" add .
+git -C "$e10_src" commit -q -m "seed e10"
+git clone --bare -q "$e10_src" "$e10_bare"
+
+GIT_TERMINAL_PROMPT=0 bash "$SYNC_PLUGINS" --repo "file://$e10_bare" --out-dir "$e10_out" >/dev/null 2>&1
+e10_clone="$(jq -r --arg out "$e10_out" '.targets[$out].sources | to_entries[0].value.sourceRoot' "$FF_DEV_TOOLKIT_STATE_DIR/antigravity/sync-state.json")"
+bash "$SYNC_HOOKS" --plugin-root "$e10_clone" --out "$e10_out/ff-dev-toolkit/hooks.json" >/dev/null 2>&1
+
+# 10a: upstream update -> --force updates plugin + existing hooks.json
+printf '{"name":"ff-dev-toolkit","version":"1.1.0","description":"e2e"}\n' > "$e10_src/.claude-plugin/plugin.json"
+mkdir -p "$e10_src/skills/s2"
+printf -- '---\nname: s2\ndescription: s2\n---\n' > "$e10_src/skills/s2/SKILL.md"
+jq '.hooks.SessionStart[0].hooks += [{type:"command",command:"echo added-in-110",timeout:5}]' "$e10_src/hooks/hooks.json" > "$e10_src/hooks/hooks.tmp"
+mv "$e10_src/hooks/hooks.tmp" "$e10_src/hooks/hooks.json"
+git -C "$e10_src" add .
+git -C "$e10_src" commit -q -m "v1.1.0"
+git -C "$e10_src" push -q "$e10_bare" master:master
+
+if bash "$AUTO_UPDATE_SH" --out "$e10_out" --force >/dev/null 2>&1 && \
+   [ "$(jq -r '.version' "$e10_out/ff-dev-toolkit/plugin.json")" = "1.1.0" ] && \
+   [ -f "$e10_out/ff-dev-toolkit/skills/s2/SKILL.md" ] && \
+   jq -e '."ff-dev-toolkit".SessionStart | any(.command | contains("added-in-110"))' "$e10_out/ff-dev-toolkit/hooks.json" >/dev/null 2>&1 && \
+   jq -e --arg out "$e10_out" --arg url "file://$e10_bare" --arg cl "$e10_clone" '
+     (.targets[$out].sources | to_entries[0].value.managedClone == true)
+     and (.targets[$out].sources | to_entries[0].value.repo == $url)
+     and (.targets[$out].sources | to_entries[0].value.repoUrl == $url)
+     and (.targets[$out].sources | to_entries[0].value.cloneDir == $cl)
+   ' "$FF_DEV_TOOLKIT_STATE_DIR/antigravity/sync-state.json" >/dev/null 2>&1; then
+  ok "E10a: 管理クローン追従でプラグイン・スキル・既存 hooks.json を自動再同期し sync-state の --repo 由来を保持"
+else
+  bad "E10a: auto-update.sh --force による再同期または sync-state 保持に失敗"
+fi
+
+# 10b: absent hooks.json is NOT newly installed on update
+rm -f "$e10_out/ff-dev-toolkit/hooks.json"
+printf '{"name":"ff-dev-toolkit","version":"1.2.0","description":"e2e"}\n' > "$e10_src/.claude-plugin/plugin.json"
+git -C "$e10_src" add .claude-plugin/plugin.json
+git -C "$e10_src" commit -q -m "v1.2.0"
+git -C "$e10_src" push -q "$e10_bare" master:master
+if bash "$AUTO_UPDATE_SH" --out "$e10_out" --force >/dev/null 2>&1 && \
+   [ "$(jq -r '.version' "$e10_out/ff-dev-toolkit/plugin.json")" = "1.2.0" ] && \
+   [ ! -e "$e10_out/ff-dev-toolkit/hooks.json" ]; then
+  ok "E10b: 未展開環境で hooks.json を新規作成しない"
+else
+  bad "E10b: hooks.json 非生成ガードに失敗"
+fi
+
+# 10c: SessionStart auto-update-marketplace.sh -> auto-update.sh --hook, daily stamp skip, SKIP=auto-update
+e10_noclaude="$TMP_ROOT/noclaude-bin"
+mkdir -p "$e10_noclaude"
+ln -s "$(command -v jq)" "$e10_noclaude/jq"
+ln -s "$(command -v git)" "$e10_noclaude/git"
+if PATH="$e10_noclaude:/usr/bin:/bin" command -v claude >/dev/null 2>&1; then
+  bad "E10c: noclaude PATH に claude が混入しています"
+fi
+
+printf '{"name":"ff-dev-toolkit","version":"1.3.0","description":"e2e"}\n' > "$e10_src/.claude-plugin/plugin.json"
+git -C "$e10_src" add .claude-plugin/plugin.json
+git -C "$e10_src" commit -q -m "v1.3.0"
+git -C "$e10_src" push -q "$e10_bare" master:master
+e10_hook_rc1=0
+PATH="$e10_noclaude:/usr/bin:/bin" FF_DEV_TOOLKIT_AGY_HOOK_EVENT=SessionStart FF_DEV_TOOLKIT_AGY_AUTO_UPDATE_STAMP="$e10_stamp" \
+  bash "$AUTO_UPDATE_HOOK" </dev/null >/dev/null 2>&1 || e10_hook_rc1=$?
+
+printf '{"name":"ff-dev-toolkit","version":"1.4.0","description":"e2e"}\n' > "$e10_src/.claude-plugin/plugin.json"
+git -C "$e10_src" add .claude-plugin/plugin.json
+git -C "$e10_src" commit -q -m "v1.4.0"
+git -C "$e10_src" push -q "$e10_bare" master:master
+e10_hook_rc2=0
+PATH="$e10_noclaude:/usr/bin:/bin" FF_DEV_TOOLKIT_AGY_HOOK_EVENT=SessionStart FF_DEV_TOOLKIT_AGY_AUTO_UPDATE_STAMP="$e10_stamp" \
+  bash "$AUTO_UPDATE_HOOK" </dev/null >/dev/null 2>&1 || e10_hook_rc2=$?
+
+e10_stamp_skip="$TMP_ROOT/e10-stamp-skip"
+if [ "$e10_hook_rc1" -eq 0 ] && [ "$e10_hook_rc2" -eq 0 ] && \
+   [ "$(jq -r '.version' "$e10_out/ff-dev-toolkit/plugin.json")" = "1.3.0" ] && \
+   FF_DEV_TOOLKIT_SKIP=auto-update FF_DEV_TOOLKIT_AGY_AUTO_UPDATE_STAMP="$e10_stamp_skip" \
+     bash "$AUTO_UPDATE_SH" --hook --force --out "$e10_out" >/dev/null 2>&1 && \
+   [ "$(jq -r '.version' "$e10_out/ff-dev-toolkit/plugin.json")" = "1.3.0" ]; then
+  ok "E10c: SessionStart 中継(claude CLI 不在時)・日次スタンプ間引き・FF_DEV_TOOLKIT_SKIP=auto-update 停止"
+else
+  bad "E10c: --hook 中継または日次スタンプ/opt-out 制御に失敗 (ver=$(jq -r '.version' "$e10_out/ff-dev-toolkit/plugin.json" 2>/dev/null || true))"
+fi
+
+# 10d: dirty checkout & non-default branch skip guards (v1.4.0 waiting on $e10_bare)
+printf 'uncommitted\n' > "$e10_clone/DIRTY.txt"
+bash "$AUTO_UPDATE_SH" --out "$e10_out" --force >/dev/null 2>&1
+e10_dirty_ver="$(jq -r '.version' "$e10_out/ff-dev-toolkit/plugin.json")"
+e10_dirty_kept=0
+[ -f "$e10_clone/DIRTY.txt" ] && e10_dirty_kept=1
+rm -f "$e10_clone/DIRTY.txt"
+git -C "$e10_clone" checkout -q -b topic-branch
+bash "$AUTO_UPDATE_SH" --out "$e10_out" --force >/dev/null 2>&1
+e10_branch_ver="$(jq -r '.version' "$e10_out/ff-dev-toolkit/plugin.json")"
+git -C "$e10_clone" checkout -q master
+bash "$AUTO_UPDATE_SH" --out "$e10_out" --force >/dev/null 2>&1
+e10_clean_ver="$(jq -r '.version' "$e10_out/ff-dev-toolkit/plugin.json")"
+if [ "$e10_dirty_ver" = "1.3.0" ] && [ "$e10_dirty_kept" -eq 1 ] && \
+   [ "$e10_branch_ver" = "1.3.0" ] && [ "$e10_clean_ver" = "1.4.0" ]; then
+  ok "E10d: dirty 作業ツリーおよび非既定ブランチでの自動更新・同期を安全スキップし復帰後のみ反映"
+else
+  bad "E10d: dirty/ブランチ保護が不発 (dirty=${e10_dirty_ver}, kept=${e10_dirty_kept}, branch=${e10_branch_ver}, clean=${e10_clean_ver})"
+fi
+
+# 10e: legacy symlink fallback when sync-state.json has no entry for target
+e10_leg_src="$TMP_ROOT/src-legacy"
+e10_leg_bare="$TMP_ROOT/remote-legacy.git"
+e10_leg_clone="$TMP_ROOT/clone-legacy"
+e10_leg_out="$TMP_ROOT/legacy-out"
+ff_git_fixture_init "$e10_leg_src"
+mkdir -p "$e10_leg_src/.claude-plugin" "$e10_leg_src/skills/l1"
+printf '{"name":"ff-dev-toolkit","version":"1.0.0"}\n' > "$e10_leg_src/.claude-plugin/plugin.json"
+printf -- '---\nname: l1\ndescription: l1\n---\n' > "$e10_leg_src/skills/l1/SKILL.md"
+git -C "$e10_leg_src" add .
+git -C "$e10_leg_src" commit -q -m "leg 1.0"
+git clone --bare -q "$e10_leg_src" "$e10_leg_bare"
+git clone -q "$e10_leg_bare" "$e10_leg_clone"
+mkdir -p "$e10_leg_out/ff-dev-toolkit"
+printf '{"name":"ff-dev-toolkit","version":"1.0.0"}\n' > "$e10_leg_out/ff-dev-toolkit/plugin.json"
+ln -s "$e10_leg_clone/skills" "$e10_leg_out/ff-dev-toolkit/skills"
+
+printf '{"name":"ff-dev-toolkit","version":"2.0.0"}\n' > "$e10_leg_src/.claude-plugin/plugin.json"
+git -C "$e10_leg_src" add .claude-plugin/plugin.json
+git -C "$e10_leg_src" commit -q -m "leg 2.0"
+git -C "$e10_leg_src" push -q "$e10_leg_bare" master:master
+
+if bash "$AUTO_UPDATE_SH" --out "$e10_leg_out" --force >/dev/null 2>&1 && \
+   [ "$(jq -r '.version' "$e10_leg_out/ff-dev-toolkit/plugin.json")" = "2.0.0" ]; then
+  ok "E10e: sync-state.json 未登録時の symlink フォールバック更新・再同期"
+else
+  bad "E10e: legacy symlink フォールバック更新に失敗"
+fi
+
+# 10f: multi-source hook ownership isolation (--dry-run + broken symlink), subdir dirty guard,
+# remote.origin.url mismatch fail-closed, deleted target non-resurrection
+e10f_iso_out="$TMP_ROOT/e10f-iso-out"
+e10f_owner="$TMP_ROOT/e10f-owner"
+e10f_other="$TMP_ROOT/e10f-other"
+mkdir -p "$e10f_owner/plugins/ff-dev-toolkit/.claude-plugin" \
+         "$e10f_owner/plugins/ff-dev-toolkit/skills/o1" \
+         "$e10f_owner/plugins/ff-dev-toolkit/hooks" \
+         "$e10f_owner/plugins/ff-dev-toolkit/scripts/antigravity" \
+         "$e10f_owner/.claude-plugin" \
+         "$e10f_other/plugins/ff-dev-toolkit/.claude-plugin" \
+         "$e10f_other/plugins/ff-dev-toolkit/skills/x1" \
+         "$e10f_other/plugins/ff-dev-toolkit/hooks" \
+         "$e10f_other/plugins/ff-dev-toolkit/scripts/antigravity" \
+         "$e10f_other/plugins/other-only/.claude-plugin" \
+         "$e10f_other/plugins/other-only/skills/y1" \
+         "$e10f_other/.claude-plugin"
+cp "$HOOK_SHIM" "$e10f_owner/plugins/ff-dev-toolkit/scripts/antigravity/hook-shim.sh"
+cp "$HOOK_SHIM" "$e10f_other/plugins/ff-dev-toolkit/scripts/antigravity/hook-shim.sh"
+printf '{"name":"owner-mkt","plugins":[{"name":"ff-dev-toolkit","source":"./plugins/ff-dev-toolkit"}]}\n' > "$e10f_owner/.claude-plugin/marketplace.json"
+printf '{"name":"ff-dev-toolkit","version":"1.0.0"}\n' > "$e10f_owner/plugins/ff-dev-toolkit/.claude-plugin/plugin.json"
+printf -- '---\nname: o1\ndescription: o1\n---\n' > "$e10f_owner/plugins/ff-dev-toolkit/skills/o1/SKILL.md"
+printf '{"hooks":{"Stop":[{"matcher":"","hooks":[{"type":"command","command":"echo owner","timeout":5}]}]}}\n' > "$e10f_owner/plugins/ff-dev-toolkit/hooks/hooks.json"
+printf '{"name":"other-mkt","plugins":[{"name":"other-only","source":"./plugins/other-only"},{"name":"ff-dev-toolkit","source":"./plugins/ff-dev-toolkit"}]}\n' > "$e10f_other/.claude-plugin/marketplace.json"
+printf '{"name":"other-only","version":"1.0.0"}\n' > "$e10f_other/plugins/other-only/.claude-plugin/plugin.json"
+printf -- '---\nname: y1\ndescription: y1\n---\n' > "$e10f_other/plugins/other-only/skills/y1/SKILL.md"
+printf '{"name":"ff-dev-toolkit","version":"9.9.9"}\n' > "$e10f_other/plugins/ff-dev-toolkit/.claude-plugin/plugin.json"
+printf -- '---\nname: x1\ndescription: x1\n---\n' > "$e10f_other/plugins/ff-dev-toolkit/skills/x1/SKILL.md"
+printf '{"hooks":{"Stop":[{"matcher":"","hooks":[{"type":"command","command":"echo HIJACKED","timeout":5}]}]}}\n' > "$e10f_other/plugins/ff-dev-toolkit/hooks/hooks.json"
+
+bash "$SYNC_PLUGINS" --marketplace-root "$e10f_owner" --out-dir "$e10f_iso_out" >/dev/null 2>&1
+bash "$SYNC_HOOKS" --plugin-root "$e10f_owner/plugins/ff-dev-toolkit" --out "$e10f_iso_out/ff-dev-toolkit/hooks.json" >/dev/null 2>&1
+bash "$SYNC_PLUGINS" --marketplace-root "$e10f_other" --plugin other-only --out-dir "$e10f_iso_out" >/dev/null 2>&1
+e10f_dry_log="$TMP_ROOT/e10f-dry.log"
+bash "$AUTO_UPDATE_SH" --out "$e10f_iso_out" --dry-run >"$e10f_dry_log" 2>&1 || true
+
+# Broken skills symlink must NOT let unselected other source overwrite hooks.json
+rm -f "$e10f_iso_out/ff-dev-toolkit/skills"
+ln -s "$TMP_ROOT/nonexistent-skills" "$e10f_iso_out/ff-dev-toolkit/skills"
+jq --arg keep "$e10f_other" --arg out "$e10f_iso_out" '
+  .targets[$out].sources |= with_entries(select(.key == $keep))
+' "$FF_DEV_TOOLKIT_STATE_DIR/antigravity/sync-state.json" > "$TMP_ROOT/e10f-state.tmp"
+mv "$TMP_ROOT/e10f-state.tmp" "$FF_DEV_TOOLKIT_STATE_DIR/antigravity/sync-state.json"
+bash "$AUTO_UPDATE_SH" --out "$e10f_iso_out" --force >/dev/null 2>&1 || true
+
+# Subdir --plugin-root on dirty feature branch must skip sync
+e10f_sub_repo="$TMP_ROOT/e10f-sub-repo"
+e10f_sub_out="$TMP_ROOT/e10f-sub-out"
+ff_git_fixture_init "$e10f_sub_repo"
+mkdir -p "$e10f_sub_repo/plugins/ff-dev-toolkit/.claude-plugin" "$e10f_sub_repo/plugins/ff-dev-toolkit/skills/s1"
+printf '{"name":"ff-dev-toolkit","version":"1.0.0"}\n' > "$e10f_sub_repo/plugins/ff-dev-toolkit/.claude-plugin/plugin.json"
+printf -- '---\nname: s1\ndescription: s1\n---\n' > "$e10f_sub_repo/plugins/ff-dev-toolkit/skills/s1/SKILL.md"
+git -C "$e10f_sub_repo" add .
+git -C "$e10f_sub_repo" commit -q -m "sub init"
+bash "$SYNC_PLUGINS" --plugin-root "$e10f_sub_repo/plugins/ff-dev-toolkit" --out-dir "$e10f_sub_out" >/dev/null 2>&1
+printf '{"name":"ff-dev-toolkit","version":"2.0.0-dirty"}\n' > "$e10f_sub_repo/plugins/ff-dev-toolkit/.claude-plugin/plugin.json"
+bash "$AUTO_UPDATE_SH" --out "$e10f_sub_out" --force >/dev/null 2>&1 || true
+
+# Tampered remote.origin.url on managed clone must fail closed, and deleted target dir must stay deleted
+e10f_del_out="$TMP_ROOT/e10f-del-out"
+GIT_TERMINAL_PROMPT=0 bash "$SYNC_PLUGINS" --repo "file://$e10_bare" --clone-dir "$TMP_ROOT/e10f-tamper-clone" --out-dir "$e10f_del_out" >/dev/null 2>&1
+git -C "$TMP_ROOT/e10f-tamper-clone" remote set-url origin "file://$TMP_ROOT/other-remote.git"
+printf '{"name":"ff-dev-toolkit","version":"1.5.0","description":"e2e"}\n' > "$e10_src/.claude-plugin/plugin.json"
+git -C "$e10_src" add .claude-plugin/plugin.json
+git -C "$e10_src" commit -q -m "v1.5.0"
+git -C "$e10_src" push -q "$e10_bare" master:master
+bash "$AUTO_UPDATE_SH" --out "$e10f_del_out" --force >/dev/null 2>&1 || true
+e10f_tamper_ver="$(jq -r '.version' "$e10f_del_out/ff-dev-toolkit/plugin.json")"
+rm -rf "$e10f_del_out"
+bash "$AUTO_UPDATE_SH" --force >/dev/null 2>&1 || true
+
+if ! grep -Fq "sync-hooks.sh" "$e10f_dry_log" && \
+   ! grep -Fq "HIJACKED" "$e10f_iso_out/ff-dev-toolkit/hooks.json" && \
+   [ "$(jq -r '.version' "$e10f_sub_out/ff-dev-toolkit/plugin.json")" = "1.0.0" ] && \
+   [ "$e10f_tamper_ver" = "1.4.0" ] && \
+   [ ! -e "$e10f_del_out" ]; then
+  ok "E10f: 複数ソース所有分離(--dry-run含む)・サブディレクトリ dirty 保護・origin URL 改ざん拒否・削除済ターゲット非復活"
+else
+  bad "E10f: セキュリティ/所有境界ガードに失敗 (tamper=${e10f_tamper_ver}, dry=$(tr '\n' '|' < "$e10f_dry_log" 2>/dev/null || true))"
 fi
 
 echo "antigravity-hooks-sync: pass=${PASS} fail=${FAIL}"

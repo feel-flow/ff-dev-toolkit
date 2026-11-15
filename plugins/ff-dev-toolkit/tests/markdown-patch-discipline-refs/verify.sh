@@ -41,6 +41,7 @@
 # run-all-required: yes — 正本・名簿のスキル・保存バイト検査はプラグイン配布物の一部で、配布先 checkout でも実在する。skip 経路を持たないため明示宣言で必須名簿へ載せる
 # 空振り検出: 一時ファイルの置き場所の節を改名すると (1)・(8) の 4 件、正本の 2 行から cygpath の失敗の停止と W= の出力を外すと 2 件、asdd-work の参照からアンカーを外すと 1 件、refine-issue の手順を /tmp 直書きへ戻すと 1 件が赤（各 rc=1。正常は 48 件 pass。2026-10-25 WSL 実測）。
 # 空振り検出: 名簿空/実体不在/正本不在は (2)/(3)/(1) が赤。追加節の欠落/空、規定・参照欠落、照合無効化、値ファイル経路の欠落・改行正規化など17変異を各rc=1で検出し、無害対照1件はrc=0を実測。値ファイル不在・空/0件/複数アンカーは文書内の例を実行して対象不変で停止することを確認。
+# 空振り検出: 永続状態ディレクトリ `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/` のみを除外する `/tmp/` 検査は、create-issue/references/filing.md の単独 `/tmp/draft.md`・永続状態パス同行混在・multi-implement/SKILL.md の `/tmp/` 化の各変異で rc=1（1 fail / 48 pass）、無害追記で rc=0（49 pass）を mutation-harness.sh で実測（2026-11-15。SURVIVED 0）。
 
 set -euo pipefail
 
@@ -228,17 +229,39 @@ for rel in ${TEMP_DIR_REFERRERS[@]+"${TEMP_DIR_REFERRERS[@]}"}; do
   fi
 done
 # 名簿のスキル（本文パッチで一時ファイルを使う）の手順例に /tmp の直書きが無い。Windows の Git Bash では
-# python / node のコードやホストのファイル編集機能がドライブ直下の別の場所を読む
+# python / node のコードやホストのファイル編集機能がドライブ直下の別の場所を読む。
+# 永続状態ディレクトリ `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/` だけは
+# 解決先がホーム配下であり MSYS 仮想 /tmp ではないため、行からそのリテラルを除いた後に `/tmp/` を検査する。
 tmp_found=0
+tmp_state_prefix='${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/'
 for skill in ${REQUIRED_SKILLS[@]+"${REQUIRED_SKILLS[@]}"}; do
   for md in "$PLUGIN_ROOT/skills/$skill/SKILL.md" "$PLUGIN_ROOT"/skills/"$skill"/references/*.md; do
     [[ -e "$md" ]] || continue
+    if [[ ! -r "$md" ]]; then
+      bad "スキルを読めませんでした（非可読）: ${md#"$PLUGIN_ROOT/"}"
+      tmp_found=1
+      continue
+    fi
+    hits=""
     rc=0
-    grep -nF -- '/tmp/' "$md" >&2 || rc=$?
+    hits="$(awk -v prefix="$tmp_state_prefix" '
+      {
+        line = $0
+        plen = length(prefix)
+        while ((p = index(line, prefix)) > 0) {
+          line = substr(line, 1, p - 1) substr(line, p + plen)
+        }
+        if (index(line, "/tmp/") > 0) {
+          printf "%d:%s\n", NR, $0
+          found = 1
+        }
+      }
+      END { exit (found ? 0 : 1) }
+    ' "$md")" || rc=$?
     case "$rc" in
-      0) bad "手順例に /tmp の直書きがあります（作業ディレクトリは置き場所の節の 2 行で求める）: ${md#"$PLUGIN_ROOT/"}"; tmp_found=1 ;;
+      0) printf '%s\n' "$hits" >&2; bad "手順例に /tmp の直書きがあります（作業ディレクトリは置き場所の節の 2 行で求める）: ${md#"$PLUGIN_ROOT/"}"; tmp_found=1 ;;
       1) : ;;
-      *) bad "スキルを読めませんでした（grep rc=${rc}）: ${md#"$PLUGIN_ROOT/"}"; tmp_found=1 ;;
+      *) bad "スキルを読めませんでした（awk rc=${rc}）: ${md#"$PLUGIN_ROOT/"}"; tmp_found=1 ;;
     esac
   done
 done

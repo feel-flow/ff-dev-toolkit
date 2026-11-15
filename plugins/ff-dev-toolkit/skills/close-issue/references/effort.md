@@ -13,6 +13,9 @@
 <!--fb634f529efe59bc-->
 MCP: 取得値: MCP で同じ PR の additions / deletions / 全 commits / reviews を取得。形式: 各実値を保つ JSON と実行済み gate / review の記録。渡し先: 工数実績の観測事実と effort_evidence へ渡す（この段で merge はしない）。不足時: MCP 必須 field 不足は未確認と記し、根拠を取れるまで実績の算定を停止する。
 
+- **サブエージェントを使った回の観測事実に `task-notification` の `duration_ms` を加える**。並行・直列を問わずサブエージェントを使った回は、hook の wall-clock だけでは担当ごとの作業時間が分からない（hook の実測が `(unmeasured)` の回を含む）。ホストの完了通知（`task-notification`）に含まれる `duration_ms` を完了済みの担当ごとに足して `effort_evidence` に並べ、統括の分を「約」として分けて書く。**API の上限・エラー・中断などで途中で止まった回の通知は数えない**
+- **起票後に範囲が広がった Issue の書き戻し**: 起票後に利用者の依頼で作業が追加された場合は、`effort_ai_actual` に何を含めたか（起票時の範囲だけか、追加分も含むか）と追加分の内訳（追加分を含めた場合は後から差し引けるよう追加分の所要目安 `h` も記す）を `effort_evidence` に書く（記事・コンテンツ系の補正元として後から比べるとき、追加分を除けるようにする）
+
 按分・加算の規則:
 
 | 状況 | 扱い |

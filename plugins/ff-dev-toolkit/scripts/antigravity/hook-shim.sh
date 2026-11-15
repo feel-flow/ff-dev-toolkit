@@ -4,10 +4,11 @@
 # Antigravity 仕様（decision / overwrite / injectSteps / continue）へ逆変換する双方向シム。
 #
 # 使い方:
-#   hook-shim.sh [--plugin-root <dir>] --event <PreToolUse|PostToolUse|SessionStart|PreInvocation|Stop> [--on-failure <block|ignore>] -- <cmd...>
+#   hook-shim.sh [--plugin-root <dir>] --event <PreToolUse|PostToolUse|SessionStart|PreInvocation|Stop> [--on-failure <block|ignore>] [--async] -- <cmd...>
 #
 # - jq 不在・空入力・非 JSON 入力・後段異常終了では原則 fail-open 既定値（{} または {"decision":"allow"}）で exit 0 とし、
 #   --on-failure block 指定の PreToolUse だけは fail-closed（{"decision":"deny"} + exit 0）へ倒す。
+# - --async は SessionStart 専用で、後段コマンドをデタッチ起動して即 {} + exit 0 を返す。
 # - PreInvocation は invocationNum == 1 のときだけ UserPromptSubmit へ変換して実行し、2 回目以降は即 {} を返す。
 # - Stop は executionNum > 1 または異常終了理由（terminationReason != NO_TOOL_CALL）で stop_hook_active=true を設定して再入を抑止する。
 set -uo pipefail
@@ -18,10 +19,11 @@ DEFAULT_PLUGIN_ROOT="$(CDPATH='' cd -P -- "$SCRIPT_DIR/../.." && pwd -P)"
 plugin_root="$DEFAULT_PLUGIN_ROOT"
 event=""
 on_failure="ignore"
+async_mode=0
 
 usage() {
   cat >&2 <<'EOF'
-Usage: hook-shim.sh [--plugin-root <dir>] --event <PreToolUse|PostToolUse|SessionStart|PreInvocation|Stop> [--on-failure <block|ignore>] -- <command...>
+Usage: hook-shim.sh [--plugin-root <dir>] --event <PreToolUse|PostToolUse|SessionStart|PreInvocation|Stop> [--on-failure <block|ignore>] [--async] -- <command...>
 EOF
 }
 
@@ -41,6 +43,10 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] && [ -n "$2" ] || { echo "✗ hook-shim.sh: --on-failure に値が要ります" >&2; usage; exit 2; }
       on_failure="$2"
       shift 2
+      ;;
+    --async)
+      async_mode=1
+      shift
       ;;
     --)
       shift
@@ -75,6 +81,12 @@ case "$on_failure" in
     exit 2
     ;;
 esac
+
+if [ "$async_mode" -eq 1 ] && [ "$event" != "SessionStart" ]; then
+  echo "✗ hook-shim.sh: --async は SessionStart 専用です: ${event}" >&2
+  usage
+  exit 2
+fi
 
 if [ "$#" -lt 1 ]; then
   echo "✗ hook-shim.sh: -- の後に後段コマンドが要ります" >&2
@@ -126,7 +138,7 @@ plugin_root="$resolved_plugin_root"
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/ff-agy-shim.XXXXXX" 2>/dev/null || true)"
 if [ -z "$work_dir" ] || [ ! -d "$work_dir" ]; then
-  cat >/dev/null || true
+  IFS= read -r -t 2 -d '' _ || true
   emit_failure_fallback "hook-shim.sh: 一時作業ディレクトリを作成できません"
   exit 0
 fi
@@ -146,7 +158,9 @@ out_file="${work_dir}/down.out"
 err_file="${work_dir}/down.err"
 reason_file="${work_dir}/reason.txt"
 
-cat >"$payload_file" || {
+shim_input=""
+IFS= read -r -t 2 -d '' shim_input || true
+printf '%s' "$shim_input" >"$payload_file" || {
   emit_failure_fallback "hook-shim.sh: 標準入力を読み込めません"
   exit 0
 }
@@ -350,9 +364,30 @@ if [ ! -s "$norm_file" ]; then
 fi
 
 export CLAUDE_PLUGIN_ROOT="$plugin_root"
+export FF_DEV_TOOLKIT_AGY_HOOK_EVENT="$event"
 
 shim_cwd="$(jq -r 'select(type == "object") | .cwd // ""' "$norm_file" 2>/dev/null | head -n 1 || true)"
 shim_cwd="${shim_cwd//$'\r'/}"
+
+if [ "$event" = "SessionStart" ] && [ "$async_mode" -eq 1 ]; then
+  async_in="$(mktemp "${TMPDIR:-/tmp}/ff-agy-async.XXXXXX" 2>/dev/null || true)"
+  if [ -n "$async_in" ] && cp "$norm_file" "$async_in" 2>/dev/null; then
+    (
+      trap - EXIT INT TERM
+      trap '' HUP
+      exec </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
+      if [ -n "$shim_cwd" ] && [ -d "$shim_cwd" ]; then
+        CDPATH='' cd -- "$shim_cwd" 2>/dev/null || true
+      fi
+      "$@" <"$async_in" >/dev/null 2>&1 || true
+      rm -f -- "$async_in" 2>/dev/null || true
+    ) </dev/null >/dev/null 2>&1 &
+  else
+    rm -f -- "$async_in" 2>/dev/null || true
+  fi
+  printf '{}\n'
+  exit 0
+fi
 
 run_one_downstream() {
   local in_file="$1"

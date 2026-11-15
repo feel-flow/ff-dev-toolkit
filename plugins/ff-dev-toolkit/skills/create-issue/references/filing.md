@@ -88,7 +88,7 @@ MCP: 取得値: MCP で同じ repo の既存候補と label name、認証主体 
 
 #### ステップ 1: 本文を一時ファイルへ書く
 
-本文は Write ツールで作業ツリー外の一時ファイル（セッションの scratchpad 等）へ書き、`--body-file` で渡す（heredoc でシェル変数へ組み立てない。空のファイルを渡さない — 空の本文は「作成済みだが中身の無い」Issue を黙って生む）。内容は SKILL.md 手順 6 の構造で組み立てる。決定 Issue（ラベル `triage:decision`、または本文が未決の論点を後で決める前提の Issue）は、同じ本文に下の「決定 Issue のテンプレ」を足す。
+本文は Write ツールで作業ツリー外の永続作業ディレクトリ（`${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/<Issue 番号 or 識別子>/`。使い捨て小片だけならセッションの scratchpad 等）へ書き、`--body-file` で渡す（heredoc でシェル変数へ組み立てない。空のファイルを渡さない — 空の本文は「作成済みだが中身の無い」Issue を黙って生む）。内容は SKILL.md 手順 6 の構造で組み立てる。決定 Issue（ラベル `triage:decision`、または本文が未決の論点を後で決める前提の Issue）は、同じ本文に下の「決定 Issue のテンプレ」を足す。
 
 本文を書いた直後に、上の「ISSUE_TEMPLATE 節の pre-flight（fail-soft）」の bash ブロックを単独実行し、列挙された `## ` 見出しを今書いた本文と突き合わせる。
 
