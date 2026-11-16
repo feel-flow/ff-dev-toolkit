@@ -557,6 +557,9 @@ run_single_task() {
   # タイムアウトの受け渡しは他レーンと同一のまま、アダプタが CLI を起動しなくなる。
   if task_is_delegated "$cli_name"; then
     extra_args+=(--delegate-dir "$(delegate_dir_for "$cli_name")")
+    if [[ "$ALLOW_HTML_ENTITIES" == true ]]; then
+      extra_args+=(--allow-html-entities)
+    fi
   fi
   if [[ "$TASK_TYPE" == "implement" ]]; then
     local staging_dir

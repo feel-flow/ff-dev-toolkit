@@ -221,8 +221,9 @@ const parseToolArguments = (value) => {
   }
 };
 
-const toolUseFromRaw = (name, raw) => {
+const toolUseFromRaw = (name, raw, options) => {
   if (!raw || typeof raw !== "object") return null;
+  const allowReadSkill = !options || options.allowReadSkill !== false;
   if ((name === "run_terminal_command" || name === "Bash") && typeof raw.command === "string") {
     return { type: "tool_use", name: "Bash", input: { command: raw.command } };
   }
@@ -235,7 +236,7 @@ const toolUseFromRaw = (name, raw) => {
   if (name === "SlashCommand" && typeof raw.command === "string") {
     return { type: "tool_use", name: "SlashCommand", input: { command: raw.command } };
   }
-  if (name === "read_file" || name === "Read") {
+  if (allowReadSkill && (name === "read_file" || name === "Read")) {
     const filePath = ["target_file", "file_path", "path", "Path"]
       .map((key) => raw[key])
       .find((value) => typeof value === "string");
@@ -370,6 +371,29 @@ const extractAntigravityUserRequest = (content) => {
   return rest;
 };
 
+// Compact Antigravity transcripts store string tool-call arguments JSON-encoded a
+// second time (e.g. "\"gh pr merge 42\""). Unwrap single string literals only.
+const unwrapJsonEncodedString = (value) => {
+  if (typeof value !== "string" || !value.startsWith('"') || !value.endsWith('"')) {
+    return value;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return typeof parsed === "string" ? parsed : value;
+  } catch {
+    return value;
+  }
+};
+
+const normalizeAntigravityToolArgs = (raw) => {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const out = Object.create(null);
+  for (const [key, val] of Object.entries(raw)) {
+    out[key] = unwrapJsonEncodedString(val);
+  }
+  return out;
+};
+
 const normalizeAntigravityStep = (entry) => {
   if (
     entry.type === "GENERIC" ||
@@ -393,9 +417,13 @@ const normalizeAntigravityStep = (entry) => {
   }
   const calls = Array.isArray(entry.tool_calls) ? entry.tool_calls : [];
   for (const call of calls) {
-    const raw = parseToolArguments(call && (call.args !== undefined ? call.args : call.arguments));
+    const raw = normalizeAntigravityToolArgs(
+      parseToolArguments(call && (call.args !== undefined && call.args !== null ? call.args : call.arguments)),
+    );
     const name = call && typeof call.name === "string" ? call.name : "";
-    const block = toolUseFromRaw(name, raw);
+    // Do not map Antigravity read_file(SKILL.md) to Skill execution: sessions often
+    // inspect tail skill files in transcript_full.jsonl without running them.
+    const block = toolUseFromRaw(name, raw, { allowReadSkill: false });
     if (block) blocks.push(block);
   }
   if (blocks.length === 0) return null;

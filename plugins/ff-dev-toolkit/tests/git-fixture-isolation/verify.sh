@@ -510,6 +510,7 @@ finish/verify.sh
 github-input-precheck/verify.sh
 grok-hooks-sync/verify.sh
 guard-checkout-restore/verify.sh
+guard-exit-code/git-write-chain.sh
 guard-review-in-flight/lane-private-cases.sh
 guard-review-in-flight/verify.sh
 knowledge-delivery/verify.sh
@@ -526,6 +527,7 @@ merge-cleanup/windows-junctions.sh
 multi-agent-critical-marker/merged-shelve-cases.sh
 multi-agent-critical-marker/verify.sh
 multi-agent-host-delegation/completed-lane-cases.sh
+multi-agent-host-delegation/entity-guard-cases.sh
 multi-agent-host-delegation/verify.sh
 multi-agent-ignore-paths/verify.sh
 multi-agent-lane-precheck/verify.sh
@@ -551,6 +553,7 @@ review-wrapper-shim/recovery-mode-cases.sh
 reviewer-pair/verify.sh
 run-all-startup-load/verify.sh
 security-review-gate/verify.sh
+shared-version-convergence/cases/adr-collision.sh
 shared-version-convergence/cases/base-guard-fetch-stderr.sh
 shared-version-convergence/cases/claim-helper-failures.sh
 shared-version-convergence/cases/merge-races.sh

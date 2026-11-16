@@ -70,7 +70,7 @@ run_cli_group() { # $1: cli / $2: status dir
     # classify_cli_failure_cause が空を返し、cli_failure_is_deterministic（auth / billing /
     # model-unsupported だけを採る）に掛からない — 残り観点はスキップされない。この分類を
     # 広げるときは 123 を除外すること（委譲待ちを「CLI 単位の決定的失敗」にしない）。
-    if [[ "${LAST_TASK_RC:-0}" -ne 0 && "${LAST_TASK_RC:-0}" -ne 124 ]]; then
+    if [[ "${LAST_TASK_RC:-0}" -ne 0 && "${LAST_TASK_RC:-0}" -ne 124 && "${LAST_TASK_RC:-0}" -ne "${DELEGATION_HTML_ENTITY_EXIT_CODE:-120}" ]]; then
       cause="$(classify_cli_failure_cause "${OUTPUT_DIR}/${cli}/${persp}.md")"
       if cli_failure_is_deterministic "$cause"; then
         poison="$cause"
@@ -536,7 +536,7 @@ execute_tasks() {
         # 124（timeout）は除く — 案内層と同じ規則（print_failure_advice は 124 の
         # とき分類を断定材料にしない）。時間を足せば通る失敗でカバレッジを捨てない。
         local seq_fail_cause
-        if [[ $task_rc -ne 124 ]]; then
+        if [[ $task_rc -ne 124 && $task_rc -ne "$DELEGATION_HTML_ENTITY_EXIT_CODE" ]]; then
           seq_fail_cause="$(classify_cli_failure_cause "${OUTPUT_DIR}/${cli}/${persp}.md")"
           if cli_failure_is_deterministic "$seq_fail_cause"; then
             POISONED_CLIS="${POISONED_CLIS:+$POISONED_CLIS }${cli}:${seq_fail_cause}"

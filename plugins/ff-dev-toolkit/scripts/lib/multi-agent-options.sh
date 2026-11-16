@@ -404,6 +404,10 @@ DELEGATION_PREVIOUS_INVOCATION=""
 DELEGATION_PREVIOUS_MANIFEST=""
 DELEGATION_UNADOPTED_NOTES=""
 DELEGATION_STATE_NEW=false
+ALLOW_HTML_ENTITIES=false
+EXTRACT_MODE=false
+EXTRACT_SUBAGENT_RESPONSE=""
+EXTRACT_OUTPUT_FILE=""
 
 # 同じ output-dir を使う別 orchestrator との排他。成果物は run-id で分離せず、利用者が
 # 従来どおり固定パスから読める契約を保つ代わりに、1 output-dir = 1 active run とする。
@@ -515,12 +519,26 @@ print_archive_recovery() { # [critical]: do not advertise a bare operation for k
 }
 
 parse_args() {
-  local archive_conflict="" option
+  local archive_conflict="" extract_conflict="" option expect_extract_arg=""
   POSITIONAL_PR=""
   for option in "$@"; do
     case "$option" in
-      --description|--include-diff|--mode|--mode=*|--strategy|--cli|--cli=*|--perspective|--perspective=*|--exclude-cli|--exclude-cli=*|--exclude-perspective|--exclude-perspective=*|--parallel|--sequential|--timeout|--set-reviewers)
+      --description|--include-diff|--mode|--mode=*|--strategy|--cli|--cli=*|--perspective|--perspective=*|--exclude-cli|--exclude-cli=*|--exclude-perspective|--exclude-perspective=*|--parallel|--sequential|--timeout|--set-reviewers|--allow-html-entities)
         archive_conflict="$option" ;;
+    esac
+    if [[ -n "$expect_extract_arg" ]]; then
+      expect_extract_arg=""
+      continue
+    fi
+    case "$option" in
+      --extract-subagent-response|--output-file|--invocation-display|--wrapper-route|--task)
+        expect_extract_arg="$option"
+        ;;
+      --extract-subagent-response=*|--output-file=*|--help|-h)
+        ;;
+      *)
+        extract_conflict="$option"
+        ;;
     esac
   done
   while [[ $# -gt 0 ]]; do
@@ -600,6 +618,27 @@ parse_args() {
           exit 1
         fi
         shift ;;
+      --allow-html-entities) ALLOW_HTML_ENTITIES=true; shift ;;
+      --extract-subagent-response)
+        if [[ $# -lt 2 || -z "${2:-}" || "${2:-}" == -* ]]; then
+          echo "ERROR: --extract-subagent-response requires a <transcript.jsonl> path (use ./path if the filename begins with '-')." >&2
+          exit 2
+        fi
+        EXTRACT_MODE=true; EXTRACT_SUBAGENT_RESPONSE="$2"; shift 2 ;;
+      --extract-subagent-response=*)
+        EXTRACT_MODE=true; EXTRACT_SUBAGENT_RESPONSE="${1#--extract-subagent-response=}"
+        [[ -n "$EXTRACT_SUBAGENT_RESPONSE" ]] || { echo "ERROR: --extract-subagent-response requires a <transcript.jsonl> path." >&2; exit 2; }
+        shift ;;
+      --output-file)
+        if [[ $# -lt 2 || -z "${2:-}" || "${2:-}" == -* ]]; then
+          echo "ERROR: --output-file requires a path (use ./path if the filename begins with '-')." >&2
+          exit 2
+        fi
+        EXTRACT_MODE=true; EXTRACT_OUTPUT_FILE="$2"; shift 2 ;;
+      --output-file=*)
+        EXTRACT_MODE=true; EXTRACT_OUTPUT_FILE="${1#--output-file=}"
+        [[ -n "$EXTRACT_OUTPUT_FILE" ]] || { echo "ERROR: --output-file requires a path." >&2; exit 2; }
+        shift ;;
       --print-reviewers) PRINT_REVIEWERS=true; shift ;;
       --set-reviewers)   SET_REVIEWERS="$2"; shift 2 ;;
       --timeout)     TIMEOUT="$2"; shift 2 ;;
@@ -629,6 +668,22 @@ parse_args() {
         ;;
     esac
   done
+
+  if [[ "$EXTRACT_MODE" == true ]]; then
+    if [[ -z "$EXTRACT_SUBAGENT_RESPONSE" || -z "$EXTRACT_OUTPUT_FILE" ]]; then
+      echo "ERROR: --extract-subagent-response requires both <transcript.jsonl> and --output-file <path>." >&2
+      exit 2
+    fi
+    if [[ "$TASK_TYPE" != review || ( "${WRAPPER_ROUTE:-direct}" != direct && "${WRAPPER_ROUTE:-direct}" != none ) || -n "$POSITIONAL_PR" || -n "$extract_conflict" ]]; then
+      echo "ERROR: --extract-subagent-response is a standalone operation; pass only <transcript.jsonl> and --output-file <path>." >&2
+      exit 2
+    fi
+    return 0
+  fi
+  if [[ "$ALLOW_HTML_ENTITIES" == true && "$DELEGATE_TO_HOST" != true ]]; then
+    echo "ERROR: --allow-html-entities requires --delegate-to-host." >&2
+    exit 2
+  fi
 
   # --staged との排他より前に解決し、番号がある実行を明示 base として扱う。
   resolve_positional_pr_base

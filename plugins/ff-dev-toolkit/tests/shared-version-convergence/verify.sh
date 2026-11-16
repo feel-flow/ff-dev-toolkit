@@ -10,6 +10,7 @@
 #   になった後に読む）を消す変異、claim helper の起動行を commit の後ろへもう 1 本足す変異、本線 R3-e
 #   手順 7 を手順 5 のゲートより前へ移す変異は、いずれも順序検査 1 件が赤（2026-09-24 実測）。
 # 空振り検出: claim 生成の針を finish.sh だけに戻すと、claim 不在の拒否と既存 claim の再利用の 2 件が赤になる（2026-10-30 実測。suite rc=1、fail=2。文字列は scripts/lib/finish-knowledge-commit-functions.sh にある）。
+# 空振り検出: ADR 番号衝突検査（cases/adr-collision.sh）は origin/<default> 衝突・open PR 衝突・空 merge-base 新設衝突・取得不能 fail-closed（rc=2）を固定し、照合削除・open PR 分岐無効化・未確認素通し・表行集計削除・次空き最大値削除・差分参照削除・stale 分岐バイパス・fork PR 自除外誤判定・空 merge-base 時 NR==FNR 素通しの 9 変異すべてが suite rc=1 で赤になることを mutation-harness.sh で確認（2026-11-15 実測、9/9 detected、SURVIVED=0）。
 set -euo pipefail
 # check-version-claims.sh は GITHUB_ACTIONS=true で「fetch せず job 開始時点の remote-tracking ref を
 # 基準にする」CI 分岐へ入る（Issue #1336）。fixture ベースの検査はランナーの環境変数に左右されず
@@ -670,6 +671,7 @@ if grep -Fq 'ACE-100-1' "$FINAL" && grep -Fq 'ACE-101-1' "$FINAL"; then ok "両 
 if grep -Fq '### [1.2.0]' "$FINAL" && grep -Fq '### [1.1.0]' "$FINAL"; then ok "両版ブロックを保全"; else bad "版ブロックが上書きされた"; fi
 
 source "$SCRIPT_DIR/cases/merge-races.sh"
+source "$SCRIPT_DIR/cases/adr-collision.sh"
 echo "shared-version-convergence: pass=$PASS fail=$FAIL total=$((PASS + FAIL))"
 if [[ "$FAIL" -ne 0 ]]; then exit 1; fi
 REACHED_END=1

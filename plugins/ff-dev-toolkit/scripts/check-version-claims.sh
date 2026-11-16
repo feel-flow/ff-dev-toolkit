@@ -202,6 +202,14 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+adr_check_script_dir="$(CDPATH='' cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || { echo "✗ script directory を解決できません" >&2; exit 2; }
+[[ -r "${adr_check_script_dir}/lib/adr-collision-check.sh" ]] || { echo "✗ 同梱 lib を読み取れません: ${adr_check_script_dir}/lib/adr-collision-check.sh" >&2; exit 2; }
+# shellcheck source=lib/adr-collision-check.sh
+. "${adr_check_script_dir}/lib/adr-collision-check.sh"
+adr_skip_open_prs=0
+if [[ -n "${snapshot_head:-}" || -n "${base_commit_pin:-}" || "${GITHUB_ACTIONS:-}" == true ]]; then
+  adr_skip_open_prs=1
+fi
 [[ -n "$root" ]] || root="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "✗ repository root を解決できません" >&2; exit 2; }
 root="$(cd "$root" && pwd -P)" || { echo "✗ repository root を正規化できません" >&2; exit 2; }
 contract_missing=0
@@ -263,7 +271,12 @@ resolve_fresh_base() {
   # 鮮度由来の非 0 は「内容の欠陥」ではないので、呼び出し側が散文の文字列一致に頼らず
   # 分類できる機械可読マーカーを先に出す（exit 2 は使い方の誤り・plugin root 解決失敗とも
   # 共有しているため、コードだけでは鮮度を特定できない）。
-  git -C "$root" merge-base --is-ancestor "$default_base" HEAD || { echo "FF_STALE_BASE=${default_ref}" >&2; echo "✗ $default_ref が HEAD より先行しています。rebase 後に再実行してください" >&2; return 2; }
+  if ! git -C "$root" merge-base --is-ancestor "$default_base" HEAD; then
+    if ff_check_adr_collision "$root" "$default_base" "$default_ref" "$adr_skip_open_prs"; then :; else return $?; fi
+    echo "FF_STALE_BASE=${default_ref}" >&2
+    echo "✗ $default_ref が HEAD より先行しています。rebase 後に再実行してください" >&2
+    return 2
+  fi
 }
 
 path_is_canonical() {
@@ -401,6 +414,7 @@ if [[ "$contract_missing" -eq 1 ]]; then
       echo "✗ default branch に導入済みの .version-claims を directory ごと削除しています" >&2
       exit 1
     fi
+    ff_check_adr_collision "$root" "$default_base" "${default_ref:-${default_base:0:12}}" "$adr_skip_open_prs"
     ;;
   1)
     contract_history="$(git -C "$root" log --all --format=%H -- .version-claims/README.md 2>&1)" || { echo "✗ version claim contract の履歴を検査できません: ${contract_history%%$'\n'*}" >&2; exit 2; }
@@ -421,6 +435,7 @@ fi
 unmerged_entries="$(git -C "$root" -c core.quotePath=false ls-files --unmerged -- 'docs/*.md' 'docs/**/*.md' '.version-claims/*.claim' '.version-claims/**/*.claim' 2>&1)" || { echo "✗ unmerged index を検査できません: ${unmerged_entries%%$'\n'*}" >&2; exit 2; }
 [[ -z "$unmerged_entries" ]] || { echo "✗ version 文書または claim に unmerged index entry があります" >&2; exit 2; }
 reject_unsafe_or_unstaged_paths
+ff_check_adr_collision "$root" "$default_base" "${default_ref:-${default_base:0:12}}" "$adr_skip_open_prs"
 index_tree_fingerprint() {
   git -C "$root" -c core.quotePath=false ls-files --stage -z |
     git -C "$root" hash-object --stdin

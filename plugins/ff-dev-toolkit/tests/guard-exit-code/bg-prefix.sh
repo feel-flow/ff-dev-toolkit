@@ -194,7 +194,8 @@ make_tree() { # <dir>
   mkdir -p "$1/hooks" "$1/tests/lib"
   cp "$TARGET" "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$1/hooks/"
   cp "$DETECTOR" "$PLUGIN_ROOT/tests/lib/heredoc-strip.sh" "$PLUGIN_ROOT/tests/lib/wait-bounds.sh" \
-    "$PLUGIN_ROOT/tests/lib/exit-code-rewrite.sh" "$PLUGIN_ROOT/tests/lib/rg-stdin-scan.sh" "$1/tests/lib/"
+    "$PLUGIN_ROOT/tests/lib/exit-code-rewrite.sh" "$PLUGIN_ROOT/tests/lib/git-write-chain-scan.sh" \
+    "$PLUGIN_ROOT/tests/lib/rg-stdin-scan.sh" "$1/tests/lib/"
 }
 # 変異を当てたコピーを作る。awk の変換が検出器を 1 行も変えなければ「当たっていない」で赤にする。
 make_mutant() { # <dir> <awk program>

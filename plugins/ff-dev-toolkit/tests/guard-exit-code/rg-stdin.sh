@@ -208,7 +208,8 @@ make_tree() { # <dir>
   mkdir -p "$1/hooks" "$1/tests/lib"
   cp "$TARGET" "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$1/hooks/"
   cp "$PLUGIN_ROOT/tests/lib/exit-code-guard.sh" "$PLUGIN_ROOT/tests/lib/heredoc-strip.sh" \
-    "$PLUGIN_ROOT/tests/lib/wait-bounds.sh" "$PLUGIN_ROOT/tests/lib/exit-code-rewrite.sh" "$RG_LIB" "$1/tests/lib/"
+    "$PLUGIN_ROOT/tests/lib/wait-bounds.sh" "$PLUGIN_ROOT/tests/lib/exit-code-rewrite.sh" \
+    "$PLUGIN_ROOT/tests/lib/git-write-chain-scan.sh" "$RG_LIB" "$1/tests/lib/"
 }
 NOLIB="$TEST_TMP/nolib"
 make_tree "$NOLIB"

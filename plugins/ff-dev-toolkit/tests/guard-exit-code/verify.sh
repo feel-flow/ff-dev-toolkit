@@ -237,6 +237,7 @@ make_copy() { # <dir> [detector-body-file|"" で検出器を置かない]
   # heredoc 除去ヘルパは hook が `hooks/../tests/lib/` から source する（共有ヘルパ）。
   # 置かないコピーは「ヘルパ不在 = fail-closed」の検査そのものになる。
   cp "$HELPER" "$dir/tests/lib/heredoc-strip.sh"
+  cp "$PLUGIN_ROOT/tests/lib/git-write-chain-scan.sh" "$dir/tests/lib/git-write-chain-scan.sh"
   if [ -n "$det" ]; then cp "$det" "$dir/tests/lib/exit-code-guard.sh"; fi
   printf '%s' "$dir/hooks/guard-exit-code.sh"
 }
@@ -1380,6 +1381,13 @@ if bash "$SCRIPT_DIR/zsh-prefix.sh"; then
   ok "zsh-prefix.sh（前置き付きの伝播は通過・伝播を欠くとゲート起動行で停止・定義の変異で赤）が緑"
 else
   bad "zsh-prefix.sh が失敗しました（上の ✗ 行）"
+fi
+
+echo "guard-exit-code: fail-fast でない git 書き込み連鎖（行列・書換実測・判定不能・変異は git-write-chain.sh）"
+if bash "$SCRIPT_DIR/git-write-chain.sh"; then
+  ok "git-write-chain.sh（OBS-104 の 3 形・4 軸・書換実行・判定不能・変異）が緑"
+else
+  bad "git-write-chain.sh が失敗しました（上の ✗ 行）"
 fi
 
 echo

@@ -4,6 +4,7 @@
 # 空振り検出: R1復帰回帰は無変異18/0、元HEAD 69c3eb7dの不変runtimeでは5/9へ赤転（env config/base・Critical案内・detached・空fresh通知）。追加関数の不在と空のassertion集合はそれぞれrc1で停止（2026-10-22 実測）。
 # 空振り検出: R2復帰回帰は22/0、修正前5a90c9a0では19/3へ赤転（非委譲full/fastのfresh案内）。full委譲のtemplate往復とfast拒否templateは保持し、非委譲2routeは案内されたfreshでrequest無しに完了する。追加関数不在・空集合は各rc1（2026-10-22 実測）。
 # 空振り検出: 実hook完了レーンの退避回帰は24/0。制御directoryの退避除外を外すと22/2、活動中・不正な完了記録の検査を外すと6/18へ赤転。別copyでcase呼出だけを空化すると24件の下限照合がrc1で停止する（2026-10-28実測、Issue `#2429`）。
+# 空振り検出: 委譲応答の実体参照ガードと transcript 抽出回帰は44/0（全体318/0）。実体参照検出無効化/allowバイパス/退避移動化/truncated検査外し/symlink検査外し/SIGPIPE早期exit化/本文破損/handoff案内削除/fast時allow拒否削除の9変異で各11/11/11/7/5/1/6/1/1件赤転、無害コメント変更の1対照は緑維持（SURVIVED 0、2026-11-15実測、Issue `#2781`）。entity-guard-cases不在・空・関数欠落・44件未満は下限照合でrc1停止。
 # git-path-isolation: 固定 PATH は実 CLI / yq / 更新 CLI の混入と不在検査の偽緑を防ぐ。
 # git の親ディレクトリ全体は追加しない（同居する CLI も露出するため）。Xcode 障害時は
 # DEVELOPER_DIR=/Library/Developer/CommandLineTools bash plugins/ff-dev-toolkit/tests/multi-agent-host-delegation/verify.sh
@@ -227,6 +228,8 @@ REPO_PHYS="$(cd "$REPO" && pwd -P)"
 STUB_PATH="$STUB:/usr/bin:/bin:/usr/sbin:/sbin"
 
 OUT_N=0
+# ケース固有の env 代入（NAME=VALUE）。分離の後に足す（主担当ホストの印を立てるケース用。Issue `#2810`）
+RUN_MA_ENV=()
 # run_ma <label> <args...> → rc を RUN_RC、stdout/stderr を RUN_OUT / RUN_ERR へ
 run_ma() {
   local label="$1"; shift
@@ -234,7 +237,7 @@ run_ma() {
   RUN_OUT="$TMP/out.${OUT_N}.${label}"
   RUN_ERR="$TMP/err.${OUT_N}.${label}"
   RUN_RC=0
-  run_isolated PATH="$STUB_PATH" HOME="$TMP/home" \
+  run_isolated PATH="$STUB_PATH" HOME="$TMP/home" ${RUN_MA_ENV[@]+"${RUN_MA_ENV[@]}"} \
     FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash "${MA_ENTRY:-$MULTI_AGENT}" "$@" > "$RUN_OUT" 2> "$RUN_ERR" || RUN_RC=$?
   local prompt response
   prompt="$(handoff_field "$RUN_OUT" prompt-file)"
@@ -1039,6 +1042,17 @@ for LANE in codex-cli grok-cli antigravity-cli; do
     fi
   fi
 done
+# 自ホスト専用レーン（Issue `#2810`）の拒否は CLI を起動する経路だけに掛かる。委譲（--delegate-dir）は
+# agy を起動しないので、他ホストの印（CLAUDECODE=1）が立っていても従来どおり handoff する
+RUN_MA_ENV=(CLAUDECODE=1)
+run_ma host-agy-foreign --task review --cli antigravity-cli --perspective code-review --base develop \
+  --delegate-to-host=antigravity-cli --output-dir "$TMP/od-agy-foreign"
+RUN_MA_ENV=()
+if [ "$RUN_RC" -eq 3 ] && grep -qF "cli=antigravity-cli" "$RUN_OUT" && ! grep -qF '自ホスト専用のレーンです' "$RUN_ERR"; then
+  ok "他ホストの印（CLAUDECODE=1）があっても --delegate-to-host=antigravity-cli は handoff する（rc=3。拒否しない）"
+else
+  bad "CLAUDECODE=1 の下で antigravity-cli の委譲が handoff しない: rc=${RUN_RC} / $(tail -3 "$RUN_ERR" | tr '\n' ' ')"
+fi
 run_ma host-bad --task review --cli codex-cli --perspective code-review --base develop \
   --delegate-to-host=copilot-cli
 if [ "$RUN_RC" -eq 1 ] && [ ! -s "$RUN_OUT" ]; then
@@ -2202,6 +2216,17 @@ COMPLETED_LANE_BEFORE=$((PASS + FAIL))
 run_completed_lane_cases
 [[ $((PASS + FAIL - COMPLETED_LANE_BEFORE)) -ge 24 ]] || { echo '✗ completed lane assertion collection empty/incomplete' >&2; exit 1; }
 # completed-lane-cases:end
+
+# entity-guard-cases:start
+ENTITY_GUARD_CASES_FILE="$SCRIPT_DIR/entity-guard-cases.sh"
+[[ ! -L "$ENTITY_GUARD_CASES_FILE" && -f "$ENTITY_GUARD_CASES_FILE" && -r "$ENTITY_GUARD_CASES_FILE" && -s "$ENTITY_GUARD_CASES_FILE" ]] || { echo '✗ entity guard cases missing/unreadable/empty' >&2; exit 1; }
+# shellcheck source=entity-guard-cases.sh
+. "$ENTITY_GUARD_CASES_FILE"
+[[ "$(type -t run_entity_guard_cases)" == function ]] || { echo '✗ entity guard case function missing' >&2; exit 1; }
+ENTITY_GUARD_BEFORE=$((PASS + FAIL))
+run_entity_guard_cases
+[[ $((PASS + FAIL - ENTITY_GUARD_BEFORE)) -ge 44 ]] || { echo '✗ entity guard assertion collection empty/incomplete' >&2; exit 1; }
+# entity-guard-cases:end
 
 echo ""
 echo "  PASS=${PASS} FAIL=${FAIL}"

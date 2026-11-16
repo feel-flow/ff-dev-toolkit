@@ -28,6 +28,8 @@ report_task_failure() {
     echo "  ❌ Timed out after ${TIMEOUT}s: ${task_name}" >&2
   elif [[ "$rc" -eq 125 ]]; then
     echo "  ❌ Orchestrator-side failure, not the CLI's: ${task_name} (exit code: ${rc} — see the adapter's ERROR above)" >&2
+  elif [[ "$rc" -eq "${DELEGATION_HTML_ENTITY_EXIT_CODE:-120}" ]]; then
+    echo "  ❌ Delegated response refused (HTML entity reference detected): ${task_name} (exit code: ${rc} — see the adapter's ERROR above)" >&2
   else
     echo "  ❌ Failed: ${task_name} (exit code: ${rc})" >&2
   fi
@@ -442,7 +444,7 @@ prompt_too_long_run_wide() {
     # 成功したタスクが 1 つでもあれば全滅ではない
     task_left_perspective_unproven "$cli" "$persp" || return 1
     rc="$(failed_task_rc "$cli" "$persp")"
-    [[ "$rc" == "124" ]] && return 1
+    [[ "$rc" == "124" || "$rc" == "${DELEGATION_HTML_ENTITY_EXIT_CODE:-120}" ]] && return 1
     cause="$(classify_cli_failure_cause "${OUTPUT_DIR}/${cli}/${persp}.md")"
     case "$cause" in
       prompt-too-long) hits=$((hits + 1)) ;;

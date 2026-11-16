@@ -20,6 +20,23 @@
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-16
+
+### 追加
+
+- **WSL 起動時の MSYS POSIX パス変換ガードと共通停止形式**: Windows の Git Bash から `wsl` / `wsl.exe` へ `MSYS_NO_PATHCONV=1`（先頭前置・先行 `export`）または対象を覆う `MSYS2_ARG_CONV_EXCL` なしで `/` 始まりの POSIX パス引数（`--flag=/…`・`VAR=/…` を含み、`--exec` 付きでも対象）を渡す呼び出しを `guard-wsl-shell.sh`（判定本体 `wsl-shell-scan.sh`）で実行前に停止して `MSYS_NO_PATHCONV=1` の前置を案内し、単一用途免除 `FF_WSL_PATHCONV_ACK` と無効化鍵 `wsl-pathconv`（`wsl-shell` が包含）、`ff_host_is_msys` によるホスト判定、および `ff_stop_block` による共通停止文 3 行を追加しました。
+- **ADR 番号のレビュー前衝突検出**: `plugins/ff-dev-toolkit/scripts/check-version-claims.sh`（実装 `plugins/ff-dev-toolkit/scripts/lib/adr-collision-check.sh`）に、index で新しく追加された ADR 見出しおよび決定ログ行の番号を `origin` 既定ブランチと open PR 差分に照らして衝突を検出し、衝突相手・次の空き番号・PR 差分内の参照箇所（ファイル名と行番号）を名指しして停止する検査（open PR 照合不能時は未確認として非 0 停止）を追加しました。
+- **ホスト委譲の実体参照ガードと transcript 抽出**: `--delegate-to-host` の再開時に、応答本文へ不等号・アンパサンドの HTML 実体参照が含まれている場合は応答ファイルを退避・削除せずに拒否して観点と応答パス・対処手順（transcript JSONL からの再抽出と意図的な場合の `--allow-html-entities`）を案内するよう変更し、サブエージェントの transcript JSONL（Claude・Antigravity・Grok・Codex）から最終応答をバイト単位で無加工書き出しする `--extract-subagent-response`（`--output-file` 併用）および handoff・統合レポート・手順正本の案内を追加しました
+- **fail-fast でない git 書き込み連鎖ガード**: 1 回の Bash 呼び出しで `git add` / `git commit` / `git push` / `git merge` と事前検証 `cmp` を `;` や改行などで繋ぐ fail-fast でない連鎖を `guard-exit-code.sh`（判定本体 `tests/lib/git-write-chain-scan.sh`、OBS-104 Count 3 対策）で検出し、`&&` / `set -e` / `if` / `$?` で守られた形は素通ししつつ、一意な Claude PreToolUse 経路では先頭へ `set -e; ` を付与した `updatedInput`（書換後再検査通過時のみ）、抑止文脈・曖昧形・非対応ホストでは `FF_EXIT_CODE_ACK=1` 抜け道および `FF_DEV_TOOLKIT_SKIP=exit-code` 免除付きの共通 3 行 `deny`（候補コマンドに限り判定不能時は fail-closed）を追加しました。
+
+### 変更
+
+- **antigravity-cli レーンを自ホスト専用に**: 主担当が Claude Code / Codex / grok のセッション（`CLAUDECODE=1` / `CODEX_THREAD_ID` / `GROK_AGENT` が立つ）では、`--cli antigravity-cli` を明示した回でも `antigravity-cli-adapter.sh` が headless の `agy` を起動せず、導入確認より前に拒否して未確認（INCOMPLETE）として記録するようにしました。判定はアダプタの宣言 `ADAPTER_OWN_HOST_ONLY=true` と共通処理 `refuse_foreign_host_launch` で行い、ホスト委譲（`--delegate-dir`）と `--precheck` は従来どおりです。あわせて `self-review.md` のクロスレビュー・代替の候補から、他ホストが主担当の回の `antigravity-cli` を外しました。
+
+### 修正
+
+- **Antigravity Stop フックの誤発火・連続ブロックを抑止**: Antigravity の 0 始まり `executionNum` に対して `Stop` 正規化の既定値と `stop_hook_active` 境界を 0 始まりへ修正し、スキル `SKILL.md` の `read_file` をチェーン終端の実行扱いから分離するとともに、圧縮版トランスクリプト内の JSON 文字列化ツール引数を展開して実コマンド実行を判定するよう改善しました。
+
 ## [1.4.0] - 2026-11-15
 
 ### 追加

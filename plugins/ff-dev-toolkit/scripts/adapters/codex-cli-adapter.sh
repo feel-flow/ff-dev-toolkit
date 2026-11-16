@@ -14,6 +14,7 @@
 #   --delegate-dir <dir>      Host delegation (review only, Issue `#2118`): when this CLI is the host,
 #                             hand the prompt to the host's own subagent instead of starting the CLI
 #                             (--delegate-to-host=codex-cli; see adapter-common.sh run_host_delegation_or_continue).
+#   --allow-html-entities     With --delegate-dir, accept .response.md containing &lt; / &gt; / &amp;.
 #   --staging-dir <dir>       Absolute, existing, writable dir the agent writes generated
 #                             files into (implement only; the orchestrator always passes it)
 #   --inline-output           implement without a staging dir: the CLI reports file contents

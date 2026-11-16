@@ -362,6 +362,41 @@ lineage_main_switch_command() { # <failed-cli>
   fi
 }
 
+# Reconstruct whether an invocation string already carries an option flag (outside single quotes).
+delegation_cmd_has_flag() { # <cmd> <flag-or-prefix...>
+  local cmd="$1" rc=2 pat
+  shift
+  if command -v python3 >/dev/null 2>&1; then
+    rc=0
+    python3 -I - "$cmd" "$@" <<'PY' 2>/dev/null || rc=$?
+import shlex, sys
+
+try:
+    tokens = shlex.split(sys.argv[1])
+except ValueError:
+    sys.exit(2)
+for tok in tokens:
+    if tok == "--":
+        break
+    for pat in sys.argv[2:]:
+        if pat.endswith("=") and tok.startswith(pat):
+            sys.exit(0)
+        if tok == pat:
+            sys.exit(0)
+sys.exit(1)
+PY
+    [[ "$rc" -ne 2 ]] && return "$rc"
+  fi
+  for pat in "$@"; do
+    if [[ "$pat" == *= ]]; then
+      [[ " ${cmd} " == *" ${pat}"* ]] && return 0
+    else
+      [[ " ${cmd} " == *" ${pat} "* ]] && return 0
+    fi
+  done
+  return 1
+}
+
 print_failure_advice() {
   # スキップは FAILED_TASKS に載せない（実行していないものを「終了コード付きの失敗」
   # として記録すると、rc を読む全分岐が 4 つ目の意味を持つことになる）。案内は必要
@@ -520,14 +555,23 @@ print_failure_advice() {
   echo "   results and review both reports. They do not complete the original round" >&2
   echo "   or combine separate runs into one accepted prior-evidence receipt." >&2
 
+  local has_non_entity_lineage_failure=false lineage_entry
   if [[ "$evidence_lineage" == true ]]; then
+    for lineage_entry in $FAILED_TASKS $SKIPPED_TASKS; do
+      [[ "${lineage_entry##*:}" == "${DELEGATION_HTML_ENTITY_EXIT_CODE:-120}" ]] && continue
+      has_non_entity_lineage_failure=true
+      break
+    done
+  fi
+  if [[ "$has_non_entity_lineage_failure" == true ]]; then
     echo "" >&2
     echo "   Prior/continued review evidence cannot be combined with --resume." >&2
     echo "   Re-run in the same output directory so the failed perspective completes" >&2
     echo "   on another CLI and the continue-review lineage is kept:" >&2
-    local seen_clis=" " lineage_cli lineage_entry switch_cmd
+    local seen_clis=" " lineage_cli switch_cmd
     local -a exclude_clis=()
     for lineage_entry in $FAILED_TASKS $SKIPPED_TASKS; do
+      [[ "${lineage_entry##*:}" == "${DELEGATION_HTML_ENTITY_EXIT_CODE:-120}" ]] && continue
       lineage_cli="${lineage_entry%%/*}"
       case " ${seen_clis} " in
         *" ${lineage_cli} "*) continue ;;
@@ -602,6 +646,38 @@ print_failure_advice() {
       echo "        the task: every remaining task on ${cli} would have failed identically." >&2
       echo "        Fix that first (see the ${cli} entry above), then re-run:" >&2
       echo "       $(model_env_prefix "$cli")${retry_self} --cli ${cli} --perspective ${persp}" >&2
+    elif [[ "$rc" -eq "${DELEGATION_HTML_ENTITY_EXIT_CODE:-120}" ]]; then
+      local entity_resp entity_base_cmd entity_resume_cmd entity_allow_cmd
+      entity_resp="$(delegate_dir_for "$cli")/${persp}.response.md"
+      entity_base_cmd="${DELEGATION_PREVIOUS_INVOCATION:-}"
+      if [[ -z "$entity_base_cmd" ]]; then
+        entity_base_cmd="$(delegation_model_env_prefix "${FULL_EXECUTION_PLAN:-$EXECUTION_PLAN}")${INVOCATION_DISPLAY}"
+      fi
+      if [[ "$OUTPUT_DIR_EXPLICIT" == true && -n "${OUTPUT_DIR:-}" ]] \
+         && ! delegation_cmd_has_flag "$entity_base_cmd" "--output-dir" "--output-dir="; then
+        entity_base_cmd="${entity_base_cmd} --output-dir $(shell_quote "$OUTPUT_DIR")"
+      fi
+      entity_resume_cmd="$entity_base_cmd"
+      if [[ "$evidence_lineage" != true ]] \
+         && ! delegation_cmd_has_flag "$entity_resume_cmd" "--resume"; then
+        entity_resume_cmd="${entity_resume_cmd} --resume"
+      fi
+      entity_allow_cmd="$entity_resume_cmd"
+      if ! delegation_cmd_has_flag "$entity_allow_cmd" "--allow-html-entities"; then
+        entity_allow_cmd="${entity_allow_cmd} --allow-html-entities"
+      fi
+      echo "     🚫 ${task} — delegated response contains an HTML entity reference (&lt; / &gt; / &amp;) and was NOT adopted." >&2
+      echo "        Left intact at: ${entity_resp}" >&2
+      echo "        Re-extract from the subagent transcript JSONL into that path (do not copy from <task-notification>):" >&2
+      echo "          bash $(shell_quote "${SCRIPT_DIR}/multi-agent.sh") --extract-subagent-response <transcript.jsonl> --output-file $(shell_quote "$entity_resp")" >&2
+      if [[ "$evidence_lineage" == true ]]; then
+        echo "        Then re-run in the same output directory, or pass --allow-html-entities if intentional:" >&2
+      else
+        echo "        Then re-run with --resume; or pass --allow-html-entities if the entity reference is intentional:" >&2
+      fi
+      echo "          ${entity_resume_cmd}" >&2
+      echo "          ${entity_allow_cmd}" >&2
+      continue
     else
     cause="$(classify_cli_failure_cause "${OUTPUT_DIR}/${cli}/${persp}.md")"
     if [[ "$rc" -eq 124 && -n "$cause" ]]; then

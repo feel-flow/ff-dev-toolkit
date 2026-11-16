@@ -218,16 +218,38 @@ for invocation_arg in "$@"; do
 done
 ROUTE=""
 ARCHIVE_OPERATION=false
+EXTRACT_OPERATION=""
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
+    --)
+      while [ $# -gt 0 ]; do
+        ARGS+=("$1"); shift
+      done
+      break
+      ;;
     --route)
       [ $# -ge 2 ] || { echo "ERROR: --route requires fast|full|none" >&2; exit 2; }
       ROUTE="$2"
       shift 2
       ;;
     --route=*) ROUTE="${1#--route=}"; shift ;;
+    --invocation-display|--wrapper-route|--task|--description|--github-input \
+      |--config|--mode|--strategy|--cli|--exclude-cli|--perspective \
+      |--exclude-perspective|--require-prior-review|--continue-review \
+      |--output-dir|--base|--set-reviewers|--timeout)
+      ARGS+=("$1"); shift
+      if [ $# -gt 0 ]; then
+        ARGS+=("$1"); shift
+      fi
+      ;;
     --archive-only|--archive-only=*) ARCHIVE_OPERATION=true; ARGS+=("$1"); shift ;;
+    --extract-subagent-response|--extract-subagent-response=*)
+      [[ -n "$EXTRACT_OPERATION" ]] || EXTRACT_OPERATION="--extract-subagent-response"
+      ARGS+=("$1"); shift ;;
+    --output-file|--output-file=*)
+      [[ -n "$EXTRACT_OPERATION" ]] || EXTRACT_OPERATION="--output-file"
+      ARGS+=("$1"); shift ;;
     *) ARGS+=("$1"); shift ;;
   esac
 done
@@ -294,13 +316,15 @@ route_rejects_lane_args() { # <route> <拒否する追加の引数...>
 case "$ROUTE" in
   '' | none) : ;;
   fast)
-    route_rejects_lane_args fast --delegate-to-host --delegate-to-host=claude-code --delegate-to-host=codex-cli --delegate-to-host=grok-cli --delegate-to-host=antigravity-cli
+    [[ -z "$EXTRACT_OPERATION" ]] || route_reject "--route ${ROUTE} cannot be combined with ${EXTRACT_OPERATION}"
+    route_rejects_lane_args fast --delegate-to-host --delegate-to-host=claude-code --delegate-to-host=codex-cli --delegate-to-host=grok-cli --delegate-to-host=antigravity-cli --allow-html-entities
     if [[ "$ARCHIVE_OPERATION" != true ]]; then
     ARGS+=(--mode cross-model --cli codex-cli --perspective comprehensive-review)
     echo "ℹ️  --route fast: Codex 1 lane only (--mode cross-model --cli codex-cli --perspective comprehensive-review)" >&2
     fi
     ;;
   full)
+    [[ -z "$EXTRACT_OPERATION" ]] || route_reject "--route ${ROUTE} cannot be combined with ${EXTRACT_OPERATION}"
     route_rejects_lane_args full
     # 主レーンはホスト自身のモデル。`--delegate-to-host=<cli>`（codex-cli / grok-cli /
     # antigravity-cli）を渡すと主がそのレーンになり、主の 4 観点をホストのサブエージェントで
@@ -340,9 +364,11 @@ for review_ac_arg in ${ARGS[@]+"${ARGS[@]}"}; do
       review_ac_auto=false
       [[ "$review_ac_arg" == --description ]] && review_ac_skip_value=true
       ;;
-    --dry-run|--help|-h|--list-perspectives|--print-reviewers|--archive-only|--archive-only=*|--set-reviewers)
+    --dry-run|--help|-h|--list-perspectives|--print-reviewers|--archive-only|--archive-only=*|--set-reviewers|--extract-subagent-response|--extract-subagent-response=*|--output-file|--output-file=*)
       review_ac_auto=false
-      [[ "$review_ac_arg" == --set-reviewers ]] && review_ac_skip_value=true
+      case "$review_ac_arg" in
+        --set-reviewers|--extract-subagent-response|--output-file) review_ac_skip_value=true ;;
+      esac
       ;;
     --base|--output-dir|--config|--timeout|--cli|--perspective|--exclude-cli|--exclude-perspective|--mode|--strategy|--require-prior-review|--continue-review|--github-input)
       review_ac_skip_value=true

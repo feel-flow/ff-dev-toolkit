@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WSL シェル本文ガード（hooks/guard-wsl-shell.sh / tests/lib/wsl-shell-scan.sh）の検査。Issue `#2341`。
+# WSL シェル本文ガード / Git Bash パス変換ガード（hooks/guard-wsl-shell.sh / tests/lib/wsl-shell-scan.sh）の検査。Issue `#2341` / `#2688`。
 # 入力はすべてコマンド文字列の fixture で、wsl も WSL も起動しない。MSYS の分岐は環境変数 OSTYPE で
 # 通す（bash は環境の OSTYPE を上書きしない）。
 # 空振り検出: hook / 判定 lib / 字句解析 lib / hooks.json の不在は suite が赤。判定 lib の不在・空・固定 clear 化と
@@ -8,13 +8,16 @@
 # `--exec` の陰性が赤、hook のホスト判定を外すと linux-gnu のケースが赤、二重引用符の中の `\$` の検出を外すと
 # `sh -c "echo \$HOME"` の陽性が赤、hooks.json の登録を外すと登録照合が赤、実行位置の探索から予約語と `timeout` を
 # 外すと `for … do wsl …` の陽性が赤（どれも 1 件目で止まる）。
+# 変異検出（2026-11-15 macOS 実測、mutation-harness.sh 9 件すべて detected / SURVIVED 0。基準 165 件緑）:
+# m1-hook-slash-filter / m2-hook-msys-gate / m3-pathconv-noop / m4-assign-flag-drop / m5-double-slash-invert /
+# m6-excl-drop / m7-subshell-leak / m8-pathconv-ack-bleed / m9-command-v-lookup。
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="$ROOT/hooks/guard-wsl-shell.sh"
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
 isolate_hook_env "FF_DEV_TOOLKIT_SKIP" "$TARGET"
-unset FF_WSL_SHELL_ACK
+unset FF_DEV_TOOLKIT_SKIP FF_WSL_SHELL_ACK FF_WSL_PATHCONV_ACK
 command -v jq >/dev/null || { echo 'jq required' >&2; exit 1; }
 for file in "$TARGET" "$ROOT/tests/lib/wsl-shell-scan.sh" "$ROOT/tests/lib/review-shell-lex.sh" "$ROOT/hooks/hooks.json"; do
   [ -s "$file" ] || { echo "required guard resource missing: $file" >&2; exit 1; }
@@ -94,7 +97,7 @@ for cmd in \
   "wsl.exe --exec sh -c 'echo \"\$1\"' sh hello" \
   "wsl -d Ubuntu -e sh -c 'echo \$x' sh" \
   "wsl --shell-type none sh -c 'echo \$x'" \
-  "wsl.exe -- bash /mnt/c/x/script.sh \$HOME" \
+  "MSYS_NO_PATHCONV=1 wsl.exe -- bash /mnt/c/x/script.sh \$HOME" \
   "wsl -- bash -c 'echo plain'" \
   "wsl -- bash -c \"echo \$HOME\"" \
   "wsl -- bash -c \"\$(cat s.sh)\"" \
@@ -168,9 +171,11 @@ if registered "$tmp/hooks.json"; then fail '登録削除の変異が照合をす
 PASS=$((PASS+2))
 
 # 判定 lib の故障は候補だけを判定不能で止める。固定 clear の写しは陽性照合を失う
-mkdir -p "$tmp/plugin/hooks" "$tmp/plugin/tests/lib"
+mkdir -p "$tmp/plugin/hooks" "$tmp/plugin/tests/lib" "$tmp/plugin/scripts/lib"
 cp "$TARGET" "$ROOT/hooks/asdd-hook-gate.sh" "$tmp/plugin/hooks/"
 cp "$ROOT/tests/lib/review-shell-lex.sh" "$ROOT/tests/lib/wsl-shell-scan.sh" "$tmp/plugin/tests/lib/"
+cp "$ROOT/scripts/lib/wsl-notice.sh" "$ROOT/scripts/lib/stop-block.sh" \
+  "$ROOT/scripts/lib/l4-declarations.sh" "$ROOT/scripts/lib/l4-declarations.tsv" "$tmp/plugin/scripts/lib/"
 copy="$tmp/plugin/hooks/guard-wsl-shell.sh"
 scan="$tmp/plugin/tests/lib/wsl-shell-scan.sh"
 deny_expected "wsl -- bash -c 'echo \$x'" "$copy"
@@ -193,5 +198,209 @@ lex="$tmp/plugin/tests/lib/review-shell-lex.sh"
 unknown_expected "wsl -- bash -c 'echo \$x'" "$copy"
 printf '%s\n' '# no functions' > "$lex"
 unknown_expected "wsl -- bash -c 'echo \$x'" "$copy"
+unknown_expected "wsl.exe -- bash /mnt/c/x/script.sh" "$copy"
+
+# ---- wsl-pathconv 拡張契約・回避行列・停止文・replica 異常系 -------------------------
+cp "$ROOT/tests/lib/review-shell-lex.sh" "$lex"
+cp "$ROOT/tests/lib/wsl-shell-scan.sh" "$scan"
+rm -f "$tmp/plugin/scripts/lib/stop-block.sh"
+pc_msys_env="$tmp/pc-msys.sh"
+pc_linux_env="$tmp/pc-linux.sh"
+printf 'OSTYPE=msys\n' > "$pc_msys_env"
+printf 'OSTYPE=linux-gnu\n' > "$pc_linux_env"
+
+pc_run() {
+  local cmd="$1" hook="${2:-$TARGET}" envf="${3:-$pc_msys_env}"
+  jq -nc --arg c "$cmd" '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:$c}}' \
+    | BASH_ENV="$envf" bash "$hook"
+}
+
+pc_deny() {
+  local cmd="$1" expect_rule="$2" expect_hint="${3:-}" hook="${4:-$TARGET}" out dec reason l2
+  out="$(pc_run "$cmd" "$hook" "$pc_msys_env")" || { echo "✗ rc!=0: $cmd" >&2; exit 1; }
+  dec="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // empty')"
+  reason="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty')"
+  if [ "$dec" != "deny" ] || [ -z "$reason" ]; then
+    echo "✗ pathconv 止めるべき形を通した: $cmd ($out)" >&2
+    exit 1
+  fi
+  l2="$(printf '%s\n' "$reason" | tail -n 3 | sed -n 2p)"
+  if [ -n "$expect_rule" ] && [[ "$l2" != "止めた規則: ${expect_rule}（"* ]]; then
+    echo "✗ pathconv 規則違い ($expect_rule != $l2): $cmd" >&2
+    exit 1
+  fi
+  if [ -n "$expect_hint" ] && [[ "$reason" != *"$expect_hint"* ]]; then
+    echo "✗ pathconv 期待文言なし ($expect_hint): $cmd -> $reason" >&2
+    exit 1
+  fi
+  PASS=$((PASS + 1))
+}
+
+pc_allow() {
+  local cmd="$1" envf="${2:-$pc_msys_env}" hook="${3:-$TARGET}" out
+  out="$(pc_run "$cmd" "$hook" "$envf")" || { echo "✗ allow rc!=0 ($hook / $envf): $cmd" >&2; exit 1; }
+  if [ -n "$out" ]; then
+    echo "✗ pathconv 通すべき形を止めた ($hook | skip=${FF_DEV_TOOLKIT_SKIP:-} | s_ack=${FF_WSL_SHELL_ACK:-} | p_ack=${FF_WSL_PATHCONV_ACK:-}): $cmd ($out)" >&2
+    exit 1
+  fi
+  PASS=$((PASS + 1))
+}
+
+# stop-block.sh 不在 replica でも pathconv / shell ともに stop-block-unavailable で deny
+pc_deny "wsl.exe -d Ubuntu --exec bash /mnt/c/x/script.sh" "stop-block-unavailable" "元の規則: wsl-pathconv" "$copy"
+pc_deny "wsl -- bash -c 'echo \$x'" "stop-block-unavailable" "元の規則: wsl-shell" "$copy"
+# wsl-notice.sh 不在 replica は非判定（fail-open exit 0）
+rm -f "$tmp/plugin/scripts/lib/wsl-notice.sh"
+pc_allow "wsl.exe -d Ubuntu --exec bash /mnt/c/x/script.sh" "$pc_msys_env" "$copy"
+
+# AC 1 & 基本 pathconv deny（元の L97 を含む）
+for cmd in \
+  "wsl.exe -d Ubuntu --exec bash /mnt/c/x/script.sh" \
+  "wsl.exe -- bash /mnt/c/x/script.sh \$HOME" \
+  "wsl /tmp/foo.sh" \
+  "wsl.exe --exec cat /etc/os-release" \
+  "wsl --distribution Ubuntu --cd /mnt/c/work ls" \
+  "wsl --shell-type login bash /mnt/c/a.sh" \
+  "wsl.exe --cd=/mnt/c/work ls" \
+  "wsl.exe --exec env FOO=/mnt/c/x bash" \
+  "wsl.exe --exec foo --out=/mnt/c/x" \
+  "MSYS_NO_PATHCONV=1 wsl /a ; wsl /b" \
+  "export MSYS_NO_PATHCONV=1; unset MSYS_NO_PATHCONV; wsl /a" \
+  "(export MSYS_NO_PATHCONV=1; true); wsl /a" \
+  "export MSYS_NO_PATHCONV=0; wsl /a"
+do
+  pc_deny "$cmd" "wsl-pathconv" "MSYS_NO_PATHCONV=1"
+done
+
+# both（-c $ と / 引数の両方）
+pc_deny "wsl -- sh -c 'echo \$x' /mnt/c/file" "wsl-shell" "MSYS_NO_PATHCONV=1"
+pc_deny "FF_WSL_PATHCONV_ACK=1 wsl -- sh -c 'echo \$x' /mnt/c/file" "wsl-shell" "FF_WSL_SHELL_ACK=1"
+pc_deny "wsl --exec sh -c 'echo \$1' sh /mnt/c/file" "wsl-pathconv" "MSYS_NO_PATHCONV=1"
+
+# 回避行列 4 軸（引用・対象語変形・区切り/構文・免除マーカー誤用）
+for cmd in \
+  "wsl.exe --exec bash \"/mnt/c/x/script.sh\"" \
+  "wsl.exe --exec bash '/mnt/c/x/script.sh'" \
+  "wsl.exe --exec bash /mnt/c/x\\ y/z.sh" \
+  "\"wsl.exe\" --exec bash /mnt/c/x/script.sh" \
+  "WSL.EXE --exec bash /mnt/c/x/script.sh" \
+  "C:/Windows/System32/wsl.exe --exec bash /mnt/c/x/script.sh" \
+  "/c/Windows/System32/wsl.exe --exec bash /mnt/c/x/script.sh" \
+  "env wsl.exe --exec bash /mnt/c/x/script.sh" \
+  "command wsl.exe --exec bash /mnt/c/x/script.sh" \
+  "command -p wsl.exe --exec bash /mnt/c/x/script.sh" \
+  "true && wsl.exe --exec bash /mnt/c/x/script.sh" \
+  "(wsl.exe --exec bash /mnt/c/x/script.sh)" \
+  "{ wsl.exe --exec bash /mnt/c/x/script.sh; }" \
+  "if true; then wsl.exe --exec bash /mnt/c/x/script.sh; fi" \
+  "FF_WSL_PATHCONV_ACK=0 wsl.exe --exec bash /mnt/c/x/script.sh" \
+  "FF_WSL_PATHCONV_ACK=true wsl.exe --exec bash /mnt/c/x/script.sh" \
+  "echo FF_WSL_PATHCONV_ACK=1 && wsl.exe --exec bash /mnt/c/x/script.sh" \
+  "FF_WSL_PATHCONV_ACK=1 echo hi && wsl.exe --exec bash /mnt/c/x/script.sh" \
+  $'# FF_WSL_PATHCONV_ACK=1\nwsl.exe --exec bash /mnt/c/x/script.sh' \
+  $'echo "FF_WSL_PATHCONV_ACK=1"; wsl.exe --exec bash /mnt/c/x/script.sh' \
+  $'# MSYS_NO_PATHCONV=1\nwsl.exe --exec bash /mnt/c/x/script.sh' \
+  "echo MSYS_NO_PATHCONV=1 && wsl.exe --exec bash /mnt/c/x/script.sh" \
+  "MSYS2_ARG_CONV_EXCL=/other wsl.exe --exec bash /mnt/c/x/script.sh" \
+  "MSYS2_ARG_CONV_EXCL='' wsl.exe --exec bash /mnt/c/x/script.sh" \
+  "MSYS_NO_PATHCONV= wsl.exe --exec bash /mnt/c/x/script.sh" \
+  "MSYS_NO_PATHCONV=1; wsl.exe --exec bash /mnt/c/x/script.sh" \
+  "FF_WSL_PATHCONV_ACK=1 wsl.exe --exec bash /mnt/c/a ; wsl.exe --exec bash /mnt/c/b"
+do
+  pc_deny "$cmd" "wsl-pathconv" "MSYS_NO_PATHCONV=1"
+done
+pc_deny "FF_WSL_SHELL_ACK=1 echo hi && wsl -- bash -c 'echo \$x'" "wsl-shell" "FF_WSL_SHELL_ACK=1"
+
+# AC 2 & AC 3 & 誤検知除外 allow
+for cmd in \
+  "MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu --exec bash /mnt/c/x/script.sh" \
+  "export MSYS_NO_PATHCONV=1; wsl.exe -d Ubuntu --exec bash /mnt/c/x/script.sh" \
+  "MSYS2_ARG_CONV_EXCL='*' wsl.exe -d Ubuntu --exec bash /mnt/c/x/script.sh" \
+  "MSYS2_ARG_CONV_EXCL=/ wsl.exe --exec bash /mnt/c/x/script.sh" \
+  "MSYS2_ARG_CONV_EXCL=/mnt/c wsl.exe --exec bash /mnt/c/x/script.sh" \
+  "MSYS2_ARG_CONV_EXCL='/mnt/c;/tmp' wsl.exe --exec bash /mnt/c/x/script.sh" \
+  "env MSYS_NO_PATHCONV=1 wsl.exe --exec bash /mnt/c/x/script.sh" \
+  "MSYS_NO_PATHCONV=1 wsl --exec sh -c 'echo \$1' sh /mnt/c/file" \
+  "FF_WSL_SHELL_ACK=1 wsl.exe -d Ubuntu --exec bash /mnt/c/x/script.sh" \
+  "FF_WSL_PATHCONV_ACK=1 wsl.exe -d Ubuntu --exec bash /mnt/c/x/script.sh" \
+  "FF_WSL_SHELL_ACK=1 wsl -- sh -c 'echo \$x' /mnt/c/file" \
+  "wsl --exec bash -c 'cat /mnt/c/foo'" \
+  "wsl.exe --exec cmd //c dir" \
+  "wsl --exec bash -c 'true' > /dev/null" \
+  "git log -S 'wsl.exe -- bash /mnt/c/x'" \
+  $'cat <(git diff HEAD | grep wsl) >/dev/null' \
+  "command -v wsl /usr/bin/wsl" \
+  "command -V wsl.exe /mnt/c/foo"
+do
+  pc_allow "$cmd"
+done
+
+# 非 MSYS ホストでは通す
+pc_allow "wsl.exe -d Ubuntu --exec bash /mnt/c/x/script.sh" "$pc_linux_env"
+pc_allow "wsl -- sh -c 'echo \$x' /mnt/c/file" "$pc_linux_env"
+
+# AC 4 FF_DEV_TOOLKIT_SKIP（wsl-shell は wsl-pathconv を包含、wsl-pathconv は pathconv のみ）
+FF_DEV_TOOLKIT_SKIP=wsl-shell pc_allow "wsl.exe -d Ubuntu --exec bash /mnt/c/x/script.sh"
+FF_DEV_TOOLKIT_SKIP=wsl-shell pc_allow "wsl -- sh -c 'echo \$x' /mnt/c/file"
+FF_DEV_TOOLKIT_SKIP=wsl-pathconv pc_allow "wsl.exe -d Ubuntu --exec bash /mnt/c/x/script.sh"
+(
+  export FF_DEV_TOOLKIT_SKIP=wsl-pathconv
+  pc_deny "wsl -- sh -c 'echo \$x' /mnt/c/file" "wsl-shell" "FF_WSL_SHELL_ACK=1"
+)
+
+# Bash 専用ガードの ACK はコマンド内の wsl 区間先頭でのみ効き、hook のプロセス環境では素通ししない
+(
+  export FF_WSL_PATHCONV_ACK=1
+  pc_deny "wsl.exe -d Ubuntu --exec bash /mnt/c/x/script.sh" "wsl-pathconv" "MSYS_NO_PATHCONV=1"
+)
+(
+  export FF_WSL_SHELL_ACK=1
+  pc_deny "wsl.exe -d Ubuntu --exec bash /mnt/c/x/script.sh" "wsl-pathconv" "MSYS_NO_PATHCONV=1"
+  pc_deny "wsl -- sh -c 'echo \$x' /mnt/c/file" "wsl-shell" "FF_WSL_SHELL_ACK=1"
+)
+
+# 複合コマンド・subshell 境界・wrapper・case・Windows バックスラッシュパス（`#2688` review 回帰）
+for cmd in \
+  "( export MSYS_NO_PATHCONV=1; true | cat ); wsl.exe --exec bash /mnt/c/x" \
+  "( export MSYS_NO_PATHCONV=1; false ) | wsl.exe --exec bash /mnt/c/x" \
+  "( export MSYS_NO_PATHCONV=1; true ) & wsl.exe --exec bash /mnt/c/x" \
+  "( export MSYS_NO_PATHCONV=1; ( true )); wsl.exe --exec bash /mnt/c/x" \
+  "( export MSYS_NO_PATHCONV=1 ) >/dev/null; wsl.exe --exec bash /mnt/c/x" \
+  "! ( true; export MSYS_NO_PATHCONV=1 ); wsl.exe --exec bash /mnt/c/x" \
+  "{ ( true; export MSYS_NO_PATHCONV=1 ); }; wsl.exe --exec bash /mnt/c/x" \
+  $'if false; then\nexport MSYS_NO_PATHCONV=1\nfi\nwsl.exe --exec bash /mnt/c/x' \
+  "if false; then true; export MSYS_NO_PATHCONV=1; fi; wsl.exe --exec bash /mnt/c/x" \
+  "case \"\$x\" in a) export MSYS_NO_PATHCONV=1 ;; esac; wsl.exe --exec bash /mnt/c/x" \
+  "exec -a mywsl wsl.exe --exec bash /mnt/c/x" \
+  "env -C /tmp wsl.exe --exec bash /mnt/c/x" \
+  "case \"\$x\" in a) wsl.exe --exec bash /mnt/c/x ;; esac" \
+  "case \"\$x\" in a) echo hi ;; b) wsl.exe --exec bash /mnt/c/x ;; esac" \
+  $'case "$x" in\n  a)\n    echo hi\n    ;;\n  b)\n    wsl.exe --exec bash /mnt/c/x\n    ;;\nesac' \
+  $'\'C:\\Windows\\System32\\wsl.exe\' --exec bash /mnt/c/x' \
+  $'"C:\\\\Windows\\\\System32\\\\wsl.exe" --exec bash /mnt/c/x'
+do
+  pc_deny "$cmd" "wsl-pathconv" "MSYS_NO_PATHCONV=1"
+done
+
+for cmd in \
+  "cd /tmp && FF_WSL_PATHCONV_ACK=1 wsl.exe --exec bash /mnt/c/x" \
+  "cd /tmp && FF_WSL_SHELL_ACK=1 wsl -- bash -c 'echo \$x'" \
+  "( export MSYS_NO_PATHCONV=1; wsl.exe --exec bash /mnt/c/x )" \
+  "case \"\$x\" in a) MSYS_NO_PATHCONV=1 wsl.exe --exec bash /mnt/c/x ;; esac"
+do
+  pc_allow "$cmd"
+done
+
+# ACK 配置文言（コマンド先頭ではなく wsl 区間先頭）と unavailable 時の到達不能 ACK 非案内
+pc_deny "FF_WSL_PATHCONV_ACK=1 cd /tmp && wsl.exe --exec bash /mnt/c/x" "wsl-pathconv" "wsl 区間先頭"
+pc_deny "FF_WSL_SHELL_ACK=1 cd /tmp && wsl -- bash -c 'echo \$x'" "wsl-shell" "wsl 区間先頭"
+out_unavail="$(pc_run "FF_WSL_SHELL_ACK=1 wsl -- bash -c 'echo \$x")" || { echo "✗ unavailable rc!=0" >&2; exit 1; }
+reason_unavail="$(printf '%s' "$out_unavail" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty')"
+if [ "$(printf '%s' "$out_unavail" | jq -r '.hookSpecificOutput.permissionDecision // empty')" != "deny" ] || [[ "$reason_unavail" != *"止めた規則: wsl-shell-unavailable（"* ]] || [[ "$reason_unavail" == *FF_WSL_SHELL_ACK* ]] || [[ "$reason_unavail" == *FF_WSL_PATHCONV_ACK* ]]; then
+  echo "✗ unavailable 応答に到達不能な ACK 案内が含まれているか形式不正: $reason_unavail" >&2
+  exit 1
+fi
+PASS=$((PASS + 1))
+
 echo "guard-wsl-shell: all $PASS checks passed"
 REACHED_END=1

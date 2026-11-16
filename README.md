@@ -148,7 +148,8 @@ export FF_DEV_TOOLKIT_SKIP=update-check,wsl-notice
 | `sub-issue-id` | sub-issues integer フィールドガード（`hooks/guard-sub-issue-id.sh`） | - |
 | `update-check` | 更新通知（`hooks/check-update.sh`） | - |
 | `wsl-notice` | Windows（Git Bash）での WSL 案内（`hooks/check-update.sh`） | - |
-| `wsl-shell` | WSL シェル本文ガード（`hooks/guard-wsl-shell.sh`） | - |
+| `wsl-pathconv` | WSL への POSIX パス引数変換ガード（`hooks/guard-wsl-shell.sh` の `/` 始まり引数検出） | - |
+| `wsl-shell` | WSL シェル本文ガード（`hooks/guard-wsl-shell.sh` 全体） | `wsl-pathconv` |
 | `zsh-expansion` | zsh 展開ガード（`hooks/guard-zsh-glob.sh` の追加検出） | - |
 | `zsh-glob` | zsh 未引用 glob ガード（`hooks/guard-zsh-glob.sh` 全体） | `zsh-expansion` |
 
@@ -159,7 +160,7 @@ export FF_DEV_TOOLKIT_SKIP=update-check,wsl-notice
 - `FF_DISCARD_UNCOMMITTED_ACK=1` — 未コミット変更ガードで、意図して変更を破棄する `git checkout` / `git restore` の先頭に付けます
 - `FF_ISSUE_LABEL_ACK=1` — 起票ラベル契約ガードで、ラベルの欠けた `gh issue create` の先頭に付けます
 - `FF_REVIEW_LOCK_ACK=1` — レビュー走行中の凍結で、その書き込みだけを通します。Bash では書き込みを含む区間の先頭に付け、Bash 以外のツールでは hook のプロセス環境で渡します
-- 名前の変わらない ACK: `FF_CREDENTIAL_OUTPUT_ACK` / `FF_EFFORT_ACTUAL_ACK` / `FF_EXIT_CODE_ACK` / `FF_LITERAL_WRITE_ACK` / `FF_LONG_GATE_BACKGROUND_ACK` / `FF_MERGE_CLOSING_ACK` / `FF_PR_DRAFT_ACK` / `FF_REVIEW_ROUND_ACK` / `FF_RG_STDIN_ACK` / `FF_SHELL_SAVE_ACK` / `FF_SUB_ISSUE_ID_ACK` / `FF_TIMEOUT_ACK` / `FF_UNBOUNDED_WAIT_ACK` / `FF_WSL_SHELL_ACK` / `FF_ZSH_EXPANSION_ACK` / `FF_ZSH_GLOB_ACK`
+- 名前の変わらない ACK: `FF_CREDENTIAL_OUTPUT_ACK` / `FF_EFFORT_ACTUAL_ACK` / `FF_EXIT_CODE_ACK` / `FF_LITERAL_WRITE_ACK` / `FF_LONG_GATE_BACKGROUND_ACK` / `FF_MERGE_CLOSING_ACK` / `FF_PR_DRAFT_ACK` / `FF_REVIEW_ROUND_ACK` / `FF_RG_STDIN_ACK` / `FF_SHELL_SAVE_ACK` / `FF_SUB_ISSUE_ID_ACK` / `FF_TIMEOUT_ACK` / `FF_UNBOUNDED_WAIT_ACK` / `FF_WSL_PATHCONV_ACK` / `FF_WSL_SHELL_ACK` / `FF_ZSH_EXPANSION_ACK` / `FF_ZSH_GLOB_ACK`
 
 この形にまとめる前の個別の名前（旧名）は、もう読みません。ガードと通知を止めていた旧名は効かず、そのガードと通知は動きます。副作用のある 4 つの鍵（`auto-update` / `codex-auto-update` / `effort-metrics` / `decision-tree`）だけは、旧名の値が空でなければ（`0` でも）その処理を止めたままにします（旧名で止めていた更新や記録が黙って動き出さないため）。hooks が発火するホスト（Claude Code など）では、旧名が環境に残っているとセッション開始時に毎回、置き換えを通知します。旧名と新しい書き方の対応表は、同梱の `PUBLIC-SURFACE.md` の「破壊的変更の記録」と CHANGELOG にあります。
 
@@ -252,16 +253,12 @@ Bash 呼び出しを実行前に止める。`grep -v` の除外やキー名抽�
 Claude Code の Bash 登録と grok の global hook 同期経路へ同じ実体を配布する。
 Codex の Bash 相当ツールでの実発火は未実測。
 
-**WSL シェル本文ガード（`guard-wsl-shell.sh`）** は Windows の Git Bash でだけ動き、
-`wsl` / `wsl.exe` から `bash` / `sh` を `-c`（`-lc` など）で起動して本文に `$` が残る Bash 呼び出しを実行前に止める。
-`wsl.exe` は `--exec` を付けない限り引数を WSL 側の既定シェルで解釈し直すので、
-単一引用符の中の `$変数` や `$?` も bash へ届く前に展開され、空文字や誤った値のまま動く。
-`wsl.exe --exec sh -c '<スクリプト>' sh <引数>` か、スクリプトファイルを `wsl.exe -- bash /mnt/c/…/script.sh` で起動する形へ書き換える。
-`--exec` / `-e` / `--shell-type none`・`-c` の無い起動・`$` を含まない本文・Git Bash 側で展開される `$` は止めない。
-ただし Git Bash 側の展開結果（`bash -c "$(cat s.sh)"` など）に `$` が含まれていれば WSL でもう一度展開され、これは静的に検出できない。
-誤検知時だけ先頭の `FF_WSL_SHELL_ACK=1` で免除でき、
-環境変数 `FF_DEV_TOOLKIT_SKIP=wsl-shell` で無効化できる。
-候補コマンドで判定 lib の不在・失敗・引用符の未終端なら判定不能として停止する。
+**WSL シェル本文ガード（`guard-wsl-shell.sh`）** は Windows の Git Bash でだけ動き、`wsl` / `wsl.exe` について次の 2 つを実行前に止める:
+1. `wsl` / `wsl.exe` から `bash` / `sh` を `-c`（`-lc` など）で起動して本文に `$` が残る呼び出し（`--exec` / `-e` / `--shell-type none` を付けない限り WSL 側の既定シェルが単一引用符の中の `$変数` や `$?` も展開して壊れる）。`wsl.exe --exec sh -c '<スクリプト>' sh <引数>` か、スクリプトファイルを `MSYS_NO_PATHCONV=1 wsl.exe -- bash /mnt/c/…/script.sh` で起動する形へ書き換える（ただし Git Bash 側の展開結果に `$` が含まれる場合、例: `bash -c "$(cat s.sh)"` は静的に検出できない）。
+2. `wsl` / `wsl.exe` の引数に `/` 始まりの POSIX パス（または `--flag=/…` / `VAR=/…`。`//*` と多語 `-c` 本文は除く）を含み、`MSYS_NO_PATHCONV=1`（`wsl` 区間先頭への前置または先行の非条件・非 subshell `export`）も対象を覆う `MSYS2_ARG_CONV_EXCL` も無い呼び出し（`--exec` を付けても MSYS が Windows 側のパスへ書き換えて WSL 側で rc 127 になる）。`wsl` 区間先頭へ `MSYS_NO_PATHCONV=1` を前置する（例: `MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu --exec bash /mnt/c/…/script.sh`）。
+
+誤検知時だけ、全体の免除は `wsl` 区間先頭の `FF_WSL_SHELL_ACK=1`（無効化は `FF_DEV_TOOLKIT_SKIP=wsl-shell`、どちらもパス変換検出を含む）、POSIX パス変換のみの免除は `wsl` 区間先頭の `FF_WSL_PATHCONV_ACK=1`（無効化は `FF_DEV_TOOLKIT_SKIP=wsl-pathconv`）を使える。
+候補コマンドで判定 lib の不在・失敗・引用符の未終端なら判定不能として停止する（理由文の末尾 3 行は停止文の共通形）。
 `$(…)` の中の wsl・別名経由の起動・Codex の Bash 相当ツールでの実発火は対象外（未実測）。
 
 
@@ -327,6 +324,7 @@ Codex の Bash 相当ツールでの実発火は未実測。
 - `command -v` で見つからない `timeout` / `gtimeout` は実行前に止める。案内は perl の alarm。このコマンドに限って通すときは先頭に `FF_TIMEOUT_ACK=1` を付ける
 - パターンはあるのに検索パスの無い `rg`（`rg -n 'pat' -g '!node_modules'`）は実行前に止める（パターンの無い `rg` は使い方の誤りで即座に終わり、`command -v rg` は起動ではないので止めない）。ripgrep は検索パスを省くと、標準入力が端末でないとき cwd ではなく標準入力を検索するので、Bash ツール（標準入力が端末でなく EOF も来ない）では出力の無いまま timeout まで待ち続ける。案内は検索パスの明示（`rg … .`）か `</dev/null`。パイプの受け側（`cmd | rg …`）・標準入力のリダイレクト・`--files` / `--type-list` / `--version` は止めない。`$(…)` の中の `rg` も外の標準入力を受け継ぐので走査する。判定の正本は `tests/lib/rg-stdin-scan.sh`。このコマンドに限って通すときは先頭に並ぶ代入として `FF_RG_STDIN_ACK=1` を付ける。`rg` の起動語を含む呼び出しに限り、判定ヘルパの不在・走査の失敗は判定不能として止める
 - セミコロンで繋いだ一意なパイプの並びは、区間のどれかが非 0 なら非 0 で終わる書き換え候補にする。一意でない区間、関数、サブシェル、背景起動は書き換えず止める
+- 1 回の Bash 呼び出しで fail-fast でない git 書き込み（`git add` / `git commit` / `git push` / `git merge` と事前の比較コマンド `cmp`）を `;` や改行等で繋ぐ連鎖も実行前に止める（`git add` 失敗後に既 stage 分だけ `git commit` する形・`cmp` 不一致後に `git commit` する形・`commit-msg` 拒否後に空ブランチへ `git push -u` する形の 3 形を含む。判定の正本は `tests/lib/git-write-chain-scan.sh`）。`&&`・`set -e`（`&&` 左辺など `errexit` が抑止される文脈を除く）・`if`・`$?` の終了コード分岐で守られた形は素通しする。入力書き換えに対応した Claude Code 環境で一意なトップレベル連鎖は先頭へ `set -e; ` を付けた `updatedInput` で通し、書換不能な形（コマンド置換・`bash -c`・パイプマスク・既設 `set -e` / `set +e` の逆効果など）や非対応ホストは `deny` に留める。免除はコマンド先頭の `FF_EXIT_CODE_ACK=1`（括弧や複合文が先頭なら `FF_EXIT_CODE_ACK=1;`）、無効化は `FF_DEV_TOOLKIT_SKIP=exit-code`。`git` と書きサブコマンド語を含む候補コマンドに限り、ヘルパの不在・走査失敗・未終端構文は判定不能として止める（fail-closed）
 - 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP=exit-code`
 - **このガードだけは判定を完了できないとき fail-closed**（判定不能である旨を出して止める）。対象は検出器の欠落・破損、heredoc 除去ヘルパの欠落・破損、走査 `awk` の失敗、`jq` フィルタの実行失敗、検出器出力の解釈不能、ASDD ゲートの検証不能（`.asdd/config.json` があるのに node が無い・設定を読めない。機能を無効にした場合は従来どおり無音で通る）。ただしその面は `$?` / `PIPESTATUS` / ゲート綴りを含む**候補コマンドに限る**ので、検出器が壊れても無関係な Bash 呼び出しは止まらない
 - 引用符の扱い: 検出器は**単一引用符**とコメントを散文として伏せる。二重引用符の中も区切り子・コマンド名は伏せるが、`$?` と `PIPESTATUS` は実際に展開されるため判定対象に残る（散文として書くなら単一引用符を使う）

@@ -7,6 +7,9 @@
 #
 # NOTE: Metered CLIs (Copilot CLI, Google Antigravity CLI) are excluded
 # from every default task lineup. Opt in explicitly with --cli <cli>.
+# Google Antigravity CLI is also own-host only: its adapter refuses to start
+# agy when another agent host's mark is set (CLAUDECODE=1 / CODEX_THREAD_ID /
+# GROK_AGENT), even with --cli antigravity-cli (Issue `#2810`).
 #
 # Compatible with bash 3.2+ (macOS default).
 #
@@ -109,6 +112,11 @@
 #                           command to adopt those results and finish the report. Every
 #                           other lane runs unchanged, and the default (no flag) still
 #                           spawns the CLI. See "Host delegation" below.
+#   --allow-html-entities   With --delegate-to-host, accept delegated .response.md containing
+#                           &lt; / &gt; / &amp; when literal HTML entities are intentional.
+#   --extract-subagent-response <transcript.jsonl> --output-file <path>
+#                           Extract a subagent's final response unmodified from transcript JSONL
+#                           into <path> (Claude / Antigravity / Grok / Codex) instead of <task-notification>.
 #   --dry-run               Show plan without executing
 #   --print-reviewers       Print the resolved review pair (main / sub / sources) plus
 #                           cross_review and its source as key=value lines, then exit
@@ -805,8 +813,12 @@ main() {
     fi
   done
 
-  load_config
+  argv_requests_extract "$@" || load_config
   parse_args "$@"
+  if [[ "$EXTRACT_MODE" == true ]]; then
+    run_extract_subagent_response
+    exit $?
+  fi
   if [[ "$ARCHIVE_ONLY" == true ]]; then
     validate_mode
     [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$(get_default_output_dir review)"
@@ -1131,8 +1143,7 @@ main() {
     echo "      The lane is released when the launch is denied, or by its own age limit — a" >&2
     echo "      subagent-stop event carries no correlation id, so a generic type cannot be matched" >&2
     echo "      back to this review without risking the release of someone else's lane." >&2
-    echo "   2) The parent writes each returned result, unmodified, to the output-file bound at launch." >&2
-    echo "      The subagent does not create or modify files." >&2
+    print_delegation_step2_guidance
     if [[ -n "$REVIEW_EVIDENCE_PRIOR" || -n "$REVIEW_EVIDENCE_PARENT" ]]; then
       echo "   3) Wait until ALL pending delegated responses have been written, then re-run the" >&2
       echo "      original command below WITHOUT --resume. Prior/continued evidence forbids --resume" >&2

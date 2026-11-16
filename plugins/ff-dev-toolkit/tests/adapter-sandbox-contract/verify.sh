@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # アダプタが渡す sandbox 引数と、CLI が実際に受け付ける値との契約検査（Issue #403）。
-# 空振り検出: effective-permissions のadapterディレクトリ不在はrc=1。正規ハーネスでhelper不在・profileケース集合0件・拒否理由の混同を含む10変異が全てred、通常対照53件PASS（2026-10-29 macOS実測）。
+# 空振り検出: effective-permissions のadapterディレクトリ不在はrc=1。正規ハーネスでhelper不在・profileケース集合0件・拒否理由の混同を含む10変異が全てred、通常対照53件PASS（2026-10-29 macOS実測）。自ホスト専用レーン（Issue `#2810`）は antigravity-cli-adapter.sh の refuse_foreign_host_launch 呼び出しを外す変異で拒否 12 ケースが全て red（rc=1）、呼び出しを導入確認（cli_available）の後ろへ移す変異で agy 不在ケースが red（rc=1）、ANTIGRAVITY_AGENT=1 だけの対照は起動を確認（2026-11-16 macOS実測）。
 #
 # 潰している事故: **アダプタが、その CLI が受け付けない sandbox 値を渡すこと**。
 # 実例（develop で長期間生きていた）— codex アダプタが implement に対して
@@ -418,6 +418,9 @@ ARGC=0
 LAUNCHES=0
 BINARY=""
 ADAPTER_RC=0
+# ケース固有の env 代入（NAME=VALUE）。run_isolated の分離（主担当ホストの印を含む）の後に足す。
+# 既定は空 — 印を前提にするのは自ホスト専用レーンの検査だけ（Issue `#2810`）。
+RUN_ADAPTER_ENV=()
 # stub の codex が `exec --help` に返す内容。既定は現行の help（`-C, --cd` あり）。
 # 旧版検出の負例だけがここを差し替える。
 STUB_CODEX_HELP=""
@@ -438,6 +441,7 @@ run_adapter() {
     PATH="$WORK/bin:$PATH" ARGV_DIR="$WORK/argv" HOME="$WORK/home" USERPROFILE="" CODEX_HOME="$WORK/codex" \
     GROK_HOME="$WORK/grok-home-empty" \
     FF_STUB_CODEX_HELP="${STUB_CODEX_HELP:-$CODEX_HELP_MODERN}" \
+    ${RUN_ADAPTER_ENV[@]+"${RUN_ADAPTER_ENV[@]}"} \
     bash "$ADAPTERS_DIR/$adapter" "$PERSPECTIVE" "$WORK/out.md" \
     --base HEAD --timeout 30 --task-type "$task" \
     "${output_args[@]}" \
@@ -879,6 +883,58 @@ if argv_has_pair --mode accept-edits && argv_has_pair --add-dir "$WORK/staging" 
 else
   bad "antigravity-cli/implement staged: --mode accept-edits / --add-dir staging のいずれかが欠落"
   dump_argv
+fi
+
+echo "-- antigravity-cli は他のエージェントホストから agy を起動しない（Issue \`#2810\`） --"
+# 上の antigravity-cli のケースは run_isolated が印を落とした状態で起動しており、それが対照になる
+# （stub が起動して argv を記録した）。ここでは印を 1 つずつ立て、stub が 1 回も起動しないこと・
+# 方針による拒否の文言が出ること・非 0 で終わることを 3 タスクとも見る。拒否の文言を見るのは、
+# 別理由の失敗（導入確認・プロンプト組み立て）で起動 0 回になった回を緑に数えないため。
+for marks in "CLAUDECODE=1" "CODEX_THREAD_ID=stub-thread" "GROK_AGENT=1" "CLAUDECODE=1 ANTIGRAVITY_AGENT=1"; do
+  for task in review explore implement; do
+    # shellcheck disable=SC2206 # marks は空白区切りの NAME=VALUE 列（値に空白を含まない固定値）
+    RUN_ADAPTER_ENV=($marks)
+    run_adapter antigravity-cli "$task"
+    RUN_ADAPTER_ENV=()
+    if [ "$LAUNCHES" -eq 0 ] && [ "$ARGC" -eq 0 ] && [ "$ADAPTER_RC" -ne 0 ] \
+       && grep -q '自ホスト専用のレーンです' "$WORK/stderr.log" \
+       && grep -q 'Status: incomplete' "$WORK/out.md" 2>/dev/null \
+       && grep -q '自ホスト専用のレーンです' "$WORK/out.md" 2>/dev/null; then
+      ok "antigravity-cli/$task: ${marks} の下では agy を起動せず、理由を INCOMPLETE の成果物へ残して拒否する（rc=${ADAPTER_RC}）"
+    else
+      bad "antigravity-cli/$task: ${marks} の下で拒否していないか、成果物に理由が無い（launches=${LAUNCHES} argc=${ARGC} rc=${ADAPTER_RC}）"
+      sed -n '1,5p' "$WORK/stderr.log" >&2 || true
+    fi
+  done
+done
+# 拒否は導入確認より前（agy が PATH に無くても「not installed」ではなく方針の拒否が出る）。
+# PATH から agy を持つディレクトリ（stub の $WORK/bin を含む）を外して確かめる
+agy_free_path=""
+_ifs_save="$IFS"; IFS=':'
+for _dir in $PATH; do
+  [ -n "$_dir" ] || continue
+  [ -x "$_dir/agy" ] && continue
+  agy_free_path="${agy_free_path:+${agy_free_path}:}${_dir}"
+done
+IFS="$_ifs_save"
+RUN_ADAPTER_ENV=(CLAUDECODE=1 "PATH=${agy_free_path}")
+run_adapter antigravity-cli review
+RUN_ADAPTER_ENV=()
+if [ "$ADAPTER_RC" -ne 0 ] && grep -q '自ホスト専用のレーンです' "$WORK/stderr.log" \
+   && ! grep -q 'is not installed' "$WORK/stderr.log"; then
+  ok "antigravity-cli/review: agy が PATH に無くても導入確認より前に方針で拒否する（rc=${ADAPTER_RC}）"
+else
+  bad "antigravity-cli/review: agy 不在時に方針の拒否が導入確認より前に出ない（rc=${ADAPTER_RC}）"
+  sed -n '1,5p' "$WORK/stderr.log" >&2 || true
+fi
+# 対照: 自ホストの印（ANTIGRAVITY_AGENT=1）だけなら従来どおり起動する
+RUN_ADAPTER_ENV=(ANTIGRAVITY_AGENT=1)
+run_adapter antigravity-cli review
+RUN_ADAPTER_ENV=()
+if [ "$LAUNCHES" -ge 1 ] && [ "$ARGC" -gt 0 ] && ! grep -q '自ホスト専用のレーンです' "$WORK/stderr.log"; then
+  ok "antigravity-cli/review: ANTIGRAVITY_AGENT=1 だけなら agy を起動する（対照）"
+else
+  bad "antigravity-cli/review: ANTIGRAVITY_AGENT=1 だけで起動しなかった（launches=${LAUNCHES} argc=${ARGC} rc=${ADAPTER_RC}）"
 fi
 
 echo "-- implement の書き込み境界を staging へ絞る（codex exec -C） --"

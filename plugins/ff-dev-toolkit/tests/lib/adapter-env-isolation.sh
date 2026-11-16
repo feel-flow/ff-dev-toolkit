@@ -197,6 +197,16 @@ build_isolate_env() {
     seen="${seen}${var} "
     ISOLATE_ENV+=(-u "$var")
   done
+  # 主担当ホストの印も落とす（Issue `#2810`）。自ホスト専用のレーン（antigravity-cli）のアダプタは、
+  # 他ホストの印（CLAUDECODE=1 / CODEX_THREAD_ID / GROK_AGENT）が立つと CLI を起動しないので、
+  # suite を Claude Code / Codex / grok の中から回すと継承された印で結果が変わる。名前は
+  # review-route.sh の主担当判定と adapter-common-cli.sh の adapter_foreign_host_marks と同じ。
+  # 印を前提にするケースは run_isolated の引数（CLAUDECODE=1 等）で明示する — env は -u の後に足す。
+  for var in CLAUDECODE CODEX_THREAD_ID GROK_AGENT ANTIGRAVITY_AGENT; do
+    case "$seen" in *" $var "*) continue ;; esac
+    seen="${seen}${var} "
+    ISOLATE_ENV+=(-u "$var")
+  done
   for s in $sentinels; do
     # センチネル名自体の検査: 抽出パターン外の名前（typo・glob メタ文字）は
     # 原理的に一致しえず、case パターンでの無クォート展開も安全でなくなる。
@@ -381,7 +391,7 @@ isolate_hook_env() {
     FF_CREDENTIAL_OUTPUT_ACK FF_DISCARD_UNCOMMITTED_ACK FF_EFFORT_ACTUAL_ACK FF_EXIT_CODE_ACK
     FF_ISSUE_LABEL_ACK FF_LITERAL_WRITE_ACK FF_LONG_GATE_BACKGROUND_ACK FF_MERGE_CLOSING_ACK
     FF_PR_DRAFT_ACK FF_REVIEW_LOCK_ACK FF_REVIEW_ROUND_ACK FF_RG_STDIN_ACK FF_SHELL_SAVE_ACK
-    FF_SUB_ISSUE_ID_ACK FF_TIMEOUT_ACK FF_UNBOUNDED_WAIT_ACK FF_WSL_SHELL_ACK FF_ZSH_EXPANSION_ACK
+    FF_SUB_ISSUE_ID_ACK FF_TIMEOUT_ACK FF_UNBOUNDED_WAIT_ACK FF_WSL_PATHCONV_ACK FF_WSL_SHELL_ACK FF_ZSH_EXPANSION_ACK
     FF_ZSH_GLOB_ACK"
   # 落とす名前を名簿へ積む行も印の間に置く（旧名の列挙を消費の行から外す変更も、印の間の字句の照合に当たる）
   for var in $ff_l4_default_unset ${!FF_DEV_TOOLKIT_SKIP_@}; do

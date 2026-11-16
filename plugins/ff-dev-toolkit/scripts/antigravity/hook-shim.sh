@@ -10,7 +10,7 @@
 #   --on-failure block 指定の PreToolUse だけは fail-closed（{"decision":"deny"} + exit 0）へ倒す。
 # - --async は SessionStart 専用で、後段コマンドをデタッチ起動して即 {} + exit 0 を返す。
 # - PreInvocation は invocationNum == 1 のときだけ UserPromptSubmit へ変換して実行し、2 回目以降は即 {} を返す。
-# - Stop は executionNum > 1 または異常終了理由（terminationReason != NO_TOOL_CALL）で stop_hook_active=true を設定して再入を抑止する。
+# - Stop は 0 始まりの executionNum >= 1 または異常終了理由（terminationReason != NO_TOOL_CALL）で stop_hook_active=true を設定して再入を抑止する。
 set -uo pipefail
 
 SCRIPT_DIR="$(CDPATH='' cd -P -- "$(dirname -- "$0")" && pwd -P)"
@@ -244,11 +244,11 @@ if ! jq -c --arg ev "$event" '
         transcript_path: $transcript_path
       } + $extra_common
     elif $ev == "Stop" then
-      ((.executionNum // 1) | if type == "number" then . else 1 end) as $exec_num
+      ((.executionNum // 0) | if type == "number" then . else 0 end) as $exec_num
       | ((.terminationReason // "NO_TOOL_CALL") | tostring) as $term
       | (
           (.stop_hook_active == true)
-          or ($exec_num > 1)
+          or ($exec_num >= 1)
           or ($term != "NO_TOOL_CALL" and $term != "")
         ) as $active
       | {

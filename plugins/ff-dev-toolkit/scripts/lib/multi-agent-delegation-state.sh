@@ -262,10 +262,8 @@ write_delegation_state_file() { # <name> <text>
   fi
 }
 
-save_delegation_state() {
-  [[ "$DELEGATION_STATE_NEW" == true ]] || return 0
-  local head invocation='' env_name cli seen=' ' value metadata generation_hash
-  head="$(git -C "$REPO_ROOT" rev-parse HEAD)" || return 1
+delegation_model_env_prefix() { # [plan]
+  local plan="${1:-$EXECUTION_PLAN}" prefix='' env_name cli seen=' ' value
   # Only the existing model-selection allowlist is retained; never dump the environment.
   while IFS= read -r cli; do
     [[ -n "$cli" ]] || continue
@@ -275,11 +273,18 @@ save_delegation_state() {
       seen="${seen}${env_name} "
       if [[ "${!env_name+x}" == x ]]; then
         value="${!env_name}"
-        invocation="${invocation}${env_name}=$(shell_quote "$value") "
+        prefix="${prefix}${env_name}=$(shell_quote "$value") "
       fi
     done
-  done <<< "$EXECUTION_PLAN"
-  invocation="${invocation}${INVOCATION_DISPLAY}"
+  done <<< "$plan"
+  printf '%s' "$prefix"
+}
+
+save_delegation_state() {
+  [[ "$DELEGATION_STATE_NEW" == true ]] || return 0
+  local head invocation metadata generation_hash
+  head="$(git -C "$REPO_ROOT" rev-parse HEAD)" || return 1
+  invocation="$(delegation_model_env_prefix "$EXECUTION_PLAN")${INVOCATION_DISPLAY}"
   generation_hash="$(printf '%s\n' "$DELEGATION_GENERATION" | git hash-object --stdin)" || return 1
   metadata="format=1
 head=${head}
@@ -293,6 +298,399 @@ invocation-hash=$(printf '%s\n' "$invocation" | git hash-object --stdin)"
   write_delegation_state_file invocation "$invocation" || return 1
   write_delegation_state_file unadopted "$DELEGATION_UNADOPTED_NOTES" || return 1
   write_delegation_state_file metadata "$metadata" || return 1
+}
+
+argv_requests_extract() { # "$@"
+  local skip=false a
+  for a in "$@"; do
+    if [[ "$skip" == true ]]; then
+      skip=false
+      continue
+    fi
+    case "$a" in
+      --) break ;;
+      --extract-subagent-response|--extract-subagent-response=*|--output-file|--output-file=*)
+        return 0 ;;
+      --invocation-display|--wrapper-route|--task|--description|--github-input \
+        |--config|--mode|--strategy|--cli|--exclude-cli|--perspective \
+        |--exclude-perspective|--require-prior-review|--continue-review \
+        |--output-dir|--base|--set-reviewers|--timeout)
+        skip=true ;;
+    esac
+  done
+  return 1
+}
+
+print_delegation_step2_guidance() {
+  echo "   2) Extract each subagent's final response from its transcript JSONL into the" >&2
+  echo "      output-file bound at launch (do NOT copy from <task-notification> text," >&2
+  echo "      which escapes <, > and & into &lt;, &gt; and &amp; that --resume refuses):" >&2
+  printf '      bash %s --extract-subagent-response <transcript.jsonl> --output-file <output-file>\n' "$(shell_quote "${SCRIPT_DIR}/multi-agent.sh")" >&2
+  echo "      (For Antigravity, pass transcript_full.jsonl when transcript.jsonl truncates content/tool_calls.)" >&2
+  echo "      The subagent does not create or modify files." >&2
+}
+
+run_extract_subagent_response() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "ERROR: --extract-subagent-response requires python3 on PATH." >&2
+    return 1
+  fi
+  python3 -I -B - "$EXTRACT_SUBAGENT_RESPONSE" "$EXTRACT_OUTPUT_FILE" <<'PY'
+import json
+import os
+import pathlib
+import stat
+import sys
+import tempfile
+
+
+def fail(msg):
+    sys.stderr.write(f"ERROR: {msg}\n")
+    sys.exit(1)
+
+
+def check_non_symlink_ancestors(target_path):
+    norm = target_path.rstrip("/") or "/"
+    raw_p = pathlib.Path(norm)
+    if not raw_p.is_absolute():
+        cwd = os.getcwd()
+        pwd = os.environ.get("PWD", "")
+        base_dir = cwd
+        if pwd and os.path.isabs(pwd):
+            try:
+                if os.path.samefile(pwd, cwd):
+                    base_dir = pwd
+            except OSError:
+                pass
+        p = pathlib.Path(base_dir, raw_p)
+    else:
+        p = raw_p
+    if p.is_symlink():
+        fail(f"refusing symlink target: {target_path}")
+    # macOS maps /tmp -> /private/tmp, /var -> /private/var, /etc -> /private/etc.
+    system_links = {pathlib.Path("/tmp"), pathlib.Path("/var"), pathlib.Path("/etc"), pathlib.Path("/")}
+    for anc in p.parents:
+        if anc in system_links:
+            continue
+        if anc.is_symlink():
+            fail(f"refusing symlink directory component: {anc}")
+        if anc.exists() and not anc.is_dir():
+            fail(f"parent component is not a directory: {anc}")
+
+
+def extract_claude(rows):
+    msgs = [r for r in rows if isinstance(r.get("message"), dict) and r.get("type") in ("user", "assistant")]
+    if not msgs:
+        return None
+    last_user_idx = -1
+    for i, r in enumerate(msgs):
+        if r.get("type") == "user" and r.get("isMeta") is not True:
+            last_user_idx = i
+    turn = [r for r in msgs[last_user_idx + 1:] if r.get("type") == "assistant"]
+    if not turn:
+        fail("Claude transcript has no final assistant turn")
+    groups = []
+    for r in turn:
+        msg = r["message"]
+        mid = msg.get("id") if isinstance(msg.get("id"), str) else ""
+        content = msg.get("content")
+        if isinstance(content, str):
+            blocks = [{"type": "text", "text": content}]
+        elif isinstance(content, list):
+            blocks = content
+        else:
+            fail("Claude transcript assistant message has unsupported content type")
+        if groups and mid and groups[-1][0] == mid:
+            prev = groups[-1][1]
+            if len(blocks) >= len(prev) and blocks[: len(prev)] == prev:
+                groups[-1][1] = list(blocks)
+            else:
+                groups[-1][1].extend(blocks)
+        else:
+            groups.append([mid, list(blocks)])
+    pending_tool = False
+    texts = []
+    for _, bs in groups:
+        if any(isinstance(b, dict) and b.get("type") == "tool_use" for b in bs):
+            texts = []
+            pending_tool = True
+            continue
+        group_texts = [b["text"] for b in bs if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)]
+        if group_texts:
+            texts.extend(group_texts)
+            pending_tool = False
+    if pending_tool:
+        fail("Claude transcript ended with an unfinished tool_use block")
+    if not texts:
+        fail("Claude transcript final assistant turn contains no text block")
+    return "\n".join(texts)
+
+
+def parse_ag_args(call):
+    raw = call.get("args") if "args" in call else call.get("arguments")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except Exception as exc:
+            fail(f"invalid Antigravity send_message arguments JSON: {exc}")
+        if isinstance(parsed, dict):
+            return parsed
+    fail("Antigravity send_message arguments must be a JSON object")
+
+
+def extract_antigravity(rows):
+    ag_types = {"USER_INPUT", "PLANNER_RESPONSE", "GENERIC", "SYSTEM_MESSAGE", "CHECKPOINT", "ERROR_MESSAGE"}
+    if not any(r.get("type") in ag_types and not isinstance(r.get("message"), dict) for r in rows):
+        return None
+    start = 0
+    for i, r in enumerate(rows):
+        if r.get("type") == "USER_INPUT" and r.get("source") != "SYSTEM":
+            start = i + 1
+    turn = rows[start:]
+    planners = [(i, r) for i, r in enumerate(turn) if r.get("type") == "PLANNER_RESPONSE"]
+    if not planners:
+        fail("Antigravity transcript has no PLANNER_RESPONSE in final turn")
+    last_p_idx, last_p = planners[-1]
+    if last_p.get("status") == "ERROR":
+        fail("Antigravity final PLANNER_RESPONSE ended with status ERROR")
+    if any(r.get("type") == "ERROR_MESSAGE" for r in turn[last_p_idx + 1 :]):
+        fail("Antigravity transcript has ERROR_MESSAGE after final PLANNER_RESPONSE")
+    sm_step = None
+    for idx, p in planners:
+        truncated = p.get("truncated_fields")
+        if truncated is not None:
+            if not isinstance(truncated, list):
+                fail("Antigravity PLANNER_RESPONSE truncated_fields must be a list")
+            if "tool_calls" in truncated:
+                fail("Antigravity transcript has truncated_fields=['tool_calls']; pass transcript_full.jsonl instead")
+        calls = p.get("tool_calls") or []
+        if not isinstance(calls, list):
+            fail("Antigravity PLANNER_RESPONSE tool_calls must be a list")
+        if any(isinstance(c, dict) and c.get("name") == "send_message" for c in calls):
+            sm_step = (idx, p)
+    if sm_step is not None:
+        sm_idx, sm_p = sm_step
+        calls = sm_p.get("tool_calls") or []
+        last_sm_pos = max(i for i, c in enumerate(calls) if isinstance(c, dict) and c.get("name") == "send_message")
+        for later_c in calls[last_sm_pos + 1 :]:
+            if isinstance(later_c, dict) and later_c.get("name") != "send_message":
+                fail("Antigravity PLANNER_RESPONSE has non-send_message tool call after send_message")
+        for later_idx, later_p in planners:
+            if later_idx > sm_idx and (later_p.get("tool_calls") or []):
+                fail("Antigravity transcript has tool_calls after send_message step")
+        args = parse_ag_args(calls[last_sm_pos])
+        msg = args.get("Message")
+        if not isinstance(msg, str) or msg == "":
+            fail("Antigravity send_message Message is missing or empty")
+        return msg
+    if last_p.get("tool_calls"):
+        fail("Antigravity final PLANNER_RESPONSE ended with unfinished tool_calls")
+    if "content" in (last_p.get("truncated_fields") or []):
+        fail("Antigravity transcript has truncated_fields=['content']; pass transcript_full.jsonl instead")
+    content = last_p.get("content")
+    if not isinstance(content, str) or content == "":
+        fail("Antigravity final PLANNER_RESPONSE content is missing or empty")
+    return content
+
+
+def extract_grok_acp(rows):
+    updates = []
+    for r in rows:
+        params = r.get("params")
+        upd = params.get("update") if isinstance(params, dict) else None
+        if isinstance(upd, dict) and isinstance(upd.get("sessionUpdate"), str):
+            updates.append(upd)
+    if not updates:
+        return None
+    buf = []
+    pending_tool = False
+    for upd in updates:
+        kind = upd.get("sessionUpdate")
+        if kind == "user_message_chunk":
+            buf = []
+            pending_tool = False
+        elif kind in ("tool_call", "tool_call_update"):
+            buf = []
+            pending_tool = True
+        elif kind == "agent_message_chunk":
+            content = upd.get("content")
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, dict) and isinstance(content.get("text"), str):
+                text = content["text"]
+            else:
+                text = ""
+            if text != "":
+                buf.append(text)
+            pending_tool = False
+    if pending_tool or not buf:
+        fail("Grok ACP transcript has no completed final agent_message_chunk turn")
+    return "".join(buf)
+
+
+def extract_grok_chat(rows):
+    chat_types = {"user", "assistant", "reasoning", "tool_result", "system"}
+    if not any(r.get("type") in chat_types and not isinstance(r.get("message"), dict) for r in rows):
+        return None
+    texts = []
+    pending_tool = False
+    for r in rows:
+        rtype = r.get("type")
+        if rtype == "user":
+            if isinstance(r.get("synthetic_reason"), str) and r.get("synthetic_reason") != "":
+                continue
+            texts = []
+            pending_tool = False
+        elif rtype == "tool_result":
+            texts = []
+            pending_tool = False
+        elif rtype == "assistant":
+            raw_calls = r.get("tool_calls")
+            if raw_calls is not None and not isinstance(raw_calls, list):
+                fail("Grok Chat assistant tool_calls must be a list")
+            calls = raw_calls or []
+            if calls:
+                texts = []
+                pending_tool = True
+            else:
+                content = r.get("content")
+                if isinstance(content, str) and content != "":
+                    texts.append(content)
+                pending_tool = False
+    if pending_tool or not texts:
+        fail("Grok Chat transcript has no completed final assistant turn")
+    return "\n".join(texts)
+
+
+def extract_codex(rows):
+    items = [r for r in rows if r.get("type") == "response_item" and isinstance(r.get("payload"), dict)]
+    if not items:
+        return None
+    texts = []
+    pending_tool = False
+    for r in items:
+        p = r["payload"]
+        ptype = p.get("type")
+        if ptype in ("function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"):
+            texts = []
+            pending_tool = True
+        elif ptype == "message":
+            role = p.get("role")
+            if role in ("user", "developer"):
+                texts = []
+                pending_tool = False
+            elif role == "assistant":
+                content = p.get("content")
+                if isinstance(content, str) and content != "":
+                    texts.append(content)
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") in ("output_text", "text") and isinstance(block.get("text"), str):
+                            if block["text"] != "":
+                                texts.append(block["text"])
+                pending_tool = False
+    if pending_tool or not texts:
+        fail("Codex transcript has no completed final assistant message")
+    return "\n".join(texts)
+
+
+def main():
+    transcript_path = sys.argv[1]
+    output_path = sys.argv[2]
+
+    check_non_symlink_ancestors(transcript_path)
+    try:
+        st = os.stat(transcript_path)
+    except OSError as exc:
+        fail(f"cannot stat transcript {transcript_path}: {exc}")
+    if not stat.S_ISREG(st.st_mode):
+        fail(f"transcript is not a regular file: {transcript_path}")
+    try:
+        with open(transcript_path, "rb") as f:
+            raw_jsonl = f.read().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        fail(f"cannot read UTF-8 transcript {transcript_path}: {exc}")
+
+    lines = raw_jsonl.splitlines()
+    if not lines:
+        fail(f"empty transcript: {transcript_path}")
+    rows = []
+    for idx, line in enumerate(lines, 1):
+        if not line.strip():
+            fail(f"blank line in transcript {transcript_path} at line {idx}")
+        try:
+            obj = json.loads(line)
+        except Exception as exc:
+            fail(f"malformed JSON in transcript {transcript_path} at line {idx}: {exc}")
+        if not isinstance(obj, dict):
+            fail(f"non-object JSON record in transcript {transcript_path} at line {idx}")
+        rows.append(obj)
+
+    payload = None
+    for extractor in (extract_claude, extract_antigravity, extract_grok_acp, extract_grok_chat, extract_codex):
+        payload = extractor(rows)
+        if payload is not None:
+            break
+    if payload is None:
+        fail(f"unrecognized subagent transcript format: {transcript_path}")
+    if payload == "":
+        fail(f"extracted response is empty: {transcript_path}")
+    if "\x00" in payload:
+        fail(f"extracted response contains NUL byte: {transcript_path}")
+
+    check_non_symlink_ancestors(output_path)
+    if os.path.exists(output_path) and not os.path.isfile(output_path):
+        fail(f"output path exists and is not a regular file: {output_path}")
+
+    parent = os.path.dirname(output_path) or "."
+    try:
+        os.makedirs(parent, mode=0o700, exist_ok=True)
+    except OSError as exc:
+        fail(f"cannot create output directory {parent}: {exc}")
+    check_non_symlink_ancestors(output_path)
+
+    raw_out = payload.encode("utf-8")
+    tmp_name = None
+    try:
+        fd, tmp_name = tempfile.mkstemp(dir=parent, prefix=".extract-", suffix=".tmp")
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(raw_out)
+                f.flush()
+                os.fsync(f.fileno())
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+        os.replace(tmp_name, output_path)
+        tmp_name = None
+    except OSError as exc:
+        if tmp_name and os.path.exists(tmp_name):
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+        fail(f"cannot write extracted response to {output_path}: {exc}")
+
+    if os.path.islink(output_path):
+        fail(f"output path became a symlink after write: {output_path}")
+    try:
+        with open(output_path, "rb") as f:
+            readback = f.read()
+    except OSError as exc:
+        fail(f"cannot read back written response {output_path}: {exc}")
+    if readback != raw_out:
+        fail(f"read-back byte mismatch at {output_path}")
+
+
+if __name__ == "__main__":
+    main()
+PY
 }
 
 _ma_part_loaded="multi-agent-delegation-state.sh"

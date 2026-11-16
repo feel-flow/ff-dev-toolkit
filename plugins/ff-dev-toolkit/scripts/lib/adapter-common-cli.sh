@@ -811,6 +811,7 @@ parse_adapter_args() {
   # ホスト委譲の受け渡しディレクトリ。空 = 従来どおり CLI を起動する。
   # 非空のとき、そのアダプタは CLI を 1 つも起動せず delegate_task へ委ねる。
   DELEGATE_DIR=""
+  ALLOW_HTML_ENTITIES="false"
 
   while [[ $# -gt 0 ]]; do
     # 値付きフラグを末尾に置いた場合、各 arm でいきなり "$2" を読むと set -u が
@@ -828,7 +829,7 @@ parse_adapter_args() {
         # inline-output は黙って消える。未知の `--foo` まで一律拒否はしない（説明文等の
         # 実値であり得るため）。このパーサー自身が知るフラグだけを欠落の証拠にする。
         case "$2" in
-          --changed-files|--base|--timeout|--task-type|--description|--description-file|--include-diff|--staged|--staging-dir|--inline-output|--diff-file|--delegate-dir)
+          --changed-files|--base|--timeout|--task-type|--description|--description-file|--include-diff|--staged|--staging-dir|--inline-output|--diff-file|--delegate-dir|--allow-html-entities)
             echo "ERROR: ${1} requires a value; got option '${2}'." >&2
             return 2
             ;;
@@ -890,6 +891,10 @@ parse_adapter_args() {
         DELEGATE_DIR="$2"
         shift 2
         ;;
+      --allow-html-entities)
+        ALLOW_HTML_ENTITIES="true"
+        shift
+        ;;
       --inline-output)
         INLINE_OUTPUT="true"
         shift
@@ -930,9 +935,13 @@ parse_adapter_args() {
       return 2
     fi
   fi
+  if [[ "$ALLOW_HTML_ENTITIES" == "true" && -z "$DELEGATE_DIR" ]]; then
+    echo "ERROR: --allow-html-entities requires --delegate-dir." >&2
+    return 2
+  fi
 
   if [[ -z "$PERSPECTIVE_FILE" || -z "$OUTPUT_FILE" ]]; then
-    echo "Usage: $(basename "$0") <perspective-file> <output-file> [--changed-files <files>] [--base <branch> | --staged] [--diff-file <path>] [--timeout <seconds>] [--task-type <review|explore|implement>] [--description <text>] [--description-file <path>] [--staging-dir <dir>] [--inline-output] [--delegate-dir <dir>]" >&2
+    echo "Usage: $(basename "$0") <perspective-file> <output-file> [--changed-files <files>] [--base <branch> | --staged] [--diff-file <path>] [--timeout <seconds>] [--task-type <review|explore|implement>] [--description <text>] [--description-file <path>] [--staging-dir <dir>] [--inline-output] [--delegate-dir <dir>] [--allow-html-entities]" >&2
     return 1
   fi
 }
@@ -1013,6 +1022,46 @@ handle_adapter_precheck_request() { # "$@"（アダプタの引数そのまま�
   esac
   printf 'capability=%s\nstate=%s\n' "$cap" "$state"
   exit 0
+}
+
+# ── 自ホスト専用レーン（Issue `#2810`）──
+#
+# アダプタが ADAPTER_OWN_HOST_ONLY=true を宣言すると、そのレーンの CLI は自分自身が主担当の
+# ときにしか起動しない。他のエージェントホスト（Claude Code / Codex / grok）の印が 1 つでも
+# 立つ回は、CLI の導入確認より前に拒否して INCOMPLETE を残す（導入確認の後ろに置くと、未導入の
+# 環境では「not installed」しか出ず、方針による拒否が試験できない）。
+# 印は review-route.sh の主担当判定と同じもの。自ホストの印（例: ANTIGRAVITY_AGENT=1）が
+# 同時に立っていても拒否する — 2 つ立つ回は入れ子の向きが分からないので、起動しない側へ倒す。
+# 委譲（--delegate-dir）は CLI を起動しないので対象外。--precheck はこれより前に終わる。
+# 上書き用の環境変数は持たない（ホストの印を外したシェルから呼べば従来どおり起動する）。
+adapter_foreign_host_marks() {
+  local marks=""
+  if [[ "${CLAUDECODE:-}" == "1" ]]; then marks="CLAUDECODE=1"; fi
+  if [[ -n "${CODEX_THREAD_ID:-}" ]]; then marks="${marks:+${marks} }CODEX_THREAD_ID"; fi
+  if [[ -n "${GROK_AGENT:-}" ]]; then marks="${marks:+${marks} }GROK_AGENT"; fi
+  printf '%s' "$marks"
+}
+
+# Usage: refuse_foreign_host_launch <perspective_name>
+# Reads: ADAPTER_OWN_HOST_ONLY, DELEGATE_DIR, CLI_NAME, CLI_COMMAND（と fail_cli_task の入力）。
+# 拒否するときは戻らない。
+refuse_foreign_host_launch() {
+  [[ "${ADAPTER_OWN_HOST_ONLY:-false}" == "true" ]] || return 0
+  [[ -z "${DELEGATE_DIR:-}" ]] || return 0
+  local marks msg log=""
+  marks="$(adapter_foreign_host_marks)"
+  [[ -n "$marks" ]] || return 0
+  msg="${CLI_NAME} (${CLI_COMMAND}) は自ホスト専用のレーンです。別のエージェントホスト（${marks}）からは起動しません。このレーンは未確認として扱い、別の CLI でレビューしてください。"
+  echo "ERROR: ${msg}" >&2
+  # 方針による拒否だと成果物（INCOMPLETE）にも残す。stderr だけだと並列時に交錯して保存されず、
+  # 成果物には「orchestrator が起動できなかった」としか残らない。置き場は EXIT で消える私有領域
+  if [[ -n "${_FF_REASON_PRIVATE_DIR:-}" ]] && log="$(mktemp "${_FF_REASON_PRIVATE_DIR}/own-host.XXXXXX" 2>/dev/null)"; then
+    printf 'ERROR: %s\n' "$msg" > "$log" 2>/dev/null || log=""
+  else
+    log=""
+  fi
+  record_timeout_reason orchestrator-error
+  fail_cli_task "$ORCHESTRATOR_ERROR_EXIT_CODE" "$log" "$1" ""
 }
 
 _ac_part_loaded="adapter-common-cli.sh"

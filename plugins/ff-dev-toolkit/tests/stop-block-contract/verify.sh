@@ -45,7 +45,7 @@ unset FF_DEV_TOOLKIT_SKIP \
   FF_CREDENTIAL_OUTPUT_ACK FF_DISCARD_UNCOMMITTED_ACK FF_EFFORT_ACTUAL_ACK FF_EXIT_CODE_ACK \
   FF_ISSUE_LABEL_ACK FF_LITERAL_WRITE_ACK FF_LONG_GATE_BACKGROUND_ACK FF_MERGE_CLOSING_ACK \
   FF_PR_DRAFT_ACK FF_REVIEW_LOCK_ACK FF_REVIEW_ROUND_ACK FF_RG_STDIN_ACK FF_SHELL_SAVE_ACK \
-  FF_SUB_ISSUE_ID_ACK FF_TIMEOUT_ACK FF_UNBOUNDED_WAIT_ACK FF_WSL_SHELL_ACK FF_ZSH_EXPANSION_ACK \
+  FF_SUB_ISSUE_ID_ACK FF_TIMEOUT_ACK FF_UNBOUNDED_WAIT_ACK FF_WSL_PATHCONV_ACK FF_WSL_SHELL_ACK FF_ZSH_EXPANSION_ACK \
   FF_ZSH_GLOB_ACK 2>/dev/null || true
 for _l4_v in "${!FF_DEV_TOOLKIT_SKIP_@}"; do unset "$_l4_v"; done
 # l4-default-unset:end
@@ -204,6 +204,7 @@ echo "stop-block-contract: R 採用名簿"
 ROSTER='hooks/guard-exit-code.sh
 hooks/guard-literal-write.sh
 hooks/guard-review-in-flight.sh
+hooks/guard-wsl-shell.sh
 hooks/run-bash-hooks.sh
 tests/lib/release-skip-profile.sh
 tests/run-all.sh'
@@ -251,6 +252,10 @@ bash_json() { jq -n --arg c "$1" '{hook_event_name: "PreToolUse", tool_name: "Ba
 # コマンド本文は単一引用符で置く（hook が見るのは文字列そのもの）。
 LW_CMD='perl -pi -e '"'"'s/x/${REPO}/'"'"' f'
 EC_CMD='npm test | tail -20; echo "EXIT=$?"'
+WSL_SH_CMD='wsl.exe -- bash -c '\''echo $x'\'''
+WSL_PC_CMD='wsl.exe -d Ubuntu --exec bash /mnt/c/x/script.sh'
+MSYS_ENV="$WORK/msys-env.sh"
+printf 'OSTYPE=msys\n' > "$MSYS_ENV"
 EDIT_JSON="$(jq -n --arg cwd "$REPO_TOP" --arg p "$REPO_TOP/stop-block-contract.probe" \
   '{hook_event_name: "PreToolUse", tool_name: "Edit", cwd: $cwd, tool_input: {file_path: $p, old_string: "a", new_string: "b"}}')"
 
@@ -273,12 +278,38 @@ if run_deny "$PLUGIN_ROOT/hooks/guard-exit-code.sh" "$(bash_json "$EC_CMD")" \
 else
   bad "E2: guard-exit-code の deny の形が違う: [$REASON]"
 fi
+if BASH_ENV="$MSYS_ENV" run_deny "$PLUGIN_ROOT/hooks/guard-wsl-shell.sh" "$(bash_json "$WSL_SH_CMD")" \
+  && head_is "$REASON" '⚠️ ff-dev-toolkit guard（WSL シェル本文の $ 展開）' \
+  && tail_is_block "$REASON" ガード '止めた規則: wsl-shell（tests/lib/wsl-shell-scan.sh）' 'FF_WSL_SHELL_ACK=1' && single_next "$REASON"; then
+  ok "E2w1: guard-wsl-shell（wsl-shell）の deny は先頭文を保ち、末尾 3 行が停止文（ガード / wsl-shell）"
+else
+  bad "E2w1: guard-wsl-shell（wsl-shell）の deny の形が違う: [$REASON]"
+fi
+if BASH_ENV="$MSYS_ENV" run_deny "$PLUGIN_ROOT/hooks/guard-wsl-shell.sh" "$(bash_json "$WSL_PC_CMD")" \
+  && head_is "$REASON" '⚠️ ff-dev-toolkit guard（MSYS の POSIX パス変換）' \
+  && tail_is_block "$REASON" ガード '止めた規則: wsl-pathconv（tests/lib/wsl-shell-scan.sh）' 'MSYS_NO_PATHCONV=1' \
+  && tail_is_block "$REASON" ガード '止めた規則: wsl-pathconv（tests/lib/wsl-shell-scan.sh）' 'FF_WSL_PATHCONV_ACK=1' && single_next "$REASON"; then
+  ok "E2w2: guard-wsl-shell（wsl-pathconv）の deny は先頭文を保ち、末尾 3 行が停止文（ガード / wsl-pathconv）"
+else
+  bad "E2w2: guard-wsl-shell（wsl-pathconv）の deny の形が違う: [$REASON]"
+fi
+WSL_RETIRED="FF_DEV_TOOLKIT_SKIP_""WSL_SHELL_GUARD"
+export "${WSL_RETIRED}=1"
+if BASH_ENV="$MSYS_ENV" run_deny "$PLUGIN_ROOT/hooks/guard-wsl-shell.sh" "$(bash_json "$WSL_SH_CMD")" \
+  && tail_is_block "$REASON" ガード '止めた規則: wsl-shell（tests/lib/wsl-shell-scan.sh）' "旧名 ${WSL_RETIRED} は読まなくなりました" && single_next "$REASON"; then
+  ok "E2w3: guard-wsl-shell に撤去済み環境変数を渡すと 次の一手 へ移行注記を添える"
+else
+  bad "E2w3: guard-wsl-shell の撤去済み環境変数注記が付かない: [$REASON]"
+fi
+unset "$WSL_RETIRED"
 
 # review-in-flight は、判定ライブラリを欠いた写し（走行中ロックを作らずに deny を起こせる最小の経路）で起こす。
 make_replica() { # <dir> <stop-block を置くか 0/1>
   mkdir -p "$1/hooks" "$1/tests/lib" "$1/scripts/lib"
   cp "$PLUGIN_ROOT"/hooks/*.sh "$PLUGIN_ROOT"/hooks/*.mjs "$1/hooks/" 2>/dev/null
   cp "$PLUGIN_ROOT"/tests/lib/*.sh "$1/tests/lib/"
+  cp "$PLUGIN_ROOT"/scripts/lib/wsl-notice.sh "$PLUGIN_ROOT"/scripts/lib/l4-declarations.sh \
+    "$PLUGIN_ROOT"/scripts/lib/l4-declarations.tsv "$1/scripts/lib/"
   rm -f "$1/tests/lib/review-in-flight-judge.sh"
   [ "$2" -eq 0 ] || cp "$LIB" "$1/scripts/lib/stop-block.sh"
 }
@@ -343,7 +374,9 @@ else
 fi
 
 # stop-block.sh を消した写し: 各 hook は stop-block-unavailable の 3 行で deny する（exit 0 で通さない）
+export BASH_ENV="$MSYS_ENV"
 for spec in "guard-literal-write.sh|$(bash_json "$LW_CMD")" "guard-exit-code.sh|$(bash_json "$EC_CMD")" \
+  "guard-wsl-shell.sh|$(bash_json "$WSL_SH_CMD")" "guard-wsl-shell.sh|$(bash_json "$WSL_PC_CMD")" \
   "guard-review-in-flight.sh|$EDIT_JSON"; do
   name="${spec%%|*}"
   json="${spec#*|}"
@@ -360,6 +393,7 @@ done
 make_replica "$WORK/exit-lib" 1
 { printf '%s\n' 'exit 0'; cat "$LIB"; } > "$WORK/exit-lib/scripts/lib/stop-block.sh"
 for spec in "guard-literal-write.sh|$(bash_json "$LW_CMD")" "guard-exit-code.sh|$(bash_json "$EC_CMD")" \
+  "guard-wsl-shell.sh|$(bash_json "$WSL_SH_CMD")" "guard-wsl-shell.sh|$(bash_json "$WSL_PC_CMD")" \
   "guard-review-in-flight.sh|$EDIT_JSON"; do
   name="${spec%%|*}"
   json="${spec#*|}"
@@ -371,6 +405,7 @@ for spec in "guard-literal-write.sh|$(bash_json "$LW_CMD")" "guard-exit-code.sh|
   fi
 done
 
+unset BASH_ENV
 # 走行中ロック（.review-results/.review-in-flight に生存 PID）を置いた fixture で、通常の review-in-flight の deny を
 # Edit と Bash の 2 入力で起こす。先頭文は `…作業ツリー編集の抑止）: ` で始まり、末尾 3 行は review-in-flight の
 # 停止文。次の一手は、その呼び出しが実際に通せる形だけを案内する（Bash だけが FF_REVIEW_LOCK_ACK=1 を持つ）

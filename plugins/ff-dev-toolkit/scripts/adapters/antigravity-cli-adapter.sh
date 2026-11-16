@@ -14,6 +14,7 @@
 #   --delegate-dir <dir>      Host delegation (review only, Issue `#2118`): when this CLI is the host,
 #                             hand the prompt to the host's own subagent instead of starting the CLI
 #                             (--delegate-to-host=antigravity-cli; see adapter-common.sh run_host_delegation_or_continue).
+#   --allow-html-entities     With --delegate-dir, accept .response.md containing &lt; / &gt; / &amp;.
 #   --staging-dir <dir>       Absolute, existing, writable dir the agent writes generated
 #                             files into (implement only; the orchestrator always passes it)
 #   --inline-output           implement without a staging dir: the CLI reports file contents
@@ -24,6 +25,8 @@
 # Requires: agy (Google Antigravity CLI, headless mode `-p "" --input-format text`)
 # Cost tier: Metered (excluded from default lineup; opt in via --cli antigravity-cli
 #            or --delegate-to-host=antigravity-cli)
+# Own host only: refuses to start agy when another agent host's mark is set
+#            (CLAUDECODE=1 / CODEX_THREAD_ID / GROK_AGENT), even with --cli (Issue `#2810`)
 # ────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -39,6 +42,10 @@ readonly CLI_LANE="antigravity-cli"
 # 走らせる経路（--delegate-to-host=antigravity-cli）。adapter-common.sh の parse_adapter_args が検査する
 # shellcheck disable=SC2034 # adapter-common.sh（source 先）が読む
 ADAPTER_SUPPORTS_DELEGATION=true
+# 自ホスト専用（Issue `#2810`）: Antigravity 以外のエージェントホスト（Claude Code / Codex / grok）の
+# 印が立つ回は agy を起動しない。判定は adapter-common-cli.sh の refuse_foreign_host_launch
+# shellcheck disable=SC2034 # adapter-common.sh（source 先）が読む
+ADAPTER_OWN_HOST_ONLY=true
 
 # ── 起動前のレーン確認（--precheck。Issue `#2044`。入口は adapter-common-cli.sh）──
 # agy CLI には残量・認証を非対話で照会する統一ステータス副コマンドが無いため能力は none。
@@ -53,14 +60,18 @@ parse_adapter_args "$@"
 
 # ── Preflight ──
 
+perspective_name="$(basename "$PERSPECTIVE_FILE" .md)"
+
+# 他のエージェントホスト（Claude Code / Codex / grok）からは headless の agy を起動しない（Issue `#2810`）。
+# 導入確認より前に判定する（ADAPTER_OWN_HOST_ONLY の説明は adapter-common-cli.sh）
+refuse_foreign_host_launch "$perspective_name"
+
 # 委譲経路（--delegate-dir）は CLI を起動しないので導入を要求しない（Issue `#2118`）
 if [[ -z "${DELEGATE_DIR:-}" ]] && ! cli_available "$CLI_COMMAND"; then
   echo "ERROR: ${CLI_NAME} (${CLI_COMMAND}) is not installed or not authenticated." >&2
   echo "Install Google Antigravity CLI (agy) and verify with: agy --version" >&2
   exit 1
 fi
-
-perspective_name="$(basename "$PERSPECTIVE_FILE" .md)"
 
 # ── Host Delegation Allowlist ──
 

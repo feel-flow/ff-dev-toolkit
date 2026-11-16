@@ -305,6 +305,28 @@ delegation_body_carries_result_header() { # <body>
   '
 }
 
+# ホスト委譲で親が完了通知（<task-notification> 等）の本文から写すと、`<` `>` `&` が
+# HTML 実体参照（`&lt;` / `&gt;` / `&amp;`）へ化けたまま応答へ混入する。
+# 採用前に先頭の該当実体参照を検出し、`--allow-html-entities` 無しでは拒否する。
+delegation_body_first_html_entity() { # <body>
+  # 64KB 超の入力で早期 exit すると set -o pipefail 下で printf が SIGPIPE (141) を
+  # 起こし、呼び出し元の `&& found_entity=$(...)` が非0を見て実体参照なしと誤判定する
+  # （ACE-149）。必ず EOF まで読み切ってから END で終了コードを返す。
+  printf '%s\n' "$1" | LC_ALL=C awk '
+    !found && match($0, /&(lt|gt|amp);/) {
+      first = substr($0, RSTART, RLENGTH)
+      found = 1
+    }
+    END {
+      if (found) {
+        print first
+        exit 0
+      }
+      exit 1
+    }
+  '
+}
+
 # 受理しなかった応答の退避先。秒精度の時刻だけだと同一秒の 2 回目が 1 回目を mv で
 # 上書きする（「捨てない」という契約が静かに破れる）ので pid と連番を足す。
 delegation_setaside_path() { # <dir> <perspective> <kind> → 未使用のパス
@@ -374,6 +396,7 @@ run_host_delegation_or_continue() { # <lane-id> <cli-display-name> <perspective>
   case "$delegate_rc" in
     0) exit 0 ;;
     "$DELEGATION_PENDING_EXIT_CODE") exit "$DELEGATION_PENDING_EXIT_CODE" ;;
+    "$DELEGATION_HTML_ENTITY_EXIT_CODE") exit "$DELEGATION_HTML_ENTITY_EXIT_CODE" ;;
     # 壊れているのは委譲の受け渡しではなく成果物の出力先。汎用の orchestrator エラーへ
     # 流すと、壊れている対象を名指しせず、書けない先へ INCOMPLETE 成果物を書きに行く。
     "$DELEGATION_OUTPUT_WRITE_EXIT_CODE")
@@ -409,7 +432,7 @@ delegate_task() { # <lane-id> <cli-display-name> <perspective> <prompt> <allowed
   local prompt_file="${dir}/${persp}.prompt.md"
   local request_file="${dir}/${persp}.request"
   local response_file="${dir}/${persp}.response.md"
-  local digest recorded superseded body body_rc handoff_output="$OUTPUT_FILE" generation=''
+  local digest recorded superseded body body_rc handoff_output="$OUTPUT_FILE" generation='' found_entity=''
   case "$dir" in
     */.delegated/generations/g-*)
       generation="${dir##*/}"
@@ -486,6 +509,16 @@ delegate_task() { # <lane-id> <cli-display-name> <perspective> <prompt> <allowed
         # 緩めると、前置きだけの応答が「レビュー完了」として統合レポートへ載る。
         delegation_set_aside_response "$dir" "$persp" rejected "$response_file" "$lane" \
           "the delegated response $(review_body_refusal_clause) — refusing it as a review result." || return 1
+      elif [ "${ALLOW_HTML_ENTITIES:-false}" != "true" ] && found_entity="$(delegation_body_first_html_entity "$body")"; then
+        # 実体参照混入時は応答ファイルをそのまま残し（退避・削除しない）、再抽出または
+        # --allow-html-entities 付きでの --resume を即座にやり直せるようにする。
+        echo "ERROR: ${lane}/${persp}: the delegated response contains an HTML entity reference (${found_entity}) and was NOT adopted." >&2
+        echo "       Response file: ${response_file}" >&2
+        echo "       Copying from <task-notification> turns '<', '>' and '&' into '&lt;', '&gt;' and '&amp;'." >&2
+        echo "       Re-extract from the subagent transcript JSONL into ${response_file} with:" >&2
+        echo "         --extract-subagent-response <transcript.jsonl> --output-file ${response_file}" >&2
+        echo "       then re-run as instructed by the handoff (with --resume, or without --resume under --require-prior-review / --continue-review); or pass --allow-html-entities if the entity reference is intentional." >&2
+        return "$DELEGATION_HTML_ENTITY_EXIT_CODE"
       else
         # 書き込みの成否は write_output の rc が答える（ENOSPC / read-only / 権限変更）。
         # `set -e` 下なので受け止めないと素の 1 で落ち、下の案内（ホストの応答がどこに
@@ -601,6 +634,11 @@ readonly DELEGATION_OUTPUT_WRITE_EXIT_CODE=122
 # 残らなかった」）へ寄せることもしない: 事実と食い違ううえ、次の一手が変わる。
 # 124 / 125 / 137 / 123 / 122 と同じく CLI 自身が返しうる値とは衝突しない位置に置く。
 readonly DELEGATION_OUTPUT_READBACK_EXIT_CODE=121
+# 委譲経路で「ホストが書けた応答に HTML 実体参照（&lt; / &gt; / &amp;）が混入していた」
+# ことを表す戻り値。<task-notification> 本文から写した応答が典型で、採用すると壊れた
+# 本文をそのまま受理してしまう。他の退避系と違い、応答ファイルを別名へ動かさずにその場へ残す
+# — 再抽出または --allow-html-entities 付き --resume を即座にやり直せるようにするため。
+readonly DELEGATION_HTML_ENTITY_EXIT_CODE=120
 # Seconds between the deadline's SIGTERM and the SIGKILL that follows it.
 # Overridable so the regression suite can exercise the escalation quickly.
 TIMEOUT_KILL_GRACE="${FF_TIMEOUT_KILL_GRACE:-10}"

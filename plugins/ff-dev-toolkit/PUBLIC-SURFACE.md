@@ -196,7 +196,8 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_PR_DRAFT_ACK`（`hooks/guard-pr-followup.sh` の Draft PR 検出だけを通すコマンド先頭の環境代入。GitHub MCP 経路では hook の環境変数として読み、セッション全体の GitHub MCP 呼び出しに効く）
 - `FF_SHELL_SAVE_ACK`（`hooks/guard-shell-save.sh` の抜け道。Write / Edit にはコマンド先頭の環境代入が無いので、hook のプロセス環境で渡す）
 - `FF_SUB_ISSUE_ID_ACK`
-- `FF_WSL_SHELL_ACK`
+- `FF_WSL_PATHCONV_ACK`（`hooks/guard-wsl-shell.sh` で、MSYS の POSIX パス変換検出だけを通す `wsl` 区間先頭の環境代入）
+- `FF_WSL_SHELL_ACK`（同 hook で、WSL シェル本文の `$` 展開検出とパス変換検出の両方を通す `wsl` 区間先頭の環境代入）
 - `FF_ZSH_EXPANSION_ACK`
 - `FF_ZSH_GLOB_ACK`
 - `FF_REVIEW_LOCK_ACK`（`hooks/guard-review-in-flight.sh` で、レビュー走行中ロックの deny の 1 回だけを通す。Bash では区間の先頭の環境代入、Bash 以外のツールでは hook のプロセス環境で渡す）
@@ -302,6 +303,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_GATE_START_EPOCH`
 - `FF_GATE_START_HEAD`
 - `FF_GH_STUB`
+- `FF_GIT_WRITE_CHAIN_AWK`
 - `FF_GOOD_ROOT`
 - `FF_GUARD_SCRIPT`
 - `FF_GUARD_SHELL_SAVE_LIB_DIR`
@@ -510,7 +512,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 L4 宣言をまとめる前の個別の名前（旧名）は、内部の別名として読むのをやめました。旧名はこの節にも書きません。配布実行物は、環境にある FF_DEV_TOOLKIT_SKIP_ で始まる変数の名前から 4-3 の鍵を導いて旧名を見つけます（接頭辞と末尾の _GUARD を外し、小文字・`-` 区切りにしたもの）。旧名と新しい書き方の対応は「破壊的変更の記録」にあります。
 
 - **副作用のある 4 鍵**（`auto-update` / `codex-auto-update` / `effort-metrics` / `decision-tree`）: 旧名の値が空でなければ（`0` でも）、その処理を止めます。旧名で止めていた更新や記録が黙って動き出さないための扱いで、期限はありません
-- **ほかの 20 鍵**（ガードと通知）: 旧名では止めません。停止文に新しい書き方を添える hook（`hooks/guard-exit-code.sh` / `hooks/guard-literal-write.sh` / `hooks/guard-review-in-flight.sh`）が止めたときは、`次の一手:` の行の末尾に、その旧名を読まなくなったことと `FF_DEV_TOOLKIT_SKIP=<鍵>` を添えます
+- **ほかの 21 鍵**（ガードと通知）: 旧名では止めません。停止文に新しい書き方を添える hook（`hooks/guard-exit-code.sh` / `hooks/guard-literal-write.sh` / `hooks/guard-review-in-flight.sh` / `hooks/guard-wsl-shell.sh`）が止めたときは、`次の一手:` の行の末尾に、その旧名を読まなくなったことと `FF_DEV_TOOLKIT_SKIP=<鍵>` を添えます
 - **通知**: hooks が発火するホストでは、旧名が環境にあるとセッション開始時（`hooks/check-update.sh`）に毎回、置き換えを通知します
 - **ACK の旧名**（4-1 の ACK のうち、L4 宣言をまとめるときに改名した 3 つの前の名前）は読みません。各 hook の deny 文が示す新しい名前で通します
 
@@ -545,7 +547,8 @@ L4 宣言をまとめる前の個別の名前（旧名）は、内部の別名�
 | `sub-issue-id` | ガード | `hooks/guard-sub-issue-id.sh` | - | `SUB_ISSUE_ID_GUARD` |
 | `update-check` | 通知 | `hooks/check-update.sh` | - | `UPDATE_CHECK` |
 | `wsl-notice` | 通知 | `hooks/check-update.sh` | - | `WSL_NOTICE` |
-| `wsl-shell` | ガード | `hooks/guard-wsl-shell.sh` | - | `WSL_SHELL_GUARD` |
+| `wsl-pathconv` | ガード | `hooks/guard-wsl-shell.sh` | - | - |
+| `wsl-shell` | ガード | `hooks/guard-wsl-shell.sh` | `wsl-pathconv` | `WSL_SHELL_GUARD` |
 | `zsh-expansion` | ガード | `hooks/guard-zsh-glob.sh`・`tests/lib/zsh-expansion-guard.sh` | - | `ZSH_EXPANSION_GUARD` |
 | `zsh-glob` | ガード | `hooks/guard-zsh-glob.sh` | `zsh-expansion` | `ZSH_GLOB_GUARD` |
 
@@ -671,7 +674,7 @@ ACK（1 回だけ通す承認）の名前は、鍵から `FF_<鍵を大文字・
 | `FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1` | `FF_DEV_TOOLKIT_SKIP=sub-issue-id` |
 | `FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1` | `FF_DEV_TOOLKIT_SKIP=update-check` |
 | `FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=1` | `FF_DEV_TOOLKIT_SKIP=wsl-notice` |
-| `FF_DEV_TOOLKIT_SKIP_WSL_SHELL_GUARD=1` | `FF_DEV_TOOLKIT_SKIP=wsl-shell` |
+| `FF_DEV_TOOLKIT_SKIP_WSL_SHELL_GUARD=1` | `FF_DEV_TOOLKIT_SKIP=wsl-shell`（`wsl-pathconv` も止まる） |
 | `FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1` | `FF_DEV_TOOLKIT_SKIP=zsh-expansion` |
 | `FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1` | `FF_DEV_TOOLKIT_SKIP=zsh-glob`（`zsh-expansion` も止まる） |
 | `FF_DISCARD_UNCOMMITTED=1` | `FF_DISCARD_UNCOMMITTED_ACK=1` |

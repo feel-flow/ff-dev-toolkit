@@ -79,7 +79,8 @@ run_library_control() {
     . "$1"
     build_isolate_env "MULTI_AGENT_CONFIG FF_TIMEOUT_KILL_GRACE _FF_TIMEOUT_REASON_EXIT_TRAP" "$2"
 
-    expected="-u MULTI_AGENT_CONFIG -u FF_TIMEOUT_KILL_GRACE -u _FF_TIMEOUT_REASON_EXIT_TRAP"
+    # 末尾の 4 つは主担当ホストの印（Issue `#2810`。抽出ではなく固定名簿で常に落とす）
+    expected="-u MULTI_AGENT_CONFIG -u FF_TIMEOUT_KILL_GRACE -u _FF_TIMEOUT_REASON_EXIT_TRAP -u CLAUDECODE -u CODEX_THREAD_ID -u GROK_AGENT -u ANTIGRAVITY_AGENT"
     [ "${ISOLATE_ENV[*]}" = "$expected" ] || {
       echo "control: 分離名簿が重複除去またはprefix境界からdrift: ${ISOLATE_ENV[*]}" >&2
       exit 1
@@ -92,6 +93,15 @@ run_library_control() {
     export MULTI_AGENT_CONFIG=host
     run_isolated bash -c '\''[ -z "${MULTI_AGENT_CONFIG+x}" ]'\''
     run_isolated MULTI_AGENT_CONFIG=case bash -c '\''[ "$MULTI_AGENT_CONFIG" = case ]'\''
+
+    export CLAUDECODE=1
+    run_isolated bash -c '\''[ -z "${CLAUDECODE+x}" ]'\'' || {
+      echo "control: 継承したホストの印 CLAUDECODE が落ちない" >&2; exit 1
+    }
+    run_isolated CLAUDECODE=1 bash -c '\''[ "$CLAUDECODE" = 1 ]'\'' || {
+      echo "control: ケースで明示したホストの印が届かない" >&2; exit 1
+    }
+    unset CLAUDECODE
 
     export FF_TIMEOUT_KILL_GRACE=host
     unset_isolated_vars

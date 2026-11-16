@@ -24,7 +24,6 @@ scripts/jev/triage-candidate.sh	1
 scripts/lib/github-input.sh	1
 
 # ── Windows 固有機能（保持。第 2 段階で lib 経由へ） ──
-hooks/guard-wsl-shell.sh	1
 scripts/check-plugin-versions.sh	2
 scripts/gh-auth-doctor.sh	1
 scripts/lib/merge-cleanup-local.sh	1

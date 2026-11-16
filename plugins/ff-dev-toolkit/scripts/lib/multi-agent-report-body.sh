@@ -101,6 +101,8 @@ append_plan_sections() {
         # 「executed」と書くと、CLI を 1 つも起動していない節が実行済みに見える
         # （skipped と同じ理由で、節の中で数行下の本文と矛盾する）。
         echo "**Result source:** delegated to the host (pending)"
+      elif [[ "$(failed_task_rc "${cli_name}" "${perspective_name}")" == "${DELEGATION_HTML_ENTITY_EXIT_CODE:-120}" ]]; then
+        echo "**Result source:** delegated to the host (refused: HTML entity reference)"
       elif [[ -n "$(skipped_task_cause "${cli_name}/${perspective_name}")" ]]; then
         # スキップした節へ executed と書くと、数行下の「this task was not executed」と
         # 同じ節の中で矛盾する（Issue `#1143`）。
@@ -196,6 +198,8 @@ append_plan_sections() {
           echo "\`$(delegate_dir_for "$cli_name")/${perspective_name}.response.md\`, then re-runs the same command **with \`--resume\`** to have it"
           echo "adopted and this report regenerated."
         fi
+        echo "Do NOT copy or transcribe from \`<task-notification>\` (it escapes \`<\`, \`>\`, \`&\` into HTML entities);"
+        echo "use \`--extract-subagent-response <transcript.jsonl> --output-file $(delegate_dir_for "$cli_name")/${perspective_name}.response.md\` instead."
         echo "Absence of a finding here means unchecked, not clean."
       elif [[ -n "$(lane_precheck_block "$cli_name")" && -n "$(skipped_task_cause "${cli_name}/${perspective_name}")" ]]; then
         # 起動前の確認で止めたが、主担当のみの完了にはならなかった回（主担当が未完走・fast 経路で
@@ -245,6 +249,15 @@ append_plan_sections() {
         echo "property of the CLI and not of the task, so every remaining ${cli_name} task was"
         echo "dropped before paying for its setup."
         echo "Absence of a finding here means unchecked, not clean."
+      elif [[ "$(failed_task_rc "${cli_name}" "${perspective_name}")" == "${DELEGATION_HTML_ENTITY_EXIT_CODE:-120}" ]]; then
+        local entity_resp_path
+        entity_resp_path="$(delegate_dir_for "$cli_name")/${perspective_name}.response.md"
+        echo "🚫 **REFUSED — HTML entity reference detected**, so this perspective counts as **INCOMPLETE**."
+        echo "The delegated response at \`${entity_resp_path}\` contains an HTML entity"
+        echo "reference (\`&lt;\`, \`&gt;\`, or \`&amp;\` — typically from copying \`<task-notification>\` text) and was left intact."
+        echo "Re-extract from the subagent transcript JSONL into \`${entity_resp_path}\`"
+        echo "using \`--extract-subagent-response <transcript.jsonl> --output-file $(shell_quote "$entity_resp_path")\`, then re-run; or pass"
+        echo "\`--allow-html-entities\` if the entity reference is intentional."
       else
         echo "⚠️ No output produced by this task — the CLI failed before writing any"
         echo "result. See the orchestrator log for the reason and the retry command."
@@ -636,6 +649,8 @@ review_task_incomplete_reason() { # <cli> <perspective>
     lane_precheck_label_ja "$cli"
   elif [[ -n "$(skipped_task_cause "${cli}/${persp}")" ]]; then
     echo "同じ CLI の先行失敗によりスキップ"
+  elif [[ "$(failed_task_rc "$cli" "$persp")" == "${DELEGATION_HTML_ENTITY_EXIT_CODE:-120}" ]]; then
+    echo "結果の拒否: 委譲応答に実体参照（&lt; / &gt; / &amp;）が含まれるため未採用"
   else
     echo "結果なし（CLI が結果を書く前に失敗）"
   fi

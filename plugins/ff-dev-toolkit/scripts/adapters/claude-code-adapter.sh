@@ -22,6 +22,7 @@
 #                             or adopt the host-written result if it is already there. Exits
 #                             DELEGATION_PENDING_EXIT_CODE (123) while the result is pending.
 #                             `claude` does NOT have to be installed on this path.
+#   --allow-html-entities     With --delegate-dir, accept .response.md containing &lt; / &gt; / &amp;.
 #
 # Requires: claude (npm i -g @anthropic-ai/claude-code)
 # Cost tier: Premium (token-based billing)

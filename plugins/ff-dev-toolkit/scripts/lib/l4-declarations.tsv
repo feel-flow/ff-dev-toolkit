@@ -46,7 +46,8 @@ skill-drift-check	skip	hooks/check-skill-drift.sh	-	-	-	-
 sub-issue-id	skip	hooks/guard-sub-issue-id.sh	-	-	-	-
 update-check	skip	hooks/check-update.sh	-	-	-	-
 wsl-notice	skip	hooks/check-update.sh	-	-	-	-
-wsl-shell	skip	hooks/guard-wsl-shell.sh	-	-	-	-
+wsl-pathconv	skip	hooks/guard-wsl-shell.sh	-	-	-	-
+wsl-shell	skip	hooks/guard-wsl-shell.sh	wsl-pathconv	-	-	-
 zsh-expansion	skip	hooks/guard-zsh-glob.sh,tests/lib/zsh-expansion-guard.sh	-	-	-	-
 zsh-glob	skip	hooks/guard-zsh-glob.sh	zsh-expansion	-	-	-
 credential-output	ack	hooks/guard-credential-output.sh	-	-	-	-
@@ -65,6 +66,7 @@ shell-save	ack	hooks/guard-shell-save.sh	-	-	-	-
 sub-issue-id	ack	hooks/guard-sub-issue-id.sh	-	-	-	-
 timeout	ack	hooks/guard-exit-code.sh	-	-	-	-
 unbounded-wait	ack	hooks/guard-exit-code.sh	-	-	-	-
+wsl-pathconv	ack	hooks/guard-wsl-shell.sh	-	-	-	-
 wsl-shell	ack	hooks/guard-wsl-shell.sh	-	-	-	-
 zsh-expansion	ack	hooks/guard-zsh-glob.sh,tests/lib/zsh-expansion-guard.sh	-	-	-	-
 zsh-glob	ack	hooks/guard-zsh-glob.sh,tests/lib/zsh-expansion-guard.sh	-	-	-	-

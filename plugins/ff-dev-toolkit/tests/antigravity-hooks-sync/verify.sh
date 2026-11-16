@@ -2,8 +2,8 @@
 # run-all-required: no — jq または node 不在では検証本体を実行できないため suite 全体を skip する
 # Google Antigravity 向け hooks 展開・双方向シム・振り返り対応（scripts/antigravity/sync-hooks.sh /
 # hook-shim.sh / retrospective-chain-tail.mjs）の検証。
-# 空振り検出: 2026-11-14 macOS 実測: 不在 --plugin-root (rc=1)、展開可能 handler 0 件の hooks.json (rc=1)、空値フラグ (B8a-d)・空 hooks.json (B5)・symlink 出力先/親ディレクトリ (B7/B9)・非 JSON 入力 fail-open 既定値 (C12)・17 MiB stdin 上限 fail-open (E8) を全件固定（無変異 baseline pass=51/fail=0）。
-# 変異検出: 2026-11-14 macOS 実測（5/5 検出）: (1) Bash matcher 変換無効化 (rc=1)、(2) PreInvocation invocationNum==1 ゲート除去 (rc=1)、(3) updatedInput->overwrite 逆変換無効化 (rc=1)、(4) GENERIC を PLANNER_RESPONSE 扱いへ変更 (rc=1)、(5) 外側 </USER_REQUEST> 抽出を外す (rc=1)。
+# 空振り検出: 2026-11-15 macOS 実測: 不在 --plugin-root (rc=1)、展開可能 handler 0 件の hooks.json (rc=1)、空値フラグ (B8a-d)・空 hooks.json (B5)・symlink 出力先/親ディレクトリ (B7/B9)・非 JSON 入力 fail-open 既定値 (C12)・17 MiB stdin 上限 fail-open (E8)・read_file(SKILL.md) 非終端 (D6)・compact 引用文字列 (D9) を全件固定（無変異 baseline pass=59/fail=0）。
+# 変異検出: 2026-11-15 macOS 実測（mutation-harness 4/4 検出 + green 対照 1/1、2026-11-14 の 5/5 に追加）: (1) executionNum>=1 を >1 へ戻す (rc=1, pass=57/fail=2)、(2) executionNum 既定値 //0 を //1 へ戻す (rc=1, pass=58/fail=1)、(3) allowReadSkill:false を true へ戻す (rc=1, pass=58/fail=1)、(4) unwrapJsonEncodedString 展開バイパス (rc=1, pass=58/fail=1)、(5) 無害コメント追加 green 対照 (rc=0, pass=59/fail=0)。前回実測: Bash matcher / PreInvocation / updatedInput / GENERIC / 外側 </USER_REQUEST> 抽出（5/5）。
 set -euo pipefail
 
 SCRIPT_DIR="$(CDPATH='' cd -P -- "$(dirname -- "$0")" && pwd -P)"
@@ -509,6 +509,18 @@ jq -nc '{type:"PLANNER_RESPONSE",source:"MODEL",content:"マージします",too
 jq -nc '{type:"GENERIC",source:"MODEL",content:"output lines"}' >>"$tr_pending"
 jq -nc '{type:"CHECKPOINT",source:"SYSTEM",content:"checkpoint"}' >>"$tr_pending"
 
+stop_0="$(jq -nc --arg repo "$repo" --arg tp "$tr_pending" '{
+  conversationId:"conv-1", workspacePaths:[$repo], transcriptPath:$tp, executionNum:0, terminationReason:"NO_TOOL_CALL"
+}' | bash -c "$stop_retro_cmd")"
+stop_omit="$(jq -nc --arg repo "$repo" --arg tp "$tr_pending" '{
+  conversationId:"conv-1", workspacePaths:[$repo], transcriptPath:$tp, terminationReason:"NO_TOOL_CALL"
+}' | bash -c "$stop_retro_cmd")"
+stop_empty_term="$(jq -nc --arg repo "$repo" --arg tp "$tr_pending" '{
+  conversationId:"conv-1", workspacePaths:[$repo], transcriptPath:$tp, executionNum:0, terminationReason:""
+}' | bash -c "$stop_retro_cmd")"
+stop_non_num="$(jq -nc --arg repo "$repo" --arg tp "$tr_pending" '{
+  conversationId:"conv-1", workspacePaths:[$repo], transcriptPath:$tp, executionNum:"1", terminationReason:"NO_TOOL_CALL"
+}' | bash -c "$stop_retro_cmd")"
 stop_1="$(jq -nc --arg repo "$repo" --arg tp "$tr_pending" '{
   conversationId:"conv-1", workspacePaths:[$repo], transcriptPath:$tp, executionNum:1, terminationReason:"NO_TOOL_CALL"
 }' | bash -c "$stop_retro_cmd")"
@@ -516,15 +528,19 @@ stop_2="$(jq -nc --arg repo "$repo" --arg tp "$tr_pending" '{
   conversationId:"conv-1", workspacePaths:[$repo], transcriptPath:$tp, executionNum:2, terminationReason:"NO_TOOL_CALL"
 }' | bash -c "$stop_retro_cmd")"
 stop_cancel="$(jq -nc --arg repo "$repo" --arg tp "$tr_pending" '{
-  conversationId:"conv-1", workspacePaths:[$repo], transcriptPath:$tp, executionNum:1, terminationReason:"USER_CANCELED"
+  conversationId:"conv-1", workspacePaths:[$repo], transcriptPath:$tp, executionNum:0, terminationReason:"USER_CANCELED"
 }' | bash -c "$stop_retro_cmd")"
 
-if printf '%s' "$stop_1" | jq -e '.decision == "continue" and ((.reason // "") | contains("retrospective"))' >/dev/null 2>&1 && \
+if printf '%s' "$stop_0" | jq -e '.decision == "continue" and ((.reason // "") | contains("retrospective"))' >/dev/null 2>&1 && \
+   printf '%s' "$stop_omit" | jq -e '.decision == "continue" and ((.reason // "") | contains("retrospective"))' >/dev/null 2>&1 && \
+   printf '%s' "$stop_empty_term" | jq -e '.decision == "continue" and ((.reason // "") | contains("retrospective"))' >/dev/null 2>&1 && \
+   printf '%s' "$stop_non_num" | jq -e '.decision == "continue" and ((.reason // "") | contains("retrospective"))' >/dev/null 2>&1 && \
+   [ "$stop_1" = '{"decision":"allow"}' ] && \
    [ "$stop_2" = '{"decision":"allow"}' ] && \
    [ "$stop_cancel" = '{"decision":"allow"}' ]; then
-  ok "D2: Stop は未振り返り末尾で continue・executionNum>1 と USER_CANCELED で allow"
+  ok "D2: Stop は executionNum=0/省略/非数値・空terminationReasonの未振り返り末尾で continue・executionNum>=1 と USER_CANCELED で allow"
 else
-  bad "D2: Stop 挙動失敗: s1=${stop_1} s2=${stop_2} cancel=${stop_cancel}"
+  bad "D2: Stop 挙動失敗: s0=${stop_0} somit=${stop_omit} sempty=${stop_empty_term} snon=${stop_non_num} s1=${stop_1} s2=${stop_2} cancel=${stop_cancel}"
 fi
 
 run_chain_tail() {
@@ -559,13 +575,41 @@ else
   bad "D5: 内側の </USER_REQUEST> で早切りされ前ターンの末尾が漏れた"
 fi
 
-tr_read_skill="$TMP_ROOT/tr-read-skill.jsonl"
-jq -nc '{type:"USER_INPUT",source:"USER_EXPLICIT",content:"<USER_REQUEST>\n手順を進めて\n</USER_REQUEST>"}' >"$tr_read_skill"
-jq -nc '{type:"PLANNER_RESPONSE",source:"MODEL",tool_calls:[{name:"read_file",args:{Path:"/abs/plugins/ff-dev-toolkit/skills/ace-curate/SKILL.md"}}]}' >>"$tr_read_skill"
-if [ "$(run_chain_tail "$tr_read_skill")" = "first" ]; then
-  ok "D6: PLANNER_RESPONSE read_file(args.Path=ace-curate/SKILL.md) を tail(first) 検出"
+d6_ok=1
+d6_fail_detail=""
+for skill_name in ace-curate merge-cleanup retrospective; do
+  tr_read_full="$TMP_ROOT/tr-read-${skill_name}-full.jsonl"
+  jq -nc '{type:"USER_INPUT",source:"USER_EXPLICIT",content:"<USER_REQUEST>\n手順を進めて\n</USER_REQUEST>"}' >"$tr_read_full"
+  jq -nc --arg sp "/abs/plugins/ff-dev-toolkit/skills/${skill_name}/SKILL.md" \
+    '{type:"PLANNER_RESPONSE",source:"MODEL",tool_calls:[{name:"read_file",args:{Path:$sp}},{name:"run_command",args:{CommandLine:"git status --short"}},{name:"invoke_subagent",args:{Role:"checker",TypeName:"research"}}]}' >>"$tr_read_full"
+  state_full="$(run_chain_tail "$tr_read_full")"
+  stop_full="$(jq -nc --arg repo "$repo" --arg tp "$tr_read_full" '{
+    conversationId:"conv-1", workspacePaths:[$repo], transcriptPath:$tp, executionNum:0, terminationReason:"NO_TOOL_CALL"
+  }' | bash -c "$stop_retro_cmd")"
+  if [ "$state_full" != "no-tail" ] || [ "$stop_full" != '{"decision":"allow"}' ]; then
+    d6_ok=0
+    d6_fail_detail="full(${skill_name}): state=${state_full} stop=${stop_full}"
+    break
+  fi
+
+  tr_read_compact="$TMP_ROOT/tr-read-${skill_name}-compact.jsonl"
+  jq -nc '{type:"USER_INPUT",source:"USER_EXPLICIT",content:"<USER_REQUEST>\n手順を進めて\n</USER_REQUEST>"}' >"$tr_read_compact"
+  jq -nc --arg sp "\"/abs/plugins/ff-dev-toolkit/skills/${skill_name}/SKILL.md\"" \
+    '{type:"PLANNER_RESPONSE",source:"MODEL",tool_calls:[{name:"read_file",args:{Path:$sp}},{name:"run_command",args:{CommandLine:"\"git status --short\"",WaitMsBeforeAsync:"5000"}}]}' >>"$tr_read_compact"
+  state_compact="$(run_chain_tail "$tr_read_compact")"
+  stop_compact="$(jq -nc --arg repo "$repo" --arg tp "$tr_read_compact" '{
+    conversationId:"conv-1", workspacePaths:[$repo], transcriptPath:$tp, executionNum:0, terminationReason:"NO_TOOL_CALL"
+  }' | bash -c "$stop_retro_cmd")"
+  if [ "$state_compact" != "no-tail" ] || [ "$stop_compact" != '{"decision":"allow"}' ]; then
+    d6_ok=0
+    d6_fail_detail="compact(${skill_name}): state=${state_compact} stop=${stop_compact}"
+    break
+  fi
+done
+if [ "$d6_ok" -eq 1 ]; then
+  ok "D6: Antigravity の read_file(SKILL.md) 参照は full/compact とも tail 扱いせず Stop allow"
 else
-  bad "D6: read_file(args.Path) 未検出"
+  bad "D6: Antigravity read_file(SKILL.md) が誤発火した: ${d6_fail_detail}"
 fi
 
 tr_noise="$TMP_ROOT/tr-noise.jsonl"
@@ -584,12 +628,53 @@ tr_delivered="$TMP_ROOT/tr-delivered.jsonl"
 cat "$tr_pending" >"$tr_delivered"
 jq -nc '{type:"PLANNER_RESPONSE",source:"MODEL",content:"完了しました。\n\n## セッション振り返り\n振り返り記録です。"}' >>"$tr_delivered"
 stop_deliv="$(jq -nc --arg repo "$repo" --arg tp "$tr_delivered" '{
-  conversationId:"conv-1", workspacePaths:[$repo], transcriptPath:$tp, executionNum:1, terminationReason:"NO_TOOL_CALL"
+  conversationId:"conv-1", workspacePaths:[$repo], transcriptPath:$tp, executionNum:0, terminationReason:"NO_TOOL_CALL"
 }' | bash -c "$stop_retro_cmd")"
 if [ "$(run_chain_tail "$tr_delivered")" = "active" ] && [ "$stop_deliv" = '{"decision":"allow"}' ]; then
   ok "D8: Antigravity トランスクリプトの ## セッション振り返り を active 判定し Stop を allow"
 else
   bad "D8: active 判定失敗: state=$(run_chain_tail "$tr_delivered") stop=${stop_deliv}"
+fi
+
+tr_compact="$TMP_ROOT/tr-compact.jsonl"
+jq -nc '{type:"USER_INPUT",source:"USER_EXPLICIT",content:"<USER_REQUEST>\n進めて\n</USER_REQUEST>"}' >"$tr_compact"
+jq -nc '{type:"PLANNER_RESPONSE",source:"MODEL",content:"マージします",tool_calls:[{name:"run_command",args:{CommandLine:"\"gh pr merge 42 --squash\"",WaitMsBeforeAsync:"5000"}}]}' >>"$tr_compact"
+stop_compact_0="$(jq -nc --arg repo "$repo" --arg tp "$tr_compact" '{
+  conversationId:"conv-1", workspacePaths:[$repo], transcriptPath:$tp, executionNum:0, terminationReason:"NO_TOOL_CALL"
+}' | bash -c "$stop_retro_cmd")"
+stop_compact_1="$(jq -nc --arg repo "$repo" --arg tp "$tr_compact" '{
+  conversationId:"conv-1", workspacePaths:[$repo], transcriptPath:$tp, executionNum:1, terminationReason:"NO_TOOL_CALL"
+}' | bash -c "$stop_retro_cmd")"
+tr_compact_neg="$TMP_ROOT/tr-compact-neg.jsonl"
+jq -nc '{type:"USER_INPUT",source:"USER_EXPLICIT",content:"<USER_REQUEST>\n確認して\n</USER_REQUEST>"}' >"$tr_compact_neg"
+jq -nc '{type:"PLANNER_RESPONSE",source:"MODEL",tool_calls:[{name:"run_command",args:{CommandLine:"\"echo \\\"gh pr merge 42\\\"\"",WaitMsBeforeAsync:"5000"}}]}' >>"$tr_compact_neg"
+stop_compact_neg_0="$(jq -nc --arg repo "$repo" --arg tp "$tr_compact_neg" '{
+  conversationId:"conv-1", workspacePaths:[$repo], transcriptPath:$tp, executionNum:0, terminationReason:"NO_TOOL_CALL"
+}' | bash -c "$stop_retro_cmd")"
+tr_full_quoted="$TMP_ROOT/tr-full-quoted.jsonl"
+jq -nc '{type:"USER_INPUT",source:"USER_EXPLICIT",content:"<USER_REQUEST>\n確認して\n</USER_REQUEST>"}' >"$tr_full_quoted"
+jq -nc '{type:"PLANNER_RESPONSE",source:"MODEL",tool_calls:[{name:"run_command",args:{CommandLine:"\"/bin/echo\" \"gh pr merge 42\""}}]}' >>"$tr_full_quoted"
+stop_full_quoted_0="$(jq -nc --arg repo "$repo" --arg tp "$tr_full_quoted" '{
+  conversationId:"conv-1", workspacePaths:[$repo], transcriptPath:$tp, executionNum:0, terminationReason:"NO_TOOL_CALL"
+}' | bash -c "$stop_retro_cmd")"
+tr_proto="$TMP_ROOT/tr-proto.jsonl"
+jq -nc '{type:"USER_INPUT",source:"USER_EXPLICIT",content:"<USER_REQUEST>\n確認して\n</USER_REQUEST>"}' >"$tr_proto"
+printf '%s\n' '{"type":"PLANNER_RESPONSE","source":"MODEL","tool_calls":[{"name":"run_command","args":{"__proto__":{"CommandLine":"gh pr merge 99"}}}]}' >>"$tr_proto"
+stop_proto_0="$(jq -nc --arg repo "$repo" --arg tp "$tr_proto" '{
+  conversationId:"conv-1", workspacePaths:[$repo], transcriptPath:$tp, executionNum:0, terminationReason:"NO_TOOL_CALL"
+}' | bash -c "$stop_retro_cmd")"
+if [ "$(run_chain_tail "$tr_compact")" = "first" ] && \
+   printf '%s' "$stop_compact_0" | jq -e '.decision == "continue" and ((.reason // "") | contains("retrospective"))' >/dev/null 2>&1 && \
+   [ "$stop_compact_1" = '{"decision":"allow"}' ] && \
+   [ "$(run_chain_tail "$tr_compact_neg")" = "no-tail" ] && \
+   [ "$stop_compact_neg_0" = '{"decision":"allow"}' ] && \
+   [ "$(run_chain_tail "$tr_full_quoted")" = "no-tail" ] && \
+   [ "$stop_full_quoted_0" = '{"decision":"allow"}' ] && \
+   [ "$(run_chain_tail "$tr_proto")" = "no-tail" ] && \
+   [ "$stop_proto_0" = '{"decision":"allow"}' ]; then
+  ok "D9: compact transcript.jsonl の JSON 文字列化 args を展開して実コマンドのみ検出し executionNum>=1・複数引用・__proto__ で安全処理"
+else
+  bad "D9: compact transcript 判定失敗: state=$(run_chain_tail "$tr_compact") s0=${stop_compact_0} s1=${stop_compact_1} neg_state=$(run_chain_tail "$tr_compact_neg") neg_s0=${stop_compact_neg_0} fq=$(run_chain_tail "$tr_full_quoted")/${stop_full_quoted_0} proto=$(run_chain_tail "$tr_proto")/${stop_proto_0}"
 fi
 
 echo "== E. 堅牢化回帰（ARG_MAX・NDJSON・SIGPIPE・onFailure・PWD・多値転送・パーサ境界） =="

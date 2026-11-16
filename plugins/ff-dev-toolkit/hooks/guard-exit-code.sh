@@ -34,6 +34,10 @@
 # 検索パスの無い rg（ripgrep）が非 TTY の標準入力を読み続けて無言で止まる形（Issue `#2136`）も
 # 同じ「上限の無い待ち」として扱い、判定は `tests/lib/rg-stdin-scan.sh` に置く。抜け道は先頭に並ぶ
 # 代入の `FF_RG_STDIN_ACK=1`。rg の起動語を含む呼び出しに限り、ヘルパの不在・走査の失敗は判定不能として止める。
+# 1 回の Bash 呼び出しで fail-fast でない git 書き込み（git add/commit/push/merge と事前 cmp）を
+# `;` や改行等で繋ぐ連鎖（Issue `#2801`、導入先 OBS-104）の判定は `tests/lib/git-write-chain-scan.sh` に置く。
+# Claude hook の一意な経路は先頭へ `set -e; ` を付与する書き換え候補を返し、曖昧形・非対応ホストは
+# `FF_EXIT_CODE_ACK=1` 抜け道付きの deny へ倒す（候補コマンドに限り判定不能も fail-closed）。
 #
 # **例外は下の既定名簿 `GATE_NAME`** — 候補の前置フィルタは検出器を source する前に走る必要が
 # あり（後述の fail-closed の面を候補コマンドへ限るため）、そのとき検出器の関数はまだ
@@ -285,6 +289,50 @@ has_consumer_gate_candidate() {
 rg_word_re='(^|[^A-Za-z0-9_.-]|\\[nrt])rg(\.[Ee][Xx][Ee])?([^A-Za-z0-9_.-]|$)'
 rg_word_candidate() { [[ $1 =~ $rg_word_re ]]; }
 
+# fail-fast でない git 書き込み連鎖の事前フィルタ（Issue `#2801`、本体は tests/lib/git-write-chain-scan.sh）。
+# 注意: `merge` が `*rg*` に一致するため、raw フィルタの `*rg*` 枝でも必ずここを通す。
+gwc_git_word_re='(^|[^A-Za-z0-9_.-])[Gg][Ii][Tt](\.[Ee][Xx][Ee])?([^A-Za-z0-9_.-]|$)'
+gwc_subcmd_re='(^|[^A-Za-z0-9_.-])(add|commit|push|merge)([^A-Za-z0-9_.-]|$)'
+gwc_norm_match() {
+  local base="$1" require_subcmd="$2" s_strip s_slash
+  s_strip="${base//\\/}"
+  s_slash="${base//\\//}"
+  if ! [[ $s_strip =~ $gwc_git_word_re ]] && ! [[ $s_slash =~ $gwc_git_word_re ]]; then
+    return 1
+  fi
+  [ "$require_subcmd" -eq 0 ] && return 0
+  [[ $s_strip =~ $gwc_subcmd_re ]] || [[ $s_slash =~ $gwc_subcmd_re ]]
+}
+
+git_write_chain_raw_candidate() {
+  case "$1" in
+    *'\u'*|*"\$'"*) return 0 ;;
+  esac
+  local s="${1//\\n/ }"
+  s="${s//\\t/ }"
+  s="${s//\\r/ }"
+  s="${s//\'/}"
+  s="${s//\"/}"
+  gwc_norm_match "$s" 1
+}
+
+git_write_chain_candidate() {
+  case "$1" in
+    *';'*|*"$nl"*|*'&'*|*'|'*|*'`'*|*'('*|*"\$'"*) : ;;
+    *) return 1 ;;
+  esac
+  local s="${1//\\"$nl"/}"
+  s="${s//\'/}"
+  s="${s//\"/}"
+  case "$1" in
+    *"\$'"*)
+      gwc_norm_match "$s" 0 && return 0
+      case "$1" in *'\x'*|*'\0'*|*'\1'*|*'\2'*|*'\3'*|*'\4'*|*'\5'*|*'\6'*|*'\7'*) return 0 ;; esac
+      ;;
+  esac
+  gwc_norm_match "$s" 1
+}
+
 # 安価な前置フィルタ。ここを通らない入力は検出器を読まずに無音で通すので、
 # fail-closed の面が全 Bash 呼び出しへ広がらない。
 case "$input" in
@@ -294,8 +342,8 @@ esac
 case "$input" in
   *'$?'*|*PIPESTATUS*|*"$GATE_NAME"*|*'|'*'&&'*|*'|'*'\u0026\u0026'*) : ;;
   *timeout*|*gtimeout*|*sleep*) : ;;
-  *rg*) rg_word_candidate "$input" || has_raw_consumer_gate_candidate "$input" || exit 0 ;;
-  *) has_raw_consumer_gate_candidate "$input" || exit 0 ;;
+  *rg*) rg_word_candidate "$input" || git_write_chain_raw_candidate "$input" || has_raw_consumer_gate_candidate "$input" || exit 0 ;;
+  *) git_write_chain_raw_candidate "$input" || has_raw_consumer_gate_candidate "$input" || exit 0 ;;
 esac
 
 # jq 自体の不在は fail-open（上の理由）。
@@ -405,14 +453,40 @@ done
 ff_ack_timeout=0
 ff_ack_unbounded=0
 ff_ack_rg=0
+ff_ack_exit_code_stmt=0
 ff_ack_rest="$ack_probe"
 while [ -n "$ff_ack_rest" ]; do
   ff_ack_word="${ff_ack_rest%% *}"
   ff_ack_word="${ff_ack_word%%	*}"
   ff_ack_word="${ff_ack_word%%"$nl"*}"
+  case "$ff_ack_word" in
+    [A-Za-z_]*=*\;*)
+      case "$ff_ack_word" in
+        *[\'\"\$\\]*) : ;;
+        *) ff_ack_word="${ff_ack_word%%;*};" ;;
+      esac
+      ;;
+  esac
   ff_ack_bare="$ff_ack_word"
   case "$ff_ack_bare" in
-    *\;) ff_ack_bare="${ff_ack_bare%;}" ;;
+    *\;)
+      ff_ack_bare="${ff_ack_bare%;}"
+      if [ "$ff_ack_bare" = FF_EXIT_CODE_ACK=1 ]; then
+        ff_ack_exit_code_stmt=1
+      fi
+      ;;
+    FF_EXIT_CODE_ACK=1)
+      ff_ack_tail="${ff_ack_rest#"$ff_ack_word"}"
+      while :; do
+        case "$ff_ack_tail" in
+          " "*|"	"*) ff_ack_tail="${ff_ack_tail#?}" ;;
+          *) break ;;
+        esac
+      done
+      case "$ff_ack_tail" in
+        ''|"$nl"*) ff_ack_exit_code_stmt=1 ;;
+      esac
+      ;;
   esac
   case "$ff_ack_bare" in
     FF_TIMEOUT_ACK=1) ff_ack_timeout=1 ;;
@@ -499,6 +573,84 @@ fi
 case "$ack_probe" in
   'FF_EXIT_CODE_ACK=1 '*|'FF_EXIT_CODE_ACK=1	'*) exit 0 ;;
 esac
+[ "$ff_ack_exit_code_stmt" -ne 1 ] || exit 0
+
+# ---- fail-fast でない git 書き込み連鎖（Issue `#2801`、OBS-104）------------------
+gwc_unavailable() { # <理由>
+  deny "⚠️ ff-dev-toolkit guard（git 書き込み連鎖）: **判定不能**のため停止しました（$1）。
+このコマンドは複数の git 書き込み（または事前の比較コマンド＋git 書き込み）を繋ぐ候補ですが、fail-fast 性を判定できませんでした。
+次のいずれかで進めてください:
+  1) コマンド間を \`&&\` で繋ぐか、スクリプト先頭へ \`set -e\` を置いて書き直す
+  2) このコマンドに限って通す: コマンドの**先頭**へ環境代入 FF_EXIT_CODE_ACK=1 を付けて再実行する
+  3) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP=exit-code を設定する" \
+    git-write-chain-unavailable tests/lib/git-write-chain-scan.sh \
+    "git 書き込み連鎖の fail-fast 性を判定できないため、判定不能として止めた" \
+    "コマンド間を && で繋ぐか先頭へ set -e を置いて再実行する（意図した形ならコマンドの先頭へ FF_EXIT_CODE_ACK=1 を付ける）"
+}
+if [ "$ff_ack_exit_code_stmt" -ne 1 ] && git_write_chain_candidate "$cmd"; then
+  if [ "$asdd_unverifiable" -eq 1 ]; then
+    deny_unavailable "ASDD 設定を検証できません（asdd_hook_enabled rc=${asdd_rc}。.asdd/config.json があるのに node が無い・設定を読めない等）"
+  fi
+  GWC_LIB="${BASH_SOURCE[0]%/*}/../tests/lib/git-write-chain-scan.sh"
+  [ -f "$GWC_LIB" ] && [ -r "$GWC_LIB" ] || gwc_unavailable "判定ヘルパのファイルが無いか読めません（tests/lib/git-write-chain-scan.sh）"
+  # shellcheck source=../tests/lib/git-write-chain-scan.sh
+  . "$GWC_LIB" 2>/dev/null || gwc_unavailable "判定ヘルパの読み込みに失敗しました"
+  [ "$(type -t ff_git_write_chain_scan 2>/dev/null)" = "function" ] || gwc_unavailable "判定ヘルパに ff_git_write_chain_scan がありません"
+  gwc_rc=0
+  gwc_hits="$(ff_git_write_chain_scan "$cmd")" || gwc_rc=$?
+  case "$gwc_rc" in
+    0) : ;;
+    4) gwc_unavailable "引用・展開・heredoc・括弧が閉じないまま入力が終わったため、走査を完了できません" ;;
+    *) gwc_unavailable "判定ヘルパの走査が失敗しました（rc=${gwc_rc}）" ;;
+  esac
+  if [ -n "$gwc_hits" ]; then
+    gwc_also_ec=0
+    case "$cmd" in
+      *'$?'*|*PIPESTATUS*|*"$GATE_NAME"*|*'|'*'&&'*) gwc_also_ec=1 ;;
+      *) has_consumer_gate_candidate "$cmd" && gwc_also_ec=1 ;;
+    esac
+    if [ "$gwc_also_ec" -eq 0 ] \
+      && [ "${CLAUDECODE:-}" = 1 ] && [ -n "${CLAUDE_PROJECT_DIR:-}" ] \
+      && [ -z "${GROK_PLUGIN_ROOT:-}" ] \
+      && printf '%s' "$input" | jq -e '.hook_event_name == "PreToolUse" and (has("model") | not) and ((.tool_input.command // "") | contains("\r") | not)' >/dev/null 2>&1 \
+      && [ "$(type -t ff_git_write_chain_rewrite 2>/dev/null)" = "function" ]; then
+      gwc_rewritten="$(ff_git_write_chain_rewrite "$cmd")" || gwc_rewritten=""
+      if [ -n "$gwc_rewritten" ] && [ -r "${BASH_SOURCE[0]%/*}/guard-zsh-glob.sh" ]; then
+        case "$input" in
+          *'$'*|*'='*|*'*'*|*'?'*|*'['*)
+            gwc_zsh_probe="$(printf '%s' "$input" | jq -c 'del(.session_id)' 2>/dev/null | FF_BASH_HOOKS_NOTICE_LOG='' bash "${BASH_SOURCE[0]%/*}/guard-zsh-glob.sh" 2>/dev/null)" || gwc_zsh_probe=""
+            if [ -n "$gwc_zsh_probe" ] && printf '%s' "$gwc_zsh_probe" | jq -e '.hookSpecificOutput | type == "object" and has("updatedInput")' >/dev/null 2>&1; then
+              gwc_rewritten=""
+            fi
+            unset gwc_zsh_probe
+            ;;
+        esac
+      fi
+      if [ -n "$gwc_rewritten" ]; then
+        printf '%s' "$input" | jq --arg command "$gwc_rewritten" \
+          '{hookSpecificOutput: {hookEventName: "PreToolUse", updatedInput: (.tool_input + {command: $command}), additionalContext: "終了コードガード（git 書き込み連鎖）: fail-fast でない git 書き込み連鎖の先頭へ set -e; を付け、前段が非 0 で失敗した時点で後続の commit / push 等を止める書き換え候補を作成しました。採用・実行は再検査と通常の権限判定に従います。"}}' || gwc_unavailable '書き換え JSON を組み立てられません'
+        exit 0
+      fi
+    fi
+    gwc_first_line="${gwc_hits%%"$nl"*}"
+    IFS=$'\t' read -r gwc_h_tag gwc_h_ln gwc_h_pair _ gwc_h_ex <<< "$gwc_first_line"
+    [ "$gwc_h_tag" = H ] && [ -n "${gwc_h_pair:-}" ] || gwc_unavailable "判定ヘルパの出力形式を解釈できませんでした"
+    gwc_reason="⚠️ ff-dev-toolkit guard（git 書き込み連鎖）: fail-fast でない連なり（\`${gwc_h_pair}\`、${gwc_h_ln} 行目付近: \`${gwc_h_ex}\`）を検出しました。
+\`;\` や改行だけで繋ぐと、前段（\`git add\` の失敗 / 事前検証 \`cmp\` の不一致 / \`commit-msg\` hook による \`git commit\` 拒否など）が非 0 で終わっても後段がそのまま走り、部分ステージでのコミットや空ブランチの \`push\` を起こします（導入先 OBS-104）。
+次のいずれかへ書き換えて再実行してください:
+  git add … && git commit … && git push …   （\`&&\` で失敗を短絡する）
+  set -e; git add …; git commit …             （\`set -e\` で非 0 終了時に中断する）
+  if git add …; then git commit …; fi       （\`if\` / \`\$?\` で成否を明示的に分岐する）
+判定の正本は tests/lib/git-write-chain-scan.sh で、この hook は判定規則を複製しません。
+どうしてもこの形で実行する必要がある場合:
+  1) このコマンドに限って通す: コマンドの**先頭**へ環境代入 FF_EXIT_CODE_ACK=1 を付けて再実行する（括弧や複合文が先頭なら FF_EXIT_CODE_ACK=1; を置く）
+  2) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP=exit-code を設定する"
+    deny "$gwc_reason" git-write-chain tests/lib/git-write-chain-scan.sh \
+      "fail-fast でない git 書き込みの連鎖（${gwc_h_pair}）を検出した" \
+      "コマンド間を && で繋ぐか先頭に set -e を置いて再実行する（意図した形ならコマンドの先頭へ FF_EXIT_CODE_ACK=1 を付ける）"
+  fi
+  unset gwc_hits gwc_rc gwc_also_ec gwc_rewritten gwc_first_line gwc_h_tag gwc_h_ln gwc_h_pair gwc_h_ex gwc_reason
+fi
 
 # rawのcwd/transcriptだけに宣言があっても停止しない。実commandで対象を絞ってから故障を扱う。
 case "$cmd" in
