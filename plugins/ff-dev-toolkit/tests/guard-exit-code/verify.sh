@@ -66,8 +66,9 @@
 # 空振り検出: 検索パスの無い rg（Issue `#2136`）は rg-stdin.sh が持つ。判定ヘルパの不在・awk 失敗・完了印なし・関数不在は rg の起動語を含む呼び出しを判定不能の deny にすることを要求し、常に 0 件を返すヘルパでは RF 系がすべて素通しになって赤になる（2026-11-02 実測）。rg-stdin.sh の失敗はこの suite の失敗として数える。
 # 空振り検出: 背景の名簿外分岐を if (0) にする、または待ちタグの print を別名にする（名前だけ残して中身が変わる）と、該当の deny は素通しになり赤（2026-10-30 実測: 変異 13/14/15 は各 1 件が pass へ落ち、変異検出がそれを赤として数える。正常は 259/0）。
 # 空振り検出: pipe-and-chain（Issue `#2593`）は、検出器の print を外す・pipefail の宣言を無視する・`||` まで対象にする・head で終わる左辺まで止める・前置フィルタ 3 箇所から `|` の後ろの `&&` を外す・書き換え案を一般形へ戻す・head の段がある行へ pipefail を勧める 7 変異が各 rc=1。無変異対照は rc=0（2026-11-04 WSL 実測）
-# 空振り検出: 背景実行のゲート起動の前置き行（代入・cd・heredoc でスクリプトを書く行。Issue `#2672`）は bg-prefix.sh が持つ。fixture のディレクトリが無い・pass が 11 件未満・expect.tsv と fire-*.txt の数が合わない・OBS 4 件と Count 4 の 2 本が欠けると赤。検出器を Issue `#2672` の修正前の版へ戻したツリーでは 62 件、代入を並べた 1 文の退行（Issue `#2683`）の修正前の版では 9 件失敗する（2026-11-07 Windows Git Bash 実測）。bg-prefix.sh の失敗はこの suite の失敗として数える。
+# 空振り検出: 背景実行のゲート起動の前置き行（代入・cd・heredoc でスクリプトを書く行。Issue `#2672`）は bg-prefix.sh が持つ。fixture のディレクトリが無い・pass が 11 件未満・expect.tsv と fire-*.txt の数が合わない・OBS 4 件と Count 4 の 2 本が欠けると赤。検出器を Issue `#2672` の修正前の版へ戻したツリーでは 62 件、代入を並べた 1 文の退行（Issue `#2683`）の修正前の版では 9 件失敗する（2026-11-07 Windows Git Bash 実測）。2 行目以降の fail-fast の準備の行と表示だけの行を持つ本文（Issue `#2813`。pass-prep-or-exit-build-e2e.txt）が欠けても赤で、Issue `#2813` の修正前の版（origin/develop 607494bc）へ戻したツリーでは 40 件失敗する（2026-11-16 macOS 実測。PR のレビュー対応と再点検の fixture・変異を含む）。bg-prefix.sh の失敗はこの suite の失敗として数える。
 # 空振り検出: 単語分割の書き換えが先頭へ付ける文を終了コードガードの判定入力から外す検査は zsh-prefix.sh が持つ。fixture のディレクトリが無い・pass が 2 件未満・expect.tsv と fire-*.txt の数が合わない・pass と fire-dropped の本文が字面を持たない・fire-near-shwordsplit がその字面を含む・本文が共有定義の変数名を含むと赤。共有定義を別の文へ変えた実ファイルでこの suite を回すと 1 件失敗（成功 268。正常は 269/0）。子の zsh-prefix.sh は 8 件失敗（成功 14。正常は 26/0）で、伝播する 2 件が deny、伝播を欠く fire-dropped の 3 検査が素通し、変異前コピーの対照 2 件が deny、コピーへの再変異は元の字面が残っていないので sed が当たらない（2026-11-09 実測）。zsh-prefix.sh の失敗はこの suite の失敗として数える。
+# 空振り検出: 背景実行の判定が、準備の行・表示だけの行を足しても変わらないことの検査は prefix-invariance.sh が持つ（Issue `#2832`）。行の集合・本文の集合・検査した件数が下限を割る、検出器が無い・読めない・awk の失敗で判定を返さない、行を差し込めず基準と同じ本文を比べている、変異の置換が当たらない、のいずれも赤。このスクリプトを Issue `#2672` の修正前（84db5538）・Issue `#2813` の修正前（607494bc）の版のツリーへ置いて回すと、どちらも 9 件失敗（rc=1。2026-11-17 macOS 実測）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -1388,6 +1389,13 @@ if bash "$SCRIPT_DIR/git-write-chain.sh"; then
   ok "git-write-chain.sh（OBS-104 の 3 形・4 軸・書換実行・判定不能・変異）が緑"
 else
   bad "git-write-chain.sh が失敗しました（上の ✗ 行）"
+fi
+
+echo "guard-exit-code: 背景実行の判定は行を足しても変わらない（組み合わせ・名簿・変異は prefix-invariance.sh）"
+if bash "$SCRIPT_DIR/prefix-invariance.sh"; then
+  ok "prefix-invariance.sh（準備の行・表示だけの行を足す前後の一致・判定が変わる形の名簿・既知の食い違い・変異検出）が緑"
+else
+  bad "prefix-invariance.sh が失敗しました（上の ✗ 行）"
 fi
 
 echo

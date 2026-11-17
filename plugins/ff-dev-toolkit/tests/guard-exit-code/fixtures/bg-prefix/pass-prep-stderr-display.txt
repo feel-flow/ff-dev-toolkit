@@ -1,0 +1,4 @@
+pnpm build > /tmp/build.log 2>&1; rc=$?
+tail -n 15 /tmp/build.log 2>/dev/null
+git status --short 2>&1
+echo "EXIT=$rc"; exit $rc

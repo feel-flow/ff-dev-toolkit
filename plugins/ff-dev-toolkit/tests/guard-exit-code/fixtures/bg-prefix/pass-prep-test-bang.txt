@@ -1,0 +1,4 @@
+export ROOT=/repo/plugins/ff-dev-toolkit
+[ ! -f "$ROOT/.lock" ] || exit 9
+bash "$ROOT/scripts/multi-review.sh" --route full > /tmp/review.log 2>&1
+rc=$?; echo "EXIT=$rc"; exit $rc

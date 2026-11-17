@@ -65,7 +65,9 @@ function addc(s, flag,   k) {
   # flag は 1 文字ぶんを渡す（s の文字数だけ繰り返して連結する）。2 文字の s へ "11" を渡すと、
   # 後ろの文字の引用状態が 2 文字ずれて未引用の glob を引用済みと読む（Issue `#2756` のレビュー）。
   # 空の引用（`ex""port` / `U""=`）は flag の文字を残さないので、引用を含む語かどうかと
-  # 最初の引用より前の文字数を別に持つ
+  # 最初の引用より前の文字数を別に持つ。
+  # wbpos は語の最初の文字の src 上の位置（equals-apply が連続した = だけの語だけを引用する。Issue `#2817`）。
+  if (!started[wc[D]]) wbpos[wc[D]] = i
   if (flag == "1" && !wq[wc[D]]) { wq[wc[D]] = 1; fq[wc[D]] = length(wb[wc[D]]) }
   wb[wc[D]] = wb[wc[D]] s
   for (k = 1; k <= length(s); k++) wf[wc[D]] = wf[wc[D]] flag
@@ -138,7 +140,7 @@ function fin(d,   w, f, q, qp) {
   w = wb[d]; f = wf[d]; q = wq[d]; qp = fq[d]
   wb[d] = ""; wf[d] = ""; wq[d] = 0; started[d] = 0
   if (cs[d] == 1) {
-    if (exm && substr(w, 1, 1) == "=") check_expansion(w, f)
+    if (exm && substr(w, 1, 1) == "=") check_expansion(w, f, d)
     cs[d] = 2; return
   }
   if (cs[d] == 2) { if (w == "in") cs[d] = 3; return }
@@ -162,7 +164,7 @@ function fin(d,   w, f, q, qp) {
   }
   # 修飾子モードは語の判定を出さない（検出は字句解析の `$` の位置で chk_mod が済ませる）
   if (mm) return
-  if (exm) { check_expansion(w, f); return }
+  if (exm) { check_expansion(w, f, d); return }
   if (ng[d]) return
   cur_q = q
   # 左辺（`=` まで）を引用・エスケープした語（`export "U"=x` / `export \U=x`）は代入ではなく glob される
@@ -170,7 +172,21 @@ function fin(d,   w, f, q, qp) {
   check(w, f)
 }
 # 警告は実値の推論ではなく、未引用 scalar の使用箇所。代入では分割しないのが正しい。
-function check_expansion(w, f,   k, name) {
+function check_expansion(w, f, d,   k, name) {
+  # equals-apply: 検出した = だけの未引用の語を、ソース上の連続した位置で引用する（Issue `#2817`）。
+  # 綴りの部分一致では、長い = の並びを引用したあとも短い方がその中に残る。位置で入れると残らない。
+  # 引用と連結した語・行継続で位置が飛んだ語は、誤った範囲を引用しないよう ebad にして呼び出し側が止める。
+  if (mode == "equals-apply") {
+    if (substr(w, 1, 1) == "=" && substr(f, 1, 1) == "0" && length(w) > 1) {
+      if (w ~ /^=+$/ && f ~ /^0+$/ && wbpos[d] >= 1 && substr(src, wbpos[d], length(w)) == w) {
+        en++; es[en] = wbpos[d] + 0; el[en] = length(w)
+      } else {
+        ebad = 1
+        if (ebadw == "") ebadw = w
+      }
+    }
+    return
+  }
   if (substr(w, 1, 1) == "=" && substr(f, 1, 1) == "0" && length(w) > 1) {
     # equals-fix: 語と書き換え案。= だけの語に限る（=cmd は意図的なパス展開でありうる）。
     if (mode == "equals-fix") { printf "%s\t%s\n", w, ((w ~ /^=+$/ && f ~ /^0+$/) ? "\"" w "\"" : "-"); return }
@@ -217,7 +233,7 @@ function check_query(w, f,   k, m) {
     return
   }
 }
-BEGIN { SQ = sprintf("%c", 39); exm = (mode == "expansion" || mode == "equals-fix"); mm = (mode == "modifier-fix") }
+BEGIN { SQ = sprintf("%c", 39); exm = (mode == "expansion" || mode == "equals-fix" || mode == "equals-apply"); mm = (mode == "modifier-fix") }
 { src = src (NR > 1 ? "\n" : "") $0 }
 END {
   n = length(src)
@@ -352,6 +368,30 @@ END {
   # 引用・展開が閉じないまま入力が終わった。走査は途中で止まっているので「0 件」と区別する
   if (D > 0) { while (D > 0) pop(); fin(0); exit 4 }
   fin(0)
+  if (mode == "equals-apply") {
+    if (ebad) {
+      if (ebadw == "") ebadw = "（不明）"
+      printf "書き換えは一意に決まりません: 語「%s」は = だけの未引用の語としてソース上の連続した位置で切り出せないため引用できません（意図的なコマンドパス展開、行継続、引用との連結のいずれかです）", ebadw
+      exit 5
+    }
+    for (ea_k = 2; ea_k <= en; ea_k++) {
+      ea_tmp = es[ea_k]; ea_L = el[ea_k]; ea_j = ea_k - 1
+      while (ea_j >= 1 && es[ea_j] > ea_tmp) { es[ea_j + 1] = es[ea_j]; el[ea_j + 1] = el[ea_j]; ea_j-- }
+      es[ea_j + 1] = ea_tmp; el[ea_j + 1] = ea_L
+    }
+    for (ea_k = 1; ea_k < en; ea_k++) {
+      if (es[ea_k] + el[ea_k] > es[ea_k + 1]) {
+        printf "書き換えは一意に決まりません: = だけの語の位置が重なるため引用できません"
+        exit 5
+      }
+    }
+    ea_result = src
+    for (ea_k = en; ea_k >= 1; ea_k--) {
+      ea_p = es[ea_k]; ea_L = el[ea_k]
+      ea_result = substr(ea_result, 1, ea_p - 1) "\"" substr(ea_result, ea_p, ea_L) "\"" substr(ea_result, ea_p + ea_L)
+    }
+    printf "%s", ea_result
+  }
 }
 '
 
@@ -370,6 +410,30 @@ ff_zsh_expansion_scan() {
 # 入力書き換え（Issue `#2255`）専用で、ff_zsh_expansion_scan の出力契約は変えない。rc は glob と共通。
 ff_zsh_equals_fix_scan() {
   printf '%s\n' "$1" | "${FF_ZSH_GLOB_AWK:-awk}" -v mode=equals-fix "$_FF_ZSH_GLOB_AWK_PROG"
+}
+
+# = だけの未引用の語を、パーサが切った位置で "…" に入れる（Issue `#2817`）。
+# 結果は stdout には出さない。呼び出し側は戻ったあと FF_ZSH_EQUALS_APPLY_OUT を読む。
+# 成功時はその変数が書き換えたコマンド（末尾の改行も残す）。rc 5 のときは同じ変数が、
+# 一意に切れなかった理由。
+# rc: 0 = 適用した（対象 0 のときは入力と同じ）
+#     4 = 引用・展開が閉じていない（ff_zsh_glob_scan と同じ）
+#     5 = 一意に引用できない（FF_ZSH_EQUALS_APPLY_OUT は理由。コマンドではない）
+#     その他 = awk の失敗。FF_ZSH_EQUALS_APPLY_OUT は信用しない
+# 末尾改行を残すため、awk の出力の直後に番兵 X を付けてから外す。失敗時は番兵を付けない。
+ff_zsh_equals_apply() { # <cmd>
+  local out rc=0
+  FF_ZSH_EQUALS_APPLY_OUT=""
+  out="$(printf '%s\n' "$1" | "${FF_ZSH_GLOB_AWK:-awk}" -v mode=equals-apply "$_FF_ZSH_GLOB_AWK_PROG" && printf X)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    FF_ZSH_EQUALS_APPLY_OUT="$out"
+    return "$rc"
+  fi
+  case "$out" in
+    *X) FF_ZSH_EQUALS_APPLY_OUT="${out%X}"; return 0 ;;
+  esac
+  FF_ZSH_EQUALS_APPLY_OUT="$out"
+  return 1
 }
 
 # stdout: zsh が履歴修飾子として値を書き換える `$name:X`（X は修飾子の文字）1 つにつき 1 行

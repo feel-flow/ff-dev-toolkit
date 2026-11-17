@@ -457,9 +457,11 @@ kc_add() {
     claim_base="origin/${default_branch}"; claim_pin=()
     kc_load_batch
     if ff_kd_state_read "$repo_root"; then claim_base="$KD_ST_DEFAULT_TIP"; claim_pin=(--base-commit "$KD_ST_DEFAULT_TIP"); fi
+    # claim の生成と検証（下の check-version-claims.sh）へ同じ repo_root を明示して渡す。生成側だけ
+    # cwd の repo で決めると、別の checkout の文書を見た CLAIM_UNCHANGED のまま検証だけが赤になる（Issue `#2818`）
     for doc in "${claim_docs[@]}"; do
       assert_bundled_shebang_lf "${plugin_root}/scripts/update-version-claim.sh"
-      FF_DEV_TOOLKIT_ROOT="${plugin_root}" "${plugin_root}/scripts/update-version-claim.sh" --base "$claim_base" --document "$doc" \
+      FF_DEV_TOOLKIT_ROOT="${plugin_root}" "${plugin_root}/scripts/update-version-claim.sh" --base "$claim_base" --document "$doc" --root "$repo_root" \
         || die_env "version claim を再生成できません: ${doc}" "origin/${default_branch} を取り込んでから再実行する"
       [[ -f "$repo_root/.version-claims/${doc}.claim" ]] || die_env "claim が生成されていません: .version-claims/${doc}.claim" "update-version-claim.sh の出力を確かめる"
       pathspecs+=("$repo_root/.version-claims/${doc}.claim")

@@ -1,0 +1,6 @@
+cd /path/to/repo || exit 2
+git checkout -- .claude/launch.json || exit 1
+git status --short .claude/launch.json
+bash /path/to/repo/plugins/ff-dev-toolkit/tests/run-all.sh > /tmp/run-all.log 2>&1; rc=$?
+tail -n 15 /tmp/run-all.log
+echo "EXIT=$rc"

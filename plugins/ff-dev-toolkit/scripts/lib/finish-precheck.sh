@@ -366,9 +366,30 @@ cmd_precheck() {
   body_close_count="$(printf '%s\n' "${CLOSES_RAW}" | awk 'NF{c++} END{print c+0}')"
   if [[ "$api_close_count" -eq 0 && "$body_close_count" -gt 0 ]]; then auto_unreliable=1; fi
   echo "AUTO_CLOSE_UNRELIABLE=${auto_unreliable}"
-  # 両群とも空なら照合する Issue が無い。checks の待機・鮮度照合・merge コマンド生成へ進まない
-  # （進めると「対象なし」の PR に ready を出し、貼れば通る merge コマンドまで生成する）
+  # 両群とも空のときだけ、PR 本文・タイトル・コミット件名に参照行の書き忘れがないかを見る。
+  # 候補は案内専用。対象集合に足さず、checks の待機・鮮度照合・merge コマンド生成へも進まない。
   if [[ -z "$CLOSES_UNION" && -z "$REFS_ONLY" ]]; then
+    local issue_ref_hints
+    issue_ref_hints="$(jq -er '
+      if (.title | type) != "string" or (.body | type) != "string" or (.commits | type) != "array"
+        or any(.commits[]; (.messageHeadline | type) != "string")
+      then error("invalid title, body or commits[].messageHeadline")
+      else
+        [(.title, .body, .commits[].messageHeadline)
+          # 宣言の区切りやコード表記が伴う数字色だけを除外する。散文の行末は CSS の証拠にしない。
+          | gsub("(?i)\\b(?:[a-z-]*color|background|fill|stroke)[ \\t]*:[ \\t]*#(?:[0-9]{8}|[0-9]{6}|[0-9]{4}|[0-9]{3})(?=[ \\t]*[;}\\x60])"; " ")
+          | scan("(?<![A-Za-z0-9_/#])#[1-9][0-9]*(?![A-Za-z0-9_])")]
+        | unique | join(", ")
+      end
+    ' <<<"$PR_JSON")" || die_env "PR 本文・タイトル・コミット件名の Issue 参照を確認できません" "gh pr view ${PR_NUMBER} --json title,body,commits または --github-input の入力を確かめて再実行する"
+    if [[ -n "$issue_ref_hints" ]]; then
+      local example_ref="$issue_ref_hints"
+      [[ "$issue_ref_hints" != *,* ]] || example_ref='#N'
+      echo "PRECHECK=blocked"
+      printf '❌ PR に Issue 番号の候補があります（%s）が、Closes 群・Refs 群とも空です。対象を確認し、PR 本文に Refs %s または Closes %s の行を追記してから precheck を再実行してください。\n' \
+        "$issue_ref_hints" "$example_ref" "$example_ref" >&2
+      return 1
+    fi
     echo "PRECHECK=no-target"
     echo "ℹ️  参照から検出できる対象 Issue がありません（Closes 群・Refs 群とも空）。checks の待機・鮮度照合・merge コマンド生成は行いません" >&2
     return 0

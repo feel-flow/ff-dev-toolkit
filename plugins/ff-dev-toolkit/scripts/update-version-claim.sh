@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # 文書の base blob ID（新規時は ABSENT）と current blob ID から Git 表示設定に依存しない version claim を生成する。
+# 対象 repo は --root（repository の最上位）で明示でき、明示しない回は cwd の repo を対象にする。決め方は検証側
+# （check-version-claims.sh）と同じ lib/version-claim-root.sh で、出力の先頭に CLAIM_ROOT= で示す。
 set -euo pipefail
 
 # ff-dev-toolkit-script-root-guard:start
@@ -170,23 +172,29 @@ ff_assert_script_plugin_root "${BASH_SOURCE[0]}" || exit 2
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 exact_link_library="$script_dir/lib/exact-link-functions.sh"
 [[ -f "$exact_link_library" && ! -L "$exact_link_library" ]] && source "$exact_link_library" || { echo "✗ exact link library が無いか読み込めません: $exact_link_library" >&2; exit 2; }
+claim_root_library="$script_dir/lib/version-claim-root.sh"
+[[ -f "$claim_root_library" && ! -L "$claim_root_library" ]] && source "$claim_root_library" || { echo "✗ claim 対象 repo の解決 library が無いか読み込めません: $claim_root_library" >&2; exit 2; }
 
 base=""
 document=""
+root_arg=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --base) shift; [[ $# -gt 0 ]] || { echo "Usage: $0 --base <ref> --document <docs/path.md>" >&2; exit 2; }; base="$1" ;;
-    --document) shift; [[ $# -gt 0 ]] || { echo "Usage: $0 --base <ref> --document <docs/path.md>" >&2; exit 2; }; document="$1" ;;
-    *) echo "Usage: $0 --base <ref> --document <docs/path.md>" >&2; exit 2 ;;
+    --root) shift; [[ $# -gt 0 && -n "$1" ]] || { echo "Usage: $0 [--root <repository>] --base <ref> --document <docs/path.md>" >&2; exit 2; }; root_arg="$1" ;;
+    --base) shift; [[ $# -gt 0 ]] || { echo "Usage: $0 [--root <repository>] --base <ref> --document <docs/path.md>" >&2; exit 2; }; base="$1" ;;
+    --document) shift; [[ $# -gt 0 ]] || { echo "Usage: $0 [--root <repository>] --base <ref> --document <docs/path.md>" >&2; exit 2; }; document="$1" ;;
+    *) echo "Usage: $0 [--root <repository>] --base <ref> --document <docs/path.md>" >&2; exit 2 ;;
   esac
   shift
 done
-[[ -n "$base" && -n "$document" ]] || { echo "Usage: $0 --base <ref> --document <docs/path.md>" >&2; exit 2; }
+[[ -n "$base" && -n "$document" ]] || { echo "Usage: $0 [--root <repository>] --base <ref> --document <docs/path.md>" >&2; exit 2; }
 [[ "$document" =~ ^docs/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\.md$ ]] || { echo "✗ document は docs/ 配下の相対 Markdown path にしてください: $document" >&2; exit 1; }
 case "/$document/" in */./*|*/../*) echo "✗ document path に . または .. component は使えません: $document" >&2; exit 1 ;; esac
 
-repo_root_raw="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "✗ git repository root を解決できません" >&2; exit 2; }
-repo_root="$(cd "$repo_root_raw" && pwd -P)" || { echo "✗ git repository root を正規化できません: $repo_root_raw" >&2; exit 2; }
+# 対象 repo は検証側（check-version-claims.sh）と同じ規則で決める（lib/version-claim-root.sh。Issue `#2818`）。
+# 以降の git はすべて -C "$repo_root" で呼び、cwd の repo を読まない
+repo_root="$(ff_claim_resolve_root "$root_arg" "$script_dir")" || exit $?
+echo "CLAIM_ROOT=$repo_root"
 doc="$repo_root/$document"
 [[ -f "$doc" && ! -L "$doc" ]] || { echo "✗ document が通常ファイルではありません: $document" >&2; exit 1; }
 doc_parent="$(cd "$(dirname "$doc")" && pwd -P)" || { echo "✗ document の親 directory を解決できません" >&2; exit 2; }
@@ -194,8 +202,8 @@ canonical_doc="$doc_parent/$(basename "$doc")"
 [[ "$canonical_doc" == "$doc" ]] || { echo "✗ document path は正規形にしてください: $document" >&2; exit 1; }
 case "$doc_parent/" in "$repo_root/docs/"*) ;; *) echo "✗ document の親 directory が docs/ 外です: $document" >&2; exit 1 ;; esac
 
-base_commit="$(git rev-parse --verify "${base}^{commit}" 2>/dev/null)" || { echo "✗ base commit を解決できません: $base" >&2; exit 2; }
-base_entry="$(git ls-tree "$base_commit" -- "$document")" || { echo "✗ base blob を検査できません: $document" >&2; exit 2; }
+base_commit="$(git -C "$repo_root" rev-parse --verify "${base}^{commit}" 2>/dev/null)" || { echo "✗ base commit を解決できません: $base" >&2; exit 2; }
+base_entry="$(git -C "$repo_root" ls-tree "$base_commit" -- "$document")" || { echo "✗ base blob を検査できません: $document" >&2; exit 2; }
 if [[ -n "$base_entry" ]]; then
   base_type="$(printf '%s\n' "$base_entry" | awk '{print $2}')"
   base_blob="$(printf '%s\n' "$base_entry" | awk '{print $3}')"
@@ -203,9 +211,9 @@ if [[ -n "$base_entry" ]]; then
 else
   base_blob="ABSENT"
 fi
-current_blob="$(git hash-object "$doc")" || { echo "✗ current blob を取得できません: $document" >&2; exit 2; }
+current_blob="$(git -C "$repo_root" hash-object "$doc")" || { echo "✗ current blob を取得できません: $document" >&2; exit 2; }
 if [[ "$base_blob" != ABSENT && "$current_blob" == "$base_blob" ]]; then
-  unchanged_blob="$(git hash-object "$doc")" || { echo "✗ unchanged document を再検査できません: $document" >&2; exit 2; }
+  unchanged_blob="$(git -C "$repo_root" hash-object "$doc")" || { echo "✗ unchanged document を再検査できません: $document" >&2; exit 2; }
   [[ "$unchanged_blob" == "$current_blob" ]] || { echo "✗ claim 判定中に document が変更されました: $document" >&2; exit 2; }
   echo "CLAIM_UNCHANGED=$document"
   exit 0
@@ -245,7 +253,7 @@ case "$version_rc" in
 esac
 [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "✗ version が SemVer ではありません: $document" >&2; exit 1; }
 
-change="$(printf '%s\n' "base=$base_blob" "current=$current_blob" | git hash-object --stdin)" || { echo "✗ claim hash を生成できません: $document" >&2; exit 2; }
+change="$(printf '%s\n' "base=$base_blob" "current=$current_blob" | git -C "$repo_root" hash-object --stdin)" || { echo "✗ claim hash を生成できません: $document" >&2; exit 2; }
 
 claims_root="$repo_root/.version-claims"
 [[ -d "$claims_root" && ! -L "$claims_root" ]] || { echo "✗ .version-claims が無いか symlink です" >&2; exit 1; }
@@ -329,13 +337,13 @@ cleanup_claim_artifacts() {
 verify_current_claim() {
   local require_inode="$1" verified_hash
   [[ -f "$claim" && ! -L "$claim" ]] || return 1
-  verified_hash="$(git hash-object "$claim")" || return 2
+  verified_hash="$(git -C "$repo_root" hash-object "$claim")" || return 2
   [[ "$verified_hash" == "$expected_hash" && "$(wc -l < "$claim" | tr -d ' ')" -eq 3 ]] || return 1
   [[ "$require_inode" -eq 0 || (-e "$claim_tmp" && "$claim" -ef "$claim_tmp") ]]
 }
 verify_current_document() {
   local verified_blob verified_version
-  verified_blob="$(git hash-object "$doc")" || return 2
+  verified_blob="$(git -C "$repo_root" hash-object "$doc")" || return 2
   verified_version="$(read_frontmatter_version "$doc")" || return 2
   [[ "$verified_blob" == "$current_blob" && "$verified_version" == "$version" ]]
 }
@@ -343,8 +351,8 @@ verify_old_claim_snapshot() {
   local old_hash snapshot_hash
   [[ -n "$claim_snapshot" ]] || return 0
   [[ -e "$claim_old" && -e "$claim_snapshot" && "$claim_old" -ef "$claim_snapshot" ]] || return 1
-  old_hash="$(git hash-object "$claim_old")" || return 2
-  snapshot_hash="$(git hash-object "$claim_snapshot")" || return 2
+  old_hash="$(git -C "$repo_root" hash-object "$claim_old")" || return 2
+  snapshot_hash="$(git -C "$repo_root" hash-object "$claim_snapshot")" || return 2
   [[ "$old_hash" == "$original_claim_hash" && "$snapshot_hash" == "$original_claim_hash" ]]
 }
 finalize_claim_artifacts() {
@@ -395,19 +403,19 @@ trap cleanup_claim_exit EXIT
 trap claim_signal_abort HUP INT TERM
 expected="$(printf '%s\n' "document=$document" "version=$version" "change=$change")"
 printf '%s\n' "$expected" > "$claim_tmp" || { echo "✗ claim 一時ファイルへ書き込めません" >&2; exit 2; }
-expected_hash="$(git hash-object "$claim_tmp")" || { echo "✗ claim 一時ファイルを検査できません" >&2; exit 2; }
+expected_hash="$(git -C "$repo_root" hash-object "$claim_tmp")" || { echo "✗ claim 一時ファイルを検査できません" >&2; exit 2; }
 if [[ -e "$claim" || -L "$claim" ]]; then
   claim_snapshot="$(mktemp "$claims_root/.version-claim-snapshot.XXXXXX")" || { echo "✗ claim snapshot path を作成できません" >&2; exit 2; }
   rm -f "$claim_snapshot" || { echo "✗ claim snapshot path を準備できません" >&2; exit 2; }
   verify_claim_parent || { echo "✗ claim snapshot 作成前に親階層が変更されました" >&2; exit 2; }
   link_in_canonical_directory "$claim" "$claim_snapshot" "$claims_root" || { echo "✗ claim snapshot を作成できません" >&2; exit 2; }
-  original_claim_hash="$(git hash-object "$claim_snapshot")" || { echo "✗ 既存 claim を検査できません" >&2; exit 2; }
+  original_claim_hash="$(git -C "$repo_root" hash-object "$claim_snapshot")" || { echo "✗ 既存 claim を検査できません" >&2; exit 2; }
 fi
-preinstall_blob="$(git hash-object "$doc")" || { echo "✗ 保存前の document を検査できません: $document" >&2; exit 2; }
+preinstall_blob="$(git -C "$repo_root" hash-object "$doc")" || { echo "✗ 保存前の document を検査できません: $document" >&2; exit 2; }
 preinstall_version="$(read_frontmatter_version "$doc")" || { echo "✗ 保存前の version を検査できません: $document" >&2; exit 2; }
 [[ "$preinstall_blob" == "$current_blob" && "$preinstall_version" == "$version" ]] || { echo "✗ claim 生成中に document が変更されました: $document" >&2; exit 2; }
 if [[ -n "$claim_snapshot" ]]; then
-  current_claim_hash="$(git hash-object "$claim")" || { echo "✗ 保存直前の claim を検査できません" >&2; exit 2; }
+  current_claim_hash="$(git -C "$repo_root" hash-object "$claim")" || { echo "✗ 保存直前の claim を検査できません" >&2; exit 2; }
   [[ "$claim" -ef "$claim_snapshot" && "$current_claim_hash" == "$original_claim_hash" ]] || { preserve_claim_snapshot=1; echo "✗ 保存直前に claim の外部変更を検出しました" >&2; exit 2; }
   claim_old="$(mktemp "$claims_root/.version-claim-old.XXXXXX")" || { echo "✗ 旧 claim path を作成できません" >&2; exit 2; }
   rm -f "$claim_old" || { echo "✗ 旧 claim path を準備できません" >&2; exit 2; }
@@ -426,9 +434,9 @@ fi
 verify_claim_parent || { echo "✗ claim install 前に親階層が変更されました" >&2; exit 2; }
 install_claim_no_replace || { [[ ! -e "$claim" && ! -L "$claim" ]] || preserve_claim_old=1; echo "✗ claim を検査済み directory へ上書き禁止で保存できません: $claim" >&2; exit 2; }
 claim_installed=1
-final_blob="$(git hash-object "$doc")" || { echo "✗ 保存後の document を検査できません: $document" >&2; exit 2; }
+final_blob="$(git -C "$repo_root" hash-object "$doc")" || { echo "✗ 保存後の document を検査できません: $document" >&2; exit 2; }
 final_version="$(read_frontmatter_version "$doc")" || { echo "✗ 保存後の version を検査できません: $document" >&2; exit 2; }
-final_claim_hash="$(git hash-object "$claim")" || { echo "✗ 保存後の claim を検査できません: $claim" >&2; exit 2; }
+final_claim_hash="$(git -C "$repo_root" hash-object "$claim")" || { echo "✗ 保存後の claim を検査できません: $claim" >&2; exit 2; }
 [[ "$final_blob" == "$current_blob" && "$final_version" == "$version" ]] || { echo "✗ claim 保存中に document が変更されました: $document" >&2; exit 2; }
 [[ "$claim" -ef "$claim_tmp" && "$final_claim_hash" == "$expected_hash" && "$(wc -l < "$claim" | tr -d ' ')" -eq 3 ]] || { echo "✗ claim の最終検証に失敗: $claim" >&2; exit 2; }
 finalize_claim_artifacts || exit 2

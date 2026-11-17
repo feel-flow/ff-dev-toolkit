@@ -1,0 +1,4 @@
+cd /path/to/repo || exit 2
+git checkout -- .claude/launch.json || exit 0
+pnpm build:e2e > /tmp/build.log 2>&1; rc=$?
+echo "EXIT=$rc"; exit $rc

@@ -62,16 +62,18 @@ PR_NUMBER="${PR_NUMBER:?PR 番号を先に設定すること}"
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" precheck "${PR_NUMBER}"
 ```
 
-終了コード **0 = マージへ進める** / **1 = 止める**（理由と次の一手が stderr） / **2 = 判定不能・検査不成立**（名指しされた項目と復帰手段に従う。鮮度は手順 7）。出力（`KEY=値`）の読み方:
+終了コード **0 = 続行または対象なし** / **1 = 停止** / **2 = 判定不能・検査不成立**（理由と次の一手は stderr）。出力の読み方:
 
 - **ブランチガード（必須）**: `git branch --show-current` が `PR_HEAD_REF` と違えば `gh pr checkout $PR_NUMBER` で切り替えてから続行する（できなければ停止）
-- 対象 Issue は `CLOSES=owner/repo#N`（**Closes 運用** = `closingIssuesReferences` ∪ 本文の closing keyword）と `REFS=owner/repo#N`（**Refs 運用** = 本文の `Ref` / `Refs` のうち Closes 群に無いもの）。以降の `gh issue` には URL を渡す（同番号の別リポジトリ Issue を誤更新しない）
-- `closingIssuesReferences` は **PR 本文だけ**を見る（件名の `fix: #N` は API 対象外）。空を理由に打ち切ると Refs が無検査になる。拾う綴りは `Ref` / `Refs` のみ（裸の `#N` 等は対象外）
-- 両群空（`PRECHECK=no-target`）は「参照から検出できる対象 Issue はありません」と報告して終了。件名経由は検出範囲外なので「Issue を閉じない」と断定しない。`AUTO_CLOSE_UNRELIABLE=1`（本文 keyword あり / API 空）も照合し、手順8で手動クローズを案内する
+- `CLOSES=owner/repo#N` は `closingIssuesReferences` ∪ 本文の closing keyword。API は PR 本文だけを見る。空を理由に打ち切ると Refs が無検査になる
+- `REFS=owner/repo#N` は本文の参照から Closes 群を除いたもの。拾う綴りは `Ref` / `Refs` のみ。以降の `gh issue` には URL を渡す
+- 両群空で本文・タイトル・コミット件名に `#N` があれば `PRECHECK=blocked`（rc 1）。候補は照合対象に加えない。対象を確認し、PR 本文に `Refs #N` または `Closes #N` の行を追記して手順 1 をやり直す
+- 候補も無い `PRECHECK=no-target` は「参照から検出できる対象 Issue はありません」と報告して終了。後続の検査は未実施で、Issue が閉じないことも保証しない
+- `AUTO_CLOSE_UNRELIABLE=1`（本文 keyword あり / API 空）も照合し、手順 8 で手動クローズを案内する
 - 複数 Issue は 1 件ずつ手順 3〜6 を繰り返す。`bundle` は sub-issue 全件へ照合し、子と bundle が本文の `Closes` か `Refs`（印）に全部並ぶかを見る
 - 未チェック AC、削除の分離、削除 push のフックは [merge-gate](references/merge-gate.md)
 
-<!--0df121a17160460b-->
+<!--6f3f8ade150c72b9-->
 MCP: 取得値: MCPでheadRefName/headRefOid と全 sub_issues。形式: PR JSON / 全 page 配列。渡し先: Git fetch/checkout の OID照合と全子のAC/参照照合。不足時: MCP 必須不足は停止。
 
 ### 2. closing keyword 抵触検査（Refs 運用の Issue がある場合）

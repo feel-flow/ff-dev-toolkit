@@ -11,6 +11,7 @@
 #   手順 7 を手順 5 のゲートより前へ移す変異は、いずれも順序検査 1 件が赤（2026-09-24 実測）。
 # 空振り検出: claim 生成の針を finish.sh だけに戻すと、claim 不在の拒否と既存 claim の再利用の 2 件が赤になる（2026-10-30 実測。suite rc=1、fail=2。文字列は scripts/lib/finish-knowledge-commit-functions.sh にある）。
 # 空振り検出: ADR 番号衝突検査（cases/adr-collision.sh）は origin/<default> 衝突・open PR 衝突・空 merge-base 新設衝突・取得不能 fail-closed（rc=2）を固定し、照合削除・open PR 分岐無効化・未確認素通し・表行集計削除・次空き最大値削除・差分参照削除・stale 分岐バイパス・fork PR 自除外誤判定・空 merge-base 時 NR==FNR 素通しの 9 変異すべてが suite rc=1 で赤になることを mutation-harness.sh で確認（2026-11-15 実測、9/9 detected、SURVIVED=0）。
+# 空振り検出: claim の対象 repo の解決（cases/claim-root.sh、Issue `#2818`）は、lib/version-claim-root.sh の --root 無視・同じリポジトリの別 worktree を止めない・最上位の違いだけで止める・下位 directory の --root を受ける、helper の base の rev-parse / ls-tree を cwd で実行する・解決を cwd へ戻す、validator の解決を cwd へ戻す、の 8 変異と、明示した root の git directory を受け継いだ GIT_DIR と比べない・スクリプト側の問い合わせで GIT_DIR を外さない・明示した root の最上位を環境込みで読む・helper の hash-object を cwd で実行する、の 4 変異がすべて suite rc=1 で赤（2026-11-17 macOS 実測。knowledge-commit が生成へ --root を渡さない変異は本 suite の針と tests/finish の H17b が赤）。
 set -euo pipefail
 # check-version-claims.sh は GITHUB_ACTIONS=true で「fetch せず job 開始時点の remote-tracking ref を
 # 基準にする」CI 分岐へ入る（Issue #1336）。fixture ベースの検査はランナーの環境変数に左右されず
@@ -127,7 +128,7 @@ contains "$ACE_CURATE" '.version-claims/docs/08-knowledge/PLAYBOOK.md.claim' "ac
 contains "$ACE_REFINE" '.version-claims/' "ace-refine は変更文書 claim を要求"
 contains "$KC_LIB" '.version-claims/${doc}.claim" ]] || die_env' "ace-curate PR は claim 不在を拒否（finish.sh knowledge-commit add --claim）"
 ace_curate_pr_block="$(sed -n '/\*\*任意エスカレーション — chore PR\*\*/,/gh pr create/p' "$ACE_CURATE")"
-if [[ "$ace_curate_pr_block" == *'knowledge-commit add --ace-playbook docs/08-knowledge/PLAYBOOK.md'* ]] && grep -qF -- 'rc=0; ff_git_literal "$repo_root" diff --quiet HEAD -- "$book_rel" || rc=$?' "$KC_LIB" && grep -qF -- 'claim_docs+=("$book_rel")' "$KC_LIB" && grep -qF -- 'claim_base="origin/${default_branch}"' "$KC_LIB" && grep -qF -- 'update-version-claim.sh" --base "$claim_base"' "$KC_LIB"; then ok "ace-curate PR は最新 base から claim を生成（add --claim → update-version-claim.sh --base origin/default。まとめるモードの書き込み中だけ起点を決めた時点の base に固定する。ADR-083）"; else bad "ace-curate PR が既存 claim を再利用"; fi
+if [[ "$ace_curate_pr_block" == *'knowledge-commit add --ace-playbook docs/08-knowledge/PLAYBOOK.md'* ]] && grep -qF -- 'rc=0; ff_git_literal "$repo_root" diff --quiet HEAD -- "$book_rel" || rc=$?' "$KC_LIB" && grep -qF -- 'claim_docs+=("$book_rel")' "$KC_LIB" && grep -qF -- 'claim_base="origin/${default_branch}"' "$KC_LIB" && grep -qF -- 'update-version-claim.sh" --base "$claim_base" --document "$doc" --root "$repo_root"' "$KC_LIB"; then ok "ace-curate PR は最新 base から claim を生成（add --claim → update-version-claim.sh --base origin/default。まとめるモードの書き込み中だけ起点を決めた時点の base に固定する。ADR-083）"; else bad "ace-curate PR が既存 claim を再利用"; fi
 contains "$ACE_REFINE_COMMIT" '[[ -f .version-claims/docs/08-knowledge/PLAYBOOK.md.claim ]] ||' "ace-refine PR は PLAYBOOK claim 不在を拒否"
 contains "$ACE_REFINE_COMMIT" '[[ -f .version-claims/docs/03-implementation/PATTERNS.md.claim ]] ||' "ace-refine は PATTERNS 変更時の claim 不在を拒否"
 contains "$ACE_CURATE" 'scripts/update-version-claim.sh' "ace-curate は共通 claim helper を実行"
@@ -672,6 +673,7 @@ if grep -Fq '### [1.2.0]' "$FINAL" && grep -Fq '### [1.1.0]' "$FINAL"; then ok "
 
 source "$SCRIPT_DIR/cases/merge-races.sh"
 source "$SCRIPT_DIR/cases/adr-collision.sh"
+source "$SCRIPT_DIR/cases/claim-root.sh"
 echo "shared-version-convergence: pass=$PASS fail=$FAIL total=$((PASS + FAIL))"
 if [[ "$FAIL" -ne 0 ]]; then exit 1; fi
 REACHED_END=1

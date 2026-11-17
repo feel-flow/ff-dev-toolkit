@@ -1,0 +1,2 @@
+tee /tmp/out/copy.log < /tmp/in.log
+echo "EXIT=$?"

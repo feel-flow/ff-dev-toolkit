@@ -1,0 +1,4 @@
+mkdir -p /tmp/out
+cd /tmp/out || exit 2
+npm test > /tmp/out/test.log 2>&1
+rc=$?; echo "EXIT=$rc"; exit $rc

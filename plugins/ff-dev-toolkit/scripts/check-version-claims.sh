@@ -195,7 +195,7 @@ trap cleanup EXIT
 trap 'exit 130' HUP INT TERM
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --root) shift; [[ $# -gt 0 ]] || { echo "Usage: $0 [--root <repository>] [--base-commit <sha>]" >&2; exit 2; }; root="$1" ;;
+    --root) shift; [[ $# -gt 0 && -n "$1" ]] || { echo "Usage: $0 [--root <repository>] [--base-commit <sha>]" >&2; exit 2; }; root="$1" ;;
     --snapshot-head) shift; [[ $# -gt 0 && "$1" =~ ^[0-9a-f]{40}$ ]] || exit 2; snapshot_head="$1" ;;
     --base-commit) shift; [[ $# -gt 0 && "$1" =~ ^[0-9a-f]{40}$ ]] || { echo "Usage: $0 [--root <repository>] [--base-commit <40桁の sha>]" >&2; exit 2; }; base_commit_pin="$1" ;;
     *) echo "Usage: $0 [--root <repository>] [--base-commit <sha>]" >&2; exit 2 ;;
@@ -206,12 +206,16 @@ adr_check_script_dir="$(CDPATH='' cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" &
 [[ -r "${adr_check_script_dir}/lib/adr-collision-check.sh" ]] || { echo "✗ 同梱 lib を読み取れません: ${adr_check_script_dir}/lib/adr-collision-check.sh" >&2; exit 2; }
 # shellcheck source=lib/adr-collision-check.sh
 . "${adr_check_script_dir}/lib/adr-collision-check.sh"
+[[ -f "${adr_check_script_dir}/lib/version-claim-root.sh" && ! -L "${adr_check_script_dir}/lib/version-claim-root.sh" && -r "${adr_check_script_dir}/lib/version-claim-root.sh" ]] || { echo "✗ 同梱 lib を読み取れません: ${adr_check_script_dir}/lib/version-claim-root.sh" >&2; exit 2; }
+# shellcheck source=lib/version-claim-root.sh
+. "${adr_check_script_dir}/lib/version-claim-root.sh"
 adr_skip_open_prs=0
 if [[ -n "${snapshot_head:-}" || -n "${base_commit_pin:-}" || "${GITHUB_ACTIONS:-}" == true ]]; then
   adr_skip_open_prs=1
 fi
-[[ -n "$root" ]] || root="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "✗ repository root を解決できません" >&2; exit 2; }
-root="$(cd "$root" && pwd -P)" || { echo "✗ repository root を正規化できません" >&2; exit 2; }
+# 対象 repo は生成側（update-version-claim.sh）と同じ規則で決める（lib/version-claim-root.sh。Issue `#2818`）
+root="$(ff_claim_resolve_root "$root" "$adr_check_script_dir")" || exit $?
+echo "CLAIM_ROOT=$root"
 contract_missing=0
 if [[ ! -e "$root/.version-claims" && ! -L "$root/.version-claims" ]]; then contract_missing=1
 else [[ -d "$root/.version-claims" && ! -L "$root/.version-claims" ]] || { echo "✗ .version-claims が directory ではないか symlink です" >&2; exit 2; }

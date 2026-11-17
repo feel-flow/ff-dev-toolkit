@@ -87,8 +87,11 @@
 # 同じ環境で、zsh が履歴修飾子として値を書き換える `$name:X`（`"$db:refs"` の `:r` など。引用の内外を問わない）を
 # `${name}:X` へ書き換える（Issue `#2756`。文を足さず語の綴りだけを変え、bash では同じ値になるので、権限判定の
 # 対象になる文が増える単語分割の前置と違い権限モードを問わない）。判定は
-# tests/lib/zsh-glob-nomatch.sh の ff_zsh_modifier_fix_scan、置換は glob / equals と同じ出現数の照合を通す。
-# 書き換え案が一意に決まらない呼び出し（同じ綴りが単一引用の中にもある・heredoc を含む）と未対応の環境は、
+# tests/lib/zsh-glob-nomatch.sh の ff_zsh_modifier_fix_scan。glob と修飾子の置換は出現数の照合を通す。
+# = だけの語は綴りの出現回数では一意にならない（長い並びを引用したあとも短い方がその中の綴りに残る。
+# Issue `#2817`）。ff_zsh_equals_apply がパーサの切った位置だけを引用する。引用の中の同じ綴りは触らない。
+# 書き換え案が一意に決まらない呼び出し（glob で同じ綴りが引用の中にもある・`=cmd`・heredoc）は従来どおり
+# deny し、どの語がどの条件で一意でないかを理由に出す。修飾子だけで一意に決まらない呼び出しと未対応の環境は、
 # 従来どおり無出力で通す（修飾子だけでは deny しない）。zsh-expansion の ACK・無効化で止まる。
 # `bash <<'EOF'` へ包み直す案（Issue `#2491` の案 B）は採らない — 包んだ本文はホストの権限判定・安全確認が中身を
 # 読めない形になり、同じ集約入口の終了コードガードの bash -c 書き換えがホストの安全確認で拒否された実測がある。
@@ -216,6 +219,8 @@ notice_first() { # <種類> — 0: 出す / 1: このセッション（とエー
 # equals の deny は入力書き換え（下の try_rewrite）を試すまで保留する（Issue `#2255`）。
 expansion_warning=""
 expansion_deny=""
+# try_rewrite が一意でないと判定したとき、deny の理由へ足す文（関数の local にしない）。
+rewrite_block_reason=""
 expansion_helper="${BASH_SOURCE[0]%/*}/../tests/lib/zsh-expansion-guard.sh"
 
 # ---- PostToolUse（Bash）: 未引用 scalar の警告をエージェントの文脈へ届ける ----------------
@@ -365,11 +370,16 @@ tab='	'
 #   - ASDD 設定を検証できている / heredoc が無い（本文を落とした文字列と元が一致する）
 #   - 元のコマンドに CR が無い（判定用に CR を落とした文字列を実行入力へ戻さない）
 #   - 一覧値の未引用 scalar（scalar-list の deny）が無い
-#   - 検出した語すべてに書き換え案がある（引用・展開を含む語や `=cmd` は案 `-`）
-#   - 語ごとに、出現回数が検出回数と一致する（引用の中・別の語の一部に同じ綴りがあると
+#   - 検出した語すべてに書き換え案がある（引用・展開を含む語や `=cmd` は案 `-`。
+#     このとき rewrite_block_reason に、どの語がどの条件で一意でないかを入れる）
+#   - glob と修飾子は、語ごとに出現回数が検出回数と一致する（引用の中・別の語の一部に同じ綴りがあると
 #     置換が判定対象外まで書き換えるので、その回は書き換えない）。長い語から置換し、回数は
 #     置換途中の文字列で数える（`--include=*.js` は `--include=*.json` の一部だが、長い方を
 #     先に引用すると `=` の直後に `"` が入り、短い方の綴りは残らない）
+#   - = だけの語は出現回数では照合しない。長い `======` を `"======"` にしても短い `=====` が
+#     その中の綴りに残るため、長さが違う区切り（`echo ======; echo =====`）を一意でないと誤る
+#     （Issue `#2817`。同じ呼び出しの二重引用符内の `|` は原因ではなかった）。パーサが切った
+#     未引用の位置だけを引用する
 #   - 書き換え後を同じ判定で再走査して 0 件になる
 # 位置（オフセット）での差し替えはしない。awk と bash で文字数の数え方が揃わない環境が
 # あるため（bash 3.2 の MBCS）、語の綴りそのものの置換と出現回数の照合で一意性を担保する。
@@ -381,7 +391,7 @@ try_rewrite() {
   # 引用の中の CR まで消えてデータが変わるので書き換えない。
   printf '%s' "$input" | jq -e '.tool_input.command | contains("\r") | not' >/dev/null 2>&1 || return 1
   [ "$asdd_unverifiable" -eq 0 ] || return 1
-  local helper fn stripped eq_on exp_hits fixes glob_fix eq_fix mod_fix mod_listed mod_rest line word fix total n rest rewritten listed ordered out split_on has_heredoc context permission_mode warning_out
+  local helper fn stripped eq_on exp_hits fixes glob_fix eq_fix mod_fix mod_listed mod_rest line word fix total n rest rewritten listed ordered out split_on has_heredoc context permission_mode warning_out eq_deferred eq_rc eq_rest found
   # 公式の hook 入力の共通フィールド（default / plan / acceptEdits / auto / dontAsk / bypassPermissions）。
   # 集約入口の再投入は tool_input だけを差し替えるので、再検査の入力にもそのまま残る。
   permission_mode="$(printf '%s' "$input" | jq -r '.permission_mode // empty | select(type == "string")' 2>/dev/null)" || permission_mode=""
@@ -390,7 +400,7 @@ try_rewrite() {
     [ -r "$HELPER_DIR/$helper" ] || return 1
     . "$HELPER_DIR/$helper" 2>/dev/null || return 1
   done
-  for fn in ff_heredoc_strip ff_zsh_glob_scan ff_zsh_expansion_scan ff_zsh_equals_fix_scan ff_zsh_word_split_prefixed; do
+  for fn in ff_heredoc_strip ff_zsh_glob_scan ff_zsh_expansion_scan ff_zsh_equals_fix_scan ff_zsh_equals_apply ff_zsh_word_split_prefixed; do
     [ "$(type -t "$fn" 2>/dev/null)" = function ] || return 1
   done
   # heredoc の本文はデータとして落としてから走査する（未終端の rc 3 は書き換えない）。語の置換は本文の
@@ -449,7 +459,20 @@ try_rewrite() {
   [ -z "$mod_fix" ] || fixes="${fixes:+$fixes
 }$mod_fix"
   [ -n "$fixes" ] || [ "$split_on" -eq 1 ] || return 1
-  [ -z "$fixes" ] || [ "$has_heredoc" -eq 0 ] || return 1
+  # heredoc-strip は行継続（行末の \ と改行）も畳む。差があるだけでは heredoc と行継続を分けない。
+  # 本文の置換はしない。= だけの語は元のコマンドで位置を試し、切れない理由を deny に残す（Issue `#2817`）。
+  if [ -n "$fixes" ] && [ "$has_heredoc" -ne 0 ]; then
+    if [ -n "$eq_fix" ]; then
+      eq_rc=0
+      ff_zsh_equals_apply "$cmd" || eq_rc=$?
+      if [ "$eq_rc" -eq 5 ]; then
+        rewrite_block_reason="$FF_ZSH_EQUALS_APPLY_OUT"
+      elif [ "$eq_rc" -eq 0 ]; then
+        rewrite_block_reason="書き換えは一意に決まりません: heredoc または行継続を含むため、= だけの語を本文の置換で引用しません。"
+      fi
+    fi
+    return 1
+  fi
   rewritten="$cmd"
   listed=""
   ordered=""
@@ -457,13 +480,22 @@ try_rewrite() {
     [ -n "$line" ] || continue
     word="${line%%"${tab}"*}"
     fix="${line#*"${tab}"}"
-    [ -n "$word" ] && [ "$fix" != "-" ] && [ "$fix" != "$line" ] || return 1
+    if [ -z "$word" ] || [ "$fix" = "-" ] || [ "$fix" = "$line" ]; then
+      if [ -n "$word" ]; then
+        case "$word" in
+          =*) rewrite_block_reason="書き換えは一意に決まりません: 語「${word}」は = だけの語ではないため引用案を出せません（意図的なコマンドパス展開の可能性があります）。" ;;
+          *) rewrite_block_reason="書き換えは一意に決まりません: 語「${word}」は引用・展開を含むか、安全な引用形を組み立てられないため案を出せません。" ;;
+        esac
+      fi
+      return 1
+    fi
     ordered="${ordered}${#word}${tab}${line}
 "
   done <<EOF
 $fixes
 EOF
   ordered="$(printf '%s' "$ordered" | sort -t "$tab" -k1,1nr)" || return 1
+  eq_deferred=0
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     line="${line#*"${tab}"}"
@@ -472,6 +504,14 @@ EOF
     case "$listed" in *"
 ${word} → "*) continue ;; esac
     case "$mod_listed" in *"、${word} → "*) continue ;; esac
+    # = だけの語は綴り置換しない（Issue `#2817`）。後ろで位置引用へ回す。
+    eq_rest="${word//=/}"
+    if [ -z "$eq_rest" ]; then
+      eq_deferred=1
+      listed="${listed}
+${word} → ${fix}"
+      continue
+    fi
     total=0
     while IFS= read -r n; do
       [ "${n%%"${tab}"*}" != "$word" ] || total=$((total + 1))
@@ -479,7 +519,11 @@ ${word} → "*) continue ;; esac
 $fixes
 EOF
     rest="${rewritten//"$word"/}"
-    [ $(( (${#rewritten} - ${#rest}) / ${#word} )) -eq "$total" ] || return 1
+    found=$(( (${#rewritten} - ${#rest}) / ${#word} ))
+    if [ "$found" -ne "$total" ]; then
+      rewrite_block_reason="書き換えは一意に決まりません: 語「${word}」は未引用の検出が ${total} 回ですが、同じ綴りがコマンド中に ${found} 箇所あり、引用の中や別の語の一部まで置換してしまいます。"
+      return 1
+    fi
     rewritten=${rewritten//"$word"/$fix}
     case "
 $mod_fix
@@ -492,12 +536,26 @@ ${word} → ${fix}"
   done <<EOF
 $ordered
 EOF
+  if [ "$eq_deferred" -eq 1 ]; then
+    eq_rc=0
+    ff_zsh_equals_apply "$rewritten" || eq_rc=$?
+    if [ "$eq_rc" -eq 5 ]; then
+      rewrite_block_reason="$FF_ZSH_EQUALS_APPLY_OUT"
+      return 1
+    fi
+    [ "$eq_rc" -eq 0 ] || return 1
+    rewritten="$FF_ZSH_EQUALS_APPLY_OUT"
+  fi
   [ "$split_on" -eq 0 ] || rewritten="${FF_ZSH_WORD_SPLIT_PREFIX}${rewritten}"
   [ "$rewritten" != "$cmd" ] || return 1
   stripped="$(ff_heredoc_strip "$rewritten")" || return 1
   [ -z "$(ff_zsh_glob_scan "$stripped")" ] || return 1
   if [ "$eq_on" -eq 1 ]; then
-    [ -z "$(ff_zsh_equals_fix_scan "$stripped")" ] || return 1
+    eq_rest="$(ff_zsh_equals_fix_scan "$stripped")" || return 1
+    if [ -n "$eq_rest" ]; then
+      rewrite_block_reason="書き換えは一意に決まりません: 引用したあとも = だけの未引用の語が残っています。"
+      return 1
+    fi
     if [ -n "$mod_fix" ]; then
       # 走査の失敗（rc≠0 で stdout が空）を「残り 0 件」と読まない
       mod_rest="$(ff_zsh_modifier_fix_scan "$stripped")" || return 1
@@ -629,7 +687,12 @@ fi
 
 try_rewrite || true
 # 書き換えられなかった equals は、保留していた従来の deny をそのまま返す。
+# 一意でないと判定した回は、どの語がどの条件かを理由へ足す（Issue `#2817`）。
 if [ -n "$expansion_deny" ]; then
+  if [ -n "$rewrite_block_reason" ]; then
+    expansion_deny_new="$(printf '%s' "$expansion_deny" | jq -c --arg extra "$rewrite_block_reason" '.hookSpecificOutput.permissionDecisionReason = ((.hookSpecificOutput.permissionDecisionReason // "") + " " + $extra)' 2>/dev/null)" || expansion_deny_new=""
+    [ -n "$expansion_deny_new" ] && expansion_deny="$expansion_deny_new"
+  fi
   expansion_warning=""
   exit 0  # EXIT trap が保留した deny を出す
 fi
@@ -664,4 +727,4 @@ deny "⚠️ ff-dev-toolkit guard（zsh-nomatch-glob: 未引用 glob の NOMATCH
   1) = の右側を引用する（上の書き換え案。例: --include=\"*.md\"。クエリ文字列の形は語全体を引用する: \"repos/o/r/contents/a.md?ref=main\"）
   2) bash 前提の複数行の手順は、bash <<'EOF' … EOF で bash に渡す
   3) 誤検知の場合（nonomatch を設定済み・その名前のファイルが実在する等）は、コマンドの**先頭**へ環境代入を付けて再実行する: FF_ZSH_GLOB_ACK=1 <コマンド>
-このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=zsh-glob を設定します。判定の正本は ${HELPER_DIR_SHOWN}/zsh-glob-nomatch.sh です。"
+このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=zsh-glob を設定します。判定の正本は ${HELPER_DIR_SHOWN}/zsh-glob-nomatch.sh です。${rewrite_block_reason:+ ${rewrite_block_reason}}"

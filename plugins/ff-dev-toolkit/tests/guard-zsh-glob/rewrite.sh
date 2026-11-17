@@ -20,6 +20,12 @@
 # 変異検出: Issue `#2614` より前の cwd ガード（cd を含まない呼び出しへ systemMessage の警告を出す版）を当てると R19 の 3 つ目が赤になる（2026-11-04 実測）。
 # 変異検出: Issue `#2756` の修飾子の置換案を一覧へ入れない hook（mod_fix を空にする）は R21a が、同じ語の 2 回目を
 #   飛ばす判定（mod_listed）を消した hook は出現数の照合で書き換えを諦めて R21c が赤になる（2026-11-11 macOS・zsh あり実測）。
+# 変異検出（2026-11-17 mutation-harness 実測。対照は rewrite.sh の 222 checks passed）:
+#   位置引用の分岐（= だけの語を綴り置換から外す if）を消して出現回数の置換へ戻すと、
+#   R22 の `echo ======; echo =====` の is_rewrite が赤になる。
+#   位置引用が切らない理由（FF_ZSH_EQUALS_APPLY_OUT の代入）を空にすると、
+#   R22 の「連続した位置」検査が赤になる。
+#   引用の中の `|` を消しても長さの違う並びは拒否のままだった（着手時の再現。ハーネスの行ではない）。
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd -P)"
 target="${ZSH_REWRITE_TARGET_OVERRIDE:-$root/hooks/guard-zsh-glob.sh}"
@@ -94,14 +100,20 @@ if command -v zsh >/dev/null 2>&1; then
 else
   echo "SKIP R4: zsh が無いため書き換え後の実行を確認できません" >&2
 fi
-# R5 陰性: 案の無い語・同じ綴りが引用の中にもある・意図的でありうる =cmd・equals の綴りが重なる・heredoc・一覧 scalar・
+# R5 陰性: 案の無い語・同じ綴りが引用の中にもある（glob）・意図的でありうる =cmd・heredoc・一覧 scalar・
 #   直後に & が続く / 列挙の brace を含むクエリ形。
-for cmd in 'grep --include=$X* .' 'echo "--include=*.md" --include=*.md' "echo '--include=*.md' --include=*.md" '=ls -la' '[ a == b ]; echo ====' \
+# = だけの語どうしの綴りの重なり（`[ a == b ]; echo ====`）は位置で引用できるので R22 が書き換えを要求する。
+for cmd in 'grep --include=$X* .' 'echo "--include=*.md" --include=*.md' "echo '--include=*.md' --include=*.md" '=ls -la' \
   "$(printf 'cat <<EOF\nx\nEOF\ngrep --include=*.md .')" 'grep --include=*.md . "--include=*.md"' \
   'curl https://example.invalid/a?x=1&y=2' 'echo a?x=1{b,c}' 'echo a?x=1 "a?x=1"'; do
   out="$(run "$cmd")"
   check is_deny "$out"
 done
+# 一意に決まらない回は、どの語がどの条件かを deny の理由に出す（Issue `#2817`）。
+out="$(run 'echo "--include=*.md" --include=*.md')"
+check jq -e '.hookSpecificOutput.permissionDecisionReason | contains("一意に決まりません") and contains("--include=*.md")' <<< "$out" >/dev/null
+out="$(run '=ls -la')"
+check jq -e '.hookSpecificOutput.permissionDecisionReason | contains("一意に決まりません") and contains("=ls")' <<< "$out" >/dev/null
 # R6 抜け道は従来どおり無出力で通す。
 out="$(run 'FF_ZSH_GLOB_ACK=1 grep --include=*.md .')"
 check test -z "$out"
@@ -531,5 +543,45 @@ if command -v zsh >/dev/null 2>&1; then
   check test "$(zsh -fc "$cmd" 2>&1)" = '+refs/heads/developefs/x|'
 else
   echo "SKIP R21g: zsh が無いため修飾子の書き換え後の値を実処理系で確認できません" >&2
+fi
+# ---- R22: = だけの語はパーサ位置で引用する（Issue `#2817`） ---------------------------------------
+# 出現回数の置換は、長い `======` を引用したあとも短い `=====` がその中に残るので、長さの違う区切りを拒否する。
+# 二重引用符の中の `|` / `\|` は原因ではない（同じ長さの語だけなら書き換え済みだった）。
+exact_cmd() { jq -j '.hookSpecificOutput.updatedInput.command' <<< "$1"; printf X; }
+# 導入先の実例（Issue 本文）。grep のパターンは 1 つのバックスラッシュを残し、echo の語だけを引用する。
+c1='tail -30 a.md; echo ======; grep -n -E "^## |^\| (ID|Title)" b.md; echo =====; sed -n 1,40p c.md'
+e1='tail -30 a.md; echo "======"; grep -n -E "^## |^\| (ID|Title)" b.md; echo "====="; sed -n 1,40p c.md'
+out="$(run "$c1")"
+check is_rewrite "$out"
+check test "$(exact_cmd "$out")" = "${e1}X"
+# 導入先の実例（コメント）。同じ長さの ======= が 2 つ。プレースホルダのリダイレクトは dir に置き換えてある。
+c2='cd dir && sed -n 255,300p a.ts && echo ======= && sed -n 270,340p b.ts && echo ======= && sed -n 440,540p b.ts && grep -n "foo\|async bar" b.ts'
+e2='cd dir && sed -n 255,300p a.ts && echo "=======" && sed -n 270,340p b.ts && echo "=======" && sed -n 440,540p b.ts && grep -n "foo\|async bar" b.ts'
+out="$(run "$c2")"
+check is_rewrite "$out"
+check test "$(exact_cmd "$out")" = "${e2}X"
+# 長さの違う並び、引用の中の同じ綴り、test の == は位置で引用する。
+out="$(run 'echo ======; echo =====')"
+check test "$(exact_cmd "$out")" = 'echo "======"; echo "====="X'
+out="$(run 'echo "====="; echo =====')"
+check test "$(exact_cmd "$out")" = 'echo "====="; echo "====="X'
+out="$(run '[ a == b ]; echo ====')"
+check test "$(exact_cmd "$out")" = '[ a "==" b ]; echo "===="X'
+# 引用と連結した = だけの語は、誤った範囲を引用しない。理由に語と条件を出す。
+out="$(run 'echo ""=====')"
+check is_deny "$out"
+check jq -e '.hookSpecificOutput.permissionDecisionReason | contains("一意に決まりません") and contains("=====") and contains("連続した位置")' <<< "$out" >/dev/null
+# 行継続で分断された = だけの語は引用しない。同じ呼び出しに一意な語があっても全体を止める。
+out="$(run $'echo ===\\\n==')"
+check is_deny "$out"
+check jq -e '.hookSpecificOutput.permissionDecisionReason | contains("一意に決まりません") and contains("=====") and contains("連続した位置")' <<< "$out" >/dev/null
+out="$(run $'echo ======; echo ===\\\n==')"
+check is_deny "$out"
+check jq -e '.hookSpecificOutput.permissionDecisionReason | contains("一意に決まりません") and contains("=====") and contains("連続した位置")' <<< "$out" >/dev/null
+if command -v zsh >/dev/null 2>&1; then
+  out="$(run 'echo ======; echo =====')"
+  check test "$(zsh -fc "$(rewritten "$out")" 2>&1)" = "$(printf '%s\n%s' '======' '=====')"
+else
+  echo "SKIP R22: zsh が無いため = だけの語の書き換え後の実行を確認できません" >&2
 fi
 echo "zsh rewrite: $pass checks passed"

@@ -1,0 +1,3 @@
+mkdir -p /tmp/out
+cd /tmp/out || exit 2
+echo "EXIT=$?"

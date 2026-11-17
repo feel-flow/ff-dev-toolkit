@@ -86,9 +86,11 @@
 - `PreToolUse :: Bash :: hooks/guard-background-cwd.sh`
 - `PreToolUse :: Bash :: hooks/guard-checkout-restore.sh`
 - `PreToolUse :: Bash :: hooks/guard-credential-output.sh`
+- `PreToolUse :: Bash :: hooks/guard-default-branch-commit.sh`
 - `PreToolUse :: Bash :: hooks/guard-effort-actual.sh`
 - `PreToolUse :: Bash :: hooks/guard-merge-closing-keyword.sh`
 - `PreToolUse :: Bash :: hooks/guard-exit-code.sh`
+- `PreToolUse :: Bash :: hooks/guard-issue-collision.sh`
 - `PreToolUse :: Bash :: hooks/guard-issue-labels.sh`
 - `PreToolUse :: Bash :: hooks/guard-literal-write.sh`
 - `PreToolUse :: Bash :: hooks/guard-long-gate-background.sh`
@@ -118,7 +120,7 @@
 
 `^mcp__` で始まる 4 本は、GitHub MCP の同じ操作（PR のマージ・Issue の起票・sub-issue の追加・PR の作成 / 更新）に Bash 経路と同じガードを当てる Claude Code 向けの登録で、ガードごとに 1 本ずつ別の matcher を持つ（PR の作成 / 更新の 2 ツールは 1 本を共有。Codex / grok では MCP 呼び出しの `tool_name` と発火が未実測のため保証しない）。
 
-Bash 専用の14実体は `hooks/run-bash-hooks.sh` が同一イベント内で並行実行する。`hooks.json` の command 引数へ各実体を明記し、上記のイベント・matcher・判定契約を維持する。ホストへの起動登録は1本になり、警告を全件結合し、拒否を確認・許可より優先する。
+Bash 専用の16実体は `hooks/run-bash-hooks.sh` が同一イベント内で並行実行する。`hooks.json` の command 引数へ各実体を明記し、上記のイベント・matcher・判定契約を維持する。ホストへの起動登録は1本になり、警告を全件結合し、拒否を確認・許可より優先する。
 
 子の処理枠は10秒（Windows の Git Bash＝MSYS / Cygwin ではプロセス起動が重いため25秒）、親の登録枠は集約の余裕を含め30秒とする。時間切れの子と不正な出力は診断して除外し、完了した他の判定を残す。時間切れの診断行は stderr に出し、終了コード2以外の回は同じ文面を集約 JSON の `systemMessage` と `hookSpecificOutput.additionalContext` へ1回ずつ足す（拒否時の未実行注記と同じく、ホストが届ける JSON に載せて黙って捨てない。終了コード2の回は stderr の診断行だけで届け、JSON へは重ねない）。時間切れだけでは新たな拒否にしない。集約自体の環境エラーは新たな拒否にせず、子の終了コード2だけをブロックとして伝播する。終了コード2と他の拒否が重なる場合は、他の拒否理由も stderr へ残す。
 
@@ -190,6 +192,8 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_UNBOUNDED_WAIT_ACK`（同 hook で、背景実行の上限の無い sleep 待ちの停止だけを通す。until / while の前は独立した文 `FF_UNBOUNDED_WAIT_ACK=1;` とする）
 - `FF_RG_STDIN_ACK`（同 hook で、検索パスの無い rg が標準入力を待ち続ける形の停止だけを通すコマンド先頭の環境代入。先頭に並ぶ代入のどれでもよい）
 - `FF_CREDENTIAL_OUTPUT_ACK`
+- `FF_DEFAULT_BRANCH_COMMIT_ACK`（`hooks/guard-default-branch-commit.sh` で、既定ブランチ上の git commit の 1 回だけを通す区間先頭の環境代入。プロセス環境の値は通さない）
+- `FF_ISSUE_COLLISION_ACK`（`hooks/guard-issue-collision.sh` で、同じ Issue のブランチ作成または PR 作成の 1 回だけを通す区間先頭の環境代入。プロセス環境の値は通さない）
 - `FF_ISSUE_LABEL_ACK`（`hooks/guard-issue-labels.sh` で、ラベルの欠けた `gh issue create` の 1 回だけを通すコマンド先頭の環境代入。セッションの間ずっと止めるときは鍵 `issue-label`）
 - `FF_LITERAL_WRITE_ACK`
 - `FF_LONG_GATE_BACKGROUND_ACK`
@@ -505,6 +509,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_TOOLKIT_MANIFEST`
 - `FF_TOOLKIT_SCRIPTS`
 - `FF_TOOLKIT_SIDECAR`
+- `FF_ZSH_EQUALS_APPLY_OUT`（zsh-glob-nomatch.sh の ff_zsh_equals_apply が、= だけの語を位置で引用したコマンド、または一意に切れなかった理由を返す受け渡し値。利用者が設定する値ではない）
 - `FF_ZSH_WORD_SPLIT_PREFIX`（guard-zsh-glob.sh が未引用 scalar の呼び出しの先頭へ付ける文。判定ヘルパと hook の受け渡し値）
 
 ##### 撤去した旧名
@@ -512,7 +517,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 L4 宣言をまとめる前の個別の名前（旧名）は、内部の別名として読むのをやめました。旧名はこの節にも書きません。配布実行物は、環境にある FF_DEV_TOOLKIT_SKIP_ で始まる変数の名前から 4-3 の鍵を導いて旧名を見つけます（接頭辞と末尾の _GUARD を外し、小文字・`-` 区切りにしたもの）。旧名と新しい書き方の対応は「破壊的変更の記録」にあります。
 
 - **副作用のある 4 鍵**（`auto-update` / `codex-auto-update` / `effort-metrics` / `decision-tree`）: 旧名の値が空でなければ（`0` でも）、その処理を止めます。旧名で止めていた更新や記録が黙って動き出さないための扱いで、期限はありません
-- **ほかの 21 鍵**（ガードと通知）: 旧名では止めません。停止文に新しい書き方を添える hook（`hooks/guard-exit-code.sh` / `hooks/guard-literal-write.sh` / `hooks/guard-review-in-flight.sh` / `hooks/guard-wsl-shell.sh`）が止めたときは、`次の一手:` の行の末尾に、その旧名を読まなくなったことと `FF_DEV_TOOLKIT_SKIP=<鍵>` を添えます
+- **ほかの 23 鍵**（ガードと通知）: 旧名では止めません。停止文に新しい書き方を添える hook（`hooks/guard-default-branch-commit.sh` / `hooks/guard-exit-code.sh` / `hooks/guard-issue-collision.sh` / `hooks/guard-literal-write.sh` / `hooks/guard-review-in-flight.sh` / `hooks/guard-wsl-shell.sh`）が止めたときは、`次の一手:` の行の末尾に、その旧名を読まなくなったことと `FF_DEV_TOOLKIT_SKIP=<鍵>` を添えます
 - **通知**: hooks が発火するホストでは、旧名が環境にあるとセッション開始時（`hooks/check-update.sh`）に毎回、置き換えを通知します
 - **ACK の旧名**（4-1 の ACK のうち、L4 宣言をまとめるときに改名した 3 つの前の名前）は読みません。各 hook の deny 文が示す新しい名前で通します
 
@@ -533,9 +538,11 @@ L4 宣言をまとめる前の個別の名前（旧名）は、内部の別名�
 | `commit-identity` | ガード | `scripts/lib/commit-identity-functions.sh` | - | `COMMIT_IDENTITY_GUARD` |
 | `credential-output` | ガード | `hooks/guard-credential-output.sh` | - | `CREDENTIAL_OUTPUT_GUARD` |
 | `decision-tree` | 記録 | `hooks/decision-tree.sh` | - | `DECISION_TREE` |
+| `default-branch-commit` | ガード | `hooks/guard-default-branch-commit.sh` | - | - |
 | `effort-actual` | ガード | `hooks/guard-effort-actual.sh` | - | `EFFORT_ACTUAL_GUARD` |
 | `effort-metrics` | 記録 | `hooks/record-effort-wallclock.sh`・`hooks/record-instruction-bytes.sh`・`scripts/record-gate-minutes.sh` | - | `EFFORT_METRICS` |
 | `exit-code` | ガード | `hooks/guard-exit-code.sh` | `timeout`・`unbounded-wait`・`rg-stdin` | `EXIT_CODE_GUARD` |
+| `issue-collision` | ガード | `hooks/guard-issue-collision.sh` | - | - |
 | `issue-label` | ガード | `hooks/guard-issue-labels.sh` | - | `ISSUE_LABEL_GUARD` |
 | `literal-write` | ガード | `hooks/guard-literal-write.sh` | - | `LITERAL_WRITE_GUARD` |
 | `long-gate-background` | ガード | `hooks/guard-long-gate-background.sh` | - | `LONG_GATE_BACKGROUND_GUARD` |

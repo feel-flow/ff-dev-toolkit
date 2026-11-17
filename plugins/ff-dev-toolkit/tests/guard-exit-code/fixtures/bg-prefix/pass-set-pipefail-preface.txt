@@ -1,0 +1,7 @@
+set -uo pipefail
+shopt -s nullglob
+unset CDPATH
+umask 077
+trap 'rm -f /tmp/test.log.tmp' EXIT
+npm test > /tmp/test.log 2>&1
+rc=$?; echo "EXIT=$rc"; exit $rc

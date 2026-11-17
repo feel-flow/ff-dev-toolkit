@@ -1,0 +1,4 @@
+cat /tmp/list.txt | while read f; do
+bash /repo/plugins/ff-dev-toolkit/tests/run-all.sh "$f" || exit 1
+done
+echo "EXIT=$?"

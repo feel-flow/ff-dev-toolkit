@@ -145,6 +145,8 @@ git が無いため横断検査の hits / fail-closed 経路をスキップ（�
 chmod 000 のディレクトリを検索できてしまう実行者（root 等）のため、親ディレクトリ検索不可のケースを実施しない	stop	stop	stop
 asdd-runtime: missing-main check not measured — claude found in	stop	stop	stop
 codex-cli: perl が無く実行時間を上限できないため exec の argv が -C を受け付けるか確認していない	stop	stop	stop
+antigravity-cli 引数解析 probe（stub）: perl が無く実行時間を上限できないため、probe の自己検査をしていない	stop	stop	stop
+antigravity-cli: --help に --sandbox の宣言行はあるが、perl が無く probe の実行時間を上限できないため、値を取らないことを引数解析で確かめていない	stop	stop	stop
 jq が無いため probe --json の構造検査だけをスキップ（setup / utf8-locale の検査は実施済み）	stop	stop	stop
 G17 skip: chmod 500 でも書ける環境（root 実行等）のため、書き込み不可 TMPDIR を再現できず検証対象外	stop	stop	stop
 14j: ps -o lstart= が使えないため env 隔離の入れ子を検査できません（記録側はこの環境で環境変数の判定だけに倒れる）	stop	stop	stop

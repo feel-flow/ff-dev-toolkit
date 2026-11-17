@@ -1,0 +1,5 @@
+cp a.json b.json
+git status --short
+pnpm build > /tmp/build.log 2>&1; rc=$?
+tail -n 15 /tmp/build.log
+echo "EXIT=$rc"; exit $rc

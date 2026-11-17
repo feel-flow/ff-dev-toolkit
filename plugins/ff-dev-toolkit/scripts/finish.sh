@@ -18,8 +18,9 @@
 #
 # precheck（/close-issue 手順 2 と手順 7 の機械部分。マージ直前にもう一度実行する）:
 #   1. PR を読む（gh）。対象 Issue を Closes 群（closingIssuesReferences ∪ 本文の closing
-#      keyword）と Refs 群（本文の Ref / Refs のうち Closes に無いもの）へ分ける。両群とも空なら
-#      PRECHECK=no-target を出して rc 0 で終わる（checks・鮮度照合・merge コマンド生成へ進まない）
+#      keyword）と Refs 群（本文の Ref / Refs のうち Closes に無いもの）へ分ける。両群とも空なら、
+#      本文・タイトル・コミット件名の裸の Issue 番号は対象に足さず、参照行の追記を案内して止める
+#      （PRECHECK=blocked、rc 1）。候補も無ければ PRECHECK=no-target（rc 0）。どちらも後続の検査はしない
 #   2. Refs 群があれば closing keyword 抵触検査（scripts/check-closing-keywords.sh）を
 #      供給源（PR タイトル + 全コミットの件名と本文）へ当て、`--subject` / `--body` が
 #      渡された回は実際に渡す squash メッセージにも当てる（これがマージの条件）。
@@ -140,7 +141,8 @@
 # 終了コード（precheck）:
 #   0  マージへ進める（FRESH_STATUS=0、または 2 でも RERUN_FULL_GATE=no）
 #   0  対象 Issue が無い（PRECHECK=no-target。以降の判定を行わない）
-#   1  止める（checks 失敗 / 判定の途中で PR が変わった / 鮮度不一致 / 改題で消せる抵触 / 実際に
+#   1  止める（Issue 番号の候補はあるが Closes 群・Refs 群とも空 / checks 失敗 /
+#      判定の途中で PR が変わった / 鮮度不一致 / 改題で消せる抵触 / 実際に
 #      渡す squash メッセージの抵触 / Refs 群があるのに --subject と --body が無い / merge commit 方式で
 #      コミットが Refs 運用の Issue を閉じる / 返信の無いレビュースレッドがある / Closes 対象の本文に
 #      未チェックの受け入れ条件が残り、その Issue が --ack-unchecked されていない / 設定したパスを含む PR の

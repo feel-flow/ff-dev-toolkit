@@ -510,6 +510,7 @@ finish/verify.sh
 github-input-precheck/verify.sh
 grok-hooks-sync/verify.sh
 guard-checkout-restore/verify.sh
+guard-default-branch-commit/verify.sh
 guard-exit-code/git-write-chain.sh
 guard-review-in-flight/lane-private-cases.sh
 guard-review-in-flight/verify.sh
@@ -556,6 +557,7 @@ security-review-gate/verify.sh
 shared-version-convergence/cases/adr-collision.sh
 shared-version-convergence/cases/base-guard-fetch-stderr.sh
 shared-version-convergence/cases/claim-helper-failures.sh
+shared-version-convergence/cases/claim-root.sh
 shared-version-convergence/cases/merge-races.sh
 shared-version-convergence/verify.sh
 stop-block-contract/verify.sh

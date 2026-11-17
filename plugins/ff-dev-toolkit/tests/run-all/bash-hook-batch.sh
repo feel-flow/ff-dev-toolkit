@@ -37,6 +37,7 @@ expected = ['guard-checkout-restore', 'guard-pr-followup', 'guard-background-cwd
             'guard-issue-labels',
             'guard-sub-issue-id', 'guard-exit-code', 'guard-zsh-glob',
             'guard-literal-write', 'guard-credential-output', 'guard-wsl-shell',
+            'guard-default-branch-commit', 'guard-issue-collision',
             'record-effort-wallclock']
 # Path 同士で比べる（Windows では hooks.json から組んだ文字列だけ '/' と '\' が混ざる）
 assert args[0] == 'bash' and Path(args[1]) == runner

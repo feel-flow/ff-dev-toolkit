@@ -1,0 +1,4 @@
+trap 'exit 0' EXIT
+git checkout -- .claude/launch.json || exit 1
+pnpm build:e2e > /tmp/build.log 2>&1; rc=$?
+echo "EXIT=$rc"; exit $rc

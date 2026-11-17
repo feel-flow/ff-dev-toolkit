@@ -15,7 +15,7 @@ if [[ -d .version-claims ]]; then
   for document in docs/08-knowledge/PLAYBOOK.md docs/03-implementation/PATTERNS.md; do
     if git diff --quiet "origin/${default_branch}" -- "$document"; then diff_rc=0; else diff_rc=$?; fi
     case "$diff_rc" in 0) continue ;; 1) ;; *) echo "文書差分を検査できません: $document" >&2; exit 1 ;; esac
-    FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" "${FF_DEV_TOOLKIT_ROOT}/scripts/update-version-claim.sh" --base "origin/${default_branch}" --document "$document" || exit 1
+    FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" "${FF_DEV_TOOLKIT_ROOT}/scripts/update-version-claim.sh" --base "origin/${default_branch}" --document "$document" --root "$(git rev-parse --show-toplevel)" || exit 1
   done
 fi
 ```

@@ -42,8 +42,8 @@ for _v in $(env | sed -n 's/^\(FF_DEV_TOOLKIT_SKIP[A-Za-z0-9_]*\)=.*/\1/p'); do 
 # 名簿との一致は tests/l4-declarations が印の間の名前で照合する（印と並びを崩さない）。
 # l4-default-unset:begin
 unset FF_DEV_TOOLKIT_SKIP \
-  FF_CREDENTIAL_OUTPUT_ACK FF_DISCARD_UNCOMMITTED_ACK FF_EFFORT_ACTUAL_ACK FF_EXIT_CODE_ACK \
-  FF_ISSUE_LABEL_ACK FF_LITERAL_WRITE_ACK FF_LONG_GATE_BACKGROUND_ACK FF_MERGE_CLOSING_ACK \
+  FF_CREDENTIAL_OUTPUT_ACK FF_DEFAULT_BRANCH_COMMIT_ACK FF_DISCARD_UNCOMMITTED_ACK FF_EFFORT_ACTUAL_ACK FF_EXIT_CODE_ACK \
+  FF_ISSUE_COLLISION_ACK FF_ISSUE_LABEL_ACK FF_LITERAL_WRITE_ACK FF_LONG_GATE_BACKGROUND_ACK FF_MERGE_CLOSING_ACK \
   FF_PR_DRAFT_ACK FF_REVIEW_LOCK_ACK FF_REVIEW_ROUND_ACK FF_RG_STDIN_ACK FF_SHELL_SAVE_ACK \
   FF_SUB_ISSUE_ID_ACK FF_TIMEOUT_ACK FF_UNBOUNDED_WAIT_ACK FF_WSL_PATHCONV_ACK FF_WSL_SHELL_ACK FF_ZSH_EXPANSION_ACK \
   FF_ZSH_GLOB_ACK 2>/dev/null || true
@@ -201,7 +201,9 @@ fi
 echo "stop-block-contract: R 採用名簿"
 # 配布物の発生元（プラグイン相対）。リポジトリ直下の scripts/release-dev-toolkit.sh（配布外）は公開 checkout に
 # 無いので名簿に入れない（採用は sync-sha-contract/release-runtime.sh が見る）。
-ROSTER='hooks/guard-exit-code.sh
+ROSTER='hooks/guard-default-branch-commit.sh
+hooks/guard-exit-code.sh
+hooks/guard-issue-collision.sh
 hooks/guard-literal-write.sh
 hooks/guard-review-in-flight.sh
 hooks/guard-wsl-shell.sh

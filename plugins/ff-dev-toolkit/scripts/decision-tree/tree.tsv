@@ -144,6 +144,8 @@ answer	bash-guard	zsh-glob	hook:guard-zsh-glob
 answer	bash-guard	literal-write	hook:guard-literal-write
 answer	bash-guard	credential-output	hook:guard-credential-output
 answer	bash-guard	wsl-shell	hook:guard-wsl-shell
+answer	bash-guard	default-branch-commit	hook:guard-default-branch-commit
+answer	bash-guard	issue-collision	hook:guard-issue-collision
 answer	bash-guard	review-lock	hook:guard-review-in-flight
 answer	bash-guard	effort-wallclock	hook:record-effort-wallclock
 answer	bash-guard	missing-ff-effort	hook:warn-missing-ff-effort

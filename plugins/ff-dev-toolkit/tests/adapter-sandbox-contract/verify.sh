@@ -2,6 +2,7 @@
 #
 # アダプタが渡す sandbox 引数と、CLI が実際に受け付ける値との契約検査（Issue #403）。
 # 空振り検出: effective-permissions のadapterディレクトリ不在はrc=1。正規ハーネスでhelper不在・profileケース集合0件・拒否理由の混同を含む10変異が全てred、通常対照53件PASS（2026-10-29 macOS実測）。自ホスト専用レーン（Issue `#2810`）は antigravity-cli-adapter.sh の refuse_foreign_host_launch 呼び出しを外す変異で拒否 12 ケースが全て red（rc=1）、呼び出しを導入確認（cli_available）の後ろへ移す変異で agy 不在ケースが red（rc=1）、ANTIGRAVITY_AGENT=1 だけの対照は起動を確認（2026-11-16 macOS実測）。
+# 空振り検出: 層 2 の agy 照合（Issue `#2830`）は 8 変異がすべて red（agy を PATH に置かない環境で rc=1）。probe の上限を「alarm を掛けてから exec」へ戻す変異は SIGALRM を無視して居座る stub が launched になって red。help_stream を stdout へ戻す変異と stdout+stderr の連結を外す変異は stderr へ出す stub 2 ケース（declared / shape）、claude-code / copilot-cli に stderr を読ませる変異は警告だけの stub 2 ケース、宣言行の錨を素の /--sandbox/ へ戻す変異と字下げを [[:space:]]* へ緩める変異は「行頭で言及するだけ」の stub、引数解析 probe で 2 本目だけの名指しを boolean と読む変異は値を消費する stub、対照の確認を外す変異は未定義フラグを無視する stub が red。agy 1.5.1 を PATH に置いた実行は、変更前が「--help が空を返した」で rc=1、変更後が層2 9/9 で rc=0（2026-11-17 macOS実測）。
 #
 # 潰している事故: **アダプタが、その CLI が受け付けない sandbox 値を渡すこと**。
 # 実例（develop で長期間生きていた）— codex アダプタが implement に対して
@@ -37,7 +38,8 @@
 # 落とす（逆に不可能な CLI の enum が埋まっていても落とす — 実 CLI で裏を取れない
 # 手書きリストで層 1 を通すのは、この suite が避けている偽の確信そのもの）。
 #
-# 実 CLI は --help、codex sandbox、設定キーと argv 確認の codex exec を呼ぶ。
+# 実 CLI は --help、codex sandbox、設定キーと argv 確認の codex exec、agy の引数解析
+# probe（未定義フラグを渡して rc≠0 で終わらせ、エージェントを起動しない）を呼ぶ。
 # 使い捨て CODEX_HOME は設定ファイルを分離するが、継承 API 認証環境変数までは
 # 除去しない。それだけで全呼出のモデル未到達・無課金を保証するとは扱わない。
 #
@@ -1094,23 +1096,80 @@ echo "-- 層 2: 宣言と実 CLI の突き合わせ --"
 # rc は捨てずに CAPTURE_RC へ残す。捨てると「ヘルプ書式が変わった」と
 # 「CLI が壊れていて何も出せなかった」が同じ診断になり、読み手を出ていない出力の
 # 比較へ送ることになる。
-CAPTURE_RC=0
-capture_help() {
-  local out="$1"; shift
-  : > "$out"
-  if "$@" >"$out" 2>"${out}.err"; then CAPTURE_RC=0; else CAPTURE_RC=$?; fi
+#
+# help_stream <cli> — 実 CLI が --help を書き出す先（provenance つき。Issue `#2830`）
+#   stdout        : stdout だけを読む
+#   stdout+stderr : stdout と stderr を両方読む（stdout → stderr の順に連結する）
+#
+# stderr まで読むのは、--sandbox の行を**見つけたこと**を緑の錨にしている CLI だけ。
+# claude-code / copilot-cli の照合は「--sandbox が無い」という否定の主張なので、
+# stderr を読ませると、stdout が空で stderr に警告 1 行だけが出た回が
+# 「ヘルプに --sandbox は無い」の緑になる（照合できないまま通さない、の破れ）。
+# codex / grok も stdout のまま据え置く（層 2 の結果を変えない）。
+#
+# provenance:
+#   claude-code / codex-cli / copilot-cli / grok-cli
+#               → stdout（層 2 の導入以来、stdout だけで照合が成立してきた）
+#   antigravity-cli
+#               → agy 1.5.1 は usage を stderr へ出し、stdout は 0 バイト
+#                 （2026-11-17 macOS 実測: rc=0、stdout=0 bytes、stderr=3319 bytes、
+#                 先頭行 "Usage of agy:"、26 行目が "  --sandbox  Run in a sandbox ..."）。
+#                 Issue `#2830` の報告では 1.1.24 も同じ形（stderr=2675 bytes）。
+#                 stderr だけにせず stdout も読むのは、stdout へ出す版に変わっても
+#                 照合そのものは変わらないため。stdout が空のまま stderr が増えても
+#                 「--sandbox 行が見つからない」は赤のままなので、足しても緑へは倒れない。
+#                 なお agy のヘルプは値の有無を表示しない（値を取る --mode / --add-dir も
+#                 --sandbox と同じ形で並ぶ）。値を取らないことはヘルプではなく、下の
+#                 引数解析の probe（agy_argv_verdict）で確かめる。
+help_stream() {
+  case "$1" in
+    claude-code)     echo "stdout" ;;
+    codex-cli)       echo "stdout" ;;
+    copilot-cli)     echo "stdout" ;;
+    grok-cli)        echo "stdout" ;;
+    antigravity-cli) echo "stdout+stderr" ;;
+    *)               echo "" ;;
+  esac
 }
 
-# help_unusable <ラベル> <出力ファイル> — 使えないヘルプなら診断を出して 0 を返す。
+CAPTURE_RC=0
+# capture_help <cli> <出力ファイル> <コマンド...> — help_stream の宣言どおりに取り込む。
+# stderr は宣言に関わらず <出力ファイル>.err にも残す（rc≠0 の診断と出力先の手がかり）。
+# 宣言の無い CLI は出力を空にして help_unusable の「空」へ倒す（推測で stdout を読まない）。
+capture_help() {
+  local cli="$1" out="$2" stream
+  shift 2
+  stream="$(help_stream "$cli")"
+  : > "$out"
+  if "$@" >"$out" 2>"${out}.err"; then CAPTURE_RC=0; else CAPTURE_RC=$?; fi
+  case "$stream" in
+    stdout) ;;
+    stdout+stderr) cat "${out}.err" >> "$out" ;;
+    *) : > "$out" ;;
+  esac
+}
+
+# help_unusable <cli> <出力ファイル> — 使えないヘルプなら診断を出して 0 を返す。
+# 読む先が空でも stderr に何か出ていれば、そのバイト数を添える。出力先が変わったのか
+# CLI が何も出せなかったのかを、出ていない出力の比較へ読み手を送らずに切り分けるため。
 help_unusable() {
-  local label="$1" out="$2"
+  local label="$1" out="$2" err_bytes=0
   if [ "$CAPTURE_RC" -ne 0 ]; then
     bad "${label}: --help が rc=${CAPTURE_RC} で終了した（ヘルプ書式の問題ではなく CLI 側の異常。宣言を照合できないまま通さない）"
     sed 's/^/    | /' "${out}.err" >&2 2>/dev/null || true
     return 0
   fi
   if [ ! -s "$out" ]; then
-    bad "${label}: --help が空を返した（照合できないまま通さない）"
+    if [ -z "$(help_stream "$label")" ]; then
+      bad "${label}: help_stream に出力先の宣言が無い（読む先を推測しないので照合できない。実測した出力先を help_stream へ足すこと）"
+      return 0
+    fi
+    if [ -s "${out}.err" ]; then err_bytes="$(wc -c < "${out}.err")"; err_bytes=$((err_bytes + 0)); fi
+    if [ "$err_bytes" -gt 0 ]; then
+      bad "${label}: --help が空を返した（読む先は help_stream=$(help_stream "$label")。stderr には ${err_bytes} バイト出ている — 出力先が変わったなら help_stream を実測で見直すこと。照合できないまま通さない）"
+    else
+      bad "${label}: --help が空を返した（照合できないまま通さない）"
+    fi
     return 0
   fi
   return 1
@@ -1138,7 +1197,7 @@ codex_live_enum() {
 
 LAYER2_TOTAL=$((LAYER2_TOTAL + 1))
 if command -v codex >/dev/null 2>&1; then
-  capture_help "$WORK/codex-help.txt" codex exec --help
+  capture_help codex-cli "$WORK/codex-help.txt" codex exec --help
   if help_unusable "codex-cli" "$WORK/codex-help.txt"; then
     :
   else
@@ -1187,7 +1246,7 @@ fi
 # 見つけられなければ失敗させる。
 LAYER2_TOTAL=$((LAYER2_TOTAL + 1))
 if command -v grok >/dev/null 2>&1; then
-  capture_help "$WORK/grok-help.txt" grok --help
+  capture_help grok-cli "$WORK/grok-help.txt" grok --help
   if help_unusable "grok-cli" "$WORK/grok-help.txt"; then
     :
   else
@@ -1225,7 +1284,7 @@ for pair in "claude-code claude" "copilot-cli copilot"; do
   cli="$1"; bin="$2"
   LAYER2_TOTAL=$((LAYER2_TOTAL + 1))
   if command -v "$bin" >/dev/null 2>&1; then
-    capture_help "$WORK/${bin}-help.txt" "$bin" --help
+    capture_help "$cli" "$WORK/${bin}-help.txt" "$bin" --help
     if help_unusable "$cli" "$WORK/${bin}-help.txt"; then
       continue
     fi
@@ -1240,24 +1299,274 @@ for pair in "claude-code claude" "copilot-cli copilot"; do
   fi
 done
 
+# agy_help_verdict <出力ファイル> <コマンド...> — antigravity-cli の --help の判定を 1 語で返す。
+# 実 CLI の照合と下の stub ケースが**同じ関数**を通る（取り込み方を stub 側だけ別に
+# 書くと、実 CLI の取り込みを壊しても stub ケースは緑のまま残る）。ok / bad はここで
+# 呼ばない — stub ケースを層 2 の照合件数（LAYER2_RUN）へ数えないため。
+#   rc=<N>   : --help が非 0 で終わった
+#   empty    : help_stream の読む先がどれも空
+#   declared : --sandbox の宣言行があり、値の表記（<...> / [possible values:]）が無い
+#   shape    : --sandbox の宣言行が無いか、値の表記が付いた
+# agy のヘルプは値の有無を表示しない（provenance の注記）ので、declared は「値を取らない」
+# ことの証明ではない。それは agy_argv_verdict が引数解析で確かめる。
+agy_help_verdict() {
+  local out="$1"
+  shift
+  capture_help antigravity-cli "$out" "$@"
+  if [ "$CAPTURE_RC" -ne 0 ]; then echo "rc=${CAPTURE_RC}"; return 0; fi
+  if [ ! -s "$out" ]; then echo "empty"; return 0; fi
+  # --sandbox は**オプション宣言行**（行頭の空白の後に置かれたフラグ）だけで数える。
+  # stdout と stderr を両方読むので、stderr の警告文が --sandbox に言及しただけで
+  # 「ヘルプに載っている」と数えると、ヘルプから消えた回が緑になる。
+  if LC_ALL=C awk '
+    { gsub(/\033\[[0-9;]*[[:alpha:]]/, "") }
+    /^[[:space:]]+(-[[:alnum:]], *)?--sandbox([[:space:]=]|$)/ {
+      saw = 1
+      if ($0 ~ /--sandbox[[:space:]=]*<[^>]+>/ || $0 ~ /\[possible values:/) bad_val = 1
+    }
+    END { exit((saw && !bad_val) ? 0 : 1) }
+  ' "$out"; then
+    echo "declared"
+  else
+    echo "shape"
+  fi
+}
+
+# ── agy の引数解析 probe（エージェントを起動しない） ──
+# --sandbox が値を取らないこと（sandbox_shape=boolean）は、ヘルプからは読めない。そこで
+# 未定義フラグを 2 本、確かめたいフラグの後ろへ置き、どちらがエラーに名指しされるかを見る。
+# 値を取らないフラグなら 2 本とも未定義として名指しされ、値を取るフラグなら 1 本目は値として
+# 消費されて 2 本目だけが名指しされる。どちらの場合も 2 本目が未定義なので引数解析で
+# rc≠0 に終わり、エージェントは起動しない。
+# 2026-11-17 macOS 実測（agy 1.5.1）: `--sandbox A B` → "flags provided but not defined:
+# -A -B" rc=2、`--mode A B` と `--add-dir A B` → "... not defined: -B" rc=2、`A` 単独 →
+# "... not defined: -A" rc=2。3 回繰り返して同じ出力。stdout は 0 バイト。
+#
+# 対照を 2 本、毎回 --sandbox より先に測る（区別できる前提そのものの確認）:
+#   未定義フラグ単独 → a（未定義フラグを名指しすること）
+#   値を取る --mode   → b（値の消費が名指しの欠落として観測できること。--mode はアダプタが
+#                         `--mode accept-edits` / `--mode ''` で渡す値つきフラグ）
+# 対照が崩れたら --sandbox は測らずに赤にする。未定義フラグを無視して起動まで進む版に
+# 変わった場合に備え、各呼び出しは stdin を /dev/null にし、時間を上限する。
+#
+# 上限は「alarm を掛けてから exec する」形にしない。その形で SIGALRM を受けるのは agy
+# 自身で、Go のプログラムは SIGALRM を受けても終了しない（この形で SIGALRM を無視する
+# 子を起こすと、上限 1 秒でも子が終わるまで待って rc=0 になった。2026-11-17 macOS 実測）。
+# 親の perl が fork した子を waitpid で待ち、親自身が受けた alarm で子のプロセスグループ
+# ごと SIGKILL して rc=142 を返す（子は exec の前に setpgrp で自分のグループを作る）。
+AGY_PROBE_A="--ff-contract-probe-a"
+AGY_PROBE_B="--ff-contract-probe-b"
+AGY_PROBE_TIMEOUT=10
+AGY_PROBE_WATCHDOG='my $t = shift; my $pid = fork; defined $pid or exit 125;
+if (!$pid) { setpgrp(0, 0); exec @ARGV; exit 127 }
+my $to = 0;
+eval { local $SIG{ALRM} = sub { die "timeout\n" }; alarm $t; waitpid($pid, 0); alarm 0; 1 } or $to = 1;
+if ($to) { kill "KILL", -$pid; waitpid($pid, 0); exit 142 }
+exit(($? & 127) ? 128 + ($? & 127) : ($? >> 8));'
+
+# agy_probe_names <出力ファイル> <コマンド...> — エラーに名指しされた probe フラグを 1 語で返す。
+#   a+b / a / b / none : 名指しされた組（rc≠0 で終わった回）
+#   launched           : rc=0（引数解析で止まらなかった）
+#   timeout            : 上限時間に達して打ち切った（監視側の rc=142）
+agy_probe_names() {
+  local out="$1" rc=0 a=0 b=0
+  shift
+  if ( cd "$WORK" && perl -e "$AGY_PROBE_WATCHDOG" "$AGY_PROBE_TIMEOUT" "$@" ) </dev/null >"$out" 2>&1; then rc=0; else rc=$?; fi
+  if [ "$rc" -eq 0 ]; then echo "launched"; return 0; fi
+  if [ "$rc" -eq 142 ]; then echo "timeout"; return 0; fi
+  if grep -q -e "-${AGY_PROBE_A#--}" "$out"; then a=1; fi
+  if grep -q -e "-${AGY_PROBE_B#--}" "$out"; then b=1; fi
+  case "${a}${b}" in
+    11) echo "a+b" ;;
+    10) echo "a" ;;
+    01) echo "b" ;;
+    *)  echo "none" ;;
+  esac
+}
+
+# agy_argv_verdict <出力ファイルの接頭辞> <agy の実行ファイル> — 判定語を 1 語で返す。
+# 実 CLI の照合と下の stub ケースが同じ関数を通る（ok / bad はここで呼ばない）。
+#   boolean          : --sandbox の後ろの 2 本がともに名指しされた（値として消費しない）
+#   valued           : --sandbox が 1 本目を値として消費した
+#   control:<u>/<m>  : 対照が成立しない（未定義フラグ単独=<u>、--mode=<m>）
+#   sandbox:<語>     : --sandbox の probe が想定外（起動まで進んだ・時間切れ・名指し無し）
+agy_argv_verdict() {
+  local prefix="$1" bin="$2" u m s
+  u="$(agy_probe_names "${prefix}-unknown.txt" "$bin" "$AGY_PROBE_A")"
+  m="$(agy_probe_names "${prefix}-mode.txt" "$bin" --mode "$AGY_PROBE_A" "$AGY_PROBE_B")"
+  if [ "$u" != "a" ] || [ "$m" != "b" ]; then echo "control:${u}/${m}"; return 0; fi
+  s="$(agy_probe_names "${prefix}-sandbox.txt" "$bin" --sandbox "$AGY_PROBE_A" "$AGY_PROBE_B")"
+  case "$s" in
+    a+b) echo "boolean" ;;
+    b)   echo "valued" ;;
+    *)   echo "sandbox:${s}" ;;
+  esac
+}
+
+# ── 取り込みと probe の自己検査（stub。実 CLI 不要・常に走る。Issue `#2830`） ──
+# 実 agy は導入の仕方によって PATH に無く（2026-11-17 の macOS 実測では
+# /Applications/Gemini.app/Contents/Helpers/agy にあり、PATH には無かった）、その
+# 環境では下の実 CLI 照合が skip になり、取り込み方や probe の退行が見えない。ヘルプを
+# 書き出す先・終了コード・--sandbox の形・引数解析のふるまいを stub で与え、実 CLI と同じ
+# agy_help_verdict / agy_argv_verdict を通して判定語を固定する。
+# agy-help-boolean は agy 1.5.1 の --help（stderr）からの抜粋。agy-help-valued は agy の
+# 書式ではなく、値の表記（<...>）が現れたら赤になることを確かめるための仮の形。
+HELP_STUB_DIR="$WORK/help-stubs"
+mkdir -p "$HELP_STUB_DIR"
+AGY_HELP_BOOLEAN="$HELP_STUB_DIR/agy-help-boolean.txt"
+AGY_HELP_VALUED="$HELP_STUB_DIR/agy-help-valued.txt"
+STUB_WARNING="$HELP_STUB_DIR/warning.txt"
+cat > "$AGY_HELP_BOOLEAN" <<'HELP'
+Usage of agy:
+  --add-dir                       Add a directory to the workspace (repeatable) (default [])
+  --sandbox                       Run in a sandbox with terminal restrictions enabled
+HELP
+cat > "$AGY_HELP_VALUED" <<'HELP'
+Usage of agy:
+  --add-dir                       Add a directory to the workspace (repeatable) (default [])
+  --sandbox <PROFILE>             Run in a sandbox with the given profile
+HELP
+AGY_HELP_NO_SANDBOX="$HELP_STUB_DIR/agy-help-no-sandbox.txt"
+STUB_SANDBOX_MENTION="$HELP_STUB_DIR/sandbox-mention.txt"
+cat > "$AGY_HELP_NO_SANDBOX" <<'HELP'
+Usage of agy:
+  --add-dir                       Add a directory to the workspace (repeatable) (default [])
+HELP
+echo "--sandbox is not available on this platform" > "$STUB_SANDBOX_MENTION"
+echo "warning: config file not found, using defaults" > "$STUB_WARNING"
+# make_help_stub <名前> <stdout へ出すファイル | -> <stderr へ出すファイル | -> <rc>
+make_help_stub() {
+  {
+    echo '#!/usr/bin/env bash'
+    [ "$2" = "-" ] || printf 'cat %q\n' "$2"
+    [ "$3" = "-" ] || printf 'cat %q >&2\n' "$3"
+    echo "exit $4"
+  } > "$HELP_STUB_DIR/$1"
+  chmod +x "$HELP_STUB_DIR/$1"
+}
+make_help_stub agy-stderr - "$AGY_HELP_BOOLEAN" 0
+make_help_stub agy-valued - "$AGY_HELP_VALUED" 0
+make_help_stub agy-stdout "$AGY_HELP_BOOLEAN" - 0
+make_help_stub agy-silent - - 0
+make_help_stub agy-rc - "$AGY_HELP_BOOLEAN" 2
+make_help_stub agy-mention "$AGY_HELP_NO_SANDBOX" "$STUB_SANDBOX_MENTION" 0
+make_help_stub warn-only - "$STUB_WARNING" 0
+
+# expect_agy_verdict <stub 名> <期待する判定語> <説明>
+expect_agy_verdict() {
+  local got
+  got="$(agy_help_verdict "$HELP_STUB_DIR/$1.out" "$HELP_STUB_DIR/$1" --help)"
+  if [ "$got" = "$2" ]; then
+    ok "antigravity-cli 取り込み（stub）: $3 → ${got}"
+  else
+    bad "antigravity-cli 取り込み（stub）: $3 → 期待 ${2} / 実際 ${got:-<空>}"
+  fi
+}
+expect_agy_verdict agy-stderr declared "ヘルプを stderr だけへ出す（agy 1.1.24 / 1.5.1 の形）なら --sandbox の宣言行を照合する"
+expect_agy_verdict agy-valued shape "stderr のヘルプで --sandbox に値の表記が付いたら赤（stderr の中身を実際に照合している）"
+expect_agy_verdict agy-stdout declared "ヘルプを stdout へ出す版でも照合する"
+expect_agy_verdict agy-silent empty "stdout・stderr とも空なら照合できないまま通さない"
+expect_agy_verdict agy-rc rc=2 "--help が非 0 で終われば照合できないまま通さない"
+expect_agy_verdict agy-mention shape "ヘルプに --sandbox が無く stderr の文が行頭で言及するだけの回は赤（字下げした宣言行だけを数える）"
+
+# 否定の主張（--sandbox が無い）で照合する CLI は stdout だけを読む。stderr の警告を
+# ヘルプと取り違えると「--sandbox は無い」の緑になる（help_stream の注記）。
+for cli in claude-code copilot-cli; do
+  capture_help "$cli" "$HELP_STUB_DIR/warn-only-${cli}.out" "$HELP_STUB_DIR/warn-only" --help
+  if [ "$CAPTURE_RC" -eq 0 ] && [ ! -s "$HELP_STUB_DIR/warn-only-${cli}.out" ]; then
+    ok "${cli} 取り込み（stub）: stdout が空で stderr に警告だけが出た回はヘルプを空と読む（否定の照合を緑にしない）"
+  else
+    bad "${cli} 取り込み（stub）: stderr の警告をヘルプとして読んだ（rc=${CAPTURE_RC}）— help_stream が stdout 以外になっている"
+  fi
+done
+
+# 引数解析の stub は agy の引数解析だけを真似る（未定義フラグをまとめて名指しして rc=2。
+# 値を取るフラグは次の引数を消費する）。第 2 引数が 1 なら --sandbox も値を取る版になる。
+# make_argv_stub <名前> <--sandbox が値を取るなら 1、取らないなら 0>
+make_argv_stub() {
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'undefined=""'
+    echo 'while [ $# -gt 0 ]; do'
+    echo '  case "$1" in'
+    echo '    --mode|--add-dir) shift ;;'
+    if [ "$2" = 1 ]; then echo '    --sandbox) shift ;;'; else echo '    --sandbox) ;;'; fi
+    echo '    -*) undefined="${undefined} -${1#--}" ;;'
+    echo '  esac'
+    echo '  shift'
+    echo 'done'
+    echo '[ -n "$undefined" ] || exit 0'
+    echo 'echo "flags provided but not defined:${undefined}" >&2'
+    echo 'exit 2'
+  } > "$HELP_STUB_DIR/$1"
+  chmod +x "$HELP_STUB_DIR/$1"
+}
+make_argv_stub agy-argv-boolean 0
+make_argv_stub agy-argv-valued 1
+make_help_stub agy-argv-lenient - - 0
+# 居座る stub は SIGALRM を無視する（Go 製の agy と同じ条件。無視しない stub だと、
+# alarm を掛けてから exec する形でも打ち切れてしまい、その形の退行を検出できない）。
+printf '#!/usr/bin/env bash\ntrap "" ALRM\nexec sleep 5\n' > "$HELP_STUB_DIR/agy-argv-hang"
+chmod +x "$HELP_STUB_DIR/agy-argv-hang"
+
+# expect_argv_verdict <stub 名> <期待する判定語> <説明>
+expect_argv_verdict() {
+  local got
+  got="$(agy_argv_verdict "$HELP_STUB_DIR/$1" "$HELP_STUB_DIR/$1")"
+  if [ "$got" = "$2" ]; then
+    ok "antigravity-cli 引数解析 probe（stub）: $3 → ${got}"
+  else
+    bad "antigravity-cli 引数解析 probe（stub）: $3 → 期待 ${2} / 実際 ${got:-<空>}"
+  fi
+}
+if command -v perl >/dev/null 2>&1; then
+  expect_argv_verdict agy-argv-boolean boolean "--sandbox の後ろの未定義フラグが 2 本とも名指しされる（agy 1.5.1 の形）なら boolean"
+  expect_argv_verdict agy-argv-valued valued "--sandbox が次の引数を値として消費する版は赤"
+  expect_argv_verdict agy-argv-lenient "control:launched/launched" "未定義フラグを無視して rc=0 で終わる版は対照が崩れたとして赤（--sandbox を測らない）"
+  hang_got="$(AGY_PROBE_TIMEOUT=1 agy_probe_names "$HELP_STUB_DIR/agy-argv-hang.out" "$HELP_STUB_DIR/agy-argv-hang" --sandbox)"
+  if [ "$hang_got" = "timeout" ]; then
+    ok "antigravity-cli 引数解析 probe（stub）: 引数解析で止まらず SIGALRM も無視して居座る版は上限時間で打ち切る → ${hang_got}"
+  else
+    bad "antigravity-cli 引数解析 probe（stub）: 居座る版を上限時間で打ち切れない → 期待 timeout / 実際 ${hang_got:-<空>}"
+  fi
+else
+  skipped "antigravity-cli 引数解析 probe（stub）: perl が無く実行時間を上限できないため、probe の自己検査をしていない"
+fi
+
 LAYER2_TOTAL=$((LAYER2_TOTAL + 1))
 if command -v agy >/dev/null 2>&1; then
-  capture_help "$WORK/agy-help.txt" agy --help
-  if ! help_unusable "antigravity-cli" "$WORK/agy-help.txt"; then
-    LAYER2_RUN=$((LAYER2_RUN + 1))
-    if LC_ALL=C awk '
-      { gsub(/\033\[[0-9;]*[[:alpha:]]/, "") }
-      /--sandbox/ {
-        saw = 1
-        if ($0 ~ /--sandbox[[:space:]=]*<[^>]+>/ || $0 ~ /\[possible values:/) bad_val = 1
-      }
-      END { exit((saw && !bad_val) ? 0 : 1) }
-    ' "$WORK/agy-help.txt"; then
-      ok "antigravity-cli: --sandbox は実 CLI でも boolean（値引数を取らない）"
-    else
-      bad "antigravity-cli: --help の --sandbox が欠落または値付きになった — sandbox_shape の宣言を見直すこと"
-    fi
-  fi
+  agy_verdict="$(agy_help_verdict "$WORK/agy-help.txt" agy --help)"
+  case "$agy_verdict" in
+    declared)
+      LAYER2_RUN=$((LAYER2_RUN + 1))
+      if ! command -v perl >/dev/null 2>&1; then
+        skipped "antigravity-cli: --help に --sandbox の宣言行はあるが、perl が無く probe の実行時間を上限できないため、値を取らないことを引数解析で確かめていない"
+      else
+        argv_verdict="$(agy_argv_verdict "$WORK/agy-probe" agy)"
+        case "$argv_verdict" in
+          boolean)
+            ok "antigravity-cli: --sandbox は実 CLI でも boolean（--help に宣言行があり、引数解析で次の引数を値として消費しない）" ;;
+          valued)
+            bad "antigravity-cli: --sandbox が次の引数を値として消費した（値を取るフラグになった）— sandbox_shape の宣言とアダプタの argv を見直すこと" ;;
+          control:*)
+            bad "antigravity-cli: 引数解析 probe の対照が成立しない（未定義フラグ単独 / --mode = ${argv_verdict#control:}。期待は a / b）— 値を取るかを区別できないので、--sandbox を照合できないまま通さない"
+            sed 's/^/    | /' "$WORK/agy-probe-unknown.txt" "$WORK/agy-probe-mode.txt" >&2 2>/dev/null || true ;;
+          *)
+            bad "antigravity-cli: --sandbox の引数解析 probe が想定外（${argv_verdict:-<空>}）— 起動まで進んだか、時間切れか、未定義フラグを名指ししなかった"
+            sed 's/^/    | /' "$WORK/agy-probe-sandbox.txt" >&2 2>/dev/null || true ;;
+        esac
+      fi ;;
+    shape)
+      LAYER2_RUN=$((LAYER2_RUN + 1))
+      bad "antigravity-cli: --help の --sandbox の宣言行が無いか、値の表記が付いた — sandbox_shape の宣言を見直すこと" ;;
+    rc=*)
+      bad "antigravity-cli: --help が ${agy_verdict} で終了した（ヘルプ書式の問題ではなく CLI 側の異常。宣言を照合できないまま通さない）"
+      sed 's/^/    | /' "$WORK/agy-help.txt.err" >&2 2>/dev/null || true ;;
+    empty)
+      bad "antigravity-cli: --help が空を返した（help_stream=$(help_stream antigravity-cli) のどれにも出ていない。照合できないまま通さない）" ;;
+    *)
+      bad "antigravity-cli: --help の判定語が想定外（${agy_verdict:-<空>}）— agy_help_verdict の戻り値を見直すこと" ;;
+  esac
 else
   skipped "antigravity-cli: agy が PATH に無いため --sandbox の boolean 形を再確認していない"
 fi

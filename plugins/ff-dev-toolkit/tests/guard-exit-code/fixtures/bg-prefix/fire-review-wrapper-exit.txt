@@ -1,0 +1,2 @@
+bash /repo/plugins/ff-dev-toolkit/tests/run-all.sh > /tmp/run-all.log 2>&1 || env exit 1
+echo done

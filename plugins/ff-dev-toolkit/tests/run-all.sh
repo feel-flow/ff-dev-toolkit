@@ -829,6 +829,10 @@ else
     "$SCRIPT_DIR/guard-credential-output/verify.sh"
     # Git Bash から wsl へ $ を含む bash -c 本文を渡す形の事前停止。
     "$SCRIPT_DIR/guard-wsl-shell/verify.sh"
+    # 既定ブランチ上の git commit を実行前に止める。
+    "$SCRIPT_DIR/guard-default-branch-commit/verify.sh"
+    # 同じ番号の open PR またはリモートブランチがあるときのブランチ作成と PR 作成を止める。
+    "$SCRIPT_DIR/guard-issue-collision/verify.sh"
     # 上の 5 本の Bash ガード（effort-actual / issue-labels / long-gate-background /
     # review-in-flight / exit-code）が共有する heredoc 除去ヘルパ（tests/lib/heredoc-strip.sh）
     # の契約: 正常終端は本文だけを落とし、未終端は rc 3 で生コマンドを返し、awk 失敗は

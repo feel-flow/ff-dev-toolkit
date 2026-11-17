@@ -17,3 +17,26 @@ fire-review-subst-prefix.txt	gate-exit-dropped	zero	result=prefix$(npm test)
 fire-review-subst-backtick-dq.txt	gate-exit-dropped	zero	result="`npm test`"
 fire-review-subst-multi-assign.txt	gate-exit-dropped	zero	out=$(bash scripts/check.sh 2>&1) rc=$?
 fire-review-subst-multi-assign-backtick.txt	gate-exit-dropped	zero	out=`scripts/check.sh` rc=$?
+fire-prep-or-exit-build-e2e.txt	gate-exit-dropped	zero	pnpm build:e2e > /tmp/build.log 2>&1; rc=$?
+fire-prep-or-exit-run-all.txt	gate-exit-dropped	same	bash /path/to/repo/plugins/ff-dev-toolkit/tests/run-all.sh > /tmp/run-all.log 2>&1; rc=$?
+fire-prep-or-exit0.txt	gate-exit-swallowed	zero	git checkout -- .claude/launch.json || exit 0
+fire-prep-mkdir-cd-echo.txt	gate-exit-dropped	zero	mkdir -p /tmp/out
+fire-prep-mkdir-cd-end.txt	gate-exit-dropped	zero	mkdir -p /tmp/out
+fire-review-subshell-or-exit.txt	gate-exit-swallowed	same	( bash /repo/plugins/ff-dev-toolkit/tests/run-all.sh > /tmp/run-all.log 2>&1 || exit 1; )
+fire-review-and-pipe-or-exit.txt	gate-exit-swallowed	zero	npm ci && npm test 2>&1 | tail -20 || exit 1
+fire-review-wrapper-exit.txt	gate-exit-swallowed	same	bash /repo/plugins/ff-dev-toolkit/tests/run-all.sh > /tmp/run-all.log 2>&1 || env exit 1
+fire-review-capture-after-cd.txt	gate-exit-dropped	zero	mkdir -p /tmp/out
+fire-review-recapture-test.txt	gate-exit-dropped	zero	mkdir -p /tmp/out
+fire-review-cat-redirect.txt	gate-exit-dropped	zero	cat p1.json p2.json > /tmp/merged.json
+fire-review-heredoc-cat-echo.txt	gate-exit-dropped	zero	cat > /tmp/step.sh <<'EOF'
+fire-review2-multiline-subshell.txt	gate-exit-swallowed	same	bash /repo/plugins/ff-dev-toolkit/tests/run-all.sh > /tmp/run-all.log 2>&1 || exit 1
+fire-review2-test-status-after-cd.txt	gate-exit-dropped	zero	mkdir -p /tmp/out
+fire-review2-tee-file.txt	gate-exit-dropped	zero	tee /tmp/out/copy.log < /tmp/in.log
+fire-review3-group-pipe.txt	gate-exit-swallowed	same	bash /repo/plugins/ff-dev-toolkit/tests/run-all.sh || exit 1
+fire-review3-while-pipe.txt	gate-exit-swallowed	same	bash /repo/plugins/ff-dev-toolkit/tests/run-all.sh "$f" || exit 1
+fire-review3-group-bg.txt	gate-exit-swallowed	same	{ bash /repo/plugins/ff-dev-toolkit/tests/run-all.sh > /tmp/run-all.log 2>&1 || exit 1; } &
+fire-review5-subshell-arg-keyword.txt	gate-exit-swallowed	same	bash /repo/plugins/ff-dev-toolkit/tests/run-all.sh || exit 1
+fire-review6-time-group-pipe.txt	gate-exit-swallowed	same	bash /repo/plugins/ff-dev-toolkit/tests/run-all.sh || exit 1
+fire-review6-coproc.txt	gate-exit-swallowed	zero	coproc bash /repo/plugins/ff-dev-toolkit/tests/run-all.sh || exit 1
+fire-review6-bang.txt	gate-exit-swallowed	zero	! git checkout -- .claude/launch.json || exit 1
+fire-review7-exit-trap.txt	gate-exit-swallowed	zero	git checkout -- .claude/launch.json || exit 1

@@ -240,6 +240,14 @@ negative() { # name / wanted rc / index / diagnostic needle
   if [ "$RC" -eq "$2" ] && ! grep -qxF MERGE_COMMAND_BEGIN "$TMP/negative.out" && { grep -F "$4" "$TMP/negative.err" >/dev/null || grep -F "$4" "$TMP/negative.out" >/dev/null; }; then ok "$1"; else bad "$1 rc=$RC"; cat "$TMP/negative.err" >&2; fi
   save_case "$1"
 }
+# 初回の raw PR/repo だけで止まる。checks/threads の入力を追加要求しない。
+jq --arg headline "$(printf 'docs: notes (Refs #%s)' 9)" \
+  '.body = "" | .closingIssuesReferences = [] | .commits[0].messageHeadline = $headline' "$TMP/pr.json" >"$TMP/hint-pr.json"
+jq --arg body "$TMP/hint-pr.json" '
+  .responses |= map(select(.phase=="initial" and (.operation=="finish.precheck.pr" or .operation=="finish.precheck.repo"))
+    | if .operation=="finish.precheck.pr" then .body=$body else . end)
+' "$TMP/base-index.json" >"$TMP/hint-index.json"
+negative missing-explicit-reference 1 "$TMP/hint-index.json" 'PRECHECK=blocked'
 # マージ後工程の判定: コメントは page / last で全件を示し、変更ファイルは raw に頼らず git で読む。
 # 設定は worker の env -i の内側で 1 ケースずつ渡す（既存ケースの出力を変えない）。
 jq --arg closes "$(printf 'Closes #%s' 7)" '.body=$closes | .closingIssuesReferences=[] | .statusCheckRollup=[] | .files=[{path:"decoy"}]' "$TMP/pr.json" >"$TMP/pm-pr.json"

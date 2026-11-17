@@ -61,6 +61,36 @@ codex は**引数解析の段階で落ちる**ので CLI 本体は 1 バイト�
 | codex-cli | **作業ルートの絞り込みの再測**（作業ルートの外へは書けない / 中へは書ける / 外を**読む**のは通る） |
 | grok-cli | 「列挙を公表しない」という**前提そのもの**がまだ成り立つか |
 | claude-code / copilot-cli | `--help` に `--sandbox` が現れていないか（`none` 宣言の前提） |
+| antigravity-cli | `agy --help` に `--sandbox` の宣言行があり値の表記が無いか、さらに引数解析の probe で `--sandbox` が次の引数を値として消費しないか（`boolean` 宣言の前提） |
+
+**ヘルプの出力先は CLI ごとに宣言する**（`verify.sh` の `help_stream`）。agy は usage を stderr へ出し、stdout は 0 バイトになる（Issue `#2830` の報告で 1.1.24、2026-11-17 の macOS 実測で 1.5.1）。stdout だけを読むと「--help が空を返した」で赤になり、agy を PATH に置いたホストでは全件ゲートとリリース gate が止まる。
+
+- stderr まで読むのは antigravity-cli だけ。`--sandbox` 行を**見つけたこと**を緑の錨にしているので、stderr を足しても「見つからない」が緑へ倒れない。stdout へ出す版に変わっても照合は続くよう、stdout と stderr を両方読む
+- 数えるのは**オプション宣言行**（行頭の空白の後に置かれた `--sandbox`）だけ。stderr の文が `--sandbox` に言及しただけで「ヘルプに載っている」と数えると、ヘルプから消えた回が緑になる
+- claude-code / copilot-cli は stdout だけを読む。照合が「`--sandbox` が無い」という否定の主張なので、stderr を混ぜると、stdout が空で stderr に警告 1 行だけが出た回が緑になる。codex-cli / grok-cli も stdout のまま据え置く
+- 読む先が空で stderr に何か出ている回は、診断にそのバイト数を添える（出力先が変わったのか、CLI が何も出せなかったのかを切り分けるため）。`help_stream` に宣言の無い CLI は、読む先を推測せずに「宣言が無い」と名指しして赤にする
+
+**agy のヘルプは値の有無を表示しない**。値を取る `--mode` / `--add-dir` も `--sandbox` と同じ形で並ぶので、ヘルプから言えるのは「宣言行がある・値の表記が無い」まで（判定語 `declared`）。値を取らないこと（`boolean`）は、エージェントを起動しない**引数解析の probe**（`agy_argv_verdict`）で確かめる:
+
+- 確かめたいフラグの後ろへ未定義フラグを 2 本置き、どちらがエラーに名指しされるかを見る。値を取らないフラグなら 2 本とも名指しされ、値を取るフラグなら 1 本目が値として消費されて 2 本目だけが名指しされる。どちらでも 2 本目が未定義なので引数解析で rc≠0 に終わり、エージェントは起動しない
+- 2026-11-17 の macOS 実測（agy 1.5.1）: `--sandbox` の後ろでは 2 本とも名指し（rc=2）、`--mode` と `--add-dir` の後ろでは 2 本目だけ（rc=2）、未定義フラグ単独ではそれ自身（rc=2）。3 回繰り返して同じ出力で、stdout は 0 バイト
+- 対照を 2 本、毎回 `--sandbox` より先に測る（未定義フラグ単独 → 1 本目を名指し、値を取る `--mode` → 2 本目だけを名指し）。対照が崩れたら `--sandbox` は測らずに赤にする。未定義フラグを無視して起動まで進む版に変わった場合に備え、各呼び出しは stdin を `/dev/null` にし、10 秒に上限する（rc=0 も時間切れも赤）。上限は親の perl が子を `waitpid` で待ち、親が受けた `alarm` で子のプロセスグループごと SIGKILL する形にする。`alarm` を掛けてから `exec` する形では SIGALRM を受けるのが agy 自身で、Go のプログラムは SIGALRM では終了しないので上限が効かない（SIGALRM を無視する子で、上限 1 秒でも子の終了まで待って rc=0 になることを実測）
+
+実 agy は導入の仕方によって PATH に無い（上の実測では `/Applications/Gemini.app/Contents/Helpers/agy` にあり、PATH には無かった）。その環境では実 CLI の照合が skip になり、取り込み方や probe の退行が見えない。そこで両方を stub で常に検査する。stub は 12 ケースあり、agy のケースは実 CLI と同じ判定関数（`agy_help_verdict` / `agy_argv_verdict`）を通す。stub のケースは層 2 の照合件数（`層2: R/T`）には数えない。ヘルプの stub のうち値の表記つきの形は agy の書式ではなく、`<...>` の表記が現れたら赤になることを確かめるための仮の形。
+
+| stub | 期待 |
+|---|---|
+| ヘルプを stderr だけへ出す | `declared`（照合する） |
+| stderr のヘルプで `--sandbox` に値の表記（`<PROFILE>`）が付く | `shape`（赤。stderr の中身を実際に照合している） |
+| ヘルプを stdout へ出す | `declared` |
+| stdout・stderr とも空 | `empty`（赤） |
+| ヘルプを stderr へ出して rc=2 | `rc=2`（赤） |
+| stdout のヘルプに `--sandbox` が無く、stderr の文が行頭で `--sandbox` に言及するだけ | `shape`（赤。字下げした宣言行だけを数える） |
+| claude-code / copilot-cli で、stderr に警告だけを出す（2 ケース） | 読み取り結果が空（否定の照合を緑にしない） |
+| 引数解析: `--sandbox` の後ろの 2 本がともに名指しされる | `boolean` |
+| 引数解析: `--sandbox` が次の引数を値として消費する | `valued`（赤） |
+| 引数解析: 未定義フラグを無視して rc=0 で終わる | `control:launched/launched`（赤。`--sandbox` を測らない） |
+| 引数解析: 終わらず、SIGALRM も無視して居座る（上限 1 秒で測る） | `timeout`（赤） |
 
 ### probe の置き場所は検査の一部（$TMPDIR に置くと無意味になる）
 
@@ -85,7 +115,7 @@ codex は**引数解析の段階で落ちる**ので CLI 本体は 1 バイト�
 
 絞り込みの probe は親ディレクトリを 1 段挟む（`<probe root>/narrow/inner` を作業ルートにする）。絞りが効かなかったときに書き込みが落ちる先がリポジトリ root ではなく probe 配下になるので、**失敗しても作業ツリーを汚さない**。
 
-実 CLI の呼出には `--help`、`codex sandbox`、`codex exec --strict-config` と argv 確認の `codex exec` がある。使い捨て `CODEX_HOME` は利用者の設定ファイルを分離するが、継承した API 認証環境変数を除去する仕組みではないため、それだけで全呼出のモデル未到達・無課金を保証するとは扱わない。
+実 CLI の呼出には `--help`、`codex sandbox`、`codex exec --strict-config` と argv 確認の `codex exec`、agy の引数解析 probe（未定義フラグを渡して rc≠0 で終わらせ、エージェントを起動しない）がある。使い捨て `CODEX_HOME` は利用者の設定ファイルを分離するが、継承した API 認証環境変数を除去する仕組みではないため、それだけで全呼出のモデル未到達・無課金を保証するとは扱わない。
 
 ## 宣言テーブル（provenance）
 
@@ -97,6 +127,7 @@ codex は**引数解析の段階で落ちる**ので CLI 本体は 1 バイト�
 | grok-cli | 値つき | **（空）** | 不可 | grok 1.0.0 で転記 / インストール済みは 1.0.5（2026-08-26）でも `grok --help` は `--sandbox <PROFILE>` とだけ書き `[possible values:]` を持たない（層 2 が毎回この行を実 CLI で再確認する） |
 | claude-code | 渡さない | — | 不在のみ | read-only は `--tools Read,Grep,Glob` と `--strict-mcp-config`。`--allowed-tools` だけを境界としない |
 | copilot-cli | 渡さない | — | 不在のみ | `--sandbox` の概念を持たない |
+| antigravity-cli | boolean（値を取らない） | — | 形のみ | agy 1.5.1 / `agy --help`（stderr）に `--sandbox` の宣言行があるが、ヘルプは値の有無を表示しない。値を取らないことは引数解析の probe で確認（`--sandbox` の後ろの未定義フラグ 2 本がともに名指しされる。2026-11-17 macOS 実測） |
 
 **grok の空欄は「検証済み」ではなく「照合できていない」の意**。誤読を防ぐため、層 1 は grok の列挙照合を `○ skip` として明示的に出力する。
 
@@ -176,7 +207,15 @@ grok 側を同じように絞らないのは意図的で、**不可能だから�
 | 23 | 能力確認の照合語を緩める（`-C, --cd` ではなく help の別の行を見る） | 「旧版でも成功した」red — stub の help を信じるだけの検査になっていない |
 | 24 | 層 2 の probe root を `$TMPDIR` 配下へ戻す | 絞り込み arm が「親へ書けた」で red。**同じ実行でモード軸の arm は緑のまま**で、旧 arm が別の理由で通っていたことが出力に残る |
 | 25 | `-C` の argv 受理 arm で `-C` の代わりに実在しないフラグを渡す（実 CLI が絞り込みフラグを失った状況の再現） | 「アダプタと同じ並びの `-C <dir>` が argv 解析で拒否された」で red。陽性対照（未知フラグの拒否）は緑のまま残るので、probe 自体は動いていて判定だけが変わったことが出力から分かる |
-| 26 | `ensure_probe_root` を無条件 `return 0` にする（probe 置き場所を確保できない環境の再現） | red にはならない — **skip がちょうど 2 件**（`リポジトリ配下に probe ディレクトリを作れない…`）増えて `層2: 6/8`、suite は緑で rc=0。これが正しい挙動で、この変異は「skip 分岐の入れ子が正しく結線されている」ことの確認に使う。skip が 1 件だけ・8/8 のまま・落ちる、のいずれかなら結線が壊れている |
+| 26 | `ensure_probe_root` を無条件 `return 0` にする（probe 置き場所を確保できない環境の再現） | red にはならない — **skip がちょうど 2 件**（`リポジトリ配下に probe ディレクトリを作れない…`）増えて `層2: 6/9`（agy が PATH に無い環境の通常値は `8/9`。2026-11-17 実測）、suite は緑で rc=0。これが正しい挙動で、この変異は「skip 分岐の入れ子が正しく結線されている」ことの確認に使う。skip が 1 件だけ・通常値のまま・落ちる、のいずれかなら結線が壊れている |
+| 27 | antigravity-cli の `help_stream` を `stdout` へ戻す（Issue `#2830` の不具合の復元） | stderr へ出す stub の 2 ケース（`declared` / `shape`）が「実際 `empty`」で red |
+| 28 | `capture_help` の stdout と stderr の連結を外す | 27 と同じ 2 ケースが red |
+| 29 | claude-code / copilot-cli の `help_stream` を `stdout+stderr` にする | 警告だけの stub の 2 ケースが「stderr の警告をヘルプとして読んだ」で red |
+| 30 | agy の `--sandbox` の照合を宣言行の錨から素の `/--sandbox/` へ戻す | 「stderr の文が行頭で言及するだけ」の stub が「実際 `declared`」で red |
+| 31 | 宣言行の錨の字下げを `[[:space:]]+` から `[[:space:]]*` へ緩める | 30 と同じ stub が red |
+| 32 | 引数解析 probe で「2 本目だけが名指しされた」を `boolean` と読む | 値を消費する stub が「実際 `boolean`」で red |
+| 33 | 引数解析 probe の対照（未定義フラグ単独 / `--mode`）の確認を外す | 未定義フラグを無視する stub が「実際 `sandbox:launched`」で red |
+| 34 | 引数解析 probe の上限を「`alarm` を掛けてから `exec`」の形へ戻す | SIGALRM を無視して居座る stub が「実際 `launched`」で red（子の終了まで待たされる） |
 
 21〜26 は書き込みルートの絞り込み（`codex exec -C`）の分（26 だけは red ではなく「skip の増え方」を見る変異）。24 が構造的に重要で、21〜23 が「絞りを外した」ことを見ているのに対し、24 は**検査の置き場所そのもの**が測定の成否を決めることを示している。25 は実 CLI 側の退行（`-C` が消える／改名される）を見る分で、陽性対照を残したまま判定だけが赤くなることを確かめている — 対照が無いと「未知フラグを拒否しない CLI」でも緑になり、実 CLI を起動しているのに何も判定していない arm になる。
 

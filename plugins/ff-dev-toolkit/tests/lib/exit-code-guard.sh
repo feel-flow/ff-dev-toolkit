@@ -53,6 +53,14 @@
 #                   右辺は実行されず、終了コードはゲートのものが残る（実測）。`{ … }` / `( … )`
 #                   のグループ実行と、末尾区間が環境代入・ラッパで始まる形（`FOO=1 echo done`）
 #                   も同じ判定に入る（Issue `#1683`）
+#                   **`|| exit N`（N は 0 以外の数字の literal。256 の倍数を除く）で終える fail-fast の
+#                   形も対象外** — `||` の右辺はゲートが失敗したときだけ走り、非 0 で終わるので赤は
+#                   赤のまま外へ出る（ゲートの直後が `||` で右辺が素の `exit N` だけの平坦な行で、同じ単位の
+#                   中でそれまでにブロック（サブシェル `( … )`・グループ・制御構文・関数定義・time / coproc /
+#                   先頭の `!`）や trap（`trap 'exit 0' EXIT` は exit 1 を 0 へ書き換える）が出ていない
+#                   行に限る。`exit 0` / 256 の倍数・パイプの手前の段のゲート・ゲートと `||` の間の別の区間・
+#                   ラッパ越しの `exit`・末尾の `&` は従来どおり握り潰し。規則の本体は failfast_tail。
+#                   Issue `#2813`）
 #                   正しい形: `bash tests/run-all.sh > log 2>&1` で改行し、次の行で
 #                       `rc=$?; echo "EXIT=$rc"; exit $rc`（診断を出したうえで伝播させる）
 #   gate-exit-dropped
@@ -87,6 +95,13 @@
 #                   最大 20 行に留まる。閉じないまま単位（ファイル・フェンス）が終わったときも
 #                   同じ再投入を行うので、末尾の 19 行以下も個別に解析される（Issue `#1805`。
 #                   heredoc 本文はそもそも読み飛ばすので対象外）
+#                   背景実行（ff_exit_code_any_launch=1。hook の run_in_background）だけは名簿外の
+#                   起動も主体にする（Issue `#2540`）。ただし代入・cd / pushd / popd / export / exit /
+#                   return・set / shopt / unset / umask / trap と、表示だけの区間（echo / printf・ファイルへ
+#                   書かない出力整形の語（tee を除く）・`git status`）は主体にしない。準備の行（heredoc で書く cat / tee、
+#                   mkdir 等）の rc は、`$?` を読まない起動の無い行を挟んでも次の起動へ引き継がせる
+#                   （Issue `#2672` / `#2813`。規則の本体は is_gate_launch / is_display_only / is_prep_launch /
+#                   track_gate の状態 3）
 #
 # 「出力整形フィルタ」= head / tail / less / more / cat / tee / wc（`| sudo tee x` /
 # `| command head -1` / `| LC_ALL=C wc -l` のように前置きが 1 段あっても同じ）。これらは測定対象の
@@ -213,9 +228,14 @@ function pipe_last_word(s,   k, arr, t, w) {
   sub(/^.*\//, "", w)
   return w
 }
+# 出力整形の語（下の「出力整形フィルタ」）。パイプ終端の判定（is_pipe）・診断終端の判定
+# （is_silent_tail）・背景実行で終了コードの主体にしない表示の判定（is_display_only）が同じ語彙を使う。
+function is_fmt_word(w) {
+  return (w ~ /^(head|tail|less|more|cat|tee|wc)$/)
+}
 function is_pipe(s,   w) {
   w = pipe_last_word(s)
-  return (w ~ /^(head|tail|less|more|cat|tee|wc)$/)
+  return is_fmt_word(w)
 }
 # 区間の前置きを剥がす。グループ実行の括弧（`{` / `(` と対応する `}` / `)`）、環境変数代入、
 # ラッパ（timeout / nohup / stdbuf / env / command / sudo / time）は background 起動の定番形で、
@@ -292,11 +312,47 @@ function is_gate_launch(s,   w, raw) {
       return 0
     }
     if (w ~ /^(cd|pushd|popd|export|exit|return)$/) return 0
+    # `set -euo pipefail` などシェルの状態を変えるだけの組み込みも、終了コードの主体ではない
+    # （1 行目に置いた背景起動を、その行を名指した dropped で止めていた。Issue `#2813` の調査で実測）
+    if (w ~ /^(set|shopt|unset|umask|trap)$/) return 0
     sub(/^.*\//, "", w)
     if (w == "" || w == "echo" || w == "printf") return 0
+    # 表示だけのコマンド（出力整形の語と `git status`）も echo / printf と同じく主体にしない（Issue `#2813`）
+    if (is_display_only(s)) return 0
     return 1
   }
   return is_named_gate(s)
+}
+# 背景実行で終了コードの主体にしない、表示だけの区間か（s は strip_prefix 済み）。出力整形の語
+# （is_fmt_word。引数のファイルへ書く tee は除く）と、作業ツリーの状態を見せる `git status`（`-C <dir>` などの大域オプションを挟んでもよい）。
+# これらの rc は検査の成否ではないので、落としても偽の緑にならない。ここを主体にすると、
+# `pnpm build > log; rc=$?` ⏎ `tail -n 15 log` ⏎ `echo "EXIT=$rc"; exit $rc` の tail や、ゲートより
+# 前の `git status --short <file>` を名指した dropped で、伝播している背景起動を止める（Issue `#2813`）。
+# ファイルへ書く形（出力のリダイレクト `>` と heredoc `<<`。`cat a b > c` や `cat > <script> <<'EOF'`）は
+# 表示ではなく、データやスクリプトを用意する起動として従来どおり数える（heredoc の cat / tee は
+# is_prep_launch の準備の行）。判定は**主体を落とされる側**の性質で行う — ゲートの rc を持ち越して
+# いる最中に表示の行が来れば、ゲートの rc は従来どおり dropped になる（track_gate の持ち越しは起動の
+# 有無より先に判定する）。`git diff` のように成否を返す用法（`--exit-code` / `--quiet`）を持つものや、
+# `git` 全体は含めない。
+function is_display_only(s,   w, rest, t) {
+  w = s
+  sub(/[[:space:]].*$/, "", w)
+  sub(/^.*\//, "", w)
+  # 標準エラー出力の向け先（`2>/dev/null` / `2>&1`）と fd の複製（`>&2`）は、出力をファイルへ書く形ではない
+  # （`tail -n 15 log 2>/dev/null` を表示のまま数える。2 巡目までのレビュー後の再点検で実測）
+  t = s; gsub(/[0-9]*>&[0-9-]+/, "", t); gsub(/2>>?[^[:space:]]*/, "", t)
+  if (index(t, ">") || index(t, "<<")) return 0
+  # tee は引数のファイルへ書く（`tee /path/out < in` も書き込みに失敗しうる）ので表示にしない
+  if (w == "tee") return 0
+  if (is_fmt_word(w)) return 1
+  if (w != "git") return 0
+  rest = s
+  sub(/^[^[:space:]]+/, "", rest)
+  while (rest ~ /^[[:space:]]+-/) {
+    if (rest ~ /^[[:space:]]+-[Cc][[:space:]]+[^[:space:]]+/) sub(/^[[:space:]]+-[Cc][[:space:]]+[^[:space:]]+/, "", rest)
+    else sub(/^[[:space:]]+-[^[:space:]]*/, "", rest)
+  }
+  return (rest ~ /^[[:space:]]+status([[:space:]]|$)/)
 }
 # 名簿のゲート（既定の run-all.sh と導入先の宣言）の起動か。背景実行かどうかに関わらない判定
 # （静的走査と前景の hook はこれだけを起動に数える）。
@@ -399,6 +455,56 @@ function is_prep_launch(s,   w) {
   if (w ~ /^(cat|tee)$/ && index(s, "<<")) return 1
   return 0
 }
+# 論理行 m（伏せた版）にブロック（サブシェル・グループ・制御構文・関数定義）や、終了コードの意味を変える前置き
+# の印があれば blk_seen を立てる。印は括弧・波括弧（位置に関わらず。`${var}` の展開は除く。置換の `$( … )` は
+# strip_subst が伏せ済み）と、空白で区切った語が予約語（if / then / else / elif / fi / for / while / until /
+# select / do / done / case / esac / function / time / coproc と、終了時に終了コードを書き換えうる trap）であるもの、区間の先頭の `!`（終了コードを反転する。
+# `[ ! -d x ]` の `!` は test の演算子なので数えない — 先頭の `!` の前に置ける語は time / if / while 等の印だけ）。
+# 予約語の位置（命令の位置か引数か）は
+# 見ない — 位置を読み分けると、`time {` や引数の `echo done` のように読み違えた分だけ印を取りこぼし、PR の
+# クロスモデルレビューが 5 巡にわたってそこから偽の緑を示した。印は多めに取る側（= 修正前と同じく止める側）へ
+# 倒し、引数の `done` / `{h}` の後の平坦な fail-fast まで止めるのは受け入れる。深さも数えない — analyze が
+# 「単位の中で一度でも印が出たか」（blk_ever）を持ち越し、failfast_tail はそれ以降の行を例外にしない。
+function blk_scan(m,   k, arr, i, t) {
+  gsub(/[$][{][^}]*[}]/, "_", m)
+  blk_seen = (m ~ /[(){}]/)
+  k = split(m, arr, /[[:space:];&|]+/)
+  # coproc は文字クラスで綴る — env-branch-contract は行をまたぐ引用符の 2 行目以降を引用符の外と読み（既知の
+  # 限界）、この awk 本体の語を能力層の外の環境分岐と数える。照合する語は coproc のまま変わらない
+  for (i = 1; i <= k; i++) if (arr[i] ~ /^(if|then|else|elif|fi|for|while|until|select|do|done|case|esac|function|time|copro[c]|trap)$/) blk_seen = 1
+  k = split(m, arr, /[;&|]+/)
+  for (i = 1; i <= k; i++) { t = arr[i]; sub(/^[[:space:]]+/, "", t); if (t ~ /^!([[:space:]]|$)/) blk_seen = 1 }
+}
+# `<ゲート> || exit N`（N は 0 以外の数字の literal。256 の倍数は 0 へ丸まるので除く）だけの平坦な行か。
+# `||` の右辺はゲートが失敗したときだけ走り、プロセスは非 0 で終わるので、赤は赤のまま外へ出る
+# （緑はゲートの 0 のまま次へ進む）。fail-fast の準備の行（`git checkout -- <file> || exit 1` /
+# `[ -d "$ROOT" ] || exit 9`）を握り潰しと取り違えて止めていた（Issue `#2813`）。
+# 例外にするのは、exit がシェル自体を終えると字面から言える最小の形だけにする — ゲートの直後が `||` で、
+# 右辺が素の `exit N` だけ。次はどれも従来どおり握り潰しとして止める:
+#   - 単位（stdin / ファイル / フェンス）の中で、この行かそれより前の行にブロックの印が一度でも出た行
+#     （blk_ever。blk_scan）。サブシェル `( … )`・パイプや末尾の `&` に繋いだグループやループの本体の中の exit は、
+#     そのサブシェルだけを終えて親は続行する（`( gate || exit 1; )` ⏎ `echo done`、`{` ⏎ `gate || exit 1` ⏎
+#     `} | tee log`、`cat list | while …; do gate || exit 1; done`）。最初の印より前の行は、どのブロックにも
+#     囲まれていないと字面から言える。PR のクロスモデルレビューがスコープ越えの偽の緑を 4 巡続けて示した
+#     （括弧・パイプ・case の分岐のパターン・引数の予約語での深さの読み違え）ので、深さを数えずにこの 1 規則へ
+#     絞った（ブロックの後の平坦な fail-fast や、パイプに繋がない if / for の本体も止める側 = 修正前と同じ）
+#   - ゲートの区間がパイプの手前の段にある（`gate | tail || exit 1`。呼び出し側）、ゲートと `||` の間に
+#     別の区間がある（`gate1 && gate2 || exit 1` / `gate1 && gate2 | tail || exit 1`）
+#   - `exit` がラッパ越し（`|| env exit 1`。exit は組み込みなので env からは起動できず、続行する）。
+#     strip_prefix を通さず生の区間で照合する
+#   - 末尾の `&` で並び全体を背景へ回す形（`gate || exit 1 &`）
+function failfast_tail(segs, seps, gi, n,   t, v) {
+  if (n != gi + 1 || seps[gi] != "||") return 0
+  if (seps[n] == "&") return 0
+  if (blk_ever) return 0
+  t = segs[n]
+  sub(/^[[:space:]]+/, "", t)
+  sub(/[[:space:]]+$/, "", t)
+  if (t !~ /^exit[[:space:]]+[0-9]+$/) return 0
+  v = t
+  sub(/^exit[[:space:]]+/, "", v)
+  return ((v + 0) % 256 != 0)
+}
 # パイプの**手前の段**にゲート起動があるか（`bash tests/run-all.sh 2>&1 | tail -20` の形）。
 function pipe_head_has_gate(s,   k, arr, i) {
   if (s !~ /[|]/) return 0
@@ -418,7 +524,7 @@ function is_silent_tail(s,   w, rest) {
   sub(/^.*\//, "", w)
   # 診断（echo / printf）に加えて、**裸の出力整形コマンド**も成否を運ばない
   # （`gate > log; tail -25 log` の形。`is_pipe` が持つ集合と同じものを終端側でも見る）。
-  if (w ~ /^(echo|printf|head|tail|less|more|cat|tee|wc)$/) return 1
+  if (w == "echo" || w == "printf" || is_fmt_word(w)) return 1
   # 赤を消す最短手そのもの。診断文が「抜け道も塞ぐ」と書く以上、実際に塞ぐ。
   if (w ~ /^(true|:)$/) return 1
   if (w == "exit") {
@@ -469,6 +575,8 @@ function gate_swallowed(m,   segs, seps, n, i, gi) {
   # (a) ゲートがパイプの手前の段にある = rc は既に落ちている。
   if (pipe_head_has_gate(segs[gi])) return 1
   if (gi == n) return 0
+  # (c) `<ゲート> || exit N`（N は 0 以外）は失敗を非 0 のまま外へ出す fail-fast の形（failfast_tail）
+  if (failfast_tail(segs, seps, gi, n)) return 0
   # (b) ゲート以降の区切り子に `&&` 以外が混ざっていれば落ちる。
   for (i = gi; i < n; i++) if (seps[i] != "&&") return 1
   return 0
@@ -562,7 +670,7 @@ function var_event(line, var,   m0, m1, i, n, c, k, st, seg0, seg1, w, a, re, co
   }
   return ow ? 2 : 0
 }
-function track_gate(line, start, m, swallowed,   segs, seps, n, n0, i, gi, last, v, only_and, t, ev) {
+function track_gate(line, start, m, swallowed,   segs, seps, n, n0, i, gi, last, v, only_and, t, ev, q) {
   if (ENVIRON["ff_exit_code_any_launch"] != "1" && g_state == 0 && g_pvar == "" && consumer_gate_n == 0 && index(m, "run-all.sh") == 0) return
   n0 = split_segments(m, segs, seps)
   gi = 0
@@ -595,6 +703,20 @@ function track_gate(line, start, m, swallowed,   segs, seps, n, n0, i, gi, last,
     if (ev == 2) print g_start ":gate-exit-dropped:" g_line
     if (ev != 0) g_state = 0
   }
+  if (g_state == 3) {
+    # 準備の行の rc を、起動の無い行越しに引き継ぎ先の起動まで待っている（`$?` はもう準備の rc ではない）。
+    # 起動の行が来れば引き継ぐ。`$?` を読まない起動の無い行は待ち続ける（ブロック境界の行は冒頭の 0) で
+    # 戻るので状態 3 のまま）。`$?` を読む行は、準備ではない行の rc を準備の rc として読む形なので、
+    # 準備の rc を落とした形として報告する。引き継ぎ先が来ないまま単位が終われば、unit_end が
+    # 状態 0 / 1 以外の持ち越しとして準備の行を報告する。
+    # 起動の行でも、起動までの区間（`[ $? -eq 0 ] || exit 1` の `[` 自身を含む）が `$?` を読むなら、
+    # 準備ではない行の rc を準備の rc として読む形なので引き継がない（PR のクロスモデルレビュー 2 巡目）
+    q = 0
+    for (i = 1; i <= gi; i++) if (segs[i] ~ /[$][?]/) q = 1
+    if (gi > 0 && !q) g_state = 0
+    else if (gi == 0 && mask(line, 1) !~ /[$][?]/) return
+    else { print g_start ":gate-exit-dropped:" g_line; g_state = 0 }
+  }
   if (g_state == 1) {
     # `$?` を持ち越している。この行の先頭区間で読まなければ失われる（後段では読めない）。
     v = capture_var(segs[1])
@@ -618,6 +740,14 @@ function track_gate(line, start, m, swallowed,   segs, seps, n, n0, i, gi, last,
       # 名指しして止めた）。準備でない起動（検査・名簿のゲート）の rc は、後続の行が何であれ
       # 従来どおり dropped にする。
       g_state = 0
+    } else if (ENVIRON["ff_exit_code_any_launch"] == "1" && g_prep && gi == 0 && mask(line, 1) !~ /[$][?]/) {
+      # 準備の行の rc を持ち越している最中の、起動の無い行（`cd out || exit 2` / 代入 / set / 表示の
+      # `git status` / echo）は引き継ぎを打ち切らない。準備の rc はこの行で失われるが、次の起動へ引き継がせて
+      # よい rc なので、引き継ぎ先の起動が来るまで待つ（Issue `#2813`。`cp a b` ⏎ `git status --short` ⏎
+      # ゲートも止めない）。`$?` はもう準備の rc ではないので `$?` の持ち越し（g_state=1）とは別の状態 3 に
+      # する — 1 のままにすると、後続の `rc=$?` が cd の rc を準備の rc として捕獲し、`exit $rc` で 0 を返す
+      # 本文を通す（PR のクロスモデルレビュー）
+      g_state = 3
     } else {
       print g_start ":gate-exit-dropped:" g_line
       g_state = 0
@@ -702,6 +832,9 @@ function analyze(line, start,   m, k, arr, i, hit, swallowed) {
   # 止める側へ倒す）
   line_subst = (index(line, "$(") > 0 || index(line, "`") > 0)
   m = strip_subst(mask(line))
+  # この単位でブロックの印が一度でも出たか（この行を含む。failfast_tail が見る）
+  blk_scan(m)
+  if (blk_seen) blk_ever = 1
   sub(/[[:space:]]*(;|&&|[|][|])[[:space:]]*$/, "", m)
   k = split(m, arr, SEP)
   hit = 0
@@ -833,7 +966,7 @@ BEGIN {
     if (prefix != "") consumer_gates[++consumer_gate_n] = prefix
   }
 }
-FNR == 1 { unit_close(); buf = ""; prev_pipe = 0; in_block = 0; g_state = 0; g_pvar = ""; hd_n = 0; hd_cnt = 0; pipefail_on = 0 }
+FNR == 1 { unit_close(); buf = ""; prev_pipe = 0; in_block = 0; g_state = 0; g_pvar = ""; hd_n = 0; hd_cnt = 0; pipefail_on = 0; blk_ever = 0 }
 { sub(/\r$/, "") }
 mode != "md" { feed($0, FNR); next }
 in_block == 0 {
@@ -848,7 +981,7 @@ in_block == 0 {
     sub(/[[:space:]].*$/, "", info)
     in_block = 1
     is_bash = (info ~ /^(bash|sh|shell|zsh)$/) ? 1 : 0
-    buf = ""; prev_pipe = 0; g_state = 0; g_pvar = ""; hd_n = 0; hd_cnt = 0; pipefail_on = 0
+    buf = ""; prev_pipe = 0; g_state = 0; g_pvar = ""; hd_n = 0; hd_cnt = 0; pipefail_on = 0; blk_ever = 0
   }
   next
 }

@@ -1,0 +1,2 @@
+npm ci && npm test 2>&1 | tail -20 || exit 1
+echo "EXIT=$?"

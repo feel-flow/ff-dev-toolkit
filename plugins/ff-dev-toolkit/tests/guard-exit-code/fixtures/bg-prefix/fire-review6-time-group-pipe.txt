@@ -1,0 +1,4 @@
+time {
+bash /repo/plugins/ff-dev-toolkit/tests/run-all.sh || exit 1
+} | cat
+echo "EXIT=$?"

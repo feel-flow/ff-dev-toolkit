@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# 空振り検出: 参照行の書き忘れ判定（Issue `#2823`）を旧 no-target 分岐へ戻す変異で、本文・件名・タイトルの候補（B6a〜c）と件名が読めない入力（B6d）がすべて rc 0 となり赤。候補なし（B6）は緑のまま（2026-11-17 macOS 実測）。
+# 空振り検出: 同じ Issue のレビュー対応前へ実装だけ戻すと、数字だけの CSS 色を含む候補なし（B6）と、複数候補で番号を選ばない案内（B6e）が赤（B まで 55/2、修正後 57/0、2026-11-17 macOS 実測）。
+# 空振り検出: CSS 除外で行末も許すと、背景 Issue の参照を見逃し B6a2 が赤（B まで 57/1、修正後 58/0、2026-11-17 macOS 実測）。
 # 空振り検出: PR の mergeable / mergeStateStatus 判定（Issue `#2788`、mergeable-cases.sh の MG 15 件）は対照 493/0。PR_FIELDS から mergeable,mergeStateStatus を落とす変異（gh pr view --json 射影ラッパで検出）は 483/10、conflict 条件を外す変異は 487/6、DIRTY 分岐を外す変異は 492/1、UNKNOWN 再読込を外す変異は 488/5、再読込回数を 1 回へ減らす変異は 491/2、!= MERGEABLE 停止を外す変異は 492/1、pr_snapshot に mergeable を足す変異は 492/1、初回・再読込側の CR 除去を外す変異（MG10）は各 492/1 で各赤（SURVIVED 0）、無害コメント対照は 493/0（2026-11-15 macOS 実測、bash 構文 rc 0）。
 # 空振り検出: 専用セキュリティゲートの記録（Issue `#2684`、security-record-cases.sh の R subset 34 件）を足した通常は421/0。scripts/lib/finish-precheck-security-record.sh と finish-precheck.sh（ff_precheck_pr_files）への単独変異 20 種は、欠落でも止めない 19件（R1/R3×12/R3b/R6/R6b/R6e/R7/R8）、最初の一致で読むのをやめる 1件（R2b。本文 112979 B で SIGPIPE）、値のどこかの語で認める 5件（R3）、行頭の検査を外す 1件（R3 の地の文の記入例）、引用（>）を行頭に許す 1件（R3d。引用の中のフェンスの記入例）、「未実施」を認める 1件（R3）、括弧で値の頭を切らない 8件（R2×5/R2b/R3c/R6c）、可視行の絞り込みを外す 1件（R3b）、コロン必須を外す 1件（R3）、判定不能を該当なしへ倒す 4件（R6/R6b/R6c/R6e）、off を無視する 17件（R5/R5b/R6d と P 系）、変更 0 件を判定できたことにする 1件（R6e）、fetch の案内を外す 1件（R6b）、先着の理由を上書きする 1件（R8）、停止理由を blocked_reason へ置かない 19件（欠落でも止めないと同じ）、off の回に理由を出さない 1件（R6d）、読めない回に review-route.sh を呼ばない 2件（R6d/P6c）、変更ファイルの CR を残す 1件（P2d3）、100件の一覧を信じる 8件（R6b/R6c/R6d/R7 と P 系）、常に git で読む 55件（R7b ほか）で赤（2026-11-07 macOS実測、全変異のbash構文rc0）。初版（R 23 件）は主担当の印なし・CLAUDECODE・CODEX_THREAD_ID・GROK_AGENT の 4 通りで 410/0 を確認した。針が当たらない入力の既定: 変更 0 件は R6e（unknown・記録要求）、ルータ不在は scripts/review-route.sh を判定行を出さないスタブ（rc 0 と rc 3）へ差し替えた複製で 75 件赤（precheck の全呼び出しが SECURITY_SENSITIVE=unknown・SECURITY_UNKNOWN_REASON=review-route.sh の判定行…がありません（rc=N: stderr）・missing になり、R4 / R5 の off も通らない）、本文を読めない回は PR の JSON を読めない回なのでこの検査より前に rc 2（B1 / B2 / B2b）。既存の P 系は fixture の migrations/*.sql が分類に当たるので MULTI_AGENT_SECURITY_REVIEW=off で隔離している。
 # 空振り検出: 工数根拠の除外（Issue `#2647`）で、end が begin より前でも broken にしない変異は P1k が赤（成功 476 / 失敗 1。根拠 2 行が POST_MERGE_EXCLUDED になり POST_MERGE_GATE=clear）。開いた HTML コメントの中の begin をマーカーにする変異は P1y2 が赤（成功 476 / 失敗 1。根拠行が POST_MERGE_EXCLUDED になり POST_MERGE_GATE=clear）。正しい実装は 477/0（2026-11-11 Linux、gawk 5.2.1。両変異とも bash 構文は通り、赤は狙った 1 件だけ）。
@@ -630,7 +633,7 @@ write_pr_json() {
   [ -z "${PR_FILES_JSON:-}" ] || files_json="$PR_FILES_JSON"
   jq -n --arg body "$1" --arg head "$HEAD_OID" --arg base "$BASE_OID" --argjson rollup "$2" --argjson number "$PRN" --argjson cross "${PR_CROSS:-false}" \
     --argjson files "$files_json" \
-    --arg title "feat(#${PRN}): x" --arg headline "${PR_HEADLINE:-fix: #${REFN} x}" --arg cbody "${PR_COMMIT_BODY:-body}" \
+    --arg title "${PR_TITLE:-feat(#${PRN}): x}" --arg headline "${PR_HEADLINE:-fix: #${REFN} x}" --arg cbody "${PR_COMMIT_BODY:-body}" \
     --arg head_ref "${PR_HEAD_REF:-feature/#7-x}" --arg base_ref "${PR_BASE_REF:-develop}" \
     --arg mergeable "${PR_MERGEABLE:-MERGEABLE}" --arg merge_state "${PR_MERGE_STATE_STATUS:-CLEAN}" '{
     number: $number, state: "OPEN", isDraft: false, headRefName: $head_ref, headRefOid: $head, baseRefOid: $base, isCrossRepository: $cross,
@@ -720,7 +723,9 @@ else
 fi
 
 # 対象 Issue が無い（Closes 群・Refs 群とも空）: checks 登録があっても待たず、以降を実行しない
-write_pr_json "no issue reference" '[{"name":"lint","conclusion":"SUCCESS"}]'
+PR_TITLE="chore: update # heading" PR_HEADLINE="chore: trim heading" \
+  write_pr_json "color: #${MISSN}; background-color: #${MISSN}${MISSN}; CSS: #${MISSN}abc; section: guide.md#${MISSN}" \
+    '[{"name":"lint","conclusion":"SUCCESS"}]'
 : >"$STUB_LOG"
 run_finish "$WORK" precheck 7
 if [ "$RC" -eq 0 ] && has_line "$OUT" "PRECHECK=no-target" && ! has_line "$OUT" "CLOSES=" && ! has_line "$OUT" "REFS=" \
@@ -729,6 +734,57 @@ if [ "$RC" -eq 0 ] && has_line "$OUT" "PRECHECK=no-target" && ! has_line "$OUT" 
   ok "B6: 対象 Issue が無ければ PRECHECK=no-target で rc 0、checks の待機・鮮度照合・merge コマンド生成へ進まない"
 else
   bad "B6: 対象なしの扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+
+assert_missing_issue_link() { # <case> <expected number>
+  local case_id="$1" issue_no="$2"
+  : >"$STUB_LOG"
+  run_finish "$WORK" precheck "$PRN"
+  if [ "$RC" -eq 1 ] && has_line "$OUT" "PRECHECK=blocked" && ! has_line "$OUT" "PRECHECK=no-target" \
+    && has_text "$ERR" "候補があります（#${issue_no}）" \
+    && has_text "$ERR" "Refs #${issue_no} または Closes #${issue_no}" \
+    && ! has_line "$OUT" "CLOSES=" && ! has_line "$OUT" "REFS=" && ! has_line "$OUT" "AC_UNCHECKED=" \
+    && ! has_line "$OUT" "CHECKS=" && ! has_line "$OUT" "REVIEW_THREADS=" && ! has_line "$OUT" "FRESH_STATUS=" \
+    && ! has_text "$OUT" "MERGE_COMMAND_BEGIN" && ! awk '/^(pr checks|issue |api )/{f=1} END{exit f ? 0 : 1}' "$STUB_LOG"; then
+    ok "${case_id}: 候補を対象に入れず、参照行の追記を案内して止まる"
+  else
+    bad "${case_id}: 参照行の不足を止められない（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+}
+
+PR_TITLE="chore: update heading" PR_HEADLINE="chore: trim heading" \
+  write_pr_json "#${REFN}の AC を一部対応。補足は #${REFN} を参照。" '[{"name":"lint","conclusion":"SUCCESS"}]'
+assert_missing_issue_link B6a "$REFN"
+PR_TITLE="chore: update heading" PR_HEADLINE="chore: trim heading" \
+  write_pr_json "Background: #${MISSN}" '[]'
+assert_missing_issue_link B6a2 "$MISSN"
+PR_TITLE="chore: update heading" PR_HEADLINE="fix: trim heading (Refs #${REFN})" \
+  write_pr_json "no issue reference" '[]'
+assert_missing_issue_link B6b "$REFN"
+PR_TITLE="docs: #${MISSN} の補足" PR_HEADLINE="docs: trim heading" \
+  write_pr_json "no issue reference" '[]'
+assert_missing_issue_link B6c "$MISSN"
+
+# 複数候補のうちどの番号が対象かは担当が確認する。先頭番号を追記例へ差し込まない。
+PR_TITLE="docs: #${MISSN} の補足" PR_HEADLINE="docs: trim heading" \
+  write_pr_json "#${REFN} の AC を一部対応" '[]'
+run_finish "$WORK" precheck "$PRN"
+if [ "$RC" -eq 1 ] && has_line "$OUT" "PRECHECK=blocked" \
+  && has_text "$ERR" "候補があります（#${REFN}, #${MISSN}）" \
+  && has_text "$ERR" "Refs #N または Closes #N" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "B6e: 複数の番号を表示し、どれも追記例には採用しない"
+else
+  bad "B6e: 複数候補の案内が違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+
+# 走査できない応答を「候補なし」へ倒さない（gh 経路）。
+jq '.title = "docs: update heading" | .body = "" | .commits[0].messageHeadline = null' "$TMP/pr.json" >"$TMP/pr-bad-headline.json"
+STUB_PR_JSON="$TMP/pr-bad-headline.json" run_finish "$WORK" precheck "$PRN"
+if [ "$RC" -eq 2 ] && has_text "$ERR" "Issue 参照を確認できません" \
+  && ! has_line "$OUT" "PRECHECK=no-target" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "B6d: コミット件名が読めない応答は検査不成立"
+else
+  bad "B6d: コミット件名が読めない応答の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
 fi
 write_pr_json "Closes #${PRN}" '[]'
 : >"$STUB_LOG"
@@ -1040,7 +1096,7 @@ else
   bad "T5: 解釈不能の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
 fi
 # T6: 対象 Issue が無い PR ではスレッドを読まない（no-target は早期終了）
-write_pr_json "no issue reference" '[]'
+PR_TITLE="chore: update heading" PR_HEADLINE="chore: trim heading" write_pr_json "no issue reference" '[]'
 : >"$STUB_LOG"
 STUB_THREADS_JSON="$TMP/threads.json" run_finish "$WORK" precheck 7
 if [ "$RC" -eq 0 ] && has_line "$OUT" "PRECHECK=no-target" && ! has_line "$OUT" "REVIEW_THREADS=" \
@@ -2406,7 +2462,11 @@ else
   bad "H15: 検証が赤でも保留 / index が変わっている（add rc=${ADD_RC}）: ${OUT} / staged=$(git -C "$KW" diff --cached --name-only | tr '\n' ' ')"
 fi
 # add --claim: stage するのは文書・claim・`--` 以降の明示 pathspec だけ（オプションの値を path と取り違えない）
-printf '#!/usr/bin/env bash\nexit 0\n' >"$ROOT/scripts/check-version-claims.sh"
+# 同じ回で、生成（update-version-claim.sh）と検証（check-version-claims.sh）へ同じ --root が渡ることも見る
+# （Issue `#2818`。生成側だけ cwd の repo で決めると、別の checkout の文書を見たまま検証だけが赤になる）
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" >"%s"\nd=""; while [ $# -gt 0 ]; do case "$1" in --document) d="$2"; shift 2 ;; *) shift ;; esac; done\nmkdir -p "$(dirname ".version-claims/$d.claim")"; printf "stub\\n" >".version-claims/$d.claim"\n' "$TMP/uvc-args" >"$ROOT/scripts/update-version-claim.sh"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" >"%s"\nexit 0\n' "$TMP/cvc-args" >"$ROOT/scripts/check-version-claims.sh"
+rm -f "$TMP/uvc-args" "$TMP/cvc-args"
 printf 'stray\n' >"$KW/docs/stray.txt"
 run_finish "$KW" knowledge-commit add --claim docs/08-knowledge/OBSERVATIONS.md --source obs --id OBS-7 --summary "要約7" --category docs -- docs/08-knowledge/OBSERVATIONS.md
 STAGED="$(git -C "$KW" diff --cached --name-only | sort | tr '\n' ' ')"
@@ -2415,6 +2475,14 @@ if [ "$RC" -eq 0 ] && has_line "$OUT" "KNOWLEDGE_PENDING=1" \
   ok "H17: add --claim は文書・claim・明示 pathspec だけを stage する（--category docs の値で docs/ を stage しない）"
 else
   bad "H17: stage の範囲が違う（rc=${RC}）: staged=${STAGED} / ${OUT} / ${ERR}"
+fi
+H17_ROOT="$(cd "$KW" && pwd -P)"
+H17_UVC_ROOT="$(awk 'prev == "--root" { print; exit } { prev = $0 }' "$TMP/uvc-args" 2>/dev/null || true)"
+H17_CVC_ROOT="$(awk 'prev == "--root" { print; exit } { prev = $0 }' "$TMP/cvc-args" 2>/dev/null || true)"
+if [ -n "$H17_UVC_ROOT" ] && [ "$H17_UVC_ROOT" = "$H17_CVC_ROOT" ] && [ "$(cd "$H17_UVC_ROOT" 2>/dev/null && pwd -P)" = "$H17_ROOT" ]; then
+  ok "H17b: add --claim は claim の生成と検証へ同じ --root（作業中の repo の最上位）を渡す"
+else
+  bad "H17b: 生成と検証へ渡す --root が揃っていない（生成=${H17_UVC_ROOT:-なし} 検証=${H17_CVC_ROOT:-なし} 期待=${H17_ROOT}）"
 fi
 run_finish "$KW" knowledge-commit discard
 git -C "$KW" reset -q >/dev/null 2>&1; rm -f "$KW/docs/stray.txt"

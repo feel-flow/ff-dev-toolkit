@@ -1,0 +1,2 @@
+cat p1.json p2.json > /tmp/merged.json
+echo "EXIT=$?"

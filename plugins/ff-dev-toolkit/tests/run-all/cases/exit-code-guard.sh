@@ -132,6 +132,69 @@ exit \${RC:-0}"
 EXITCODE_PROBE_GATE_BARE_EXIT="bash tests/run-all.sh > log 2>&1
 exit"
 EXITCODE_PROBE_GATE_PIPE_BARE_EXIT='bash tests/run-all.sh 2>&1 | tail -20; exit'
+# Issue `#2813`: ゲートの直後が `|| exit N`（N は 0 以外）だけの平坦な行は、失敗を非 0 のまま外へ出す fail-fast の形。
+# `exit 0` / 256 の倍数 / パイプの手前の段 / ゲートと `||` の間の区間 / `;` / 単独の `&` は従来どおり握り潰し
+EXITCODE_PROBE_GATE_OR_EXIT1='bash tests/run-all.sh > log 2>&1 || exit 1'
+EXITCODE_PROBE_GATE_AND_OR_EXIT='bash tests/run-all.sh > log 2>&1 && FF_RUN_ALL_FULL=1 bash tests/run-all.sh > log2 2>&1 || exit 3'
+EXITCODE_PROBE_GATE_OR_EXIT0='bash tests/run-all.sh > log 2>&1 || exit 0'
+EXITCODE_PROBE_GATE_OR_EXIT256='bash tests/run-all.sh > log 2>&1 || exit 256'
+EXITCODE_PROBE_GATE_PIPE_OR_EXIT1='bash tests/run-all.sh 2>&1 | tail -20 || exit 1'
+EXITCODE_PROBE_GATE_SEMI_EXIT1='bash tests/run-all.sh > log 2>&1; exit 1'
+EXITCODE_PROBE_GATE_AMP_OR_EXIT1='bash tests/run-all.sh > log 2>&1 & sleep 1 || exit 1'
+# PR のレビューが示した偽の緑: サブシェルの中の exit・`&&` の後続区間のパイプ・ラッパ越しの exit・末尾の `&`。
+# ブロック（グループ `{ … }` を含む）を含む行は、パイプや `&` に繋いだ形と字面で区別しないので止める
+EXITCODE_PROBE_GATE_SUBSHELL_OR_EXIT1='( bash tests/run-all.sh > log 2>&1 || exit 1 )
+echo done'
+EXITCODE_PROBE_GATE_SUBSHELL_OR_EXIT1_SEMI='( bash tests/run-all.sh > log 2>&1 || exit 1; )
+echo done'
+EXITCODE_PROBE_GATE_AND_PIPE_OR_EXIT1='bash tests/run-all.sh > log 2>&1 && bash tests/run-all.sh 2>&1 | tail -20 || exit 1'
+EXITCODE_PROBE_GATE_WRAP_EXIT1='bash tests/run-all.sh > log 2>&1 || env exit 1
+echo done'
+EXITCODE_PROBE_GATE_OR_EXIT1_BG='bash tests/run-all.sh > log 2>&1 || exit 1 &'
+EXITCODE_PROBE_GATE_BRACE_OR_EXIT1='{ bash tests/run-all.sh > log 2>&1 || exit 1; }
+echo done'
+# 複数行にまたがるサブシェルの中の exit もサブシェルだけを終える（2 巡目のレビュー）。case の分岐の `a)` は
+# 深さに数えない（3 巡目のレビュー以降は、ブロックが一度出た後の行を例外にしない規則で扱う）
+EXITCODE_PROBE_GATE_SUBSHELL_MULTI_OR_EXIT1='(
+bash tests/run-all.sh > log 2>&1 || exit 1
+)
+echo done'
+EXITCODE_PROBE_GATE_CASE_THEN_OR_EXIT1='case "$x" in
+a) echo a ;;
+esac
+bash tests/run-all.sh > log 2>&1 || exit 1
+echo done'
+# パイプに繋いだグループ・ループの本体の中の exit も、その段のサブシェルだけを終える（例外を平坦な行に絞った後の再点検）
+EXITCODE_PROBE_GATE_GROUP_PIPE_OR_EXIT1='{
+bash tests/run-all.sh || exit 1
+} 2>&1 | tee log
+echo done'
+EXITCODE_PROBE_GATE_WHILE_PIPE_OR_EXIT1='cat list | while read f; do
+bash tests/run-all.sh "$f" || exit 1
+done
+echo done'
+# trap 'exit 0' EXIT は exit 1 を 0 へ書き換えるので、trap の後の行は例外にしない（6 巡目のレビュー）
+EXITCODE_PROBE_GATE_TRAP_THEN_OR_EXIT1='trap '"'"'exit 0'"'"' EXIT
+bash tests/run-all.sh > log 2>&1 || exit 1
+echo done'
+# 波括弧の前に time を置いた形もブロック（5 巡目のレビュー）
+EXITCODE_PROBE_GATE_TIME_GROUP_PIPE_OR_EXIT1='time {
+bash tests/run-all.sh || exit 1
+} | cat
+echo done'
+# 引数の予約語（`echo done`）はブロックの深さを打ち消さない（4 巡目のレビュー）
+EXITCODE_PROBE_GATE_SUBSHELL_ARG_KEYWORD_OR_EXIT1='(
+echo done
+bash tests/run-all.sh || exit 1
+)
+echo done'
+# case の分岐のパターンの `)` は case の深さを打ち消さない（3 巡目のレビュー）
+EXITCODE_PROBE_GATE_CASE_PIPE_OR_EXIT1='case x in
+x)
+bash tests/run-all.sh || exit 1
+;;
+esac | cat
+echo done'
 EXITCODE_PROBE_GATE_ELIF="if [ x = y ]; then
   bash tests/run-all.sh > log 2>&1
 elif [ a = b ]; then
@@ -408,6 +471,69 @@ exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_DONE_REDIR" nohit "" \
 exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_PIPE_BARE_EXIT" hit gate-exit-swallowed \
   "終了コード検出器が パイプ段のゲート + 裸の exit を検出できる（self-test）" \
   "終了コード検出器が パイプ段のゲート + 裸の exit を取りこぼす — 裸の exit が運ぶのはパイプライン全体の rc"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_OR_EXIT1" nohit "" \
+  "終了コード検出器が fail-fast の \`|| exit 1\` を誤検出しない（self-test）" \
+  "終了コード検出器が fail-fast の \`|| exit 1\` を握り潰しと見ている — 失敗は非 0 のまま外へ出る形まで止める"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_AND_OR_EXIT" hit gate-exit-swallowed \
+  "終了コード検出器が \`gate1 && gate2 || exit 3\` を fail-fast の例外にしない（ゲートの直後の \`||\` だけを例外にする。self-test）" \
+  "終了コード検出器が ゲートと \`||\` の間の区間を許している — 例外はゲートの直後の \`|| exit N\` だけの平坦な行に限る"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_OR_EXIT0" hit gate-exit-swallowed \
+  "終了コード検出器が \`|| exit 0\` を検出できる（self-test）" \
+  "終了コード検出器が \`|| exit 0\` を fail-fast と見ている — 赤を 0 へ変える形が素通りする"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_OR_EXIT256" hit gate-exit-swallowed \
+  "終了コード検出器が \`|| exit 256\`（0 へ丸まる） を検出できる（self-test）" \
+  "終了コード検出器が \`|| exit 256\` を fail-fast と見ている — 256 の倍数は終了コード 0 になる"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_PIPE_OR_EXIT1" hit gate-exit-swallowed \
+  "終了コード検出器が パイプ段のゲート + \`|| exit 1\` を検出できる（self-test）" \
+  "終了コード検出器が パイプ段のゲート + \`|| exit 1\` を fail-fast と見ている — \`||\` が見るのは tail の rc"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_SEMI_EXIT1" hit gate-exit-swallowed \
+  "終了コード検出器が \`; exit 1\`（ゲートの成否と無関係に 1） を検出できる（self-test）" \
+  "終了コード検出器が \`; exit 1\` を fail-fast と見ている — \`||\` 以外の区切り子まで緩めている"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_AMP_OR_EXIT1" hit gate-exit-swallowed \
+  "終了コード検出器が \`gate & x || exit 1\` を検出できる（self-test）" \
+  "終了コード検出器が 単独の \`&\` の背後の \`|| exit 1\` を fail-fast と見ている — \`||\` が見るのは x の rc"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_SUBSHELL_OR_EXIT1" hit gate-exit-swallowed \
+  "終了コード検出器が サブシェルの中の \`|| exit 1\` を検出できる（self-test）" \
+  "終了コード検出器が \`( gate || exit 1 )\` を fail-fast と見ている — exit はサブシェルだけを終え、親は 0 で終わる"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_SUBSHELL_OR_EXIT1_SEMI" hit gate-exit-swallowed \
+  "終了コード検出器が サブシェルの中の \`|| exit 1;\` を検出できる（self-test）" \
+  "終了コード検出器が \`( gate || exit 1; )\` を fail-fast と見ている — exit はサブシェルだけを終え、親は 0 で終わる"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_AND_PIPE_OR_EXIT1" hit gate-exit-swallowed \
+  "終了コード検出器が \`gate1 && gate2 | tail || exit 1\` を検出できる（self-test）" \
+  "終了コード検出器が \`&&\` の後続区間のパイプを見ていない — \`||\` が見るのは tail の rc"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_WRAP_EXIT1" hit gate-exit-swallowed \
+  "終了コード検出器が ラッパ越しの \`|| env exit 1\` を検出できる（self-test）" \
+  "終了コード検出器が \`|| env exit 1\` を fail-fast と見ている — exit は組み込みなので env からは起動できず続行する"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_OR_EXIT1_BG" hit gate-exit-swallowed \
+  "終了コード検出器が 末尾の \`&\` で背景へ回した \`|| exit 1\` を検出できる（self-test）" \
+  "終了コード検出器が \`gate || exit 1 &\` を fail-fast と見ている — 並び全体が背景へ回り、その場の rc は 0"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_BRACE_OR_EXIT1" hit gate-exit-swallowed \
+  "終了コード検出器が グループの中の \`|| exit 1;\` を fail-fast の例外にしない（ブロックを含む行は止める側。self-test）" \
+  "終了コード検出器が \`{ gate || exit 1; }\` を例外にしている — パイプや \`&\` に繋いだグループと字面で区別しない"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_SUBSHELL_MULTI_OR_EXIT1" hit gate-exit-swallowed \
+  "終了コード検出器が 複数行のサブシェルの中の \`|| exit 1\` を検出できる（self-test）" \
+  "終了コード検出器が 複数行のサブシェルの中の \`|| exit 1\` を fail-fast と見ている — exit はサブシェルだけを終える"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_GROUP_PIPE_OR_EXIT1" hit gate-exit-swallowed \
+  "終了コード検出器が パイプに繋いだ複数行のグループの中の \`|| exit 1\` を検出できる（self-test）" \
+  "終了コード検出器が \`{ ⏎ gate || exit 1 ⏎ } | tee\` を fail-fast と見ている — exit はパイプの段のサブシェルだけを終える"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_WHILE_PIPE_OR_EXIT1" hit gate-exit-swallowed \
+  "終了コード検出器が パイプに繋いだ while の本体の \`|| exit 1\` を検出できる（self-test）" \
+  "終了コード検出器が \`cat | while … do ⏎ gate || exit 1\` を fail-fast と見ている — exit はパイプの段のサブシェルだけを終える"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_TRAP_THEN_OR_EXIT1" hit gate-exit-swallowed \
+  "終了コード検出器が trap の後の \`|| exit 1\` を fail-fast の例外にしない（self-test）" \
+  "終了コード検出器が trap の後の行を例外にしている — trap 'exit 0' EXIT は exit 1 を 0 へ書き換える"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_TIME_GROUP_PIPE_OR_EXIT1" hit gate-exit-swallowed \
+  "終了コード検出器が time を前置したグループの中の \`|| exit 1\` を検出できる（self-test）" \
+  "終了コード検出器が \`time {\` の波括弧を取りこぼしている — 波括弧は位置に関わらずブロックの印にする"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_SUBSHELL_ARG_KEYWORD_OR_EXIT1" hit gate-exit-swallowed \
+  "終了コード検出器が 引数に予約語を含む複数行のサブシェルの中の \`|| exit 1\` を検出できる（self-test）" \
+  "終了コード検出器が 複数行のサブシェルの中を例外にしている — 引数の予約語の有無に関わらずブロックの後は止める"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_CASE_PIPE_OR_EXIT1" hit gate-exit-swallowed \
+  "終了コード検出器が パイプに繋いだ case の分岐の中の \`|| exit 1\` を検出できる（self-test）" \
+  "終了コード検出器が case の分岐のパターンの \`)\` で case の深さを打ち消している — 分岐の中を平坦な行と見る"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_CASE_THEN_OR_EXIT1" hit gate-exit-swallowed \
+  "終了コード検出器が ブロック（case）の後の行の \`|| exit 1\` を fail-fast の例外にしない（単位の中で一度ブロックが出たら以降は止める側。self-test）" \
+  "終了コード検出器が ブロックの後の行を例外にしている — 深さを数えずに、最初のブロックより前の行だけを例外にする"
 exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_OVERWRITE_SAMELINE" hit gate-exit-dropped \
   "終了コード検出器が 同じ行の診断参照 + 無条件上書き を検出できる（self-test）" \
   "終了コード検出器が 上書き判定を論理行全体へ当てている — 同居する診断参照で上書きを見逃す"

@@ -37,6 +37,38 @@
 # バッククォートの判定だけを消す）でそのバッククォート版の 1 件だけが素通しになることを、それぞれ
 # 反転の集合として照合する。pass-subst-multi-assign-exit.txt（同じ 1 文の rc を exit まで伝播する本文）は
 # OBS の本文ではないので BM_ALL_PASS に入れず、BP の照合だけを受ける（Issue `#2683`）。
+#
+# Issue `#2813`（導入先の観測台帳 OBS-237 Count 3）: 2 行目以降の準備の行 `<cmd> || exit N` と、ゲートの
+# 前後に置いた表示だけの行（`git status --short <file>` / `tail -n 15 <log>`）を名指して止めていた本文
+# pass-prep-or-exit-build-e2e.txt（2026-11-16 に止められた本文そのもの）と、同じ穴の隣接形 —
+# `export` ⏎ `[ -d "$ROOT" ] || exit 9`（2026-10-30 の本文の形）・`mkdir` ⏎ `cd <dir> || exit 2`・
+# `cp` ⏎ `git status --short`・1 行目の `set -uo pipefail` — を pass に置く。fire は同じ本文から `exit $rc` を
+# 落とした形（名簿外の pnpm と名簿の run-all.sh の 2 本。後者は素の exit_code_scan とも一致する）、
+# `|| exit 0` で準備の失敗を握り潰す形、準備の rc を起動の無い行越しに待って `$?` の読み・単位の終端で落とす
+# 形と、PR のレビュー（codex-cli と主担当側）が示した偽の緑 7 形（fire-review-*: サブシェルの中の exit・
+# `&&` の後続区間のパイプ・ラッパ越しの exit・cd の後の `rc=$?` を準備の rc として読む 2 形・`cat a b > c`・
+# heredoc の cat）、4 巡目の 1 形（fire-review5-*: 引数の予約語が深さを打ち消す）、5 巡目の `time {` と同じ類の
+# coproc・先頭の `!`（fire-review6-*）、6 巡目の `trap 'exit 0' EXIT` の後（fire-review7-*）と、2 巡目のレビュー（codex-cli）が示した 3 形（fire-review2-*: 複数行のサブシェル・cd の後の
+# `[ $? -eq 0 ] || exit 1`・引数のファイルへ書く tee）、その後の再点検でブロック越しに漏れた 3 形（fire-review3-*: パイプに
+# 繋いだグループ・パイプに繋いだ while の本体・`&` に繋いだグループ）を受けて、fail-fast の例外を平坦な行に絞った。
+# pass-prep-stderr-display.txt は `tail … 2>/dev/null` / `git status 2>&1` を表示のまま数えることを固定する。
+# これら新しい pass は OBS の本文ではないので BM_ALL_PASS に入れない。
+#   BM1 は Issue `#2813` の fail-fast の判定（failfast_tail）も併せて無効にする — `cd <dir> || exit 2` の
+#   本文（pass-obs468-cd-exit-review.txt）は、cd を起動に数えても fail-fast の形として通るようになった。
+#   BM2（起動から外す判定だけを無効にする）ではこの 1 件が deny へ倒れなくなったことを、反転しない側
+#   として照合する。BM4 では tail が起動でなくなったので、fire-handover-tail-after-gate.txt は「どの起動も
+#   準備とみなす」変異でもゲートの起動行を示したまま（反転しない側として照合する）。
+#   BM8〜BM23 は規則を 1 つずつ外し、BM_2813_PASS / BM_2813_FIRE の反転の集合を期待と照合する（bm_expect）:
+#   fail-fast の判定・exit 0 の除外・表示だけの区間・起動の無い行越しの引き継ぎ・状態 3（`$?` の持ち越しとの
+#   区別）・set などの組み込み・状態 3 の `$?` の判定・同じ行のブロックの除外・ゲートの直後の `||`・ラッパ越しの
+#   exit の除外・ファイルへ書く形の除外・複数行のブロックの除外・状態 3 で起動の区間が読む `$?`・tee の除外・
+#   stderr の向け先の扱い・ブロックの印に数える予約語・波括弧（BM26）・区間の先頭の `!`（BM27 / BM28）。印は語の
+#   位置を見ずに多めに取る（5 巡目の `time {` を受けて命令の位置の読み分けをやめたので、旧 BM25 は無い）。
+#   ブロックは深さを数えず「単位の中で一度でも印が出た行以降は例外にしない」（blk_ever）で扱うので、深さの
+#   規則を外す変異（旧 BM19 / BM24）は無い。case の分岐のパターンの形は run-all の静的 self-test が固定する。
+# 変異検出（2026-11-16 macOS 実測）: 検出器を Issue `#2813` の修正前（origin/develop 607494bc）へ差し替えた
+# ツリーでは、新しい pass が deny（Issue の本文は準備の行を名指す）、exit $rc を欠いた fire が準備・表示の行を
+# 名指し、変異 BM8〜BM28 の照合先の行が無いので赤になる（件数は verify.sh の空振り検出の行）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -128,7 +160,7 @@ if [ "$FIRE_N" -gt 0 ] && [ "$FIRE_N" = "$EXPECT_N" ]; then
 else
   bad "fire の fixture（${FIRE_N} 件）と expect.tsv の行（${EXPECT_N:-0} 件）が合わない"
 fi
-for want in pass-obs460- pass-obs468- pass-obs475- pass-obs484- pass-obs475-bare-cd.txt pass-obs475-ff-root-assign.txt; do
+for want in pass-obs460- pass-obs468- pass-obs475- pass-obs484- pass-obs475-bare-cd.txt pass-obs475-ff-root-assign.txt pass-prep-or-exit-build-e2e.txt; do
   # bash 3.2 の set -u は空配列の展開を unbound として落とすので、空なら空文字列へ展開する
   case " ${PASS_FILES[*]+"${PASS_FILES[*]}"} " in
     *"/$want"*) ok "pass の集合に $want がある" ;;
@@ -227,25 +259,28 @@ BM_ALL_PASS="pass-obs460-assign-wsl-gate.txt pass-obs460-cd-exit-heredoc.txt pas
 # 代入の除外（ブロックの if 行）を if (0) にし、cd / exit 等の除外の行を消す
 EXCL_AWK='index($0, "if (w ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {") { print "    if (0) {"; next } index($0, "if (w ~ /^(cd|pushd|popd|export|exit|return)$/) return 0") { next }'
 HANDOVER_AWK='index($0, "g_prep && gi > 0) {") { print "    } else if (0) {"; next }'
+# fail-fast の判定（`<ゲート> || exit N` を握り潰しと見ない。Issue `#2813`）の呼び出しを消す
+FAILFAST_AWK='index($0, "if (failfast_tail(segs, seps, gi, n)) return 0") { next }'
 
 # BM1: 背景実行の判定を修正前へ戻す（代入・cd・exit を起動から外す判定と、準備の行から後続の
-# 起動への引き継ぎを無効にする）。OBS の pass の本文がすべて deny へ倒れる
+# 起動への引き継ぎと、fail-fast の判定を無効にする）。OBS の pass の本文がすべて deny へ倒れる
 M="$TEST_TMP/bm1"
-if make_mutant "$M" "$EXCL_AWK $HANDOVER_AWK { print }"; then
+if make_mutant "$M" "$EXCL_AWK $HANDOVER_AWK $FAILFAST_AWK { print }"; then
   # shellcheck disable=SC2086 # 名前の列を語に割る
   got="$(flipped "$M/hooks/guard-exit-code.sh" pass $BM_ALL_PASS)"
   if [ "$got" = " $BM_ALL_PASS" ]; then ok "BM1: 背景実行の判定を修正前へ戻すと、OBS-460 / 468 / 475 / 484 と mkdir の pass の本文 12 件がすべて deny へ倒れる"
   else bad "BM1: 修正前へ戻しても deny へ倒れたのは [${got# }] だけ"; fi
 fi
 # BM2: 起動から外す判定だけを無効にする。代入・素の cd の行は準備の行ではないので後続の起動へ
-# 引き継がれず、OBS-468 / 475 / 484 の本文も、cd <dir> || exit 2 の本文（同じ行の握り潰し）も止まる
+# 引き継がれず、OBS-468 / 475 / 484 の本文が止まる。1 行目が `cd <dir> || exit 2` だけの本文
+# （pass-obs468-cd-exit-review.txt）は、cd を起動に数えても fail-fast の形（Issue `#2813`）として通る
 M="$TEST_TMP/bm2"
 if make_mutant "$M" "$EXCL_AWK { print }"; then
-  BM2_PASS="pass-obs460-assign-wsl-gate.txt pass-obs460-cd-exit-heredoc.txt pass-obs468-assign-wsl.txt pass-obs468-cd-exit-review.txt pass-obs468-assign-precommit.txt pass-obs475-assign-run-all.txt pass-obs475-cd-exit-root-review.txt pass-obs475-assign-echo-cat.txt pass-obs475-bare-cd.txt pass-obs475-ff-root-assign.txt pass-obs484-assign-npm-run-all.txt"
+  BM2_PASS="pass-obs460-assign-wsl-gate.txt pass-obs460-cd-exit-heredoc.txt pass-obs468-assign-wsl.txt pass-obs468-assign-precommit.txt pass-obs475-assign-run-all.txt pass-obs475-cd-exit-root-review.txt pass-obs475-assign-echo-cat.txt pass-obs475-bare-cd.txt pass-obs475-ff-root-assign.txt pass-obs484-assign-npm-run-all.txt"
   # shellcheck disable=SC2086 # 名前の列を語に割る
-  got="$(flipped "$M/hooks/guard-exit-code.sh" pass $BM2_PASS pass-prep-mkdir.txt)"
+  got="$(flipped "$M/hooks/guard-exit-code.sh" pass $BM2_PASS pass-obs468-cd-exit-review.txt pass-prep-mkdir.txt)"
   if [ "$got" = " $BM2_PASS" ]; then
-    ok "BM2: 代入・cd・exit を起動に数えると OBS の pass 11 件が deny へ倒れ、mkdir の準備の行は引き継ぎで通ったまま"
+    ok "BM2: 代入・cd・exit を起動に数えると OBS の pass 10 件が deny へ倒れ、cd <dir> || exit 2 は fail-fast の形として、mkdir の準備の行は引き継ぎで通ったまま"
   else bad "BM2: 変異で deny へ倒れた集合が違う: [${got# }]"; fi
 fi
 # BM3: 準備の行から後続の起動への引き継ぎだけを無効にする
@@ -257,14 +292,16 @@ if make_mutant "$M" "$HANDOVER_AWK { print }"; then
   else bad "BM3: 引き継ぎを無効にして deny へ倒れた集合が違う: [${got# }]"; fi
 fi
 # BM4: どの起動も準備の行とみなす（g_prep を 0 にしない）。検査・名簿のゲートの rc を後続の
-# コマンドが奪う形を素通しする（レビューで別モデル 2 本が指摘した偽の緑）
+# コマンドが奪う形を素通しする（レビューで別モデル 2 本が指摘した偽の緑）。tail の行は起動では
+# ない（表示だけの区間。Issue `#2813`）ので引き継ぎ先にならず、fire-handover-tail-after-gate.txt は
+# この変異でもゲートの起動行を示したまま
 M="$TEST_TMP/bm4"
 if make_mutant "$M" 'index($0, "!is_prep_launch(segs[i])) g_prep = 0") { next } { print }'; then
-  BM4_FIRE="fire-review-sed-after-test.txt fire-review-build-after-test.txt fire-review-rm-after-test.txt fire-handover-grep-after-gate.txt fire-handover-tail-after-gate.txt fire-named-gate-overwritten.txt"
+  BM4_FIRE="fire-review-sed-after-test.txt fire-review-build-after-test.txt fire-review-rm-after-test.txt fire-handover-grep-after-gate.txt fire-named-gate-overwritten.txt"
   # shellcheck disable=SC2086 # 名前の列を語に割る
-  got="$(flipped "$M/hooks/guard-exit-code.sh" fire $BM4_FIRE)"
+  got="$(flipped "$M/hooks/guard-exit-code.sh" fire $BM4_FIRE fire-handover-tail-after-gate.txt)"
   if [ "$got" = " $BM4_FIRE" ]; then
-    ok "BM4: どの起動も準備とみなすと、検査・run-all.sh の rc を後続の sed / build / rm / grep / tail が奪う 6 件でゲートの起動行を示さなくなる"
+    ok "BM4: どの起動も準備とみなすと、検査・run-all.sh の rc を後続の sed / build / rm / grep が奪う 5 件でゲートの起動行を示さなくなり、表示だけの tail の 1 件はゲートの起動行を示したまま"
   else bad "BM4: 反転したのは [${got# }] だけ"; fi
 fi
 # BM5〜BM7 が照合するコマンド置換の代入の 5 形（反転の集合はこの順の部分列で比べる）
@@ -298,7 +335,106 @@ if make_mutant "$M" 'index($0, "if (index(raw, \"`\") || (line_subst") { print "
   if [ "$got" = " fire-review-subst-multi-assign-backtick.txt" ]; then ok "BM7: 素のバッククォートの判定を消すと、out=\`cmd\` rc=\$? の 1 形だけが素通しになる"
   else bad "BM7: 素のバッククォートの判定を消して反転したのは [${got# }]（期待は fire-review-subst-multi-assign-backtick.txt だけ）"; fi
 fi
+# BM8〜BM28（BM19 / BM24 / BM25 は欠番）が照合する Issue `#2813` の pass 7 形と fire 23 形（反転の集合はこの順の部分列で比べる）
+BM_2813_PASS="pass-prep-or-exit-build-e2e.txt pass-prep-test-or-exit.txt pass-prep-mkdir-cd-exit.txt pass-set-pipefail-preface.txt pass-prep-cp-status-gate.txt pass-prep-stderr-display.txt pass-prep-test-bang.txt"
+BM_2813_FIRE="fire-prep-or-exit-build-e2e.txt fire-prep-or-exit-run-all.txt fire-prep-or-exit0.txt fire-prep-mkdir-cd-echo.txt fire-prep-mkdir-cd-end.txt fire-review-subshell-or-exit.txt fire-review-and-pipe-or-exit.txt fire-review-wrapper-exit.txt fire-review-capture-after-cd.txt fire-review-recapture-test.txt fire-review-cat-redirect.txt fire-review-heredoc-cat-echo.txt fire-review2-multiline-subshell.txt fire-review2-test-status-after-cd.txt fire-review2-tee-file.txt fire-review3-group-pipe.txt fire-review3-while-pipe.txt fire-review3-group-bg.txt fire-review5-subshell-arg-keyword.txt fire-review6-time-group-pipe.txt fire-review6-coproc.txt fire-review6-bang.txt fire-review7-exit-trap.txt"
+# 変異を当てたツリーで、pass と fire の反転の集合が期待どおりかを照合する
+bm_expect() { # <名> <変異の awk> <期待する pass の反転> <期待する fire の反転> <成立時の説明>
+  local name="$1" prog="$2" want_p="$3" want_f="$4" msg="$5" got_p got_f
+  M="$TEST_TMP/$name"
+  make_mutant "$M" "$prog" || return 0
+  # shellcheck disable=SC2086 # 名前の列を語に割る
+  got_p="$(flipped "$M/hooks/guard-exit-code.sh" pass $BM_2813_PASS)"
+  # shellcheck disable=SC2086 # 名前の列を語に割る
+  got_f="$(flipped "$M/hooks/guard-exit-code.sh" fire $BM_2813_FIRE)"
+  if [ "${got_p# }" = "$want_p" ] && [ "${got_f# }" = "$want_f" ]; then ok "${name}: $msg"
+  else bad "${name}: 反転した集合が違う: pass=[${got_p# }]（期待 [$want_p]） fire=[${got_f# }]（期待 [$want_f]）"; fi
+}
+# BM8: fail-fast の判定（failfast_tail）を消す。`git checkout -- <file> || exit 1` と `[ -d "$ROOT" ] || exit 9` が
+# 握り潰しへ戻り、pass はその 2 件だけが deny へ倒れ、exit $rc を欠いた 2 本は準備の行を名指す
+# （`cd <dir> || exit 2` は cd が起動ではないので、pass-obs468-cd-exit-review.txt も通ったまま）
+bm_expect bm8 "$FAILFAST_AWK { print }" \
+  "pass-prep-or-exit-build-e2e.txt pass-prep-test-or-exit.txt pass-prep-test-bang.txt" \
+  "fire-prep-or-exit-build-e2e.txt fire-prep-or-exit-run-all.txt fire-review2-test-status-after-cd.txt" \
+  "fail-fast の判定を消すと、|| exit N の準備の行を持つ pass 3 件が deny へ倒れ、fire 3 件が準備の行・[ \$? … ] || exit 1 の行を名指す"
+M="$TEST_TMP/bm8b"
+if make_mutant "$M" "$FAILFAST_AWK { print }"; then
+  got="$(flipped "$M/hooks/guard-exit-code.sh" pass pass-obs468-cd-exit-review.txt)"
+  if [ -z "$got" ]; then ok "bm8b: fail-fast の判定を消しても cd <dir> || exit 2 の本文は通ったまま（cd は起動ではない）"
+  else bad "bm8b: fail-fast の判定を消すと cd <dir> || exit 2 の本文まで deny へ倒れる"; fi
+fi
+# BM9: `exit 0`（と 256 の倍数）まで fail-fast とみなす。準備の失敗を `|| exit 0` で握り潰す本文だけが素通しになる
+bm_expect bm9 'index($0, "return ((v + 0) % 256 != 0)") { print "  return 1"; next } { print }' \
+  "" "fire-prep-or-exit0.txt" \
+  "exit 0 まで fail-fast とみなすと、|| exit 0 で準備の失敗を握り潰す 1 件だけが素通しになる"
+# BM10: 表示だけの区間（git status / tail）を起動へ戻す。Issue の本文と cp ⏎ git status ⏎ ゲートが deny へ倒れ、
+# exit $rc を欠いた 2 本はゲートの起動行ではなく git status の行を名指す（この Issue が直す誤検知そのもの）
+bm_expect bm10 'index($0, "if (is_display_only(s)) return 0") { next } { print }' \
+  "pass-prep-or-exit-build-e2e.txt pass-prep-cp-status-gate.txt pass-prep-stderr-display.txt" \
+  "fire-prep-or-exit-build-e2e.txt fire-prep-or-exit-run-all.txt" \
+  "表示だけの区間を起動へ戻すと、表示の行を挟む pass 3 件が deny へ倒れ、exit \$rc を欠いた 2 本がゲートの起動行を示さなくなる"
+# BM11: 起動の無い行越しに準備の rc を待つ判定（状態 3 への移行）を無効にする
+bm_expect bm11 'index($0, "g_prep && gi == 0 && mask(line, 1) !~ /[$][?]/) {") { print "    } else if (0) {"; next } { print }' \
+  "pass-prep-mkdir-cd-exit.txt pass-prep-cp-status-gate.txt" "" \
+  "起動の無い行越しの引き継ぎを無効にすると、mkdir ⏎ cd ⏎ ゲートと cp ⏎ git status ⏎ ゲートの 2 件だけが deny へ倒れる"
+# BM12: 状態 3 を状態 1（`$?` の持ち越し）へ戻す — 単位の終端で報告されず、cd の後の rc=$? を準備の rc として
+# 捕獲する（PR のクロスモデルレビューが示した形）
+bm_expect bm12 '$0 == "      g_state = 3" { print "      g_state = 1"; next } { print }' \
+  "" "fire-prep-mkdir-cd-end.txt fire-review-capture-after-cd.txt fire-review-recapture-test.txt fire-review2-test-status-after-cd.txt" \
+  "状態 3 を \$? の持ち越しへ戻すと、mkdir ⏎ cd ⏎ export で終わる本文と、cd の後の \$? を準備の rc として読む 3 本の計 4 件が素通しになる"
+# BM13: set などシェルの状態を変える組み込みを起動へ戻す
+bm_expect bm13 'index($0, "if (w ~ /^(set|shopt|unset|umask|trap)$/) return 0") { next } { print }' \
+  "pass-set-pipefail-preface.txt" "" \
+  "set を起動へ戻すと、1 行目が set -uo pipefail の 1 件だけが deny へ倒れる"
+# BM14: 状態 3 で `$?` を読む行を落とす判定を消す（`cd` の rc を準備の rc として読む形）
+bm_expect bm14 'index($0, "    else if (gi == 0 && mask(line, 1) !~ /[$][?]/) return") { print "    else if (gi == 0) return"; next } { print }' \
+  "" "fire-review-recapture-test.txt" \
+  "状態 3 の \$? の判定を消すと、cd の後の rc=\$? ⏎ [ … ] || exit 1 ⏎ ゲートの 1 件だけが素通しになる"
+# BM15: fail-fast の判定から、単位の中でブロックの印が一度でも出た行以降の除外（blk_ever）を消す
+bm_expect bm15 'index($0, "  if (blk_ever) return 0") { next } { print }' \
+  "" "fire-review-subshell-or-exit.txt fire-review2-multiline-subshell.txt fire-review3-group-pipe.txt fire-review3-while-pipe.txt fire-review3-group-bg.txt fire-review5-subshell-arg-keyword.txt fire-review6-time-group-pipe.txt fire-review6-coproc.txt fire-review6-bang.txt fire-review7-exit-trap.txt" \
+  "ブロックの印の除外を消すと、サブシェル・パイプや & に繋いだグループ・パイプに繋いだ while・time { }・coproc・先頭の !・trap の後の gate || exit 1 の 10 件だけが素通しになる（閉じ括弧が exit に付く形は exit の照合が止める）"
+# BM16: ゲートの直後が `||` という条件を、末尾の区切り子が `||` であることへ緩める（ゲートと `||` の間の別の区間を許す）
+bm_expect bm16 'index($0, "  if (n != gi + 1 || seps[gi] != \"||\") return 0") { print "  if (seps[n - 1] != \"||\") return 0"; next } { print }' \
+  "" "fire-review-and-pipe-or-exit.txt" \
+  "ゲートと || の間の区間を許すと、gate1 && gate2 | tail || exit 1 の 1 件だけが素通しになる"
+# BM17: fail-fast の exit の照合を strip_prefix 越しへ戻す（ラッパ越しの exit を通す）
+bm_expect bm17 '$0 == "  t = segs[n]" { print "  t = strip_prefix(segs[n])"; next } { print }' \
+  "" "fire-review-wrapper-exit.txt" \
+  "exit の照合をラッパ越しへ戻すと、|| env exit 1 の 1 件だけが素通しになる"
+# BM18: 表示の判定からファイルへ書く形（`>` / heredoc）の除外を消す
+bm_expect bm18 'index($0, "if (index(t, \">\") || index(t, \"<<\")) return 0") { next } { print }' \
+  "" "fire-review-cat-redirect.txt fire-review-heredoc-cat-echo.txt" \
+  "ファイルへ書く形の除外を消すと、cat a b > c と heredoc の cat の 2 件だけが素通しになる"
 
+# BM20: 状態 3 で、起動までの区間が $? を読む行も引き継ぐ（`[ $? -eq 0 ] || exit 1` の `[` へ渡す）
+bm_expect bm20 'index($0, "    if (gi > 0 && !q) g_state = 0") { print "    if (gi > 0) g_state = 0"; next } { print }' \
+  "" "fire-review2-test-status-after-cd.txt" \
+  "起動の区間の \$? の判定を消すと、cd の後の [ \$? -eq 0 ] || exit 1 の 1 件だけが素通しになる"
+# BM21: tee を表示へ戻す（引数のファイルへ書く tee の失敗を落とす）
+bm_expect bm21 'index($0, "  if (w == \"tee\") return 0") { next } { print }' \
+  "" "fire-review2-tee-file.txt" \
+  "tee の除外を消すと、tee FILE < in ⏎ echo の 1 件だけが素通しになる"
+# BM22: 標準エラー出力の向け先・fd の複製を、ファイルへ書く形として数える（`tail … 2>/dev/null` を主体へ戻す）
+bm_expect bm22 'index($0, "  t = s; gsub(/[0-9]*>&[0-9-]+/") { print "  t = s"; next } { print }' \
+  "pass-prep-stderr-display.txt" "" \
+  "stderr の向け先の扱いを消すと、tail … 2>/dev/null と git status 2>&1 を挟む pass 1 件だけが deny へ倒れる"
+# BM23: 予約語をブロックの印に数えない（括弧・波括弧・先頭の `!` だけを印にする）
+bm_expect bm23 'index($0, "  for (i = 1; i <= k; i++) if (arr[i] ~ /^(if|then|else|elif|fi|for|while|until|select|do|done|case|esac|function|time|copro[c]|trap)$/) blk_seen = 1") { next } { print }' \
+  "" "fire-review3-while-pipe.txt fire-review6-coproc.txt fire-review7-exit-trap.txt" \
+  "予約語と trap を印に数えないと、パイプに繋いだ while の本体・coproc・trap 'exit 0' EXIT の後の 3 件だけが素通しになる"
+# BM26: 波括弧をブロックの印に数えない（PR のクロスモデルレビュー 5 巡目: `time {` の波括弧を位置の読み違えで取りこぼした）
+bm_expect bm26 'index($0, "  blk_seen = (m ~ /[(){}]/)") { print "  blk_seen = (m ~ /[()]/)"; next } { print }' \
+  "" "fire-review3-group-pipe.txt fire-review3-group-bg.txt" \
+  "波括弧を印に数えないと、パイプや & に繋いだグループの 2 件だけが素通しになる（time { … } は time の語でも止まる）"
+# BM27: 区間の先頭の `!`（終了コードの反転）を印に数えない
+bm_expect bm27 'index($0, "if (t ~ /^!([[:space:]]|$)/) blk_seen = 1 }") { next } { print }' \
+  "" "fire-review6-bang.txt" \
+  "先頭の ! を印に数えないと、! git checkout … || exit 1 の 1 件だけが素通しになる"
+# BM28: `!` を区間の先頭に限らず印に数える — 偽の緑は開かないが、`[ ! -f x ] || exit 9`（test の演算子）まで止める
+bm_expect bm28 'index($0, "if (t ~ /^!([[:space:]]|$)/) blk_seen = 1 }") { sub(/\^!/, "(^|[[:space:]])!"); print; next } { print }' \
+  "pass-prep-test-bang.txt" "" \
+  "! を区間の先頭に限らず数えると、[ ! -f … ] || exit 9 の pass 1 件だけが deny へ倒れる"
 echo
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ bg-prefix: ${FAIL} 件失敗（成功 ${PASS} 件）" >&2

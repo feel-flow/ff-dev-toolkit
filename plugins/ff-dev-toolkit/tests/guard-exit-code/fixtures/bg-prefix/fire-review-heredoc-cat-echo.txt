@@ -1,0 +1,4 @@
+cat > /tmp/step.sh <<'EOF'
+echo hi
+EOF
+echo "EXIT=$?"
