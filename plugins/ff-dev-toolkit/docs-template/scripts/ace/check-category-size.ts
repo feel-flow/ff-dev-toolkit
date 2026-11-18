@@ -157,7 +157,7 @@ const INDEX_FINDING_REPORT_LIMIT = 10;
  * 取り残される）。**実測の現況件数（カテゴリごとの live 件数）は、本文にも
  * この近傍にも書かない** — Playbook の成長とともに変わるため。
  */
-export const DEFAULT_MAX_ENTRIES_PER_CATEGORY = 280;
+export const DEFAULT_MAX_ENTRIES_PER_CATEGORY = 380;
 /**
  * 件数ゲートの refine 目安（警告のみ・exit 0）。`ACE_MAX_ENTRIES_PER_CATEGORY`
  * を 130 に戻すと警告段は発火せず、旧来の 130 件で exit 1 になる。

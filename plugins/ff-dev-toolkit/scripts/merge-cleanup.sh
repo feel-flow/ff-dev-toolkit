@@ -19,7 +19,8 @@
 #   3.5 ガード情報の取得（MERGED / open PR 一覧。失敗時は後続の破壊的処理を fail-closed で縮退）
 #   4. 対象 PR のリモートブランチ削除（same-repo かつ open PR 未使用、--force-with-lease で OID 一致時のみ）
 #   5. [gone] ローカルブランチ + 関連 worktree の削除
-#      （dirty worktree は保護。-D は MERGED PR head と OID 一致するブランチのみ）
+#      （dirty worktree は保護。-D は MERGED PR head と OID 一致、または worktree 未保持・
+#      同名 PR が一意かつ same-repo・PR head の祖先と確認できたブランチのみ）
 #   5.4 worktree 未使用・マージ証拠・origin 同名 ref 不在を満たす worktree-agent-* の削除
 #   5.5 削除した worktree のトランスクリプト回収（cwd 照合のうえ tar.gz へアーカイブ）
 #   6. リモート取り残しブランチのガード付き自動削除（fail-closed）
@@ -53,7 +54,10 @@
 #     git は空の stdin を渡すため consumer の「削除だけならスキップ」判定が効かない
 #     （公開 ff-dev-toolkit#137。実測で約 10〜12 分のフルゲート）
 #   - ローカル [gone] ブランチの -D（強制削除）は (名前, ローカル OID) が
-#     MERGED PR の head と一致する場合に限定（[gone] だけではマージ済みの証明にならない）
+#     MERGED PR の head と一致する場合、または worktree が保持せず同名 PR が一意な
+#     same-repo MERGED PR の head の祖先と確認できた場合に限定（[gone] だけでは
+#     マージ済みの証明にならない。同名 PR が複数・fork PR・head 取得不能・worktree
+#     保持時は従来の完全一致のみを許す）
 #   - ガードに必要な情報の取得に失敗したら削除せずスキップ（fail-closed）
 #   - dirty な worktree は削除しない。upstream なしの孤児ブランチも警告のみ。
 #     例外は Step 5.4 の全条件で安全性を確認した worktree-agent-* だけ

@@ -4,6 +4,7 @@
 # merge-cleanup.sh の破壊的経路の回帰テスト。
 # 空振り検出: detached linked caller の判定を除いた mutant は独立 fixture の dry-run 検査で赤になる。
 # 空振り検出: agent branch専用fixtureが削除処理の欠落・祖先判定欠落・worktree判定欠落・remote判定欠落を赤にする。
+# 空振り検出: gone ancestor専用fixture（gone-ancestor.sh）が、祖先削除の欠落（no-ancestor）・取得不能/3値判定の祖先誤認（fetch-fail-as-ancestor）・複数同名PR緩和（allow-multi-pr）・dry-run本体リポジトリ汚染（dry-pollutes-repo）の各変異を赤にする（2026-11-18 macOS / Bash 3.2 実測）。
 # 空振り検出: msys の core.longpaths=true を外した mutant は long-paths.sh の呼び出し記録の照合で赤になる。Windows の実機では、深い node_modules の削除が git の「Filename too long」で失敗して赤になる（2026-10-30 実測、Issue `#2479`）。
 # 空振り検出: msys で ignored のリンクを外す工程を除いた mutant は、long-paths.sh の「worktree remove の時点のリンク数」が 1 になって赤になる（リンクを数えられない回は印の行で 0 にならない）。Windows の実機では windows-junctions.sh の outside の回が参照先の keep.txt の消失で、pnpm の回が単独でも「Directory not empty」で赤になる。残ったリンクの確認を除いた mutant は long-paths.sh の hidden-untracked の回が赤にする。ジャンクションを作れない回と、登録の照合が実行前に当たらない回も赤（2026-10-31 実測、Issue `#2557`）。
 # 空振り検出: 入口の「ファイルが無い」分岐を外した写しを与えると、「構成ファイルを読めない入口が削除前に止まっていない（mode=missing）」の 1 件だけが赤になる（2026-10-21 実測。成功は残り全部。判定は exit 1 のまま、針「がありません」が外れ、次の分岐の「が 0 バイトです」になる。削除へは進まない）。
@@ -278,6 +279,7 @@ mbcs_assert_clean() {
 # 裸で書くと `PASS（` を参照して suite が途中死する。
 mbcs_assert_clean "$TARGET" "merge-cleanup.sh"
 mbcs_assert_clean "$SCRIPT_DIR/verify.sh" "本 suite (tests/merge-cleanup/verify.sh)"
+mbcs_assert_clean "$SCRIPT_DIR/gone-ancestor.sh" "本 suite の gone-ancestor.sh"
 _mc_cases=0
 for _mc_case in "$SCRIPT_DIR"/cases/*.sh; do
   [ -f "$_mc_case" ] || continue
@@ -729,6 +731,69 @@ elif ! grep -qF '(stop hidden-untracked)' "$TMP/stray-mutant.log"; then
 else
   ok "残ったリンクの確認を除いた mutant を long-paths.sh の hidden-untracked の回が赤にする"
 fi
+
+if bash "$SCRIPT_DIR/gone-ancestor.sh" "$TARGET"; then
+  ok "[gone] ブランチの祖先判定（ローカル/取得・非祖先・取得失敗・複数 PR/fork/worktree 保護・dry-run）"
+else
+  bad "[gone] ブランチの祖先判定の回帰"
+  exit 1
+fi
+for ga_mut in no-ancestor fetch-fail-as-ancestor allow-multi-pr dry-pollutes-repo; do
+  GA_DIR="$TMP/ga-mutant-${ga_mut}"
+  stage_cleanup_mutant "$GA_DIR"
+  case "$ga_mut" in
+    no-ancestor)
+      awk '
+        /if \[ "\$ANC_VERDICT" = "ancestor" \]; then/ { print "        if false; then"; next }
+        { print }
+      ' "$GA_DIR/lib/merge-cleanup-local.sh" > "$GA_DIR/lib/merge-cleanup-local.new"
+      mv "$GA_DIR/lib/merge-cleanup-local.new" "$GA_DIR/lib/merge-cleanup-local.sh"
+      ga_changed_base="$PLUGIN_ROOT/scripts/lib/merge-cleanup-local.sh"
+      ga_changed_mut="$GA_DIR/lib/merge-cleanup-local.sh"
+      ;;
+    fetch-fail-as-ancestor)
+      awk '
+        /^mc_ancestor_verdict\(\)/ { in_fn = 1 }
+        in_fn && /unreachable/ && /printf/ { sub(/unreachable/, "ancestor"); print; next }
+        { print }
+        in_fn && /^\}$/ { in_fn = 0 }
+      ' "$GA_DIR/lib/merge-cleanup-local.sh" > "$GA_DIR/lib/merge-cleanup-local.new"
+      mv "$GA_DIR/lib/merge-cleanup-local.new" "$GA_DIR/lib/merge-cleanup-local.sh"
+      ga_changed_base="$PLUGIN_ROOT/scripts/lib/merge-cleanup-local.sh"
+      ga_changed_mut="$GA_DIR/lib/merge-cleanup-local.sh"
+      ;;
+    allow-multi-pr)
+      awk '
+        /select\(length == 1\)/ { sub(/select\(length == 1\)/, "select(length >= 1)"); print; next }
+        { print }
+      ' "$GA_DIR/lib/merge-cleanup-remote.sh" > "$GA_DIR/lib/merge-cleanup-remote.new"
+      mv "$GA_DIR/lib/merge-cleanup-remote.new" "$GA_DIR/lib/merge-cleanup-remote.sh"
+      ga_changed_base="$PLUGIN_ROOT/scripts/lib/merge-cleanup-remote.sh"
+      ga_changed_mut="$GA_DIR/lib/merge-cleanup-remote.sh"
+      ;;
+    dry-pollutes-repo)
+      awk '
+        /^mc_ancestor_verdict\(\)/ { in_fn = 1 }
+        in_fn && /if \[ "\$\{DRY_RUN:-0\}" = "1" \]; then/ { print "    if false; then"; next }
+        { print }
+        in_fn && /^\}$/ { in_fn = 0 }
+      ' "$GA_DIR/lib/merge-cleanup-local.sh" > "$GA_DIR/lib/merge-cleanup-local.new"
+      mv "$GA_DIR/lib/merge-cleanup-local.new" "$GA_DIR/lib/merge-cleanup-local.sh"
+      ga_changed_base="$PLUGIN_ROOT/scripts/lib/merge-cleanup-local.sh"
+      ga_changed_mut="$GA_DIR/lib/merge-cleanup-local.sh"
+      ;;
+  esac
+  if cmp -s "$ga_changed_base" "$ga_changed_mut"; then
+    bad "gone-ancestor mutant ${ga_mut} が原本と同一（空振り）"
+    exit 1
+  fi
+  if bash "$SCRIPT_DIR/gone-ancestor.sh" "$GA_DIR/merge-cleanup.sh" > "$TMP/ga-mutant-${ga_mut}.log" 2>&1; then
+    bad "gone-ancestor mutant ${ga_mut} が生き残った"
+    exit 1
+  else
+    ok "gone-ancestor mutant ${ga_mut} を fixture が赤にする"
+  fi
+done
 
 echo "✓ merge-cleanup verify: 全 $PASS 件 pass"
 FF_REACHED_END=1

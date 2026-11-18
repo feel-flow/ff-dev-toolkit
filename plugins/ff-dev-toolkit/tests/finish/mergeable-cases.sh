@@ -166,26 +166,74 @@ MG_SLEEP
     bad "MG6: 3 回後 UNKNOWN の扱いが違う（rc=${RC}, pr_view=${pr_view_count}, sleep=${sleep_count}）: ${OUT} / ${ERR}"
   fi
 
-  # MG7: MERGEABLE 時は CLEAN / BLOCKED / BEHIND / UNSTABLE / HAS_HOOKS とも出力が完全に同じ
+  # MG7: MERGEABLE 時は CLEAN / BLOCKED / BEHIND / UNSTABLE / HAS_HOOKS とも出力が同じ。
+  # precheck の stdout には経過時間の行（EFFORT_<N>_wallclock_actual_h。終了の記録が無い回は
+  # 現在時刻まで）があり、5 回の実行のあいだに 0.1 時間の丸めの境界をまたぐと値が変わる。
+  # 時刻は PR の状態と無関係なので、時計を 1 回ごとに 1 時間進めて毎回この値を変え、
+  # 比較ではその値だけを伏せる（キーと他の行はバイト一致のまま比べる）。
+  local mg7_real_date mg7_clock="$mg_dir/mg7-clock" mg7_base mg7_step=0 mg7_walls="$mg_dir/mg7-walls"
+  local clean_norm="$mg_dir/clean.norm" mg7_wall_kinds
+  mg7_real_date="$(command -v date)"
+  mg7_base="$("$mg7_real_date" +%s)"
+  cat >"$BIN/date" <<MG_DATE
+#!/usr/bin/env bash
+# 最後の引数が +%s の呼び出し（date +%s / date -u +%s）だけを差し替える
+_mg7_last=""
+for _mg7_last in "\$@"; do :; done
+if [[ "\$_mg7_last" == "+%s" ]]; then
+  cat "${mg7_clock}"
+  exit \$?
+fi
+exec "${mg7_real_date}" "\$@"
+MG_DATE
+  chmod +x "$BIN/date"
+  _mg7_mask() { # <入力> <出力>: 経過時間の値だけを伏せる
+    LC_ALL=C sed -E 's/^(EFFORT_[0-9]+_wallclock_actual_h)=.*$/\1=(masked)/' "$1" >"$2"
+  }
+  _mg7_wall() { # <入力>: 経過時間の行（伏せる前）
+    LC_ALL=C awk '/^EFFORT_[0-9]+_wallclock_actual_h=/' "$1"
+  }
+  _mg7_diff() { # <基準> <対象>: 不一致の行を 1 行にまとめる（diff の rc 1 で suite を止めない）
+    local d=""
+    d="$(diff "$1" "$2" 2>&1 || true)"
+    printf '%s\n' "$d" | LC_ALL=C awk '/^[<>]/ { if (n++ < 20) printf "%s | ", $0 } END { if (n == 0) printf "(none)" }'
+  }
+  : >"$mg7_walls"
+  printf '%s\n' "$mg7_base" >"$mg7_clock"
   PR_MERGEABLE=MERGEABLE PR_MERGE_STATE_STATUS=CLEAN write_pr_json "Closes #${PRN}" '[]'
   _mg_run
   printf '%s\n' "$OUT" >"$clean_out"
+  _mg7_mask "$clean_out" "$clean_norm"
+  _mg7_wall "$clean_out" >>"$mg7_walls"
   if [ "$RC" -eq 0 ] && has_line "$OUT" "PRECHECK=ready" && [ "$pr_view_count" -eq 2 ] && [ "$sleep_count" -eq 0 ]; then
     ok "MG7-CLEAN: MERGEABLE + CLEAN は PRECHECK=ready で追加 gh 呼出しなし"
   else
     bad "MG7-CLEAN: 基準実行が失敗（rc=${RC}, pr_view=${pr_view_count}）"
   fi
   for clean_state in BLOCKED BEHIND UNSTABLE HAS_HOOKS; do
+    mg7_step=$((mg7_step + 1))
+    printf '%s\n' "$((mg7_base + mg7_step * 3600))" >"$mg7_clock"
     PR_MERGEABLE=MERGEABLE PR_MERGE_STATE_STATUS="$clean_state" write_pr_json "Closes #${PRN}" '[]'
     _mg_run
     printf '%s\n' "$OUT" >"$mg_dir/state-${clean_state}.out"
-    if [ "$RC" -eq 0 ] && cmp -s "$clean_out" "$mg_dir/state-${clean_state}.out" \
+    _mg7_mask "$mg_dir/state-${clean_state}.out" "$mg_dir/state-${clean_state}.norm"
+    _mg7_wall "$mg_dir/state-${clean_state}.out" >>"$mg7_walls"
+    if [ "$RC" -eq 0 ] && cmp -s "$clean_norm" "$mg_dir/state-${clean_state}.norm" \
       && [ "$pr_view_count" -eq 2 ] && [ "$sleep_count" -eq 0 ]; then
-      ok "MG7/${clean_state}: MERGEABLE + ${clean_state} は CLEAN と stdout 完全一致"
+      ok "MG7/${clean_state}: MERGEABLE + ${clean_state} は CLEAN と stdout が一致（経過時間の値を除く）"
     else
-      bad "MG7/${clean_state}: 競合以外の出力が CLEAN と異なる（rc=${RC}, pr_view=${pr_view_count}）"
+      bad "MG7/${clean_state}: 競合以外の出力が CLEAN と異なる（rc=${RC}, pr_view=${pr_view_count}, sleep=${sleep_count}）。不一致の行（< CLEAN / > ${clean_state}。(none) は行の差なし = rc か呼び出し回数の違い）: $(_mg7_diff "$clean_norm" "$mg_dir/state-${clean_state}.norm")"
     fi
   done
+  rm -f "$BIN/date"
+  # MG7-clock: 進めた時計が precheck に届いていること。5 回の経過時間の値がすべて違わなければ、
+  # 上の一致は「時刻が進んでも変わらない」を測れていない（時計の差し替えが読まれていない・行が消えた）
+  mg7_wall_kinds="$(LC_ALL=C sort -u "$mg7_walls" | LC_ALL=C awk '/^EFFORT_[0-9]+_wallclock_actual_h=[0-9]+\.[0-9]$/ { n++ } END { print n + 0 }')"
+  if [ "$mg7_wall_kinds" -eq 5 ]; then
+    ok "MG7-clock: 5 回の実行で経過時間の値がすべて違う（進めた時計が precheck に届いている）"
+  else
+    bad "MG7-clock: 経過時間の値が 5 通りの数値にならない（${mg7_wall_kinds} 通り。時計の差し替えが届いていない・値が数値でない・行が無い・状態で値が変わった、のいずれか）:$(tr '\n' ' ' <"$mg7_walls")"
+  fi
 
   # MG8: 先着ブロック理由（未返信スレッド）+ CONFLICTING → 両方の理由を連結し PRECHECK=blocked（rc 1）
   cat >"$mg_dir/threads-unanswered.json" <<'JSON'

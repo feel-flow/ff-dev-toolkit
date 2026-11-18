@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 空振り検出: origin行・失敗rc行の不在は赤。旧probeは合成secretのJSON/Markdown 8件が赤、修正版は68件pass（macOS実測）。
+# 空振り検出: origin行・失敗rc行の不在は赤。旧probeは合成secretのJSON/Markdown 8件が赤、修正版は68件pass（macOS実測）。plugin-root-contract の ff_ensure_utf8_locale 削除変異で rc=1（1 件失敗（68 件成功））、無変異対照は rc=0（全 69 件 pass）。
 #
 # cloud-env-setup: クラウド環境セットアップ（CI / クラウド開発環境の不足ツールとロケールを揃える）の挙動契約。
 #
@@ -11,7 +11,7 @@
 #        macOS / 非 root / --skip-install では apt-get を呼ばず手動導入を案内する
 #      - ロケール: 実効 LC_CTYPE が UTF-8 でなく `locale -a` に UTF-8 があれば `export LC_ALL=...`
 #        行を提示（--print-env では stdout に export 行だけ）、無ければ ❌ の 1 行警告
-#   2. tests/lib/utf8-locale.sh（run-all.sh / docs-gates / docs-gates-runtime が入口で呼ぶ）
+#   2. tests/lib/utf8-locale.sh（run-all.sh / docs-gates / docs-gates-runtime / plugin-root-contract が入口で呼ぶ）
 #      - 実効 LC_CTYPE が UTF-8 なら何もしない / POSIX なら `locale -a` の UTF-8 を LC_ALL に export /
 #        無ければ警告して続行
 #   3. scripts/probe-env-capabilities.sh の env カテゴリ「ロケール」行（ok / warn / missing）と --json
@@ -400,7 +400,7 @@ r="$(probe_lib POSIX 'C\nPOSIX\n')"
 if [ "$r" = "unset" ] && grep -qF "docs-gates / docs-gates-runtime" "$TMP/lib-err.log"; then ok "UTF-8 ロケール無し → export せず 1 行警告して続行（戻り値 0）"; else bad "UTF-8 無しの扱いが違う: LC_ALL=${r} / $(cat "$TMP/lib-err.log")"; fi
 r="$(probe_lib ja_JP.UTF-8 'C\nPOSIX\n')"
 if [ "$r" = "unset" ] && [ ! -s "$TMP/lib-err.log" ]; then ok "実効 LC_CTYPE が UTF-8 なら何もしない（利用者のロケールを上書きしない）"; else bad "UTF-8 実効時の扱いが違う: LC_ALL=${r} / $(cat "$TMP/lib-err.log")"; fi
-for consumer in "$PLUGIN_ROOT/tests/run-all.sh" "$PLUGIN_ROOT/tests/docs-gates/verify.sh" "$PLUGIN_ROOT/tests/docs-gates-runtime/verify.sh"; do
+for consumer in "$PLUGIN_ROOT/tests/run-all.sh" "$PLUGIN_ROOT/tests/docs-gates/verify.sh" "$PLUGIN_ROOT/tests/docs-gates-runtime/verify.sh" "$PLUGIN_ROOT/tests/plugin-root-contract/verify.sh"; do
   if grep -qF 'lib/utf8-locale.sh' "$consumer" && grep -qE '^[[:space:]]*ff_ensure_utf8_locale$' "$consumer"; then
     ok "$(basename "$(dirname "$consumer")")/$(basename "$consumer") が入口でロケールを固定する"
   else

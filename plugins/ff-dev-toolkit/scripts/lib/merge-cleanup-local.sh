@@ -96,6 +96,84 @@ wt_remove() { # <worktree>
   "${WT_REMOVE_GIT[@]}" worktree remove "$1"
 }
 
+MC_DRY_OBJ_DIR=""
+
+mc_init_dry_objects() {
+  # dry-run で不足している PR head commit を一時領域へだけ取得するための代替 object DB。
+  # alternates に元の object DB を指すことで、既存オブジェクトを参照しつつ本体の
+  # .git/objects や FETCH_HEAD を一切汚さずに merge-base --is-ancestor を実行できる。
+  local dry_obj="${WORK_TMP}/dry_ancestor_objects"
+  if [ -f "${dry_obj}/info/alternates" ]; then
+    MC_DRY_OBJ_DIR="$dry_obj"
+    return 0
+  fi
+  local base_obj="" common_dir="" common_abs=""
+  if [ -n "${GIT_OBJECT_DIRECTORY:-}" ]; then
+    base_obj="$(resolved_dir "$GIT_OBJECT_DIRECTORY")" || return 1
+  else
+    common_abs="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    if [ -z "$common_abs" ]; then
+      common_dir="$(git rev-parse --git-common-dir 2>/dev/null)" || return 1
+      common_abs="$(resolved_dir "$common_dir")" || return 1
+    fi
+    base_obj="${common_abs}/objects"
+  fi
+  [ -d "$base_obj" ] || return 1
+  mkdir -p "${dry_obj}/info" "${dry_obj}/pack" || return 1
+  printf '%s\n' "$base_obj" > "${dry_obj}/info/alternates" || return 1
+  MC_DRY_OBJ_DIR="$dry_obj"
+}
+
+mc_ancestor_verdict() { # <local_oid> <pr_head_oid> -> stdout: ancestor | not_ancestor | unreachable
+  # [gone] ローカルブランチの OID が単一 same-repo MERGED PR の head OID の祖先かを判定する。
+  # 手元に PR head commit が無ければ（別 worktree/別セッションで先行した場合）ref/FETCH_HEAD を
+  # 変えずに OID 指定 fetch を試み、取得失敗や merge-base の 0/1 以外の終了コードは
+  # 「祖先である」へ倒さず unreachable（判定不能・保護）を返す（fail-closed）。
+  local local_oid="$1" head_oid="$2"
+  local use_dry_obj=0 mb_rc=0
+  case "$local_oid" in
+    -*) printf 'not_ancestor\n'; return 0 ;;
+  esac
+  case "$head_oid" in
+    -*) printf 'unreachable\n'; return 0 ;;
+  esac
+  if ! git cat-file -e "${head_oid}^{commit}" 2>/dev/null; then
+    if [ "${DRY_RUN:-0}" = "1" ]; then
+      if ! mc_init_dry_objects; then
+        printf 'unreachable\n'
+        return 0
+      fi
+      use_dry_obj=1
+      if ! GIT_OBJECT_DIRECTORY="$MC_DRY_OBJ_DIR" git cat-file -e "${head_oid}^{commit}" 2>/dev/null; then
+        if ! GIT_TERMINAL_PROMPT=0 GIT_OBJECT_DIRECTORY="$MC_DRY_OBJ_DIR" git -c gc.auto=0 fetch -q --no-tags --no-write-fetch-head origin "$head_oid" >/dev/null 2>&1 \
+          || ! GIT_OBJECT_DIRECTORY="$MC_DRY_OBJ_DIR" git cat-file -e "${head_oid}^{commit}" 2>/dev/null; then
+          printf 'unreachable\n'
+          return 0
+        fi
+      fi
+    else
+      if ! GIT_TERMINAL_PROMPT=0 git -c gc.auto=0 fetch -q --no-tags --no-write-fetch-head origin "$head_oid" >/dev/null 2>&1 \
+        || ! git cat-file -e "${head_oid}^{commit}" 2>/dev/null; then
+        printf 'unreachable\n'
+        return 0
+      fi
+    fi
+  fi
+  set +e
+  if [ "$use_dry_obj" = "1" ]; then
+    GIT_OBJECT_DIRECTORY="$MC_DRY_OBJ_DIR" git merge-base --is-ancestor "$local_oid" "$head_oid" >/dev/null 2>&1
+  else
+    git merge-base --is-ancestor "$local_oid" "$head_oid" >/dev/null 2>&1
+  fi
+  mb_rc=$?
+  set -e
+  case "$mb_rc" in
+    0) printf 'ancestor\n' ;;
+    1) printf 'not_ancestor\n' ;;
+    *) printf 'unreachable\n' ;;
+  esac
+}
+
 # grep は「マッチ 0 件」で exit 1 を返すが、[gone] ゼロ件は正常系なので || true で許容する
 GONE_BRANCHES="$(git for-each-ref \
   --format='%(if:equals=[gone])%(upstream:track)%(then)%(refname:short)%(end)' \
@@ -221,7 +299,7 @@ else
       # untracked の .review-results で毎回削除に失敗し、unlock → force remove の手動
       # 3 手を要して常に PARTIAL になっていた。次の **3 条件をすべて**満たす場合に限り
       # unlock + 使い捨てパスの除去 + 削除を自動で行う:
-      #   1. (名前, ローカル OID) が MERGED PR の head と一致（-D エスカレーションと同じ証拠）
+      #   1. (名前, ローカル OID) が MERGED PR の head と完全一致（worktree 削除は厳格に完全一致のまま維持）
       #   2. ロックされていて、ロック理由に claude agent を含む（未ロックは対象外）
       #   3. dirty の内訳が既知の使い捨てパス（.review-results）の untracked だけ（clean も可）
       # 証拠が欠ける・未知の残置物がある・ロックが無い/理由が異なる場合は
@@ -398,8 +476,11 @@ else
     elif [ "$BRANCH_DELETE_MODE" = "dry_escalate" ] \
       || grep -qE 'not fully merged' <<<"$BRANCH_DEL_OUT"; then
       # squash merge 由来は -d で消せない。ただし [gone] は「upstream が消えた」ことしか
-      # 保証しないため、-D は (名前, ローカル OID) が MERGED PR の head と一致する
-      # ブランチに限定する（手動でリモート削除された未マージ作業を消さないため）
+      # 保証しないため、-D は次のどちらかに限定する:
+      #   1) (名前, ローカル OID) が same-repo MERGED PR の head と完全一致
+      #   2) worktree が保持しておらず、同名 MERGED PR が一覧上で一意（same-repo・非 null）で、
+      #      かつローカル OID がその PR head の祖先であると git merge-base --is-ancestor で確認できた
+      # PR head の取得に失敗した回・同名 PR が複数ある回・fork PR・非祖先は保護する。
       LOCAL_OID="$(git rev-parse "refs/heads/$branch")"
       if [ "$GUARDS_OK" = "1" ] && grep -qxF "$(printf '%s\t%s' "$branch" "$LOCAL_OID")" "$MERGED_LIST"; then
         if [ "$DRY_RUN" = "1" ]; then
@@ -424,10 +505,38 @@ else
         echo "       $(ff_shell_argv git branch -D "$branch")"
         FAILED_ITEMS+=("$branch: [gone] だが MERGED 一覧側の OID が null で照合材料が無い（要手動確認）")
       else
-        echo "  ⚠️ $branch はマージ済み PR の head と OID 一致しません（未マージの固有コミットの可能性）。"
-        echo "     削除をスキップします。内容確認のうえ手動で次を実行してください:"
-        echo "       $(ff_shell_argv git branch -D "$branch")"
-        FAILED_ITEMS+=("$branch: [gone] だが MERGED PR と OID 不一致（要手動確認）")
+        UNIQUE_MERGED_OID=""
+        ANC_VERDICT=""
+        if [ "$GUARDS_OK" = "1" ] && [ -r "$MERGED_UNIQUE_HEADS" ] \
+          && { [ -z "$WORKTREE_PATH" ] || [ "$WORKTREE_PATH" = "$REPO_ROOT" ]; }; then
+          UNIQUE_MERGED_OID="$(LC_ALL=C BRANCH="$branch" awk -F'\t' '$1 == ENVIRON["BRANCH"] { print $2; exit }' "$MERGED_UNIQUE_HEADS" || true)"
+        fi
+        if [ -n "$UNIQUE_MERGED_OID" ]; then
+          ANC_VERDICT="$(mc_ancestor_verdict "$LOCAL_OID" "$UNIQUE_MERGED_OID")"
+        fi
+        if [ "$ANC_VERDICT" = "ancestor" ]; then
+          if [ "$DRY_RUN" = "1" ]; then
+            dry_run_skip "git branch -D ${branch}（MERGED PR の head ${UNIQUE_MERGED_OID} の祖先であることを確認）"
+            echo "  ✓ (dry-run) 削除対象のブランチ: ${branch}"
+            DELETED_BRANCHES+=("$branch")
+          elif BRANCH_DEL_OUT="$(git branch -D "$branch" 2>&1)"; then
+            echo "  ✓ branch deleted (forced, MERGED PR の head ${UNIQUE_MERGED_OID} の祖先であることを確認): ${branch}"
+            DELETED_BRANCHES+=("$branch")
+          else
+            echo "  ❌ ブランチ削除に失敗: ${BRANCH_DEL_OUT}"
+            FAILED_ITEMS+=("${branch}: git branch -D 失敗")
+          fi
+        elif [ "$ANC_VERDICT" = "unreachable" ]; then
+          echo "  ⚠️ ${branch} は MERGED PR の head（${UNIQUE_MERGED_OID}）を手元で参照できず取得にも失敗したため、祖先かどうかを判定できません。"
+          echo "     削除をスキップします。内容確認のうえ手動で次を実行してください:"
+          echo "       $(ff_shell_argv git branch -D "$branch")"
+          FAILED_ITEMS+=("${branch}: [gone] だが MERGED PR の head（${UNIQUE_MERGED_OID}）を取得・参照できず祖先判定不能（要手動確認）")
+        else
+          echo "  ⚠️ $branch はマージ済み PR の head と OID 一致しません（未マージの固有コミットの可能性）。"
+          echo "     削除をスキップします。内容確認のうえ手動で次を実行してください:"
+          echo "       $(ff_shell_argv git branch -D "$branch")"
+          FAILED_ITEMS+=("$branch: [gone] だが MERGED PR と OID 不一致（要手動確認）")
+        fi
       fi
     else
       echo "  ❌ ブランチ削除に失敗: $BRANCH_DEL_OUT"

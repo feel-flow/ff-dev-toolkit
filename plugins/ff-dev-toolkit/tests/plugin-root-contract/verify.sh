@@ -6,6 +6,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# 退行検出の正規表現にマルチバイト否定文字クラス（`[^。]*`）を含むため、POSIX ロケール
+# （LANG / LC_ALL / LC_CTYPE 未設定）での単体実行ではバイト単位評価になり negative control が
+# 偽赤になる（OBS-438）。入口で UTF-8 ロケールへ固定する（Issue `#2842`）。
+if [ -f "$SCRIPT_DIR/../lib/utf8-locale.sh" ]; then
+  # shellcheck source=../lib/utf8-locale.sh
+  . "$SCRIPT_DIR/../lib/utf8-locale.sh"
+  ff_ensure_utf8_locale
+fi
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SKILLS_DIR="$PLUGIN_ROOT/skills"
 

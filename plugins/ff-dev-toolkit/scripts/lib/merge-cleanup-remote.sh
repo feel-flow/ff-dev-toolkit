@@ -143,6 +143,7 @@ fi
 # open 一覧:   「同じ head を open PR が再利用していないか」ガード（Step 4/6）
 GUARDS_OK=1
 MERGED_LIST="$WORK_TMP/merged.list"   # "name<TAB>oid"（same-repo PR のみ）
+MERGED_UNIQUE_HEADS="$WORK_TMP/merged_unique_heads.list" # "name<TAB>oid"（名前が一意な same-repo 非 null OID のみ）
 AGENT_MERGED_OIDS="$WORK_TMP/agent_merged_oids.list"
 OPEN_LIST="$WORK_TMP/open.list"       # "name"
 
@@ -199,6 +200,14 @@ else
     printf '%s' "$GH_MERGED_JSON" \
       | jq -r '.[] | select(.isCrossRepository | not) | "\(.headRefName)\t\(.headRefOid)"' \
       | LC_ALL=C sort -u > "$MERGED_LIST"
+    printf '%s' "$GH_MERGED_JSON" | jq -r '
+      group_by(.headRefName)
+      | .[]
+      | select(length == 1)
+      | .[0]
+      | select(.isCrossRepository == false and (.headRefOid | type == "string" and test("^[0-9a-fA-F]{40}$")))
+      | "\(.headRefName)\t\(.headRefOid)"
+    ' > "$MERGED_UNIQUE_HEADS"
     printf '%s' "$GH_OPEN_JSON" | jq -r '.[].headRefName' | LC_ALL=C sort -u > "$OPEN_LIST"
     printf '%s' "$GH_MERGED_JSON" | jq -r --arg base "$PR_BASE" '
       .[] | select(.isCrossRepository == false and .baseRefName == $base)

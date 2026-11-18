@@ -20,6 +20,18 @@
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-18
+
+### 変更
+
+- ACE 件数ゲートのブロック上限の既定値を 280 件から 380 件へ更新した。上限は「詰めてよい容量」ではなく再判断の発火点で、整理 1 回分の追加を賄う余裕を取り直した。refine 目安 130 件の警告は変えていない。従来の値で運用する場合は環境変数 `ACE_MAX_ENTRIES_PER_CATEGORY=280` を指定する
+
+### 修正
+
+- `tests/plugin-root-contract/verify.sh` の入口でロケール固定（`ff_ensure_utf8_locale`）を呼び、`LANG` / `LC_ALL` / `LC_CTYPE` 未設定で単体実行したときにマルチバイト否定文字クラス（`[^。]*`）がバイト評価されて negative control が偽赤になる問題を修正（`tests/cloud-env-setup/verify.sh` の消費側一覧へ追加）
+- `merge-cleanup` Step 5 の `[gone]` ローカルブランチ `-D` 判定で、worktree が保持しておらず同名の same-repo MERGED PR が一意に特定できる場合にローカル OID がその PR head の祖先であれば削除対象とするよう拡張（PR head が未取得なら `--no-write-fetch-head` で一時取得、`--dry-run` は一時 object DB を使用。取得失敗・非祖先・複数同名 PR・fork PR・worktree 保持時は従来どおり保全）
+- `finish` の検査のうち、PR のマージ状態ごとの出力を比べる箇所が、実行のあいだに経過時間の丸めの境界（0.1 時間刻み）をまたぐと偶発的に赤になる問題を直した。検査の中で時計を毎回進めて経過時間の値を必ず変え、その値だけを伏せて比べる。赤になった回は不一致の行を表示する
+
 ## [1.6.0] - 2026-11-18
 
 ### 変更

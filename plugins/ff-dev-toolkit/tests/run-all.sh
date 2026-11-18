@@ -1097,7 +1097,7 @@ else
     "$SCRIPT_DIR/claude-hooks-path/verify.sh"
     # クラウド環境セットアップ: scripts/setup-cloud-env.sh の「導入不能でも
     # exit 0 / 1 行報告 / --dry-run は導入を実行しない」契約、tests/lib/utf8-locale.sh の
-    # UTF-8 ロケール固定（run-all.sh / docs-gates / docs-gates-runtime の入口）、
+    # UTF-8 ロケール固定（run-all.sh / docs-gates / docs-gates-runtime / plugin-root-contract の入口）、
     # scripts/probe-env-capabilities.sh のロケール行。apt-get / npm / curl は stub、gh の
     # 不在は絞った PATH で作る。root scripts/ を持たない配布先 checkout では ○ skip。
     "$SCRIPT_DIR/cloud-env-setup/verify.sh"

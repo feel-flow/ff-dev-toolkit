@@ -522,6 +522,7 @@ merge-cleanup/agent-branches.sh
 merge-cleanup/cases/fixtures.sh
 merge-cleanup/cases/uncommitted-guard.sh
 merge-cleanup/detached-caller.sh
+merge-cleanup/gone-ancestor.sh
 merge-cleanup/long-paths.sh
 merge-cleanup/verify.sh
 merge-cleanup/windows-junctions.sh
