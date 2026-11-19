@@ -93,7 +93,7 @@ release/*     ← リリース準備ブランチ（developから分岐）
 
 起票は **body-file + 単純コマンド分割**で行う（`/create-issue` スキルと同じ契約。Issue #715 / #1079）。1 つの複合 bash ブロック（配列でラベル引数を組み立て、照会と起票を同じフェンスで分岐させる形）は使わない — worktree 隔離セッションの複合コマンド拒否ガードに当たり、起票そのものが止まる。
 
-raw `gh issue create` を直接使う前に、`.github/ISSUE_TEMPLATE/<種別>.md` があれば `cat` して節見出しを本文の骨子へ写す（`/create-issue` はこの確認を起票手順 `references/filing.md` の pre-flight として自動化している）。
+raw `gh issue create` を直接使う前に、`.github/ISSUE_TEMPLATE/<種別>.md` があれば `cat` して節見出しを本文の骨子へ写す（`/create-issue` はこの確認を起票手順 `references/filing.md` の pre-flight として自動化している）。タイトルと本文の書き方（タイトルには結果か効果を書き、台帳の番号は本文へ回す。本文の冒頭に背景と目的と期待効果を置く）は、raw で起票するときも `/create-issue` の `references/writing.md` に従う。
 
 **1. 本文を一時ファイルへ書く。** Write ツール（無ければエディタ）で作業ツリー**外**の永続作業ディレクトリ（`${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/<Issue 番号 or 識別子>/`。消えても困らない使い捨ての小片だけならセッションの scratchpad も可）へ本文を書く。ファイル名は Issue ごとに一意にする（`mktemp` か Issue の slug を含める — 共有一時領域の汎用名は並列セッションが相互上書きし、別 Issue の本文で起票する）。Bash の `mktemp` で作ったパスを Write ツールへ渡すときは、[一時ファイルの置き場所](./markdown-patch-discipline.md#一時ファイルの置き場所)のとおり `cygpath -m`（Windows の Git Bash だけに在る）で変換した値を Write ツールと `gh` の両方へ渡す — `/tmp/…` のまま渡すと Write ツールは別の場所へ書き、`gh` は `mktemp` が作った空のファイルを送る。heredoc でシェル変数へ組み立てない。空のファイルを渡さない（空の本文は「作成済みだが中身の無い」Issue を黙って生む）。
 
@@ -197,7 +197,7 @@ git diff --stat <前のブランチ> <base ブランチ> -- <対象ディレク�
 
 業務変更では索引を業務用語・主体・状態でも検索し、domain本文のEvidence / Verification / Distill-Toを読む。unverifiedやconflictingを正式仕様として実装しない。Distilled-Toがある場合は反映先の現行仕様も照合する。
 
-実装に入る前に [PLAYBOOK.md](../../08-knowledge/PLAYBOOK.md) の索引（エントリ一覧）を変更対象領域のキーワードで検索し、関連する ACE エントリを読む。Issue 本文に「関連 ACE エントリ」があれば（`/create-issue` が生成）それを起点にする。参照して役立ったエントリは ACE ID で記録する。**コミット件名・本文**への記録は再利用計測 `ace-reuse-report` の入力になる（計測対象は git log の件名・本文だけなので、squash merge 後のコミットにも ACE ID が残るようにする）。**`implementation-notes.md`** への記録は PR description へ転記され、`/ace-curate` の `Helpful` カウンター更新の入力になる。
+実装に入る前に [PLAYBOOK.md](../../08-knowledge/PLAYBOOK.md) の索引（エントリ一覧）を変更対象領域のキーワードで検索し、関連する ACE エントリを読む。Issue 本文の「関連」に ACE エントリがあれば（`/create-issue` が添える）それを起点にする。参照して役立ったエントリは ACE ID で記録する。**コミット件名・本文**への記録は再利用計測 `ace-reuse-report` の入力になる（計測対象は git log の件名・本文だけなので、squash merge 後のコミットにも ACE ID が残るようにする）。**`implementation-notes.md`** への記録は PR description へ転記され、`/ace-curate` の `Helpful` カウンター更新の入力になる。
 
 この節が手順の正本である。記録の契約: 検索結果は必ず記録し（ヒットした ACE ID / `0 件` / `Playbook なし` / `読み取り失敗（理由）` の 4 種。いずれも「検索を実施した」記録）、空欄のまま先へ進まない。Playbook 不在・読み取り失敗は該当を記録して標準手順を続行する（探索の失敗でタスクを止めない）。`/spec-driven` を使う場合は Step 1（tier 判定の直後）が本節の起動点となり、結果をゲート進行表のタスクサマリー「参照 ACE エントリ」欄へ記録する。スキル側は別手順を定義せず、本節を実行して結果を記録するだけとする。
 

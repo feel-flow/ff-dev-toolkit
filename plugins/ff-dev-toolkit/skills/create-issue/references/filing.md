@@ -122,11 +122,11 @@ gh issue create \
   --repo "$expected_repo" \
   --label "{実在を確認したラベル}" \
   --assignee "@me" \
-  --title "{prefix}: {ストーリー要約}" \
+  --title "{prefix}: {何が・誰が どう良くなるか（references/writing.md）}" \
   --body-file "{本文ファイルのパス}"
 ```
 
-<!--466f064f837bf225-->
+<!--5d6121badaf549d3-->
 MCP: 取得値: MCP で同じ repo の既存候補と label name、認証主体 login を取得。形式: title / 本文ファイル原文 / 実在 labels / 必要 assignees の構造化引数。渡し先: 既存 create_issue へ渡し、返った number / url と fresh body / labels を後読する。@me は実 login、out-of-scope はアサイン中立を保持。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
 
 `--label` はステップ 2 の照合を通った候補の数だけ繰り返す（0 件なら渡さない）。

@@ -75,9 +75,9 @@
    - **既定モードでも起票せず提示に留めるもの**（承認の問題ではなく、構造的に起票先または内容を確定できないもの）: 起票先の owner/repo を確定できない・「起票前の既存確認」を実行できなかった（認証エラー・rate limit 等）・ヒットした open Issue の方針と矛盾する（方針側の変更提案として提示する）・個人環境（`~/.claude` 等）への提案。いずれも `既存確認:` 欄に理由を書き、`起票:` 行を「見送り（理由）」にする
    - **ask モード（`RETROSPECTIVE_FILING=ask`）**: 提案を提示して**ユーザー承認を待つ**（承認なしに起票しない）。ただし、同一 private 確認済み repo で、利用者がそのセッションで当該作業を含む**包括的な実行指示**（「最後までやって」「起票まで進めて」等。「マージまで進めて」のようにチェーン末尾の振り返りより前で終わる指示は含まない）を直接出している場合は、その範囲内の観測 Issue の起票・既存 Issue への再発コメント追記・台帳エントリの Count 更新（Count 更新はもともと承認不要の定型記録）について改めて確認を取らずに実施し、実施した事実と発行番号を振り返り結果で報告する（利用者の直接指示は skill に優先する）。外部公開については下の承認境界に従う
    - ask モードの包括指示例外は特急レーン（データ破壊・広範な作業停止・セキュリティの重大起票）には及ばない — ask を選んだ利用者には重大さの判断そのものを見せる価値があるため、包括指示があっても提案を提示してから実施する
-3. 起票対象（既存確認・送信境界を通過し、起票モードに従って実行できる提案）のうち**新規起票**のもの: 起票先 repo へ Issue を作成する。ff-dev-toolkit 導入 repo では `/create-issue` を**既定**とする（種別・優先度ラベルの実在確認付き付与まで行われる）。素の `gh issue create` は `/create-issue` が使えない環境向けの fallback で（`docs/` のコア文書が無い、AC を書く材料が揃わない場合を含む）、**そのままではラベルが付かない**。ラベル付与手順の正本は `/create-issue`（`skills/create-issue/SKILL.md`「ラベルの決定」）であり、ここでは逐語複製せずその verify-then-skip をそのまま用いる: `gh label list --repo "<owner>/<repo>" --limit 200 --json name --jq '.[].name'` で実在するラベル名を取得し、**存在するものだけ** `--label` へ渡し、省略した系統は「不在」と「照会失敗」を書き分けて報告する。
+3. 起票対象（既存確認・送信境界を通過し、起票モードに従って実行できる提案）のうち**新規起票**のもの: 起票先 repo へ Issue を作成する。ff-dev-toolkit 導入 repo では `/create-issue` を**既定**とする（種別・優先度ラベルの実在確認付き付与まで行われる）。タイトルと本文は、どちらの経路でも `create-issue` の [references/writing.md](../../create-issue/references/writing.md) に従う。提案の欄は同ファイル「経路ごとの適用」のとおり節へ写す（背景には実測の要約だけを書き、台帳の番号・Count・詳しい経緯と既存確認は `## 関連` へ回す。期待効果 → 目的と期待効果、提案 → やること）。期待効果を本文の末尾へ回さず、AC の材料が足りないときの書き方と、下の fallback で省いてよい節も同ファイルに従う。提案タイトルも同ファイル「タイトル」の形にし、台帳の番号や Count はタイトルに入れない。素の `gh issue create` は `/create-issue` が使えない環境向けの fallback で（`docs/` のコア文書が無い、AC を書く材料が揃わない場合を含む）、**そのままではラベルが付かない**。ラベル付与手順の正本は `/create-issue`（`skills/create-issue/SKILL.md`「ラベルの決定」）であり、ここでは逐語複製せずその verify-then-skip をそのまま用いる: `gh label list --repo "<owner>/<repo>" --limit 200 --json name --jq '.[].name'` で実在するラベル名を取得し、**存在するものだけ** `--label` へ渡し、省略した系統は「不在」と「照会失敗」を書き分けて報告する。
 
-   <!--16587df47126564a-->
+   <!--58dc998f781396a5-->
    MCP: 取得値: MCP で同じ repo の既存候補と label name、認証主体 login を取得。形式: title / 本文ファイル原文 / 実在 labels / 必要 assignees の構造化引数。渡し先: 既存 create_issue（PR は create_pull_request）へ渡し、返った number / url と fresh body / labels を後読する。@me は実 login、out-of-scope はアサイン中立を保持。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
 
 ```bash
@@ -86,10 +86,10 @@
 gh issue create --repo "<owner>/<repo>" --assignee @me \
   --label "<実在確認済みの type ラベル>" --label "<実在確認済みの priority ラベル>" \
   --title "<提案タイトル>" \
-  --body "<実測の経緯 + 提案内容 + 期待効果>"
+  --body-file "<writing.md「経路ごとの適用」の /retrospective の節で組み立て、作業ツリー外へ書いた本文ファイル>"
 ```
 
-   <!--ba21e771758913c2-->
+   <!--f4c0bbf99e59476e-->
    MCP: 取得値: MCP で同じ repo の既存候補と label name、認証主体 login を取得。形式: title / 本文ファイル原文 / 実在 labels / 必要 assignees の構造化引数。渡し先: 既存 create_issue（PR は create_pull_request）へ渡し、返った number / url と fresh body / labels を後読する。@me は実 login、out-of-scope はアサイン中立を保持。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
 
 4. 起票対象のうち**既存への追記へ切り替えた**もの: 新規起票はしない。既存 Issue へのコメント追記は `gh issue comment "<Issue番号>" --repo "<owner>/<repo>" --body "<再発の実測・経緯 + 元提案の内容>"` で行う。既存 ACE エントリのカウンター更新は本スキルでは行わず、ACE 側の手順（`/ace-curate`、または導入 repo の Playbook 記述ガイドライン）へ回す

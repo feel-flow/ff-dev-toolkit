@@ -20,6 +20,15 @@
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-11-20
+
+### 変更
+
+- `/create-issue`・`/out-of-scope-issue`・`/retrospective` が起票する Issue のタイトルと本文の書き方を、`plugins/ff-dev-toolkit/skills/create-issue/references/writing.md` に 1 つの正本としてまとめた。タイトルには仕組みの名前ではなく結果か効果を 40 文字前後で書き、台帳の番号や Count は本文の「関連」へ回す。本文は、ストーリーと背景のあとに「目的と期待効果」（目的・効果・得をする人）と「やること」（対象と方針。代替案とやらないことは、あるときだけ）を置き、末尾に「関連」を置く。7W2H1G は見出しにせず、書いた本文を点検するのに使う
+- `/out-of-scope-issue` の本文の雛形に「目的と期待効果」（目的・効果・得をする人）の節を足し、台帳の番号の書き先を「発見元」に決め、タイトルの例を効果を書く形に改めた。`/retrospective` は提案の欄を上の節へ写す。背景には実測の要約だけを書き、台帳の番号・Count・詳しい経緯は「関連」へ回す。AC の材料が足りないときは推測で埋めずに「着手時に決める」と書く。fallback の起票例は本文をファイルで渡す形にした
+- `/create-issue`（と、それを通して起票する `/retrospective`）は、リポジトリに Issue テンプレートがあるとき、同じ役割の節（例: 関連Issue と関連、スコープ外とやらないこと）をテンプレートの見出しにそろえて 1 つにし、同じことを 2 か所に書かない。`/out-of-scope-issue` はテンプレートがあっても 4 節のまま起票する
+- 配布用の Issue テンプレート（`docs-template/.github/ISSUE_TEMPLATE/` の feature / bug / docs / infra / refactor）に「目的と期待効果」の節を足し、feature と bug には「やること」の節も足した。素の `gh issue create` で起票するときも同じ書き方に従うよう、`plugins/ff-dev-toolkit/docs-template/05-operations/deployment/git-workflow.md` の起票手順に案内を足した
+
 ## [1.8.0] - 2026-11-20
 
 ### 追加

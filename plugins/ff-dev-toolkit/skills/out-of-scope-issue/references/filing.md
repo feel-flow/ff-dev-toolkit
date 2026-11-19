@@ -101,16 +101,22 @@ MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形
 
 #### ステップ 1: 本文を一時ファイルへ書く
 
-本文は Write ツールで作業ツリー外の永続作業ディレクトリ（`${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/<Issue 番号 or 識別子>/`。使い捨て小片だけならセッションの scratchpad 等）へ書き、`--body-file` で渡す（heredoc でシェル変数へ組み立てない。空のファイルを渡さない — 空の本文は「作成済みだが中身の無い」Issue を黙って生む）。§3.5 で取得した発見元情報を埋める:
+本文は Write ツールで作業ツリー外の永続作業ディレクトリ（`${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/<Issue 番号 or 識別子>/`。使い捨て小片だけならセッションの scratchpad 等）へ書き、`--body-file` で渡す（heredoc でシェル変数へ組み立てない。空のファイルを渡さない — 空の本文は「作成済みだが中身の無い」Issue を黙って生む）。§3.5 で取得した発見元情報を埋める。節の中身とタイトルの書き方は `create-issue` の [references/writing.md](../../create-issue/references/writing.md) に従う（本スキルは同ファイル「経路ごとの適用」の 4 節の形）:
 
 ```markdown
 ## 概要
 {発見内容を 1〜3 行}
 
+## 目的と期待効果
+- 目的: {直すと何のためになるか}
+- 効果: {何がどれだけ良くなるか。数字か、目で確かめられる変化で}
+- 得をする人: {誰か}
+
 ## 発見元
 - PR: #{current_pr}
 - 発見者: {tool 名 or 手動レビュー}
 - 関連ファイル: {ファイルパス}
+- 台帳・関連 Issue: {OBS / ACE / ADR の番号や関連 Issue。あるときだけ}
 
 ## 受け入れ条件
 - [ ] {主要な完了条件}
@@ -163,13 +169,15 @@ MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形
 
 ### 3.4 Title prefix
 
+プレフィックスの後ろは、仕組みの名前ではなく結果か効果を書く。台帳の番号や Count はタイトルに入れず本文の `## 発見元` へ回し、長さは 40 文字前後を目安にする（正本は `create-issue` の [references/writing.md](../../create-issue/references/writing.md)「タイトル」）。
+
 | 種類 | Prefix | 例 |
 |------|--------|----|
-| リファクタリング | `refactor:` | `refactor: 共通ヘルパー抽出` |
-| テスト不足 | `test:` | `test: エラーパスのカバレッジ追加` |
-| バグ発見 | `fix:` | `fix: edge case の未処理` |
-| 改善提案 | `chore:` | `chore: ログ改善` |
-| ドキュメント | `docs:` | `docs: API 仕様の更新` |
+| リファクタリング | `refactor:` | `refactor: 設定の読み込みを 1 か所にまとめ、直す場所を減らす` |
+| テスト不足 | `test:` | `test: 読み込みに失敗する経路も回帰テストで守る` |
+| バグ発見 | `fix:` | `fix: 入力が空のとき一覧が表示されない` |
+| 改善提案 | `chore:` | `chore: 失敗時のログで原因の場所が分かるようにする` |
+| ドキュメント | `docs:` | `docs: API の認証手順を実装に合わせて直す` |
 
 ### 3.5 Context 自動検出
 

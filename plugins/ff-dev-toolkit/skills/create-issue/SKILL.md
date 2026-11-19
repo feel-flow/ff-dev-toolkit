@@ -45,10 +45,11 @@ fi
 
 ## 条件付きで読む references
 
-どちらも毎回の起票で読む。
+どれも毎回の起票で読む。
 
 | 読む条件 | ファイル | 中身 |
 |---|---|---|
+| 手順 3・6 でタイトルと本文を書くとき | [references/writing.md](references/writing.md) | タイトルと本文の書き方 |
 | 手順 3 で工数ブロックを書くとき | [references/estimation.md](references/estimation.md) | 過去実績の 3 層参照・工数の目安表・積み方と補正 |
 | 手順 5 で priority を判定するときから手順 6 の起票まで | [references/filing.md](references/filing.md) | ラベルの照合規則・priority の判定基準・報告の書き分け・ISSUE_TEMPLATE の pre-flight・各論点の既定値 |
 
@@ -83,14 +84,14 @@ MCP: 取得値: MCP で同じ repo の既存候補と label name、認証主体 
 
 #### 関連 ACE エントリの検索（Reuse）
 
-ACE Playbook（`docs/08-knowledge/PLAYBOOK.md`）があれば索引を対象領域で検索し、関連エントリを最大 3 件、手順 6 の「関連 ACE エントリ」へ添える（無ければ添えない。読む側は [git-workflow.md](../../docs-template/05-operations/deployment/git-workflow.md)「着手前の Playbook 参照（ACE Reuse）」）。Issue 本文では相対パスが解決しないので blob URL で書き、アンカーは ACE ID の小文字化にする（`ACE-438-1 → #ace-438-1`、`ACE-i425-1 → #ace-i425-1`）。
+ACE Playbook（`docs/08-knowledge/PLAYBOOK.md`）があれば索引を対象領域で検索し、関連エントリを最大 3 件、手順 6 の「関連」へ添える（無ければ添えない。読む側は [git-workflow.md](../../docs-template/05-operations/deployment/git-workflow.md)「着手前の Playbook 参照（ACE Reuse）」）。Issue 本文では相対パスが解決しないので blob URL で書き、アンカーは ACE ID の小文字化にする（`ACE-438-1 → #ace-438-1`、`ACE-i425-1 → #ace-i425-1`）。
 
 ### 3. Issue 内容のヒアリング（ストーリー収集）
 
-- **ユーザー向け（新機能 / ドキュメント）= ユーザーストーリー**: ペルソナ（誰が）/ 実現したいこと（何を）/ 価値・理由（なぜ）
-- **技術系（バグ / リファクタ / インフラ / 汎用タスク）= ジョブストーリー**: 状況・トリガー / 動機 / 得たい結果
+- **新機能 / ドキュメント = ユーザーストーリー**: ペルソナ（誰が）/ 実現したいこと（何を）/ 価値・理由（なぜ）
+- **それ以外 = ジョブストーリー**: 状況・トリガー / 動機 / 得たい結果
 
-加えて **タイトル**（conventional-commit プレフィックス + ストーリー要約。汎用タスクのみ `【タスク】` 形式）と **受け入れ条件**（Given-When-Then + Definition of Done）を収集する。
+加えて **タイトル**（references/writing.md の形式）と **受け入れ条件**（Given-When-Then + Definition of Done）を収集する。
 
 #### 工数の推定（KPI 計測）
 
@@ -148,7 +149,7 @@ MCP: 取得値: MCP で open bundle の number/title/body/state と子 Issue の
 
 ### 6. Issue の作成
 
-次の構造で本文を組み立てる。先頭の見出しは `## ユーザーストーリー`〔feature/docs〕か `## ジョブストーリー`〔bug/refactor/infra/汎用タスク〕の**どちらか一方**:
+次の構造で組み立てる（各節の中身は references/writing.md）。先頭は `## ユーザーストーリー`〔feature/docs〕か `## ジョブストーリー`〔他〕の**どちらか一方**:
 
 ```markdown
 ## ユーザーストーリー
@@ -159,13 +160,19 @@ MCP: 取得値: MCP で open bundle の number/title/body/state と子 Issue の
 
 [なぜ必要か]
 
+## 目的と期待効果
+
+- 目的: [何のためか]
+- 効果: [何がどれだけ良くなるか]
+- 得をする人: [誰か]
+
+## やること
+
+- [対象と方針]
+
 ## 参照文書
 
 - [タスク種別に応じた参照文書リスト]
-
-### 関連 ACE エントリ（該当時のみ）
-
-- [ACE-XXX-X: タイトル](https://github.com/<owner>/<repo>/blob/<default-branch>/docs/08-knowledge/playbook/<category>.md#ace-xxx-x)
 
 ## 受け入れ条件（AC）
 
@@ -177,6 +184,10 @@ MCP: 取得値: MCP で open bundle の number/title/body/state と子 Issue の
 
 - [ ] [機械的完了条件]
 - [ ] markdownlint エラーなし（該当する場合）
+
+## 関連
+
+- [関連 Issue・PR・台帳の番号・ACE エントリ]
 
 ## 工数見積もり（KPI 計測）
 

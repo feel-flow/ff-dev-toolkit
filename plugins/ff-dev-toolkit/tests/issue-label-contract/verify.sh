@@ -619,6 +619,7 @@ done
 # 表から HTML コメントは除く（コメントへ退避した行を「在る」と数えない）。
 CI_ROUTING_HEADING='## 条件付きで読む references'
 CI_ROUTES=(
+  'writing.md|| 手順 3・6 でタイトルと本文を書くとき | [references/writing.md](references/writing.md) |'
   'estimation.md|| 手順 3 で工数ブロックを書くとき | [references/estimation.md](references/estimation.md) |'
   'filing.md|| 手順 5 で priority を判定するときから手順 6 の起票まで | [references/filing.md](references/filing.md) |'
 )
