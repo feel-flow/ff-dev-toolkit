@@ -4,7 +4,7 @@
 # 配布物 hooks/guard-effort-actual.sh を stdin JSON で直接駆動し、AC の各分岐
 # （ff-effort ブロックがあるのに実績が未記入なら停止 / 案内された迂回手段で通過 /
 # ブロック不在は通過 / マージと無関係な Bash は判定処理へ入らない /
-# gh・jq 不在は stdin を読み切って通過 / Closes と Refs を同じ基準で判定）を固定する。
+# gh・jq 不在は stdin を読み切って通過 / Refs だけは完了報告の有無で判定する）を固定する。
 # 停止メッセージが「未記入の Issue 番号」「/close-issue <PR番号>」「迂回手段」を
 # 同じ本文で案内する契約も検査し、hooks.json の PreToolUse 登録を静的照合する。
 #
@@ -89,8 +89,10 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
 # ---- fixture: gh スタブ -------------------------------------------------------
 # `gh pr view [selector] --json ...`      → $FF_STUB_DIR/pr-<selector|current>.json
-# `gh issue view <n> --json body,state`   → $FF_STUB_DIR/issue-<n>.json
+# `gh issue view <n> --json body,state` と、Refs の未記入だけ続く `--json comments`
+# → $FF_STUB_DIR/issue-<n>.json（--json の中身では絞らない）
 # FF_STUB_FAIL=1 のときは常に非 0（認証切れ・オフライン相当）。
+# FF_STUB_FAIL_COMMENTS=1 のときは --json に comments を含む呼び出しだけ非 0。
 BIN_DIR="$TEST_TMP/bin"
 STUB_DIR="$TEST_TMP/stub"
 mkdir -p "$BIN_DIR" "$STUB_DIR"
@@ -102,13 +104,20 @@ resource="${1:-}"
 verb="${2:-}"
 shift 2 2>/dev/null || true
 selector=""
+json_fields=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --json | --jq | --repo | -R) shift 2; continue ;;
+    --json) json_fields="${2:-}"; shift 2; continue ;;
+    --jq | --repo | -R) shift 2; continue ;;
     -*) shift; continue ;;
     *) [ -n "$selector" ] || selector="$1"; shift ;;
   esac
 done
+if [ "${FF_STUB_FAIL_COMMENTS:-0}" = "1" ]; then
+  case "$json_fields" in
+    *comments*) exit 1 ;;
+  esac
+fi
 [ "$verb" = "view" ] || exit 1
 case "$resource" in
   pr)
@@ -159,8 +168,9 @@ write_pr() { # <selector> <body> [number] [closing-csv]
          end)
     }' > "$STUB_DIR/pr-$sel.json"
 }
-write_issue() { # <number> <body> [state]
-  jq -n --arg b "$2" --arg s "${3:-OPEN}" '{body: $b, state: $s}' > "$STUB_DIR/issue-$1.json"
+write_issue() { # <number> <body> [state] [comments JSON array]
+  jq -n --arg b "$2" --arg s "${3:-OPEN}" --argjson c "${4:-[]}" \
+    '{body: $b, state: $s, comments: $c}' > "$STUB_DIR/issue-$1.json"
 }
 
 BLOCK_UNFILLED='## 工数見積もり
@@ -345,6 +355,10 @@ write_issue 918 "$BLOCK_HOURS_WITH_DAYS"
 write_issue 919 "$BLOCK_LEGACY_WITH_HOURS"
 # closing keyword の本文は関数で組む（公開同期の番号短縮形検査に fixture の番号を拾わせない）
 closes_body() { printf 'Closes %s%s' '#' "$1"; }
+refs_body() { printf 'Refs %s%s\n\n## Summary\n- 変更点' '#' "$1"; }
+marker_comments() { # <pull request number>
+  jq -nc --arg n "$1" '[{body: ("完了報告\n<!-- close-issue-report:PR-" + $n + " -->\n継続")}]'
+}
 write_pr 60 "$(closes_body 916)" 60 "916"
 write_pr 61 "$(closes_body 917)" 61 "917"
 write_pr 62 "$(closes_body 918)" 62 "918"
@@ -353,6 +367,23 @@ write_issue 920 "$BLOCK_EMPTY_UNIT"
 write_pr 64 "$(closes_body 920)" 64 "920"
 # GitHub MCP 経路: 閉じる Issue の本文を gh で読めない PR（Issue のスタブを置かない）
 write_pr 65 "$(closes_body 921)" 65 "921"
+# Refs だけの完了報告。番号は連結して書き、追加行の短縮参照検査に拾わせない。
+write_issue 930 "$BLOCK_UNFILLED" OPEN "$(marker_comments 66)"
+write_pr 66 "$(refs_body 930)" 66 ""
+write_issue 931 "$BLOCK_UNFILLED" OPEN "$(jq -nc '[{body:"<!-- close-issue-report:ISSUE-931 -->"}]')"
+write_pr 67 "$(refs_body 931)" 67 ""
+write_issue 932 "$BLOCK_UNFILLED" OPEN "$(marker_comments 68)"
+write_pr 68 "$(closes_body 932)" 68 "932"
+write_pr 69 "$(refs_body 930)" 69 ""
+write_issue 936 "$BLOCK_UNFILLED" OPEN "$(marker_comments 700)"
+write_pr 70 "$(refs_body 936)" 70 ""
+write_pr 71 "$(refs_body 903)" 71 ""
+write_issue 934 "$(printf '%s\n\n%s\n' "$BLOCK_UNFILLED" '<!-- close-issue-report:PR-72 -->')" OPEN '[]'
+write_pr 72 "$(refs_body 934)" 72 ""
+write_pr 73 "$(printf '%s\n%s\n' "$(closes_body 932)" "$(refs_body 931)")" 73 ""
+write_issue 935 "$BLOCK_UNFILLED" OPEN null
+write_pr 74 "$(refs_body 935)" 74 ""
+write_pr 75 "$(refs_body 937)" 75 ""
 
 OUT=""
 RC=0
@@ -561,16 +592,19 @@ HOOK_CWD=""
 run_hook "echo 'gh pr merge 42 --squash'"
 assert_pass "コマンド位置に無い gh（echo の文字列）は素通りする"
 
-echo "guard-effort-actual: クォート内の区切り記号と heredoc 本文は実コマンドとして読まない"
+echo "guard-effort-actual: クォート内の区切り記号・未閉鎖クォート・heredoc 本文は実コマンドとして読まない"
 run_hook "echo 'gh pr merge 42; gh pr merge 43'"
-assert_pass "クォート内の ; で割れたセグメントは捨てる（文字列出力を停止しない）"
+assert_pass "クォート内の ; はコマンド境界として読まない（文字列出力を停止しない）"
 assert_no_gh_call "クォート内の ; では gh を 1 度も呼ばない"
 run_hook "echo \"gh pr merge 42 && gh pr merge 43\""
-assert_pass "クォート内の && で割れたセグメントは捨てる"
+assert_pass "クォート内の && はコマンド境界として読まない"
 assert_no_gh_call "クォート内の && では gh を 1 度も呼ばない"
 run_hook "echo 'gh pr merge 42 | cat'"
-assert_pass "クォート内の | で割れたセグメントは捨てる"
+assert_pass "クォート内の | はコマンド境界として読まない"
 assert_no_gh_call "クォート内の | では gh を 1 度も呼ばない"
+run_hook "gh pr merge 42 --body 'unclosed"
+assert_pass "クォートが閉じていないコマンドは解析不能として素通しする（fail-open）"
+assert_no_gh_call "クォート未閉鎖では gh を 1 度も呼ばない"
 run_hook "$(printf '%s\n' "cat > note.md <<'EOF'" "gh pr merge 42 --squash" "EOF")"
 assert_pass "heredoc 本文に書かれた gh pr merge は停止しない（データであって実行されない）"
 assert_no_gh_call "heredoc 本文では gh を 1 度も呼ばない"
@@ -647,13 +681,299 @@ else
   bad "gh のみの PATH: exit=$RC out=[$OUT]"
 fi
 
-echo "guard-effort-actual: AC6（Closes / Refs を同じ基準で判定する）"
+echo "guard-effort-actual: AC6（Refs だけで報告が無い PR は止め、Issue は閉じない前提で案内する）"
 run_hook "gh pr merge 43 --squash"
-assert_fire "AC6: Refs 運用の PR でも Closes と同じ基準で停止する"
+assert_fire "AC6: Refs だけで完了報告が無い PR は未記入を理由に停止する"
 case "$REASON" in
   *'#901'*) ok "AC6: Refs 先の Issue 番号を名指しする" ;;
   *) bad "AC6: Refs 先の Issue 番号が停止メッセージに無い: [$REASON]" ;;
 esac
+case "$REASON" in
+  *'閉じません'*) ok "AC6: 停止メッセージは Issue が閉じない前提で書く" ;;
+  *) bad "AC6: Refs の停止メッセージが Issue が閉じない前提でない: [$REASON]" ;;
+esac
+case "$REASON" in
+  *'Issue は閉じます'*) bad "AC6: Refs の停止メッセージが、Issue が閉じる前提の文を含む: [$REASON]" ;;
+  *) ok "AC6: Refs の停止メッセージは Issue が閉じる前提の文を含まない" ;;
+esac
+case "$REASON" in
+  *'/close-issue 43'*) ok "AC6: 停止メッセージが /close-issue を PR 番号つきで案内する" ;;
+  *) bad "AC6: 停止メッセージに /close-issue の案内が無い: [$REASON]" ;;
+esac
+case "$REASON" in
+  *'FF_EFFORT_ACTUAL_ACK=1'*) ok "AC6: 停止メッセージが迂回手段を案内する" ;;
+  *) bad "AC6: 停止メッセージに迂回手段が無い: [$REASON]" ;;
+esac
+
+echo "guard-effort-actual: Refs だけの完了報告（報告があれば通し、別 PR の印や本文だけの印では通さない）"
+ref930="$(printf '%s%s' '#' 930)"
+ref931="$(printf '%s%s' '#' 931)"
+ref932="$(printf '%s%s' '#' 932)"
+ref934="$(printf '%s%s' '#' 934)"
+ref936="$(printf '%s%s' '#' 936)"
+run_hook "gh pr merge 66 --squash"
+assert_pass "Refs だけで、この PR の完了報告がコメントにあれば未記入でも停止しない"
+if grep -q '^issue view 930 --json comments$' "$STUB_DIR/gh-calls.log"; then
+  ok "完了報告の判定は対象 Issue のコメントを読んでいる"
+else
+  bad "完了報告ありの Refs でコメントを読んでいない: [$(tr '\n' ';' < "$STUB_DIR/gh-calls.log")]"
+fi
+if grep -q '^issue view 930 --json body,state$' "$STUB_DIR/gh-calls.log"; then
+  ok "Refs も本文と状態をコメントとは別に読む"
+else
+  bad "Refs の本文照会が無い: [$(tr '\n' ';' < "$STUB_DIR/gh-calls.log")]"
+fi
+fixes_930="$(printf 'Fixes %s%s' '#' 930)"
+run_hook "gh pr merge 66 --squash --body \"${fixes_930}\""
+assert_fire "マージコマンドの body にある closing keyword は報告印があっても未記入なら停止する"
+case "$REASON" in
+  *"$ref930"*'Issue は閉じます'*) ok "マージコマンドで閉じる Issue は閉じる文で止める" ;;
+  *) bad "マージコマンドの body を閉じる側として止めていない: [$REASON]" ;;
+esac
+case "$REASON" in
+  *'閉じません'*) bad "マージコマンドで閉じる Issue の停止文に、閉じない前提が混ざる: [$REASON]" ;;
+  *) ok "マージコマンドで閉じる Issue の停止文は閉じない前提を含まない" ;;
+esac
+run_hook "gh pr merge 66 --squash --subject '${fixes_930}'"
+assert_fire "マージコマンドの subject にある closing keyword は報告印があっても未記入なら停止する"
+merge_cmd="$(cat <<EOF
+gh pr merge 66 --squash \\
+  --body '${fixes_930}'
+EOF
+)"
+run_hook "$merge_cmd"
+assert_fire "継続行の body にある closing keyword も閉じる側として止める"
+keep_open="$(printf 'keep this issue open')"
+run_hook "gh pr merge 66 --squash --body \"${keep_open}\""
+assert_pass "マージコマンドが closing keyword を含まなければ報告印で通す"
+fix_paren="$(printf 'fix(%s%s): title' '#' 930)"
+run_hook "gh pr merge 66 --squash --subject \"${fix_paren}\""
+assert_pass "件名の fix と括弧の番号は closing keyword として扱わない"
+
+echo "guard-effort-actual: マージ指定・引用・文脈の回避形行列"
+# 軸 1（引用・エスケープ・複数行・フラグ結合・後置セレクタ）
+run_hook "gh pr merge 66 --squash --body=\"${fixes_930}\""
+assert_fire "回避形（引用）: --body=\"...\" に含まれる closing keyword で停止する"
+case "$REASON" in
+  *"$ref930"*'Issue は閉じます'*) ok "回避形（引用）: --body=\"...\" を閉じる側として止める" ;;
+  *) bad "回避形（引用）: --body=\"...\" の理由文が不整合: [$REASON]" ;;
+esac
+run_hook "gh pr merge 66 --squash --subject=\"${fixes_930}\""
+assert_fire "回避形（引用）: --subject=\"...\" に含まれる closing keyword で停止する"
+run_hook "gh pr merge 66 --squash -b\"${fixes_930}\""
+assert_fire "回避形（引用）: 短縮結合 -b\"...\" で停止する"
+run_hook "gh pr merge 66 --squash -t\"${fixes_930}\""
+assert_fire "回避形（引用）: 短縮結合 -t\"...\" で停止する"
+run_hook "gh pr merge 66 --squash -sb \"${fixes_930}\""
+assert_fire "回避形（引用）: 短縮フラグ束ね -sb \"...\" で停止する"
+run_hook "gh pr merge 66 --squash -sb\"${fixes_930}\""
+assert_fire "回避形（引用）: 短縮フラグ束ね直結 -sb\"...\" で停止する"
+run_hook "gh pr merge 66 --squash --body \"note \\\"quoted\\\" ${fixes_930}\""
+assert_fire "回避形（エスケープ）: ダブルクォート内の \\\" を含む --body で停止する"
+sq_val="'note '\\''quoted'\\'' ${fixes_930}'"
+run_hook "gh pr merge 66 --squash --body ${sq_val}"
+assert_fire "回避形（引用）: シングルクォート連結の --body で停止する"
+ansic_cmd="$(printf 'gh pr merge 66 --squash --body $%s' "'Refs ${ref930}\\n\\n${fixes_930}'")"
+run_hook "$ansic_cmd"
+assert_fire "回避形（引用）: ANSI-C 引用 \$'...' 内の \\n 越しの closing keyword で停止する"
+ml_fire_cmd="$(cat <<EOF
+gh pr merge 66 --squash \\
+  --body 'Refs ${ref930}
+
+${fixes_930}'
+EOF
+)"
+run_hook "$ml_fire_cmd"
+assert_fire "回避形（複数行）: 複数行シングルクォート --body の後続行の closing keyword で停止する"
+ml_pass_cmd="$(cat <<EOF
+gh pr merge 66 --squash \\
+  --body 'Refs ${ref930}
+
+詳細メモ'
+EOF
+)"
+run_hook "$ml_pass_cmd"
+assert_pass "回避形（複数行）: 複数行シングルクォート --body に closing keyword が無ければ完了報告で通す"
+if grep -q '^pr view 66 ' "$STUB_DIR/gh-calls.log" && grep -q '^issue view 930 --json comments$' "$STUB_DIR/gh-calls.log"; then
+  ok "回避形（複数行）: 複数行 --body を失敗扱いせず実際に PR 66 と完了報告を照会している"
+else
+  bad "回避形（複数行）: 複数行 --body が検査に入っていない: [$(tr '\n' ';' < "$STUB_DIR/gh-calls.log")]"
+fi
+ml_no_marker_cmd="$(cat <<EOF
+gh pr merge 43 --squash \\
+  --body 'Refs ${ref930}
+
+詳細メモ'
+EOF
+)"
+run_hook "$ml_no_marker_cmd"
+assert_fire "回避形（複数行）: 完了報告の無い Refs を複数行 --body で隠して通せない"
+run_hook "gh pr merge --squash --body \"${keep_open} now\" 67"
+assert_fire "回避形（順序）: 複数語の --body の後ろに置いた PR 番号でもセレクタを誤読しない"
+case "$REASON" in
+  *"$ref931"*) ok "回避形（順序）: --body の後の PR 67 に紐づく Issue を名指しする" ;;
+  *) bad "回避形（順序）: セレクタ 67 を解決できていない: [$REASON]" ;;
+esac
+
+# 軸 2（コマンド文脈の変形とラッパー）
+run_hook "\"gh\" \"pr\" 'merge' 66 --squash --body \"${fixes_930}\""
+assert_fire "回避形（語変形）: 引用した \"gh\" \"pr\" 'merge' で停止する"
+run_hook "\\gh pr merge 66 --squash --body \"${fixes_930}\""
+assert_fire "回避形（語変形）: バックスラッシュ付きの \\gh で停止する"
+run_hook "env VAR_OTHER=1 gh pr merge 66 --squash --body \"${fixes_930}\""
+assert_fire "回避形（ラッパー）: env 前置の gh pr merge で停止する"
+run_hook "command -p gh pr merge 66 --squash --body \"${fixes_930}\""
+assert_fire "回避形（ラッパー）: command -p 前置の gh pr merge で停止する"
+run_hook "gh -R acme/widgets pr merge 66 --squash --body \"${fixes_930}\""
+assert_fire "回避形（語順）: pr より前に -R を置いた gh -R ... pr merge で停止する"
+run_hook "command -v gh pr merge 42"
+assert_pass "回避形（除外境界）: command -v gh は実行ではなく照会なので通す"
+assert_no_gh_call "回避形（除外境界）: command -v では gh を呼ばない"
+
+# 軸 3（区切り・構文・後続コマンドの隔離）
+run_hook "true&&gh pr merge 66 --squash --body \"${fixes_930}\""
+assert_fire "回避形（区切り）: 空白無しの true&&gh pr merge で停止する"
+run_hook "echo gh && gh pr merge 66 --squash --body \"${fixes_930}\""
+assert_fire "回避形（構文）: 先行コマンド echo gh に惑わされず後続の本物を停止する"
+fixes_932="$(printf 'Fixes %s%s' '#' 932)"
+run_hook "gh pr merge 66 --squash && echo gh pr merge 67 --body \"${fixes_932}\""
+assert_pass "回避形（隔離）: 後続 echo の引数に含まれる別 Issue の closing keyword を拾わない"
+run_hook "echo dry-run gh pr merge 66 --body \"${fixes_930}\" && gh pr merge 66 --squash"
+assert_pass "回避形（隔離）: 先行 echo の引数に含まれる closing keyword を実マージに混ぜない"
+run_hook "gh pr merge 66 --squash # --body ${fixes_930}"
+assert_pass "回避形（構文）: クォート外の # コメント内の --body は無視する"
+run_hook "(gh pr merge 66 --squash --body \"${fixes_930}\")"
+assert_fire "回避形（構文）: サブシェル (gh pr merge ...) でも停止する"
+run_hook "gh pr merge --squash 2>/dev/null"
+assert_fire "回避形（構文）: リダイレクト 2>/dev/null を PR 指定と誤読せず現在ブランチの PR で停止する"
+
+# 軸 4（免除語 FF_EFFORT_ACTUAL_ACK=1）
+run_hook "FF_EFFORT_ACTUAL_ACK=1 FF_EFFORT_ACTUAL_ACK=0 gh pr merge 42 --squash"
+assert_fire "回避形（免除語）: 後続の FF_EFFORT_ACTUAL_ACK=0 で上書きされた呼び出しは通さない"
+run_hook "\"FF_EFFORT_ACTUAL_ACK=1\" gh pr merge 42 --squash"
+assert_pass "回避形（免除語）: 左辺を含めて引用した文字列はコマンド名であり代入ではない（gh 未実行扱い）"
+assert_no_gh_call "回避形（免除語）: 引用した代入形ではコマンドが gh でないので gh を呼ばない"
+run_hook "FF_EFFORT_ACTUAL_ACK=\"1\" gh pr merge 42 --squash"
+assert_pass "回避形（免除語）: 値だけを引用した FF_EFFORT_ACTUAL_ACK=\"1\" は有効な環境代入として通す"
+run_hook "gh pr merge 42 --squash FF_EFFORT_ACTUAL_ACK=1"
+assert_fire "回避形（免除語）: コマンドの後ろに置いた ACK 文字列では通さない"
+
+# --body-file / -F 経路（絶対 / CWD 相対 / = 形式 / Refs のみ / 未存在 / stdin / 8 KiB 上限）
+printf '%s\n' "${fixes_930}" > "$TEST_TMP/merge-fixes.txt"
+printf 'Refs %s\n' "${ref930}" > "$TEST_TMP/merge-refs.txt"
+awk 'BEGIN { for (i = 0; i < 8200; i++) printf "x"; print "" }' > "$TEST_TMP/merge-large.txt"
+printf '%s\n' "${fixes_930}" >> "$TEST_TMP/merge-large.txt"
+run_hook "gh pr merge 66 --squash --body-file \"$TEST_TMP/merge-fixes.txt\""
+assert_fire "body-file（絶対パス）に closing keyword があれば完了報告があっても停止する"
+case "$REASON" in
+  *"$ref930"*'Issue は閉じます'*) ok "body-file で閉じる Issue は閉じる文で止める" ;;
+  *) bad "body-file の理由文が閉じる側でない: [$REASON]" ;;
+esac
+HOOK_CWD="$TEST_TMP"
+run_hook "gh pr merge 66 --squash -F merge-fixes.txt"
+assert_fire "body-file（CWD 相対 -F）に closing keyword があれば停止する"
+run_hook "gh pr merge 66 --squash --body-file=merge-fixes.txt"
+assert_fire "body-file（= 形式 --body-file=...）に closing keyword があれば停止する"
+HOOK_CWD=""
+run_hook "gh pr merge 66 --squash --body-file \"$TEST_TMP/merge-refs.txt\""
+assert_pass "body-file に closing keyword が無ければ完了報告で通す"
+run_hook "gh pr merge 66 --squash --body-file \"$TEST_TMP/no-such-file.txt\""
+assert_pass "読めない / 存在しない --body-file は止めない（fail-open）"
+run_hook "gh pr merge 66 --squash -F -"
+assert_pass "-F -（stdin）は読まずに素通しする（既知の限界・fail-open）"
+run_hook "gh pr merge 66 --squash --body-file \"$TEST_TMP/merge-large.txt\""
+assert_pass "8 KiB 上限を超える --body-file は読まずに素通しする（既知の限界・fail-open）"
+
+# 実処理系（bash）で上の構文の性質を実測する
+_prop_eq="$("${BASH:-/bin/bash}" -c 'show() { printf "%s" "$1"; }; show --body="'"${fixes_930}"'"' 2>/dev/null || true)"
+if [ "$_prop_eq" = "--body=${fixes_930}" ]; then
+  ok "実処理系確認（bash）: --body=\"...\" は 1 引数へ連結される"
+else
+  bad "実処理系確認（bash）: --body=\"...\"=[$_prop_eq]"
+fi
+_prop_sq="$("${BASH:-/bin/bash}" -c "show() { printf '%s' \"\$1\"; }; show ${sq_val}" 2>/dev/null || true)"
+if [ "$_prop_sq" = "note 'quoted' ${fixes_930}" ]; then
+  ok "実処理系確認（bash）: シングルクォート連結が 1 文字列へ復号される"
+else
+  bad "実処理系確認（bash）: sq=[$_prop_sq]"
+fi
+_prop_ack="$("${BASH:-/bin/bash}" -c 'show() { printf "%s" "${FF_EFFORT_ACTUAL_ACK:-unset}"; }; FF_EFFORT_ACTUAL_ACK=1 FF_EFFORT_ACTUAL_ACK=0 show' 2>/dev/null || true)"
+if [ "$_prop_ack" = "0" ]; then
+  ok "実処理系確認（bash）: 後続代入 FF_EFFORT_ACTUAL_ACK=0 が先の =1 を上書きする"
+else
+  bad "実処理系確認（bash）: ack override=[$_prop_ack]"
+fi
+_prop_qack="$("${BASH:-/bin/bash}" -c 'FF_EFFORT_ACTUAL_ACK=unset; "FF_EFFORT_ACTUAL_ACK=1" 2>/dev/null || true; printf "%s" "$FF_EFFORT_ACTUAL_ACK"' 2>/dev/null || true)"
+if [ "$_prop_qack" = "unset" ]; then
+  ok "実処理系確認（bash）: 左辺の引用は環境代入にならずコマンド名になる"
+else
+  bad "実処理系確認（bash）: quoted assignment=[$_prop_qack]"
+fi
+run_hook "gh pr merge 42 --squash" FF_STUB_FAIL_COMMENTS=1
+assert_fire "コメントの照会が失敗しても、閉じる Issue の未記入は止め続ける"
+if grep -q 'comments' "$STUB_DIR/gh-calls.log"; then
+  bad "閉じる Issue なのにコメントを照会している: [$(tr '\n' ';' < "$STUB_DIR/gh-calls.log")]"
+else
+  ok "閉じる Issue にはコメントを要求しない"
+fi
+run_hook "gh pr merge 67 --squash" FF_STUB_FAIL_COMMENTS=1
+assert_pass "Refs のコメント照会が失敗したときは止めない"
+run_hook "gh pr merge 67 --squash"
+assert_fire "別の形の報告印（ISSUE 番号）は完了報告として数えない"
+case "$REASON" in
+  *"$ref931"*'閉じません'*'/close-issue 67'*'FF_EFFORT_ACTUAL_ACK=1'*) ok "Refs の停止メッセージが Issue・閉じない前提・/close-issue・迂回を案内する" ;;
+  *) bad "Refs の停止メッセージが揃わない: [$REASON]" ;;
+esac
+case "$REASON" in
+  *'Issue は閉じます'*) bad "報告の無い Refs の停止メッセージが、Issue が閉じる前提の文を含む: [$REASON]" ;;
+  *) ok "報告の無い Refs の停止メッセージは Issue が閉じる前提の文を含まない" ;;
+esac
+run_hook "gh pr merge 68 --squash"
+assert_fire "closing keyword の Issue は完了報告があっても未記入なら停止する"
+case "$REASON" in
+  *"$ref932"*'Issue は閉じます'*) ok "閉じる Issue の停止メッセージは従来の文のまま" ;;
+  *) bad "閉じる Issue の停止メッセージが従来の文でない: [$REASON]" ;;
+esac
+case "$REASON" in
+  *'閉じません'*) bad "閉じる Issue だけの停止メッセージに Refs 用の文が混ざる: [$REASON]" ;;
+  *) ok "閉じる Issue だけの停止メッセージに Refs 用の文は混ざらない" ;;
+esac
+run_hook "gh pr merge 69 --squash"
+assert_fire "別の PR 番号の完了報告では通さない"
+case "$REASON" in
+  *"$ref930"*) ok "別 PR の報告しか無い Issue を停止メッセージが名指しする" ;;
+  *) bad "別 PR の報告しか無い Issue が停止メッセージに無い: [$REASON]" ;;
+esac
+run_hook "gh pr merge 70 --squash"
+assert_fire "PR 番号の前方一致（隣の番号の報告）では通さない"
+case "$REASON" in
+  *"$ref936"*) ok "前方一致しただけの報告は停止メッセージが名指しする" ;;
+  *) bad "前方一致の報告を通してしまった: [$REASON]" ;;
+esac
+run_hook "gh pr merge 71 --squash"
+assert_pass "Refs 先の実績が記入済みなら、報告が無くても停止しない"
+run_hook "gh pr merge 72 --squash"
+assert_fire "完了報告が Issue 本文だけにあるときはコメントの報告として数えない"
+case "$REASON" in
+  *"$ref934"*) ok "本文だけの報告は停止メッセージが名指しする" ;;
+  *) bad "本文だけの報告を通してしまった: [$REASON]" ;;
+esac
+run_hook "gh pr merge 73 --squash"
+assert_fire "閉じる Issue と Refs の未記入が両方あるときは両方を止める"
+case "$REASON" in
+  *"$ref932"*'Issue は閉じます'*"$ref931"*'閉じません'*) ok "1 つの停止メッセージに閉じる文と Refs の文が両方ある" ;;
+  *) bad "混在時の停止メッセージが両方を含まない: [$REASON]" ;;
+esac
+run_hook "gh pr merge 66 --squash --body \"${fixes_932}\"" FF_EFFORT_ACTUAL_GUARD_MAX_ISSUES=1
+assert_fire "照会上限 1 件でも、マージコマンドで閉じる Issue は Refs より先に照会して停止する"
+case "$REASON" in
+  *"$ref932"*'Issue は閉じます'*) ok "上限優先: Refs で枠を消費せず閉じる Issue 側の文で止める" ;;
+  *) bad "上限優先: 閉じる Issue が Refs の後ろへ回って漏れている: [$REASON]" ;;
+esac
+run_hook "gh pr merge 74 --squash"
+assert_pass "comments を解釈できない Refs は Bash 経路では止めない"
+run_hook "gh pr merge 75 --squash"
+assert_pass "Refs 先の Issue を読めないときは Bash 経路では止めない"
 
 echo "guard-effort-actual: GitHub MCP 経路（merge_pull_request）"
 # 実測したツール名（GitHub 公式リモート MCP の tools/list）を 2 つのサーバー名の形で駆動する。
@@ -691,6 +1011,8 @@ if [ -n "$bash_rest" ] && [ "$mcp_rest" = "$bash_rest" ] && [ "$MCP_REASON" != "
 else
   bad "AC1: deny 文が Bash 経路とずれている: mcp=[$MCP_REASON] bash=[$REASON]"
 fi
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":42}' FF_STUB_FAIL_COMMENTS=1
+assert_fire "MCP でもコメント照会の失敗で、閉じる Issue の未記入を通さない"
 run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":42}'
 assert_fire "AC1: server キー github で設定したサーバーでも deny"
 run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":"42"}'
@@ -737,6 +1059,45 @@ run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullN
 ff_mcp_assert_message "閉じる Issue の本文を gh で読めなければ止めずに理由を出す" "$UNREAD_REF"
 run_hook "gh pr merge 65 --squash"
 assert_pass "Bash 経路で閉じる Issue を読めないときは従来どおり無音"
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":67}'
+assert_fire "Refs だけの未記入は MCP 経路でも deny"
+case "$REASON" in
+  *'閉じません'*'hook の環境変数 FF_EFFORT_ACTUAL_ACK=1'*) ok "MCP の Refs 拒否文は hook の環境変数の抜け道を案内する" ;;
+  *) bad "MCP の Refs 拒否文に抜け道の案内が無い: [$REASON]" ;;
+esac
+MCP_REFS="$REASON"
+run_hook "gh pr merge 67 --squash"
+mcp_refs_rest="$(printf '%s\n' "$MCP_REFS" | grep -v '^  2) ')"
+bash_refs_rest="$(printf '%s\n' "$REASON" | grep -v '^  2) ')"
+if [ -n "$bash_refs_rest" ] && [ "$mcp_refs_rest" = "$bash_refs_rest" ] && [ "$MCP_REFS" != "$REASON" ]; then
+  ok "Refs の deny 文は抜け道の案内（選択肢 2）の 1 行だけが経路で違う"
+else
+  bad "Refs の deny 文が Bash 経路とずれている: mcp=[$MCP_REFS] bash=[$REASON]"
+fi
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":66}'
+assert_pass "MCP でも完了報告があれば Refs の未記入を止めない"
+mcp_msg_closing="$(jq -cn --arg m "${fixes_930}" '{owner:"acme",repo:"widgets",pullNumber:66,commit_title:"merge",commit_message:$m}')"
+run_mcp mcp__github__merge_pull_request "$mcp_msg_closing"
+assert_fire "MCP の commit_message にある closing keyword は完了報告があっても未記入なら停止する"
+case "$REASON" in
+  *"${ref930}"*'Issue は閉じます'*)
+    case "$REASON" in
+      *'閉じません'*) bad "MCP の commit_message 停止文に閉じない前提が混ざる: [$REASON]" ;;
+      *) ok "MCP の commit_message による停止は Issue が閉じる文になる" ;;
+    esac
+    ;;
+  *) bad "MCP の commit_message を閉じる側として止めていない: [$REASON]" ;;
+esac
+mcp_title_closing="$(jq -cn --arg t "${fixes_930}" '{owner:"acme",repo:"widgets",pullNumber:66,commit_title:$t,commit_message:"note"}')"
+run_mcp mcp__github__merge_pull_request "$mcp_title_closing"
+assert_fire "MCP の commit_title にある closing keyword も完了報告があっても停止する"
+mcp_safe_msg="$(jq -cn --arg m "${keep_open}" '{owner:"acme",repo:"widgets",pullNumber:66,commit_title:"merge title",commit_message:$m}')"
+run_mcp mcp__github__merge_pull_request "$mcp_safe_msg"
+assert_pass "MCP の commit_title / commit_message が closing keyword を含まなければ完了報告で通す"
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":74}'
+ff_mcp_assert_message "comments を解釈できない Refs は止めずに、コメントを読めなかったと知らせる" "コメント"
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":75}'
+ff_mcp_assert_message "Refs 先の Issue を gh で読めなければ止めずに理由を出す" "Refs 先"
 echo "guard-effort-actual: GitHub MCP 経路の針が当たらない入力（素通しではなく理由付きの systemMessage）"
 run_mcp mcp__github__merge_pull_requests '{"owner":"acme","repo":"widgets","pullNumber":42}'
 ff_mcp_assert_message "判定表にないツール名（綴りの揺れ）は理由を出して通す" "判定表"
@@ -864,6 +1225,16 @@ STUB
   assert_fire "CRLF の jq でも、複数 Issue を閉じる PR の先頭側の未記入を見落とさない"
   run_hook "gh pr merge 45 --squash"
   assert_pass "CRLF の jq でも、実績が記入済みなら停止しない"
+  # 最終行にも CR が残る jq（コマンド置換が末尾の LF だけを落とすホスト）。
+  # PR 番号の CR を残すと完了報告の印が一致しない。
+  cat > "$BIN_DIR/jq" <<STUB
+#!/usr/bin/env bash
+[ -n "\${FF_STUB_DIR:-}" ] && printf '%s\n' "\$*" >> "\$FF_STUB_DIR/jq-calls.log"
+"$REAL_JQ" "\$@" | sed 's/\$/'"$(printf '\r')"'/'
+STUB
+  chmod +x "$BIN_DIR/jq"
+  run_hook "gh pr merge 66 --squash"
+  assert_pass "PR 番号に CR が残る jq でも、完了報告の印で Refs を通す"
   cp "$TEST_TMP/jq-wrapper.orig" "$BIN_DIR/jq"
 fi
 

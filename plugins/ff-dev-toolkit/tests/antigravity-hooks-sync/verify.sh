@@ -171,19 +171,21 @@ fi
 
 if jq -e '
   [ ."ff-dev-toolkit".PreToolUse[].hooks[]
-    | select(.command | contains("guard-review-in-flight.sh")) ] as $rf
-  | ($rf | length) > 0
+    | select((.command | contains("guard-review-in-flight.sh")) or (.command | contains("guard-gate-in-flight.sh"))) ] as $rf
+  | ([ ."ff-dev-toolkit".PreToolUse[].hooks[] | select(.command | contains("guard-review-in-flight.sh")) ] | length) > 0
+  and ([ ."ff-dev-toolkit".PreToolUse[].hooks[] | select(.command | contains("guard-gate-in-flight.sh")) ] | length) > 0
   and ($rf | all((.command | contains("--on-failure")) and (.command | contains("block"))))
 ' "$default_out" >/dev/null 2>&1; then
   ok "A9: onFailure:block 登録フックへ --on-failure block が引き継がれる"
 else
-  bad "A9: guard-review-in-flight.sh への --on-failure block 引き継ぎが欠落"
+  bad "A9: guard-review-in-flight.sh / guard-gate-in-flight.sh への --on-failure block 引き継ぎが欠落"
 fi
 
 if jq -e '
   [."ff-dev-toolkit".PreToolUse[].matcher] as $pre
   | ($pre | index("run_command") != null)
   and ($pre | index("write_file|edit_file") != null)
+  and ($pre | index("edit_file|write_file|run_command") != null)
   and ($pre | index("read_file") != null)
   and ($pre | index("edit_file|write_file|run_command|invoke_subagent|manage_subagents|manage_task") != null)
   and ($pre | index("^mcp__(github|plugin_github_github)__merge_pull_request$") != null)

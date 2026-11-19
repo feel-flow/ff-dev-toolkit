@@ -100,6 +100,7 @@
 - `PreToolUse :: Bash :: hooks/guard-zsh-glob.sh`
 - `PreToolUse :: Bash :: hooks/record-effort-wallclock.sh`
 - `PreToolUse :: Bash :: hooks/run-bash-hooks.sh`
+- `PreToolUse :: Edit|Write|MultiEdit|NotebookEdit|Bash :: hooks/guard-gate-in-flight.sh`
 - `PreToolUse :: Edit|Write|MultiEdit|NotebookEdit|Bash|Agent|Task|TaskStop :: hooks/guard-review-in-flight.sh`
 - `PreToolUse :: Read|Skill :: hooks/record-instruction-bytes.sh`
 - `PreToolUse :: Write|Edit :: hooks/guard-shell-save.sh`
@@ -193,6 +194,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_RG_STDIN_ACK`（同 hook で、検索パスの無い rg が標準入力を待ち続ける形の停止だけを通すコマンド先頭の環境代入。先頭に並ぶ代入のどれでもよい）
 - `FF_CREDENTIAL_OUTPUT_ACK`
 - `FF_DEFAULT_BRANCH_COMMIT_ACK`（`hooks/guard-default-branch-commit.sh` で、既定ブランチ上の git commit の 1 回だけを通す区間先頭の環境代入。プロセス環境の値は通さない）
+- `FF_GATE_IN_FLIGHT_ACK`（`hooks/guard-gate-in-flight.sh` で、全件ゲート走行中ガードの deny の 1 回だけを通す。Bash では書き込みを含む区間の先頭の環境代入、Bash 以外のツールでは hook のプロセス環境で渡す）
 - `FF_ISSUE_COLLISION_ACK`（`hooks/guard-issue-collision.sh` で、同じ Issue のブランチ作成または PR 作成の 1 回だけを通す区間先頭の環境代入。プロセス環境の値は通さない）
 - `FF_ISSUE_LABEL_ACK`（`hooks/guard-issue-labels.sh` で、ラベルの欠けた `gh issue create` の 1 回だけを通すコマンド先頭の環境代入。セッションの間ずっと止めるときは鍵 `issue-label`）
 - `FF_LITERAL_WRITE_ACK`
@@ -379,10 +381,13 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_RUN_ALL_PROBE_LOG`
 - `FF_RUN_ALL_PROBE_RENDEZVOUS`
 - `FF_RUN_ALL_VERIFY_STOP_AFTER_GUARD`（tests/run-all/verify.sh が並走判定の直後で走査を始めず終わる検査用注入口。`1` のときだけ）
+- `FF_DEFER_STARTUP_LOAD_WARN`（起動負荷警告を並走早期停止後まで遅らせる内部フラグ）
 - `FF_STARTUP_CORES`（以下はrunnerの起動時観測を保持する内部変数）
 - `FF_STARTUP_LOAD`
 - `FF_STARTUP_LOAD_PER_CORE`
 - `FF_STARTUP_OTHER_GATES`
+- `FF_STARTUP_OTHER_GATES_RAW`
+- `FF_STARTUP_OTHER_GATES_RC`
 - `FF_STARTUP_PRESSURE`
 - `FF_STARTUP_REPORT`
 - `FF_STARTUP_THRESHOLD`
@@ -406,6 +411,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_STUB_CODEX_HELP`
 - `FF_STUB_DIR`
 - `FF_STUB_FAIL`
+- `FF_STUB_FAIL_COMMENTS`（guard-effort-actual の検査が comments を含む gh 呼び出しだけを失敗させる注入口。`1` のときだけ）
 - `FF_STUB_GET_FAIL`
 - `FF_STUB_GH_MODE`
 - `FF_STUB_LABELS_MODE`
@@ -517,7 +523,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 L4 宣言をまとめる前の個別の名前（旧名）は、内部の別名として読むのをやめました。旧名はこの節にも書きません。配布実行物は、環境にある FF_DEV_TOOLKIT_SKIP_ で始まる変数の名前から 4-3 の鍵を導いて旧名を見つけます（接頭辞と末尾の _GUARD を外し、小文字・`-` 区切りにしたもの）。旧名と新しい書き方の対応は「破壊的変更の記録」にあります。
 
 - **副作用のある 4 鍵**（`auto-update` / `codex-auto-update` / `effort-metrics` / `decision-tree`）: 旧名の値が空でなければ（`0` でも）、その処理を止めます。旧名で止めていた更新や記録が黙って動き出さないための扱いで、期限はありません
-- **ほかの 23 鍵**（ガードと通知）: 旧名では止めません。停止文に新しい書き方を添える hook（`hooks/guard-default-branch-commit.sh` / `hooks/guard-exit-code.sh` / `hooks/guard-issue-collision.sh` / `hooks/guard-literal-write.sh` / `hooks/guard-review-in-flight.sh` / `hooks/guard-wsl-shell.sh`）が止めたときは、`次の一手:` の行の末尾に、その旧名を読まなくなったことと `FF_DEV_TOOLKIT_SKIP=<鍵>` を添えます
+- **ほかの 24 鍵**（ガードと通知）: 旧名では止めません。停止文に新しい書き方を添える hook（`hooks/guard-default-branch-commit.sh` / `hooks/guard-exit-code.sh` / `hooks/guard-gate-in-flight.sh` / `hooks/guard-issue-collision.sh` / `hooks/guard-literal-write.sh` / `hooks/guard-review-in-flight.sh` / `hooks/guard-wsl-shell.sh`）が止めたときは、`次の一手:` の行の末尾に、その旧名を読まなくなったことと `FF_DEV_TOOLKIT_SKIP=<鍵>` を添えます
 - **通知**: hooks が発火するホストでは、旧名が環境にあるとセッション開始時（`hooks/check-update.sh`）に毎回、置き換えを通知します
 - **ACK の旧名**（4-1 の ACK のうち、L4 宣言をまとめるときに改名した 3 つの前の名前）は読みません。各 hook の deny 文が示す新しい名前で通します
 
@@ -542,6 +548,7 @@ L4 宣言をまとめる前の個別の名前（旧名）は、内部の別名�
 | `effort-actual` | ガード | `hooks/guard-effort-actual.sh` | - | `EFFORT_ACTUAL_GUARD` |
 | `effort-metrics` | 記録 | `hooks/record-effort-wallclock.sh`・`hooks/record-instruction-bytes.sh`・`scripts/record-gate-minutes.sh` | - | `EFFORT_METRICS` |
 | `exit-code` | ガード | `hooks/guard-exit-code.sh` | `timeout`・`unbounded-wait`・`rg-stdin` | `EXIT_CODE_GUARD` |
+| `gate-in-flight` | ガード | `hooks/guard-gate-in-flight.sh` | - | - |
 | `issue-collision` | ガード | `hooks/guard-issue-collision.sh` | - | - |
 | `issue-label` | ガード | `hooks/guard-issue-labels.sh` | - | `ISSUE_LABEL_GUARD` |
 | `literal-write` | ガード | `hooks/guard-literal-write.sh` | - | `LITERAL_WRITE_GUARD` |

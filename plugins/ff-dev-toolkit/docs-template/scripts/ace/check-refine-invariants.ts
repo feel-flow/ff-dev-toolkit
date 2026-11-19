@@ -19,8 +19,10 @@
  * 走査対象は **`## Changelog` 節だけ**（次のレベル 2 見出し直前まで）。エントリ本文が
  * refine 運用を解説して同形 bullet を書いても操作として採用しない（Issue #1030）。
  * 節の探索は本体を優先する。本体に節が無い、または節はあるが版見出し（`### [x.y.z]`）が
- * 無いときは `playbook/CHANGELOG.md`（直下だけ）を読む。版見出しはフェンスと HTML
- * コメントの外だけを数える。採用したときはログに出典を付ける。
+ * 無いときは `playbook/CHANGELOG.md`（直下だけ）を読む。`## Changelog` 節のほかに
+ * 見出し無しで先頭側に `### [x.y.z]` が置かれた分割 CHANGELOG も採用する（版見出しは
+ * フェンス・HTML コメント・frontmatter の外だけを数える）。採用したときはログに
+ * 出典を付け、分割側に整理操作行があるのに 0 件しか読めない場合は非 0 にする。
  * 索引行の検査は本体のまま（Issue `#2130`、ACE-1110-2）。
  * 同節の中では `- Compacted:` は括弧書きの外、`- Promoted:` / `- Archived:` はコロン直後の
  * ID 列だけを読む。どのラベルも ID どうしの区切りは `,` / `、` に限り、それ以外で並べた行は
@@ -228,8 +230,29 @@ function resolvePlaybookPath(argv: readonly string[]): string | undefined {
   return undefined;
 }
 
+function findLevel2Boundary(lines: readonly string[], startAfter: number): number {
+  for (let i = startAfter; i < lines.length; i++) {
+    if (LEVEL2_HEADING_LINE_PATTERN.test(lines[i])) {
+      return i;
+    }
+  }
+  return lines.length;
+}
+
+function maskSplitChangelog(content: string): string {
+  const lines = content.replace(/\r\n/gu, "\n").split("\n");
+  if (lines[0] === "---") {
+    const close = lines.findIndex((line, index) => index > 0 && line === "---");
+    if (close > 0) {
+      for (let i = 0; i <= close; i++) lines[i] = "";
+    }
+  }
+  return blankHtmlBlockComments(blankCodeRegions(lines.join("\n")).text);
+}
+
 /**
  * `## Changelog` 見出しから次のレベル 2 見出し直前までを切り出す（Issue #1030）。
+ * 分割 CHANGELOG に限り、`allowHeadingless: true` で先頭側の `### [x.y.z]` からの切り出しも許す。
  *
  * 整理操作の記録は Changelog 節にしか無い。全文を走査すると、エントリ本文が refine 運用を
  * 解説して書いた同形 bullet（`- Compacted: ACE-X` など）まで操作として採用してしまう。
@@ -237,20 +260,26 @@ function resolvePlaybookPath(argv: readonly string[]): string | undefined {
  * 見出しがまったく無い断片（単体テストの 1 行入力）は従来どおり全文を見る
  * — `extractPromotionSection`（ace-refine-report）と同じ切り出し規約に揃えてある。
  */
-export function extractChangelogSection(playbookContent: string): string {
+export function extractChangelogSection(
+  playbookContent: string,
+  options: { readonly allowHeadingless?: boolean } = {},
+): string {
   const lines = playbookContent.split("\n");
   const start = lines.findIndex((line) => CHANGELOG_HEADING_PATTERN.test(line));
-  if (start < 0) {
-    return HAS_LEVEL2_HEADING_PATTERN.test(playbookContent) ? "" : playbookContent;
+  if (start >= 0) {
+    return lines.slice(start + 1, findLevel2Boundary(lines, start + 1)).join("\n");
   }
-  let end = lines.length;
-  for (let i = start + 1; i < lines.length; i++) {
-    if (LEVEL2_HEADING_LINE_PATTERN.test(lines[i])) {
-      end = i;
-      break;
+  if (options.allowHeadingless === true) {
+    // 先行する別の ## 見出し（壊れた見出し等）の後ろの版見出しは採用しない（changelog-layout と同じ境界）。
+    const first = lines.findIndex(
+      (line) => LEVEL2_HEADING_LINE_PATTERN.test(line) || CHANGELOG_VERSION_HEADING_PATTERN.test(line),
+    );
+    if (first >= 0 && CHANGELOG_VERSION_HEADING_PATTERN.test(lines[first])) {
+      return lines.slice(first, findLevel2Boundary(lines, first + 1)).join("\n");
     }
+    return "";
   }
-  return lines.slice(start + 1, end).join("\n");
+  return HAS_LEVEL2_HEADING_PATTERN.test(playbookContent) ? "" : playbookContent;
 }
 
 /**
@@ -502,7 +531,10 @@ function collectIdRun(
 }
 
 /** Changelog 節の Compacted / Merged / Promoted / Archived 行から操作対象 ID を拾う。 */
-export function parseChangelogOperations(playbookContent: string): ChangelogOperations {
+export function parseChangelogOperations(
+  playbookContent: string,
+  options: { readonly allowHeadingless?: boolean } = {},
+): ChangelogOperations {
   const compactedIds: string[] = [];
   const mergedPairs: { source: string; target: string }[] = [];
   const promotedIds: string[] = [];
@@ -527,8 +559,11 @@ export function parseChangelogOperations(playbookContent: string): ChangelogOper
   // 指摘: フェンス内の偽 `## Changelog` が先にあると本物の節が終端扱いされ、実操作が
   // 全件未検証になる）。順序は sync-playbook-frontmatter の maskChangelogScanNoise と同じ
   // 理由で blankCodeRegions（probe 方式）→ コメント空白化。
-  const maskedContent = blankHtmlBlockComments(blankCodeRegions(playbookContent).text);
-  for (const rawLine of extractChangelogSection(maskedContent).split("\n")) {
+  const maskedContent =
+    options.allowHeadingless === true
+      ? maskSplitChangelog(playbookContent)
+      : blankHtmlBlockComments(blankCodeRegions(playbookContent).text);
+  for (const rawLine of extractChangelogSection(maskedContent, options).split("\n")) {
     const line = rawLine.trim();
     // 括弧の対応種・対応相手の無い括弧・「括弧の中にしか無い ID」は 4 ラベル共通の前提なので、
     // ラベルごとの ID 列パーサへ渡す前に 1 箇所で見る（ラベル別に書くと片方だけ抜ける）。
@@ -848,6 +883,39 @@ function lineMatches(content: string, pattern: RegExp): boolean {
   return content.split("\n").some((line) => pattern.test(line));
 }
 
+function splitChangelogAdopted(splitText: string): boolean {
+  const masked = maskSplitChangelog(splitText);
+  if (lineMatches(masked, CHANGELOG_HEADING_PATTERN)) return true;
+  const lines = masked.split("\n");
+  const first = lines.findIndex(
+    (line) => LEVEL2_HEADING_LINE_PATTERN.test(line) || CHANGELOG_VERSION_HEADING_PATTERN.test(line),
+  );
+  return first >= 0 && CHANGELOG_VERSION_HEADING_PATTERN.test(lines[first]);
+}
+
+function findUnreadSplitOperationLine(splitText: string): string | null {
+  for (const rawLine of maskSplitChangelog(splitText).split("\n")) {
+    const line = rawLine.trim();
+    if (!CHANGELOG_LABEL_PREFIXES.some((prefix) => line.startsWith(prefix))) continue;
+    const lineOps = parseChangelogOperations(line);
+    if (
+      lineOps.compactedIds.length > 0 ||
+      lineOps.mergedPairs.length > 0 ||
+      lineOps.promotedIds.length > 0 ||
+      lineOps.archivedIds.length > 0 ||
+      lineOps.malformedMerged.length > 0 ||
+      lineOps.malformedArchived.length > 0 ||
+      lineOps.malformedPromoted.length > 0 ||
+      lineOps.malformedCompacted.length > 0 ||
+      lineOps.malformedParenthesisKind.length > 0 ||
+      lineOps.malformedParentheticalIds.length > 0
+    ) {
+      return line;
+    }
+  }
+  return null;
+}
+
 /**
  * 本体の Changelog を操作の正本にするか。
  * レベル 2 見出しが無い断片は全文を Changelog とみなす（単体テストの 1 行入力）。
@@ -920,6 +988,7 @@ export function main(): number {
 
   let changelogContent = playbookContent;
   let changelogSource: "body" | "split" = "body";
+  let readSplitText: string | null = null;
   if (!bodyChangelogAuthoritative(playbookContent)) {
     const splitPath = path.join(path.dirname(playbookPath), "playbook", "CHANGELOG.md");
     if (knowledgeInputExists(splitPath)) {
@@ -930,14 +999,18 @@ export function main(): number {
         console.error(`読み込み失敗: ${splitPath}: ${formatReadError(error)}`);
         return EXIT_USAGE_ERROR;
       }
-      if (lineMatches(splitText, CHANGELOG_HEADING_PATTERN)) {
+      readSplitText = splitText;
+      if (splitChangelogAdopted(splitText)) {
         changelogContent = splitText;
         changelogSource = "split";
       }
     }
   }
 
-  const ops = parseChangelogOperations(changelogContent);
+  const ops = parseChangelogOperations(
+    changelogContent,
+    changelogSource === "split" ? { allowHeadingless: true } : undefined,
+  );
   console.log(`Playbook: ${playbookPath}`);
   const splitSuffix = changelogSource === "split" ? "（playbook/CHANGELOG.md）" : "";
   console.log(
@@ -951,6 +1024,19 @@ export function main(): number {
     archiveBlocks,
     patternsContent,
   });
+  const totalOps =
+    ops.compactedIds.length +
+    ops.mergedPairs.length +
+    ops.promotedIds.length +
+    ops.archivedIds.length;
+  if (readSplitText !== null && totalOps === 0 && violations.length === 0) {
+    const unreadOpLine = findUnreadSplitOperationLine(readSplitText);
+    if (unreadOpLine !== null) {
+      violations.push(
+        `playbook/CHANGELOG.md に整理操作の行があるのに Changelog 節・版見出しとして読めず操作 0 件になりました: ${unreadOpLine}`,
+      );
+    }
+  }
 
   if (violations.length > 0) {
     console.error(

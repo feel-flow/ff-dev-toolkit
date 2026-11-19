@@ -244,6 +244,11 @@ if [ -f "$SCRIPT_DIR/lib/utf8-locale.sh" ]; then
   ff_ensure_utf8_locale
 fi
 
+if [ -r "$SCRIPT_DIR/lib/gate-in-flight.sh" ]; then
+  # shellcheck source=lib/gate-in-flight.sh
+  . "$SCRIPT_DIR/lib/gate-in-flight.sh"
+fi
+
 # Windows の Git Bash（MSYS / Cygwin）では全件ゲートが完走しないことがあるので、WSL で流す手順を
 # 冒頭に案内する（Issue `#2030`）。実行は止めない。Linux / macOS では何も出さない（判定は bash
 # 組み込みの OSTYPE だけ）。lib が無い fixture コピーでは素通しする（上のロケールと同じ扱い）。
@@ -508,6 +513,8 @@ ff_capture_startup_load() {
     fi
   fi
   others="$(ff_startup_other_gates)" || others_rc=$?
+  FF_STARTUP_OTHER_GATES_RAW="$others"
+  FF_STARTUP_OTHER_GATES_RC="$others_rc"
   if [[ -n "$others" ]]; then
     FF_STARTUP_OTHER_GATES="${others//$'\n'/,}"
     [[ "$others_rc" == 0 ]] || FF_STARTUP_OTHER_GATES="${FF_STARTUP_OTHER_GATES},unknown"
@@ -519,7 +526,7 @@ ff_capture_startup_load() {
         "$FF_STARTUP_CORES" == unknown || "$FF_STARTUP_OTHER_GATES" == unknown ]]; then
     FF_STARTUP_REPORT=1
   fi
-  if [[ "$FF_STARTUP_PRESSURE" == 1 ]]; then
+  if [[ "$FF_STARTUP_PRESSURE" == 1 && "${FF_DEFER_STARTUP_LOAD_WARN:-0}" != "1" ]]; then
     echo "⚠️  起動時の負荷: load average ${FF_STARTUP_LOAD}; 閾値 ${FF_STARTUP_THRESHOLD}（${FF_STARTUP_CORES} コア × ${FF_STARTUP_LOAD_PER_CORE}）; 他ゲート ${FF_STARTUP_OTHER_GATES} — ゲートを続行します" >&2
   fi
   return 0
@@ -533,7 +540,9 @@ ff_emit_startup_load() {
   fi
   return 0
 }
+FF_DEFER_STARTUP_LOAD_WARN=1
 ff_capture_startup_load
+FF_DEFER_STARTUP_LOAD_WARN=0
 # <<< ff-startup-load-block
 
 if [[ $# -gt 0 ]]; then
@@ -776,6 +785,8 @@ else
     # gh pr merge を止める側と、ブロック不在・記入済み・非該当コマンド・gh/jq 不在で
     # 止めない側を stdin JSON fixture + gh スタブで固定する。close-issue 手順 5a の
     # fail-open 契約（ブロック不在は素通し）と矛盾しないことも併せて見る。
+    # Refs だけの PR は、対象 Issue のコメントにその PR の完了報告があるときだけ未記入でも通す。
+    # マージコマンドの subject / body が closing keyword で閉じる Issue は、報告があっても実績を求める。
     "$SCRIPT_DIR/guard-effort-actual/verify.sh"
     # PreToolUse（Edit/Write/MultiEdit/NotebookEdit/Bash/Agent）のレビュー走行中ロック +
     # 起動時 dirty ガード（hooks/guard-review-in-flight.sh）。ロック生存中の編集・git 書き込みの
@@ -833,6 +844,10 @@ else
     "$SCRIPT_DIR/guard-default-branch-commit/verify.sh"
     # 同じ番号の open PR またはリモートブランチがあるときのブランチ作成と PR 作成を止める。
     "$SCRIPT_DIR/guard-issue-collision/verify.sh"
+    # PreToolUse（Edit/Write/MultiEdit/NotebookEdit/Bash）の全件ゲート走行中ガード
+    # （hooks/guard-gate-in-flight.sh）。共有ライブマーカー判定・死んだ PID/再利用 PID 回収・
+    # 作業ツリー内書き込み遮断・ツリー外/.review-results/gitignore/別worktree 通過・抜け道を固定する。
+    "$SCRIPT_DIR/guard-gate-in-flight/verify.sh"
     # 上の 5 本の Bash ガード（effort-actual / issue-labels / long-gate-background /
     # review-in-flight / exit-code）が共有する heredoc 除去ヘルパ（tests/lib/heredoc-strip.sh）
     # の契約: 正常終端は本文だけを落とし、未終端は rc 3 で生コマンドを返し、awk 失敗は
@@ -2682,10 +2697,98 @@ if [[ "$FAST_MODE" == "1" ]]; then
     exit 1
   fi
   SCRIPTS=("${FAST_KEPT[@]}")
-  if [[ ${#FAST_EXCLUDED[@]} -gt 0 ]]; then
-    echo "⚡ 高速モード: selftest ${#FAST_EXCLUDED[@]} 件を実行対象から除外します（内訳はサマリー。全件実行は FF_RUN_ALL_FULL=1）"
-    echo
+fi
+
+ff_scripts_include_run_all_verify() {
+  local target_dir="" target="" s="" s_dir=""
+  [[ ${#SCRIPTS[@]} -gt 0 ]] || return 1
+  target_dir="$(CDPATH='' cd -P -- "$SCRIPT_DIR/run-all" 2>/dev/null && pwd -P)" || target_dir=""
+  target="${target_dir:-$SCRIPT_DIR/run-all}/verify.sh"
+  for s in "${SCRIPTS[@]}"; do
+    case "$s" in
+      */run-all/verify.sh | run-all/verify.sh | */verify.sh | verify.sh)
+        s_dir="$(CDPATH='' cd -P -- "$(dirname -- "$s")" 2>/dev/null && pwd -P)" || s_dir=""
+        if [[ -n "$s_dir" && "${s_dir}/verify.sh" == "$target" ]] || [[ "$s" == "$SCRIPT_DIR/run-all/verify.sh" ]]; then
+          return 0
+        fi
+        ;;
+    esac
+  done
+  return 1
+}
+
+ff_startup_stop_if_concurrent() {
+  local combined="" line="" pid="" known_pids=" " unknown_markers=""
+  local has_other=0 has_unknown=0
+  if [[ "${FF_STARTUP_OTHER_GATES_RC:-0}" -ne 0 ]]; then
+    has_unknown=1
   fi
+  if [[ -n "${FF_STARTUP_OTHER_GATES_RAW:-}" ]]; then
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      has_other=1
+      combined="${combined:+${combined}
+}${line}"
+      pid="${line%%:*}"
+      known_pids="${known_pids}${pid} "
+    done <<EOF
+$FF_STARTUP_OTHER_GATES_RAW
+EOF
+  fi
+  if declare -F ff_gate_scan_repo_worktree_markers >/dev/null 2>&1 && [[ "${FF_STARTUP_OTHER_GATES_RC:-0}" -eq 0 ]]; then
+    ff_gate_scan_repo_worktree_markers "$SCRIPT_DIR" 1
+    if [[ -n "${GATE_UNKNOWN_LINES:-}" || "${GATE_DIR_UNSAFE:-0}" -eq 1 ]]; then
+      has_unknown=1
+      unknown_markers="$GATE_UNKNOWN_LINES"
+    fi
+    if [[ -n "${GATE_LIVE_LINES:-}" ]]; then
+      while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        pid="${line%%:*}"
+        case "$known_pids" in
+          *" ${pid} "*) continue ;;
+        esac
+        has_other=1
+        combined="${combined:+${combined}
+}${line}"
+        known_pids="${known_pids}${pid} "
+      done <<EOF
+$GATE_LIVE_LINES
+EOF
+    fi
+  fi
+  if [[ "$has_other" -eq 1 ]]; then
+    echo "✗ 判定不能: 別の全件ゲートが動いています（実行集合に tests/run-all/verify.sh を含むため、suite を実行せず停止しました）。並走:" >&2
+    printf '%s\n' "$combined" >&2
+    echo "  復帰: 並走中の tests/run-all.sh が終わってから、このゲートを回し直してください（pgrep -f は自身のシェルにも一致するため、上の PID を kill -0 <PID> で確認してください）" >&2
+    exit 2
+  fi
+  if [[ "$has_unknown" -eq 1 ]]; then
+    if [[ "${FF_STARTUP_OTHER_GATES_RC:-0}" -ne 0 ]]; then
+      echo "✗ 判定不能: プロセス一覧を取得できないため並走を判定できません（実行集合に tests/run-all/verify.sh を含むため、suite を実行せず停止しました）" >&2
+    else
+      echo "✗ 判定不能: ゲート状態マーカーを判定できないため並走を判定できません（実行集合に tests/run-all/verify.sh を含むため、suite を実行せず停止しました）" >&2
+    fi
+    if [[ -n "$unknown_markers" ]]; then
+      echo "  取得できた候補:" >&2
+      printf '%s\n' "$unknown_markers" >&2
+    fi
+    echo "  復帰: プロセス一覧とマーカー領域が正常な状態で、このゲートを回し直してください" >&2
+    exit 2
+  fi
+}
+
+if ff_scripts_include_run_all_verify; then
+  ff_startup_stop_if_concurrent
+fi
+
+if [[ "$FF_STARTUP_PRESSURE" == 1 ]]; then
+  echo "⚠️  起動時の負荷: load average ${FF_STARTUP_LOAD}; 閾値 ${FF_STARTUP_THRESHOLD}（${FF_STARTUP_CORES} コア × ${FF_STARTUP_LOAD_PER_CORE}）; 他ゲート ${FF_STARTUP_OTHER_GATES} — ゲートを続行します" >&2
+fi
+
+if [[ "$FAST_MODE" == "1" && ${#FAST_EXCLUDED[@]} -gt 0 ]]; then
+  echo "⚡ 高速モード: selftest ${#FAST_EXCLUDED[@]} 件を実行対象から除外します（内訳はサマリー。全件実行は FF_RUN_ALL_FULL=1）"
+  echo
 fi
 
 # 全件実行であることを肯定的に 1 行で出す。「⚡ が出ていない」ことでしか全件を判別できないと、
@@ -3378,16 +3481,22 @@ GATE_MARKER_FILE=""
 # >>> ff-gate-marker-block（tests/effort-contract/verify.sh 14j がこの関数定義を抽出して、
 # 親プロセスで置いたマーカーを子の記録ブロックが入れ子と判定することを実測する。範囲は関数定義だけ）
 ff_gate_marker_set() {
-  local dir f p start
+  local dir f p start root_phys=""
   [[ "${FF_ENTERED_NESTED:-0}" == "0" ]] || return 0
   dir="$(git -C "$SCRIPT_DIR" rev-parse --absolute-git-dir 2>/dev/null)" || return 0
   [[ -n "$dir" ]] || return 0
+  if declare -F ff_gate_marker_write >/dev/null 2>&1; then
+    root_phys="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+    [[ -z "$root_phys" ]] || root_phys="$(ff_gate_phys_dir "$root_phys" 2>/dev/null || printf '%s' "$root_phys")"
+    GATE_MARKER_FILE="$(ff_gate_marker_write "$dir" "tests/run-all.sh" "$root_phys" 2>/dev/null || true)"
+    return 0
+  fi
   dir="$dir/ff-dev-toolkit/run-all-in-flight"
   mkdir -p "$dir" 2>/dev/null || return 0
   for f in "$dir"/*; do
     p="${f##*/}"
     case "$p" in '' | *[!0-9]*) continue ;; esac
-    kill -0 "$p" 2>/dev/null || rm -f "$f" 2>/dev/null || true
+    kill -0 "$p" 2>/dev/null || rm -f "$f" "${f}.meta" 2>/dev/null || true
   done
   start="$(LC_ALL=C TZ=UTC0 ps -o lstart= -p "$$" 2>/dev/null)" || return 0
   [[ -n "$start" ]] || return 0
@@ -3396,6 +3505,12 @@ ff_gate_marker_set() {
 }
 # <<< ff-gate-marker-block
 ff_gate_marker_set
+
+# INT / TERM 中断時だけ走行中マーカーを即時回収する（EXIT trap は置かない — case 12 維持）。
+if [[ -n "$GATE_MARKER_FILE" ]]; then
+  trap 'if declare -F ff_gate_signal_cleanup >/dev/null 2>&1; then ff_gate_signal_cleanup INT "$GATE_MARKER_FILE"; else rm -f "$GATE_MARKER_FILE" "${GATE_MARKER_FILE}.meta" 2>/dev/null || true; trap - INT; kill -s INT "$$" 2>/dev/null || exit 1; fi' INT
+  trap 'if declare -F ff_gate_signal_cleanup >/dev/null 2>&1; then ff_gate_signal_cleanup TERM "$GATE_MARKER_FILE"; else rm -f "$GATE_MARKER_FILE" "${GATE_MARKER_FILE}.meta" 2>/dev/null || true; trap - TERM; kill -s TERM "$$" 2>/dev/null || exit 1; fi' TERM
+fi
 
 if [[ ${#SCRIPTS[@]} -eq 0 ]]; then
   # 変更ベースの選択で交差が 0 件だった回だけがここへ来る（それ以外の 0 件は上流で止まる）。
@@ -3791,7 +3906,15 @@ ff_gate_marker_nested() {
 
 # 走行中マーカーの後片付け（置いた回だけ）。祖先判定は自分のマーカーを見ないので、
 # 自分の記録より先に消してよい — 下の 2 つの exit 経路の両方を 1 箇所で覆える
-[[ -z "$GATE_MARKER_FILE" ]] || rm -f "$GATE_MARKER_FILE" 2>/dev/null || true
+if [[ -n "$GATE_MARKER_FILE" ]]; then
+  if declare -F ff_gate_marker_remove >/dev/null 2>&1; then
+    ff_gate_marker_remove "$GATE_MARKER_FILE"
+  else
+    rm -f "$GATE_MARKER_FILE" "${GATE_MARKER_FILE}.meta" 2>/dev/null || true
+  fi
+  GATE_MARKER_FILE=""
+  trap - INT TERM
+fi
 
 if [[ ${#FAILED[@]} -gt 0 || ${#NOT_RUN[@]} -gt 0 || ${#REQUIRED_SKIPPED[@]} -gt 0 ]]; then
   ff_record_gate_head fail

@@ -8,7 +8,7 @@
 
 # ════ 実行コード ════
 # ── セキュリティ境界の呼び出し側（保持・統一禁止。OS 分岐そのものが境界） ──
-hooks/guard-review-in-flight.sh	5
+hooks/guard-review-in-flight.sh	4
 scripts/multi-agent.sh	1
 tests/lib/review-in-flight-judge.sh	1
 tests/lib/review-round-counter.sh	1

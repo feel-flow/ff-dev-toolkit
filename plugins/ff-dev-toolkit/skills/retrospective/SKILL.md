@@ -63,7 +63,7 @@ fi
 | `ff-effort` ブロックを持つ Issue がこのセッションでマージされた、または前回の集計から `ff-effort` 付き Issue が増えた | [references/effort.md](references/effort.md) | 乖離の記録帯・集計 |
 | SSOT リポジトリで実行する（旧版が起票した `[observation]` Issue の残件は同ファイル手順 1 の検索で確かめる） | [references/legacy-intake.md](references/legacy-intake.md) | 旧経路の取り込み |
 | hook を変更する・自動発火の挙動を確かめる・入れ子の非対話起動を組む | [references/auto-trigger.md](references/auto-trigger.md) | 自動発火の判定規則 |
-| 台帳記録・knowledge 保留の回収・base 先行・Count の確認 | [references/ledger.md](references/ledger.md) | 照合・保留合流・送信・Count |
+| 台帳記録・knowledge 保留の回収・base 先行・Count の確認 | [references/ledger.md](references/ledger.md) | 照合・保留合流・送信・Count・時間損失 |
 
 ## ask / off モード（保険）
 
@@ -125,7 +125,7 @@ printenv RETROSPECTIVE_MODE
 
 上「記録の前に base の先行を照合する」のフェンスを通してから手順 0 へ入る。
 
-0. **台帳の実在確認と作成**: `docs/08-knowledge/OBSERVATIONS.md` が無ければ `${FF_DEV_TOOLKIT_ROOT}/docs-template/08-knowledge/OBSERVATIONS.md` をコピーして作成する（作成した事実を報告する）。書き込めないリポジトリでは作成せず、観測を報告に残す
+0. **台帳の実在確認と作成**: `docs/08-knowledge/OBSERVATIONS.md` が無ければ `${FF_DEV_TOOLKIT_ROOT}/docs-template/08-knowledge/OBSERVATIONS.md` をコピーして作成する。書き込めないリポジトリでは作成せず、観測を報告に残す
 1. 台帳を grep し、同じ主張を探す。`FF_JEV_MODE=on` なら [triage](references/ledger.md#triage) で先に選別する。`off` は呼び出さず従来経路・出力とバイト同一。
 2. **既存エントリあり** → `Count` を +1、`Last` を今日へ、観測メモを 1 行追記（**1 行 = 1 回**・**同一セッション・同一エントリは 1 回**・**既存エントリは遡及しない**）。`archived` の再発は `active` へ戻す（統合元は除く）。`mitigated` は [references/promotion.md](references/promotion.md) の再発分岐と復帰条件で扱う
 3. **既存エントリなし** → 台帳のエントリ形式（台帳ファイル冒頭に定義）で末尾へ追記する（script で当てるなら [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う）
@@ -150,10 +150,10 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ## 提案の閾値（ノイズ対策の本体）
 
-提案として出すのは、台帳を経由した昇格・定着・特急の提案と、台帳へ書き込めないリポジトリでの従来の起票で、以下をすべて満たすものだけ:
+提案として出すのは、台帳を経由した昇格・定着・特急・単発の提案と、台帳へ書き込めないリポジトリでの従来の起票で、以下をすべて満たすものだけ:
 
 - **実測に限る**: このセッションで実測した手戻り・無駄時間、または台帳に実測として積まれた観測履歴だけを根拠にする。一般論・仮説だけの提案は禁止
-- **最大 3 件**。3 件を超える候補がある場合は効果の大きい順に絞る。閾値未達の観測は出さない（台帳へ書き込めないリポジトリだけがこの限定の対象外）
+- **最大 3 件**。3 件を超える候補がある場合は効果の大きい順に絞る。閾値未達の観測は出さない（台帳へ書き込めないリポジトリと ledger.md の単発提案だけがこの限定の対象外）
 - 各提案に **起票先 repo**・**期待効果**・**既存確認**・**付与予定ラベル** を添える
 - **提示する前に** [references/filing.md](references/filing.md) の「起票前の既存確認」を実施し、起票先 repo の既存 Issue 検索まで済ませてから提示する。方針に矛盾する Issue があれば方針側の変更提案と明示するか取り下げる
 - **機微情報を提案本文へ引用しない**

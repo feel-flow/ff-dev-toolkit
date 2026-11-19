@@ -102,6 +102,7 @@ WS_HEREDOC_TARGET=""
 WRITE_BASE=""      # 相対パスの解決基準（`cd` で動く。空 = 不明）
 WS_ROOT_PHYS=""
 WS_OUTPUT_DIR=".review-results"
+WS_ACK_VAR="FF_REVIEW_LOCK_ACK"
 RESOLVED=""
 RESOLVE_WHY=""
 VAR_TABLE=""
@@ -134,12 +135,13 @@ if . "${BASH_SOURCE[0]%/*}/review-shell-lex.sh" 2>/dev/null \
   WS_LEX_OK=1
 fi
 
-ff_write_scan_init() { # <ROOT_PHYS> <CWD_PHYS> <OUTPUT_DIR_NAME> [凍結対象ツリー（改行区切り）]
+ff_write_scan_init() { # <ROOT_PHYS> <CWD_PHYS> <OUTPUT_DIR_NAME> [凍結対象ツリー（改行区切り）] [ACK変数名]
   local t
   WS_ROOT_PHYS="$1"
   WRITE_BASE="$2"
   WS_OUTPUT_DIR="${3:-.review-results}"
   WS_TREES="${4:-}"
+  WS_ACK_VAR="${5:-${WS_ACK_VAR:-FF_REVIEW_LOCK_ACK}}"
   # 空行だけの集合（物理パスを引けなかった）は cwd のツリーへ倒す（空集合 = 何も守らない、にしない）
   case "$WS_TREES" in
     *[![:space:]]*) : ;;
@@ -1338,8 +1340,12 @@ EOF
         done
         ;;
       *')') i=$((i + 1)) ;; # case のパターン（`x)`）
-      FF_REVIEW_LOCK_ACK=1) seg_override=1; i=$((i + 1)) ;;
-      [A-Za-z_]*=*) i=$((i + 1)) ;;
+      [A-Za-z_]*=*)
+        if [ "${toks[$i]}" = "${WS_ACK_VAR:-FF_REVIEW_LOCK_ACK}=1" ]; then
+          seg_override=1
+        fi
+        i=$((i + 1))
+        ;;
       -*)
         [ -n "$wrap" ] || break
         case "$wrap:${toks[$i]}" in
@@ -1555,7 +1561,16 @@ EOF
       collect_nonopts "-c --namespace --exec-path" "$@"
       [ "${#NONOPTS[@]}" -gt 0 ] || return 1
       case "${NONOPTS[0]}" in
-        rm | mv | clean | commit | rebase | checkout | switch | merge | reset | apply | cherry-pick | revert | am | pull)
+        clean)
+          ws_git_clean_is_dry_run after-git "$@" && return 1
+          [ -n "$WRITE_BASE" ] || { undeterminable "git ${NONOPTS[0]}（cd 先が不明）"; return $?; }
+          if target_in_tree "$WRITE_BASE"; then
+            WRITE_HIT=1
+            WRITE_REASON="作業ツリー内へ書き込みます: ${WRITE_BASE}（git ${NONOPTS[0]}）"
+            return 0
+          fi
+          ;;
+        rm | mv | commit | rebase | checkout | switch | merge | reset | apply | cherry-pick | revert | am | pull)
           [ -n "$WRITE_BASE" ] || { undeterminable "git ${NONOPTS[0]}（cd 先が不明）"; return $?; }
           if target_in_tree "$WRITE_BASE"; then
             WRITE_HIT=1
@@ -1985,7 +2000,7 @@ EOF
   if [ "$rc" -ne 0 ] && [ "$override_hit" -eq 1 ]; then
     WRITE_HIT=1
     WRITE_OVERRIDE=1
-    WRITE_REASON="override 付きの書き込み（区間先頭の FF_REVIEW_LOCK_ACK=1）"
+    WRITE_REASON="override 付きの書き込み（区間先頭の ${WS_ACK_VAR:-FF_REVIEW_LOCK_ACK}=1）"
     return 0
   fi
   return $rc
@@ -2042,4 +2057,268 @@ ws_judge_file_program() {
   rc=$?
   WS_IN_FILE=$((WS_IN_FILE - 1))
   return $rc
+}
+
+ws_trees_has_exact() { # <phys_dir>
+  local t=""
+  [ -n "$1" ] || return 1
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    [ "$1" = "$t" ] && return 0
+  done <<EOF
+$WS_TREES
+EOF
+  return 1
+}
+
+ws_trees_has_within() { # <phys_dir>
+  local t=""
+  [ -n "$1" ] || return 1
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    ws_path_within "$1" "$t" && return 0
+  done <<EOF
+$WS_TREES
+EOF
+  return 1
+}
+
+ws_git_clean_is_dry_run() { # <after-git|after-clean> <tokens...> -> 0 = dry-run (-n / --dry-run)
+  local mode="${1:-after-clean}" clean_dry=0 end_opts=0 skip_next=0 tok_c="" seen_clean=0 skip_g=0
+  shift || return 1
+  while [ $# -gt 0 ]; do
+    tok_c="$1"
+    shift
+    if [ "$mode" = "after-git" ] && [ "$seen_clean" -eq 0 ]; then
+      if [ "$skip_g" -eq 1 ]; then
+        skip_g=0
+        continue
+      fi
+      case "$tok_c" in
+        -c | --namespace | --exec-path) skip_g=1 ;;
+        -*) : ;;
+        clean) seen_clean=1 ;;
+      esac
+      continue
+    fi
+    if [ "$skip_next" -eq 1 ]; then
+      skip_next=0
+      continue
+    fi
+    if [ "$end_opts" -eq 0 ]; then
+      case "$tok_c" in
+        --) end_opts=1 ;;
+        -e | --exclude) skip_next=1 ;;
+        --dry-run | -n) clean_dry=1 ;;
+        --no-dry-run) clean_dry=0 ;;
+        -*)
+          case "$tok_c" in
+            --*) : ;;
+            *e*)
+              case "${tok_c#-}" in *n*) clean_dry=1 ;; esac
+              case "${tok_c#-}" in *e) skip_next=1 ;; esac
+              ;;
+            *n*) clean_dry=1 ;;
+          esac
+          ;;
+      esac
+    fi
+  done
+  [ "$clean_dry" -eq 1 ]
+}
+
+# Bash コマンド内の作業ツリーを変更する git コマンドを検出する（共有判定）。
+# 事前に ff_write_scan_init 済みであること。
+# 引数: <HEREDOC 除去後の本文> <hook 入力の cwd> [is_msys=0] [include_index_writes=0]
+# 戻り値: 0 = 止める git 書き込みを検出（WRITE_GIT_OVERRIDE に区間先頭 ACK 有無）/ 1 = 非検出
+ff_worktree_git_write_scan() { # <code_only> <cwd> [is_msys=0] [include_index_writes=0]
+  local code_only="$1" cwd="$2" is_msys="${3:-0}" inc_index="${4:-0}"
+  local has_git=0 segments="" git_base="" git_sub_saved="" git_restore=0 git_override_hit=0
+  local seg="" ctoks=() cj=0 cdir="" craw="" toks=() n=0 i=0 seg_override=0
+  local gitdir="" seg_root="" j=0 staged=0 worktree=0
+  local ack_token="${WS_ACK_VAR:-FF_REVIEW_LOCK_ACK}=1"
+  WRITE_GIT_HIT=0
+  WRITE_GIT_OVERRIDE=0
+
+  case "$code_only" in
+    *git*) has_git=1 ;;
+  esac
+  [ "$has_git" -eq 1 ] || return 1
+
+  segments="$(printf '%s\n' "$code_only" | awk '{ gsub(/&&|\|\||;|\|/, "\n"); print }')"
+  git_base="$cwd"
+  while IFS= read -r seg; do
+    [ -n "$seg" ] || continue
+    if [ "$git_restore" -eq 1 ]; then git_base="$git_sub_saved"; git_sub_saved=""; git_restore=0; fi
+    case "$seg" in *')' | *') ') [ -n "$git_sub_saved" ] && git_restore=1 ;; esac
+    set -f
+    # shellcheck disable=SC2206 # 素朴な空白トークン化（意図的。glob は set -f で抑止）
+    ctoks=($seg)
+    set +f
+    case "${ctoks[0]:-}" in '(' | '(cd' | '(pushd') [ -n "$git_sub_saved" ] || git_sub_saved="$git_base" ;; esac
+    cj=0
+    case "${ctoks[0]:-}" in '(' | '{') cj=1 ;; '(cd' | '(pushd') ctoks[0]="${ctoks[0]#(}" ;; esac
+    case "${ctoks[$cj]:-}" in
+      cd | pushd)
+        cj=$((cj + 1))
+        while :; do case "${ctoks[$cj]:-}" in -- | -P | -L | -e | -@) cj=$((cj + 1)) ;; *) break ;; esac; done
+        cdir="${ctoks[$cj]:-}"
+        craw="$cdir"
+        cdir="${cdir#[\"\']}"
+        cdir="${cdir%[\"\']}"
+        if [ -z "$cdir" ] || [ $((cj + 1)) -lt "${#ctoks[@]}" ]; then
+          git_base="?"
+        else
+          case "$cdir" in
+            '~' | '~/'*) git_base="${HOME}${cdir#\~}" ;;
+            /*) git_base="$cdir" ;;
+            [A-Za-z]:\\* | [A-Za-z]:/*)
+              if [ "$is_msys" = "1" ]; then
+                case "$craw" in
+                  [A-Za-z]:/* | [\"\']*) git_base="${cdir//\\//}" ;;
+                  *) git_base="?" ;;
+                esac
+              else
+                [ "$git_base" != "?" ] && git_base="${git_base}/${cdir}"
+              fi
+              ;;
+            -* | *'$'* | '~'* | *'`'*) git_base="?" ;;
+            *) [ "$git_base" != "?" ] && git_base="${git_base}/${cdir}" ;;
+          esac
+          [ "$git_base" = "?" ] || [ -d "$git_base" ] || git_base="?"
+        fi
+        continue
+        ;;
+    esac
+    case "$seg" in
+      *git*) : ;;
+      *) continue ;;
+    esac
+    set -f
+    # shellcheck disable=SC2206 # 素朴な空白トークン化（意図的。glob は set -f で抑止）
+    toks=($seg)
+    set +f
+    n=${#toks[@]}
+    i=0
+    seg_override=0
+    while [ "$i" -lt "$n" ]; do
+      case "${toks[$i]}" in
+        [A-Za-z_]*=*)
+          [ "${toks[$i]}" = "$ack_token" ] && seg_override=1
+          i=$((i + 1))
+          ;;
+        env | command | sudo | nohup) i=$((i + 1)) ;;
+        *) break ;;
+      esac
+    done
+    [ "$i" -lt "$n" ] || continue
+    case "${toks[$i]}" in
+      git | */git) : ;;
+      *) continue ;;
+    esac
+    i=$((i + 1))
+    gitdir="$git_base"
+    while [ "$i" -lt "$n" ]; do
+      case "${toks[$i]}" in
+        -C)
+          i=$((i + 1))
+          if [ "$i" -lt "$n" ]; then
+            cdir="${toks[$i]}"
+            craw="$cdir"
+            case "$cdir" in
+              \"*\") cdir="${cdir#\"}"; cdir="${cdir%\"}" ;;
+              \'*\') cdir="${cdir#\'}"; cdir="${cdir%\'}" ;;
+            esac
+            case "$cdir" in
+              /*) gitdir="$cdir" ;;
+              [A-Za-z]:\\* | [A-Za-z]:/*)
+                if [ "$is_msys" = "1" ]; then
+                  case "$craw" in
+                    [A-Za-z]:/* | [\"\']*) gitdir="${cdir//\\//}" ;;
+                    *) gitdir="?" ;;
+                  esac
+                else
+                  [ "$gitdir" = "?" ] || gitdir="$gitdir/$cdir"
+                fi
+                ;;
+              ?*) [ "$gitdir" = "?" ] || gitdir="$gitdir/$cdir" ;;
+            esac
+          fi
+          i=$((i + 1))
+          ;;
+        -c | --git-dir | --work-tree | --namespace | --exec-path) i=$((i + 2)) ;;
+        -*) i=$((i + 1)) ;;
+        *) break ;;
+      esac
+    done
+    [ "$i" -lt "$n" ] || continue
+    if [ "$gitdir" = "?" ]; then
+      :
+    elif [ "$gitdir" != "$cwd" ]; then
+      [ -d "$gitdir" ] || continue
+      if seg_root="$(git -C "$gitdir" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$seg_root" ]; then
+        seg_root="$(ws_phys_dir "$seg_root")"
+        ws_trees_has_exact "$seg_root" || continue
+      else
+        ws_trees_has_within "$(ws_phys_dir "$gitdir")" || continue
+      fi
+    else
+      [ "$WS_CWD_PROTECTED" -eq 1 ] || continue
+    fi
+    case "${toks[$i]}" in
+      add) [ "$inc_index" = "1" ] || continue ;;
+      clean)
+        if [ $((i + 1)) -lt "$n" ] && ws_git_clean_is_dry_run after-clean "${toks[@]:$((i + 1))}"; then
+          continue
+        fi
+        ;;
+      rm | mv | commit | rebase | checkout | switch | merge | reset | apply | cherry-pick | revert | am | pull) : ;;
+      stash)
+        j=$((i + 1))
+        while [ "$j" -lt "$n" ]; do
+          case "${toks[$j]}" in
+            -*) j=$((j + 1)) ;;
+            *) break ;;
+          esac
+        done
+        if [ "$j" -lt "$n" ]; then
+          case "${toks[$j]}" in
+            list | show) continue ;;
+          esac
+        fi
+        ;;
+      restore)
+        staged=0
+        worktree=0
+        j=$((i + 1))
+        while [ "$j" -lt "$n" ]; do
+          case "${toks[$j]}" in
+            --) break ;;
+            --staged | -S) staged=1 ;;
+            --worktree | -W) worktree=1 ;;
+          esac
+          j=$((j + 1))
+        done
+        if [ "$staged" -eq 1 ] && [ "$worktree" -eq 0 ]; then
+          continue
+        fi
+        ;;
+      *) continue ;;
+    esac
+    if [ "$seg_override" -eq 1 ]; then
+      git_override_hit=1
+      continue
+    fi
+    WRITE_GIT_HIT=1
+    WRITE_GIT_OVERRIDE=0
+    return 0
+  done <<EOF
+$segments
+EOF
+  if [ "$git_override_hit" -eq 1 ]; then
+    WRITE_GIT_HIT=1
+    WRITE_GIT_OVERRIDE=1
+    return 0
+  fi
+  return 1
 }

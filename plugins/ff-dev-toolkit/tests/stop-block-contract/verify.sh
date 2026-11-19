@@ -43,7 +43,7 @@ for _v in $(env | sed -n 's/^\(FF_DEV_TOOLKIT_SKIP[A-Za-z0-9_]*\)=.*/\1/p'); do 
 # l4-default-unset:begin
 unset FF_DEV_TOOLKIT_SKIP \
   FF_CREDENTIAL_OUTPUT_ACK FF_DEFAULT_BRANCH_COMMIT_ACK FF_DISCARD_UNCOMMITTED_ACK FF_EFFORT_ACTUAL_ACK FF_EXIT_CODE_ACK \
-  FF_ISSUE_COLLISION_ACK FF_ISSUE_LABEL_ACK FF_LITERAL_WRITE_ACK FF_LONG_GATE_BACKGROUND_ACK FF_MERGE_CLOSING_ACK \
+  FF_GATE_IN_FLIGHT_ACK FF_ISSUE_COLLISION_ACK FF_ISSUE_LABEL_ACK FF_LITERAL_WRITE_ACK FF_LONG_GATE_BACKGROUND_ACK FF_MERGE_CLOSING_ACK \
   FF_PR_DRAFT_ACK FF_REVIEW_LOCK_ACK FF_REVIEW_ROUND_ACK FF_RG_STDIN_ACK FF_SHELL_SAVE_ACK \
   FF_SUB_ISSUE_ID_ACK FF_TIMEOUT_ACK FF_UNBOUNDED_WAIT_ACK FF_WSL_PATHCONV_ACK FF_WSL_SHELL_ACK FF_ZSH_EXPANSION_ACK \
   FF_ZSH_GLOB_ACK 2>/dev/null || true
@@ -203,6 +203,7 @@ echo "stop-block-contract: R 採用名簿"
 # 無いので名簿に入れない（採用は sync-sha-contract/release-runtime.sh が見る）。
 ROSTER='hooks/guard-default-branch-commit.sh
 hooks/guard-exit-code.sh
+hooks/guard-gate-in-flight.sh
 hooks/guard-issue-collision.sh
 hooks/guard-literal-write.sh
 hooks/guard-review-in-flight.sh
@@ -312,12 +313,13 @@ make_replica() { # <dir> <stop-block を置くか 0/1>
   cp "$PLUGIN_ROOT"/tests/lib/*.sh "$1/tests/lib/"
   cp "$PLUGIN_ROOT"/scripts/lib/wsl-notice.sh "$PLUGIN_ROOT"/scripts/lib/l4-declarations.sh \
     "$PLUGIN_ROOT"/scripts/lib/l4-declarations.tsv "$1/scripts/lib/"
-  rm -f "$1/tests/lib/review-in-flight-judge.sh"
+  rm -f "$1/tests/lib/review-in-flight-judge.sh" "$1/tests/lib/gate-in-flight.sh"
   [ "$2" -eq 0 ] || cp "$LIB" "$1/scripts/lib/stop-block.sh"
 }
 make_replica "$WORK/with-lib" 1
 make_replica "$WORK/no-lib" 0
 if [ ! -f "$WORK/with-lib/hooks/guard-review-in-flight.sh" ] || [ ! -f "$WORK/no-lib/hooks/guard-exit-code.sh" ] \
+  || [ ! -f "$WORK/with-lib/hooks/guard-gate-in-flight.sh" ] \
   || [ -e "$WORK/no-lib/scripts/lib/stop-block.sh" ]; then
   bad "E0: hook の写しを作れない（検査不成立）"
 fi
@@ -329,6 +331,14 @@ else
   bad "E3: guard-review-in-flight の deny の形が違う: [$REASON]"
 fi
 [ "$(printf '%s\n' "$REASON" | grep -c '^止めた層: ')" -eq 1 ] || bad "E3: deny 1 件に停止文が 1 ブロックでない: [$REASON]"
+if run_deny "$WORK/with-lib/hooks/guard-gate-in-flight.sh" "$EDIT_JSON" \
+  && head_is "$REASON" '⚠️ ff-dev-toolkit guard（全件ゲート走行中）' \
+  && tail_is_block "$REASON" ガード '止めた規則: gate-judge-unavailable（tests/lib/gate-in-flight.sh）' && single_next "$REASON"; then
+  ok "E3b: guard-gate-in-flight の deny（emit_deny）は先頭文を保ち、末尾 3 行が停止文（ガード）で 1 ブロックだけ"
+else
+  bad "E3b: guard-gate-in-flight の deny の形が違う: [$REASON]"
+fi
+[ "$(printf '%s\n' "$REASON" | grep -c '^止めた層: ')" -eq 1 ] || bad "E3b: deny 1 件に停止文が 1 ブロックでない: [$REASON]"
 
 # run-bash-hooks.sh 経由で 2 hook が同時に deny する入力（perl -i のシェル変数 + 出力整形フィルタの直後の $?）
 BOTH_CMD='perl -pi -e '"'"'s/x/${REPO}/'"'"' f | tail -1; echo "EXIT=$?"'
@@ -379,7 +389,7 @@ fi
 export BASH_ENV="$MSYS_ENV"
 for spec in "guard-literal-write.sh|$(bash_json "$LW_CMD")" "guard-exit-code.sh|$(bash_json "$EC_CMD")" \
   "guard-wsl-shell.sh|$(bash_json "$WSL_SH_CMD")" "guard-wsl-shell.sh|$(bash_json "$WSL_PC_CMD")" \
-  "guard-review-in-flight.sh|$EDIT_JSON"; do
+  "guard-review-in-flight.sh|$EDIT_JSON" "guard-gate-in-flight.sh|$EDIT_JSON"; do
   name="${spec%%|*}"
   json="${spec#*|}"
   if run_deny "$WORK/no-lib/hooks/$name" "$json" \
@@ -396,7 +406,7 @@ make_replica "$WORK/exit-lib" 1
 { printf '%s\n' 'exit 0'; cat "$LIB"; } > "$WORK/exit-lib/scripts/lib/stop-block.sh"
 for spec in "guard-literal-write.sh|$(bash_json "$LW_CMD")" "guard-exit-code.sh|$(bash_json "$EC_CMD")" \
   "guard-wsl-shell.sh|$(bash_json "$WSL_SH_CMD")" "guard-wsl-shell.sh|$(bash_json "$WSL_PC_CMD")" \
-  "guard-review-in-flight.sh|$EDIT_JSON"; do
+  "guard-review-in-flight.sh|$EDIT_JSON" "guard-gate-in-flight.sh|$EDIT_JSON"; do
   name="${spec%%|*}"
   json="${spec#*|}"
   if run_deny "$WORK/exit-lib/hooks/$name" "$json" \
@@ -441,6 +451,39 @@ if ff_git_fixture_init "$RIF_REPO" "stop-block-contract" "stop-block@example.inv
   fi
 else
   bad "E6: 走行中ロックの git fixture を作れない（検査不成立）"
+fi
+
+# 全件ゲート走行中マーカー（ff_gate_marker_write で $$ を置いた）で Edit と Bash の 2 入力を止める。
+GIF_REPO="$WORK/gif-repo"
+GIF_HEAD='⚠️ ff-dev-toolkit guard（全件ゲート走行中・作業ツリー編集の抑止）: '
+if ff_git_fixture_init "$GIF_REPO" "stop-block-contract" "stop-block@example.invalid" \
+  && GIF_REPO="$(cd "$GIF_REPO" && pwd -P)" \
+  && gif_gd="$(git -C "$GIF_REPO" rev-parse --absolute-git-dir 2>/dev/null)" \
+  && gif_mk="$( . "$PLUGIN_ROOT/tests/lib/gate-in-flight.sh" \
+    && ff_gate_marker_write "$gif_gd" "stop-block-contract" "$GIF_REPO" )"; then
+  gif_edit="$(jq -n --arg d "$GIF_REPO" \
+    '{hook_event_name: "PreToolUse", tool_name: "Edit", cwd: $d, tool_input: {file_path: "a.txt", old_string: "a", new_string: "b"}}')"
+  gif_bash="$(jq -n --arg d "$GIF_REPO" \
+    '{hook_event_name: "PreToolUse", tool_name: "Bash", cwd: $d, tool_input: {command: "git commit -m x"}}')"
+  if run_deny "$PLUGIN_ROOT/hooks/guard-gate-in-flight.sh" "$gif_edit" \
+    && head_is "$REASON" "$GIF_HEAD" \
+    && tail_is_block "$REASON" ガード '止めた規則: gate-in-flight（tests/lib/gate-in-flight.sh）' && single_next "$REASON" \
+    && case "$(printf '%s\n' "$REASON" | tail -n 1)" in *FF_GATE_IN_FLIGHT_ACK=1*) false ;; *) true ;; esac; then
+    ok "E8: 走行中マーカーで Edit を止めた deny は先頭文を保ち、末尾 3 行が gate-in-flight の停止文で、次の一手に FF_GATE_IN_FLIGHT_ACK=1 を含まない"
+  else
+    bad "E8: 走行中マーカーで Edit を止めた deny の形が違う: [$REASON]"
+  fi
+  if run_deny "$PLUGIN_ROOT/hooks/guard-gate-in-flight.sh" "$gif_bash" \
+    && head_is "$REASON" "$GIF_HEAD" \
+    && tail_is_block "$REASON" ガード '止めた規則: gate-in-flight（tests/lib/gate-in-flight.sh）' 'FF_GATE_IN_FLIGHT_ACK=1' \
+    && single_next "$REASON"; then
+    ok "E8: 走行中マーカーで Bash（git commit）を止めた deny は先頭文を保ち、末尾 3 行が gate-in-flight の停止文で、次の一手に FF_GATE_IN_FLIGHT_ACK=1 を含む"
+  else
+    bad "E8: 走行中マーカーで Bash を止めた deny の形が違う: [$REASON]"
+  fi
+  rm -f "$gif_mk" "${gif_mk}.meta"
+else
+  bad "E8: 走行中マーカーの git fixture を作れない（検査不成立）"
 fi
 
 echo

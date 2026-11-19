@@ -127,7 +127,7 @@ git diff --name-only -- <1) で得た staged パス>
 - 2) が空なら一致している。手順 7・8 をそのまま実行する
 - 2) が空でなければ、そこに並ぶファイルについて**プリフライトは判定できない**。ファイル名を名指しして「不一致のため判定不能」と報告し、「違反なし」とは書かない。緑扱いにせず commit へ進まない側の判定にする（fail-closed）
 - 次の一手は `git add <名指ししたファイル>` で作業ツリーの内容を staged へ揃え、手順 6 から回し直すこと。staged 側の内容のまま commit したいなら、代わりに `git restore --worktree -- <名指ししたファイル>` で作業ツリーを staged 内容へ戻してから回し直す
-- 1) が 0 件なら手順 7・8 はどちらも「対象なし」になる。一致確認も「対象なし」として 1 行で報告し、他の手順の結果は変えない。ただし削除も対象にする手順 8 の「staged SKILL 本線の容量」と「fixture consumer の判定」は 1) が 0 件でも回す（削除だけの commit を「対象なし」にしない）
+- 1) が 0 件なら手順 7・8 はどちらも「対象なし」になる。一致確認も「対象なし」として 1 行で報告し、他の手順の結果は変えない。ただし削除も対象にする手順 8 の「staged SKILL 本線の容量」と「fixture consumer の判定」は 1) が 0 件でも回す（削除だけの commit を「対象なし」にしない）。同じ理由で削除も対象にする「skip 理由行の判定」も 1) が 0 件でも回す
 
 手順 8 が回す suite にはリポジトリ全体を走査するもの（`sync-forbidden-patterns` の live 検査、`plugin-root-contract` の census）があり、staged していないファイルの作業ツリー内容も判定へ入る。本手順が保証するのは「staged パスについて、検査される内容と commit される内容が一致すること」までである。
 
@@ -164,14 +164,16 @@ git diff --name-only -- <1) で得た staged パス>
 | E. 断片内容（Bへの条件付き追加） | `changelog.d/*.md` が staged（ACMR）。README.md と下位ディレクトリは除く | `changelog-fragments` |
 | F. fixture consumer（判定器で決まる条件付き追加。削除だけの回も判定する） | staged（ACDMRT）の `*.sh` のうち、index か HEAD の内容が fixture lib（`tests/lib/git-fixture.sh`）の consumer であるもの、または判定器自身。判定は下の「fixture consumer の判定」 | `git-fixture-isolation` |
 | G. 新規 suite の追加（Cへの条件付き追加） | `plugins/ff-dev-toolkit/tests/<名>/verify.sh` が新規追加（`--no-renames --diff-filter=A`、1 階層のみ。既存の `M` や削除の `D` は含まない） | `docs-fact-drift` / `adapter-env-isolation-selftest` |
+| H. skip 理由行・許容表（判定器で決まる条件付き追加。削除だけの回も判定する） | staged（ACDMRT）の `plugins/*/tests/**`（`*.sh` / `*.bash` / `*.py` / `*.mjs`）のうち index か HEAD の skip 理由・書式判定が変化したもの、または許容表（`tests/lib/release-skip-profile.tsv`）と skip 検査自身。判定は下の「skip 理由行の判定」 | `skip-line-contract` |
 
 - 種別 B の `skill-count-consistency` は、公開面の正本 `PUBLIC-SURFACE.md` が列挙する skills / hooks / `FF_*` 環境変数と実体の一致を見る。新しい `FF_*` 名を足して公開面へ分類し忘れた状態を commit 前に拾う
 - 種別 D は frontmatter の `version` を bump したときの随伴漏れ（Changelog 節の `### [x.y.z]` 欠落 = `docs-version-changelog`、bump 幅と `changeImpact` の不一致 = `docs-frontmatter-repo`）を拾う（OBS-259 / OBS-142）。version claim の再生成漏れは suite ではなく下の「version claim と changelog 断片」で見る
 - 種別 G は、新規 suite を追加した回に発生する docs の登録 suite 数記載のずれ（`docs-fact-drift`）と試験隔離ヘルパーの callsite 名簿漏れ（`adapter-env-isolation-selftest`）を commit 前に拾う（OBS-041）。既存 suite の修正（`M`）や削除（`D`）だけの回はこの 2 本を追加せず、A〜F の判定も変えない
+- 種別 H は、テストや selftest に部分 skip の理由行（`` `  ○ skip:` `` や同ファイル内の skip ヘルパー呼び出し）を足した回・削除した回や許容表を変えた回に、`release-skip-profile.tsv` への未登録や固定発生元の欠落を commit 前に拾う（OBS-550。`skip-line-contract` 単体の実測は 34.65 秒で 1 分未満）。skip の理由行に触れない変更では追加せず、A〜G の判定も変えない
 
 #### プリフライトの実行手順
 
-まず `git diff --cached --name-only --diff-filter=ACMR` で staged パスの一覧を取る（手順 7 と同じ入力）。一覧を上表の 7 種別へ振り分ける（F は一覧のパスではなく内容で決まるので下の判定器の結果で振り分け、G は `git diff --cached --name-only --no-renames --diff-filter=A` のうち `plugins/ff-dev-toolkit/tests/<名>/verify.sh`（`<名>` は `/` を含まない 1 階層）に一致するものがある回だけ当てる）。1 ファイルが複数種別に該当してよい（`plugins/ff-dev-toolkit/skills/<名>/SKILL.md` は A と B、`plugins/ff-dev-toolkit/tests/<名>/verify.sh` は B と C に該当する）。該当した種別の suite を、重複を除いて 1 回ずつ単体で実行する:
+まず `git diff --cached --name-only --diff-filter=ACMR` で staged パスの一覧を取る（手順 7 と同じ入力）。一覧を上表の 8 種別へ振り分ける（F と H は一覧のパスではなく下の各判定器の結果で振り分け、G は `git diff --cached --name-only --no-renames --diff-filter=A` のうち `plugins/ff-dev-toolkit/tests/<名>/verify.sh`（`<名>` は `/` を含まない 1 階層）に一致するものがある回だけ当てる）。1 ファイルが複数種別に該当してよい（`plugins/ff-dev-toolkit/skills/<名>/SKILL.md` は A と B、`plugins/ff-dev-toolkit/tests/<名>/verify.sh` は B と C に該当する）。該当した種別の suite を、重複を除いて 1 回ずつ単体で実行する:
 
 ```bash
 bash plugins/ff-dev-toolkit/tests/docs-gates/verify.sh
@@ -189,6 +191,8 @@ bash plugins/ff-dev-toolkit/tests/git-fixture-isolation/verify.sh
 # G が当たった回だけ（新規の tests/<名>/verify.sh が A で無い回は C に追加しない）
 bash plugins/ff-dev-toolkit/tests/docs-fact-drift/verify.sh
 bash plugins/ff-dev-toolkit/tests/adapter-env-isolation-selftest/verify.sh
+# H が当たった回だけ（判定器が skip-line-contract: none の回は C に追加しない）
+bash plugins/ff-dev-toolkit/tests/skip-line-contract/verify.sh
 ```
 
 判定順序は手順 7 と同じで、**実行できなかった**を先に切り分ける。suite ファイルが存在しない・依存コマンドが無い・suite 自身が「skip」と報告した場合は、終了コードが 0 でも**違反なしへ倒さない**。「実行できなかった」と「違反なし」を別の状態として報告し、緑扱いにせず commit へ進まない側の判定にする（fail-closed）。実行できた suite だけを終了コードで緑赤に分ける。`tests/run-all/verify.sh` が終了コード 2 で、別の `run-all.sh` の並走、またはプロセス一覧を取得できないことを名指しした回は「実行できなかった」とする。製品の違反でも緑でもない。並走を名指した回の次の一手は、その全件ゲートが終わってから同じ suite を回すこと。プロセス一覧を取得できない回の次の一手は、一覧が取れる状態で同じ suite を回すこと。
@@ -232,6 +236,20 @@ bash -c 'r="$(git rev-parse --show-toplevel)" || exit 2; f="$r/plugins/ff-dev-to
 | 0 | `git-fixture consumer: <path>` と `git-fixture-isolation: run N` | 名指しされたパスを記録し、`git-fixture-isolation` を単体で回す。名簿不一致は suite が名簿へ足す名前・名簿から消す名前に分けて名指しする |
 | 0 | `git-fixture-isolation: none` | 対象なし。F の suite は回さず、A〜E の判定は変えない |
 | 2 | `git-fixture 未検査: <理由>` | 一覧・blob の取得失敗、未解決の衝突。「違反なし」とも「対象なし」とも書かず、commit へ進まない |
+
+#### skip 理由行の判定
+
+種別 H は、テストや selftest に部分 skip の理由行・呼び出しを足した回や削除した回、許容表（`tests/lib/release-skip-profile.tsv`）と関連検査を変えた回に、`skip-line-contract` を単体で実行する（OBS-550）。判定器は `plugins/*/tests/` 配下の staged（ACDMRT）な `*.sh` / `*.bash` / `*.py` / `*.mjs` について index の blob と HEAD の blob に対する `ff_skip_line_scan_files --reasons` の結果（行番号差を正規化して比較）および全件 skip 行の増減を読み、skip 理由行に触れていない変更では追加しない。削除も見るので、ACMR の一覧が 0 件の回（skip を含むテストを消すだけの commit）も回す:
+
+```bash
+bash -c 'r="$(git rev-parse --show-toplevel)" || exit 2; f="$r/plugins/ff-dev-toolkit/tests/lib/precommit-skip-line.sh"; if [ ! -d "$r/plugins/ff-dev-toolkit/tests" ]; then echo "skip-line-contract: none"; exit 0; fi; [ -s "$f" ] || { echo "skip-line 未検査: $f がありません/空です" >&2; exit 2; }; . "$f" || exit 2; skip_line_precommit_scan "$r"'
+```
+
+| 終了コード | 出力 | 報告 |
+|---|---|---|
+| 0 | `skip-line target: <path>` と `skip-line-contract: run N` | 名指しされたパスを記録し、`skip-line-contract` を単体で回す。未登録の理由は suite が「ファイル:行: 未分類の部分 skip: <理由>」で名指しし、commit へ進まない |
+| 0 | `skip-line-contract: none` | 対象なし。H の suite は回さず、A〜G の判定は変えない |
+| 2 | `skip-line 未検査: <理由>` | 一覧・blob の取得失敗、走査不能、未解決の衝突。「違反なし」とも「対象なし」とも書かず、commit へ進まない |
 
 #### version claim と changelog 断片
 
@@ -389,6 +407,12 @@ tests を持たない消費側プロジェクトでは「対象なし」。tests
 - ✅ 違反なし（`git-fixture consumer:` で名指ししたパスと `git-fixture-isolation` の成功）
 - ○ 対象なし（`git-fixture-isolation: none`）
 - ❌ 赤（suite が名指しした名簿へ足す名前・消す名前などを列挙、commit へ進まない）
+- ❌ 未検査（判定器 rc=2、または suite の skip。「違反なし」とは書かず、commit へ進まない）
+
+### skip 理由行（種別 H）
+- ✅ 違反なし（`skip-line target:` で名指ししたパスと `skip-line-contract` の成功）
+- ○ 対象なし（`skip-line-contract: none`）
+- ❌ 赤（suite が名指しした `ファイル:行` の未分類部分 skip・固定発生元欠落などを列挙、commit へ進まない）
 - ❌ 未検査（判定器 rc=2、または suite の skip。「違反なし」とは書かず、commit へ進まない）
 
 ### 実行ビット（新規 suite / hook）

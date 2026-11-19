@@ -84,6 +84,10 @@ RESIDENT_SKIP_LIB="$SCRIPT_DIR/resident-skip-allow.sh"
 [[ -f "$RESIDENT_SKIP_LIB" ]] || fail "suite skip の許容を決める判定がありません: $RESIDENT_SKIP_LIB"
 # shellcheck source=resident-skip-allow.sh
 . "$RESIDENT_SKIP_LIB"
+GATE_MARKER_LIB="$SCRIPT_DIR/../lib/gate-in-flight.sh"
+[[ -f "$GATE_MARKER_LIB" ]] || fail "走行中マーカーの判定がありません: $GATE_MARKER_LIB"
+# shellcheck source=../lib/gate-in-flight.sh
+. "$GATE_MARKER_LIB"
 
 BASE="${XDG_CACHE_HOME:-$HOME/.cache}/ff-dev-toolkit"
 mkdir -p "$BASE" || fail "合成先の親ディレクトリを作れません: $BASE"
@@ -95,14 +99,25 @@ WORK="$(mktemp -d "$BASE/public-layout.XXXXXX")" || fail "合成先を作れま�
 # 素の `trap 'rm -rf …' EXIT` は途中死（set -u 含む）の終了ステータスを 0 へ上書きするので、
 # 最終行のセンチネルで到達を確かめる（run-all/verify.sh case 12 が再混入を検出する）
 FF_REACHED_END=0
+PUBLIC_LAYOUT_MARKER=""
 _cleanup() {
+  local rc=$?
+  ff_gate_marker_remove "${PUBLIC_LAYOUT_MARKER:-}"
   rm -rf "$WORK"
   if [[ "$FF_REACHED_END" -ne 1 ]]; then
-    echo "✗ public-layout: 最後まで到達しませんでした（途中で中断）" >&2
-    exit 1
+    if [[ "$rc" -eq 0 ]]; then
+      echo "✗ public-layout: 最後まで到達しませんでした（途中で中断）" >&2
+      rc=1
+    fi
+    exit "$rc"
   fi
 }
 trap _cleanup EXIT
+_ssot_git_dir="$(git -C "$REPO_ROOT" rev-parse --absolute-git-dir 2>/dev/null || true)"
+_ssot_tree="$(ff_gate_phys_dir "$REPO_ROOT" 2>/dev/null || printf '%s' "$REPO_ROOT")"
+if [[ -n "$_ssot_git_dir" ]]; then
+  PUBLIC_LAYOUT_MARKER="$(ff_gate_marker_write "$_ssot_git_dir" "tests/public-layout/verify.sh" "$_ssot_tree" 2>/dev/null || true)"
+fi
 TARGET="$WORK/public"
 ORIGIN="$WORK/origin.git"
 
@@ -134,8 +149,15 @@ if [[ -n "${FF_PUBLIC_LAYOUT_SUITES:-}" ]]; then
     suites+=("tests/$s/verify.sh")
   done
   echo "public-layout: 合成配置で ${#suites[@]} suite を回します（FF_PUBLIC_LAYOUT_SUITES）"
-  env -u FF_RUN_ALL_FULL -u FF_RUN_ALL_FAST -u FF_RUN_ALL_CHANGED bash tests/run-all.sh "${suites[@]}" \
-    || { echo "✗ public-layout: 合成した公開配置で suite が赤です" >&2; exit 1; }
+  public_rc=0
+  env -u FF_RUN_ALL_FULL -u FF_RUN_ALL_FAST -u FF_RUN_ALL_CHANGED bash tests/run-all.sh "${suites[@]}" || public_rc=$?
+  if [[ "$public_rc" -eq 2 ]]; then
+    echo "✗ 判定不能: public-layout: 並走中の全件ゲート（またはプロセス一覧取得不能）により合成配置の run-all.sh が rc=2 で停止しました" >&2
+    exit 2
+  elif [[ "$public_rc" -ne 0 ]]; then
+    echo "✗ public-layout: 合成した公開配置で suite が赤です" >&2
+    exit 1
+  fi
 else
   n_steps="$(yq "[.jobs[].steps[] | select(.name == \"$STEP_NAME\")] | length" "$TARGET/$WORKFLOW_REL")" \
     || fail "公開 workflow を読めません: $WORKFLOW_REL"
@@ -156,11 +178,18 @@ else
   # step 本文は Actions が用意するファイルへ要約を書く。ローカルには無いので合成先に置く
   # （GITHUB_ACTIONS は設定しない — 中の suite が CI 用の挙動へ切り替わるため）
   : > "$WORK/step-summary.md"
+  public_rc=0
   env -u FF_RUN_ALL_FULL -u FF_RUN_ALL_FAST -u FF_RUN_ALL_CHANGED RUNNER_TEMP="$WORK" \
     GITHUB_STEP_SUMMARY="$WORK/step-summary.md" \
     FF_PUBLIC_LAYOUT_ALLOWED_SKIP_SUITES="$ff_public_layout_resident_allowed" \
-    bash -eo pipefail "$WORK/run-public.sh" \
-    || { echo "✗ public-layout: 合成した公開配置で公開 suite セットが赤です（公開同期後の週次 CI で同じ赤になる）" >&2; exit 1; }
+    bash -eo pipefail "$WORK/run-public.sh" || public_rc=$?
+  if [[ "$public_rc" -eq 2 ]]; then
+    echo "✗ 判定不能: public-layout: 並走中の全件ゲート（またはプロセス一覧取得不能）により合成配置の run-all.sh が rc=2 で停止しました" >&2
+    exit 2
+  elif [[ "$public_rc" -ne 0 ]]; then
+    echo "✗ public-layout: 合成した公開配置で公開 suite セットが赤です（公開同期後の週次 CI で同じ赤になる）" >&2
+    exit 1
+  fi
 fi
 echo "✓ public-layout: 合成した公開配置で緑"
 FF_REACHED_END=1

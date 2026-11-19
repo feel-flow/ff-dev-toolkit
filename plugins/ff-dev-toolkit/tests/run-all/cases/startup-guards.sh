@@ -821,4 +821,296 @@ expect_has '^✗ stale (base が先行しているための赤を含む): ' "並
 run_runner "$FIXTURES/partial-skip/verify.sh"
 expect_lacks '^✗ stale ' "鮮度と無関係な suite を巻き込まない"
 
+echo ""
+echo "== case 54: 実行集合に tests/run-all/verify.sh を含む場合の並走早期停止と残骸マーカー回収 =="
+
+if ! command -v git >/dev/null 2>&1; then
+  bad "case 54: git が無いため隔離 repo 検証を実行できない"
+else
+_c54_fx="$RUN_WORK/ff-run-all-concurrent-stop"
+rm -rf "$_c54_fx"
+mkdir -p "$_c54_fx/repo/tests/run-all" "$_c54_fx/repo/tests/other-probe" "$_c54_fx/repo/tests/lib" "$_c54_fx/repo/scripts" "$_c54_fx/bin"
+_c54_rec="$_c54_fx/gate-record"
+cat > "$_c54_fx/repo/tests/run-all/verify.sh" <<'PROBE'
+#!/usr/bin/env bash
+echo "FIXTURE-C54-RUN-ALL-EXECUTED"
+exit 0
+PROBE
+cat > "$_c54_fx/repo/tests/other-probe/verify.sh" <<'PROBE'
+#!/usr/bin/env bash
+if false; then
+  echo "○ skip: material"
+  exit 0
+fi
+echo "FIXTURE-C54-OTHER-EXECUTED"
+exit 0
+PROBE
+chmod +x "$_c54_fx/repo/tests/run-all/verify.sh" "$_c54_fx/repo/tests/other-probe/verify.sh"
+awk '
+  /^  SCRIPTS=\($/ {
+    print
+    print "    \"$SCRIPT_DIR/run-all/verify.sh\""
+    print "    \"$SCRIPT_DIR/other-probe/verify.sh\""
+    in_scripts = 1
+    next
+  }
+  in_scripts && /^  \)$/ { in_scripts = 0; print; next }
+  in_scripts { next }
+  /^REQUIRED_SUITES=\($/ {
+    print
+    print "  other-probe"
+    in_required = 1
+    next
+  }
+  in_required && /^\)$/ { in_required = 0; print; next }
+  in_required { next }
+  /^MISS_PROBE_BASELINE=\($/ {
+    print
+    print "  run-all"
+    print "  other-probe"
+    in_baseline = 1
+    next
+  }
+  in_baseline && /^\)$/ { in_baseline = 0; print; next }
+  in_baseline { next }
+  { print }
+' "$RUNNER" > "$_c54_fx/repo/tests/run-all.sh"
+cp "$TESTS_DIR/lib/gate-in-flight.sh" "$_c54_fx/repo/tests/lib/gate-in-flight.sh"
+if [ -f "$TESTS_DIR/lib/utf8-locale.sh" ]; then
+  cp "$TESTS_DIR/lib/utf8-locale.sh" "$_c54_fx/repo/tests/lib/utf8-locale.sh"
+fi
+cp "$TESTS_DIR/../scripts/record-gate-head.sh" "$_c54_fx/repo/scripts/record-gate-head.sh"
+
+_dg_git -C "$_c54_fx/repo" init -q . >/dev/null 2>&1 || true
+_dg_git -C "$_c54_fx/repo" add -A >/dev/null 2>&1 || true
+_dg_git -C "$_c54_fx/repo" commit -qm "c54-init" >/dev/null 2>&1 || true
+
+_c54_real_ps="$(command -v ps)"
+cat > "$_c54_fx/bin/ps" <<'STUB'
+#!/usr/bin/env bash
+real_ps="${C54_REAL_PS:?}"
+if [ "${1:-}" = "-o" ]; then
+  exec "$real_ps" "$@"
+fi
+if [ "${1:-}" = "-ww" ] && [ "${2:-}" = "-eo" ]; then
+  case "${C54_GRAPH:-clean}" in
+    fail) exit 1 ;;
+  esac
+  pid="$PPID"
+  i=0
+  while [ "$i" -lt 6 ] && [ -n "$pid" ] && [ "$pid" != 0 ] && [ "$pid" != 1 ]; do
+    printf "%s 1 bash verify.sh\n" "$pid"
+    pid="$("$real_ps" -o ppid= -p "$pid" 2>/dev/null | tr -d "[:space:]")" || exit 1
+    i=$((i + 1))
+  done
+  if [ "${C54_GRAPH:-clean}" = "independent" ]; then
+    printf "%s 1 bash /x/run-all.sh\n" "${C54_SLEEPER_PID:?}"
+  fi
+  exit 0
+fi
+if [ "${1:-}" = "-ww" ] && [ "${2:-}" = "-o" ] && [ "${3:-}" = "args=" ] && [ "${4:-}" = "-p" ]; then
+  if [ "${5:-}" = "${C54_SLEEPER_PID:-}" ] && [ "${C54_GRAPH:-clean}" = "independent" ]; then
+    printf "%s\n" "bash /x/run-all.sh"
+    exit 0
+  fi
+  exit 1
+fi
+exec "$real_ps" "$@"
+STUB
+chmod +x "$_c54_fx/bin/ps"
+
+_c54_runner="$_c54_fx/repo/tests/run-all.sh"
+_c54_run() {
+  local graph="$1"; shift
+  if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_ALLOW_SKIP -u FF_RUN_ALL_CHANGED -u FF_RUN_ALL_ALLOW_DIRTY \
+    FF_RUN_ALL_JOBS=1 FF_GATE_RECORD_FILE="$_c54_rec" \
+    C54_GRAPH="$graph" C54_SLEEPER_PID=4194303 C54_REAL_PS="$_c54_real_ps" \
+    PATH="$_c54_fx/bin:$PATH" \
+    bash "$_c54_runner" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+}
+
+rm -f "$_c54_rec"
+_c54_run independent
+expect_rc 2 "54-A: 既定一覧（run-all/verify.sh を含む）で他ゲート並走時は rc=2 で停止"
+expect_has '判定不能: 別の全件ゲートが動いています' "54-A: 判定不能メッセージを出力"
+expect_has '4194303:/x/run-all\.sh' "54-A: 並走プロセス PID とスクリプト名を名指し"
+expect_has 'pgrep -f' "54-A: 復帰手順に誤判定注意の案内を含む"
+expect_lacks 'FIXTURE-C54-RUN-ALL-EXECUTED' "54-A: run-all/verify.sh を 1 件も実行しない"
+expect_lacks 'FIXTURE-C54-OTHER-EXECUTED' "54-A: 他 suite も 1 件も実行しない"
+expect_lacks '^suites: total=' "54-A: サマリーを出さない"
+[ ! -e "$_c54_rec" ] && ok "54-A: 停止回は gate-record を作成しない" || bad "54-A: 停止回が gate-record を作成した"
+
+rm -f "$_c54_rec"
+_c54_run independent "$_c54_fx/repo/tests/other-probe/verify.sh"
+expect_rc 0 "54-B: run-all/verify.sh を含まない部分実行は並走時でも警告のみで続行する"
+expect_has 'FIXTURE-C54-OTHER-EXECUTED' "54-B: 部分実行では対象 suite が実行される"
+expect_has '起動時の負荷:' "54-B: 並走負荷の警告を出す"
+
+rm -f "$_c54_rec"
+_c54_run independent "$_c54_fx/repo/tests/run-all/verify.sh"
+expect_rc 2 "54-C: 明示指定に run-all/verify.sh を含むときは並走時に rc=2 で停止"
+expect_lacks 'FIXTURE-C54-RUN-ALL-EXECUTED' "54-C: 明示指定でも 1 件も実行しない"
+
+rm -f "$_c54_rec"
+_c54_run fail
+expect_rc 2 "54-D: run-all/verify.sh を含む実行でプロセス一覧取得失敗時は rc=2 で停止"
+expect_has '判定不能: プロセス一覧を取得できない' "54-D: プロセス取得不能の理由を出す"
+expect_lacks 'FIXTURE-C54-RUN-ALL-EXECUTED' "54-D: 1 件も実行しない"
+[ ! -e "$_c54_rec" ] && ok "54-D: プロセス取得不能時は gate-record を作成しない" || bad "54-D: gate-record が作られた"
+
+_c54_mdir="$_c54_fx/repo/.git/ff-dev-toolkit/run-all-in-flight"
+mkdir -p "$_c54_mdir"
+printf 'Thu Jan  1 00:00:00 1970\n' > "$_c54_mdir/999999"
+printf 'label=dead\ntree=%s\n' "$_c54_fx/repo" > "$_c54_mdir/999999.meta"
+printf 'Thu Jan  1 00:00:00 1970\n' > "$_c54_mdir/$$"
+printf 'label=reused\ntree=%s\n' "$_c54_fx/repo" > "$_c54_mdir/$$.meta"
+rm -f "$_c54_rec"
+_c54_run clean
+expect_rc 0 "54-E: 死んだ PID と再利用 PID の残骸マーカーを自動回収して実行を完了する"
+expect_has 'FIXTURE-C54-RUN-ALL-EXECUTED' "54-E: 残骸掃除後に全 suite が走る"
+[ ! -e "$_c54_mdir/999999" ] && [ ! -e "$_c54_mdir/$$" ] \
+  && ok "54-E: 非生存・PID 再利用の残骸マーカーを自動削除した" \
+  || bad "54-E: 残骸マーカーが削除されていない"
+
+sleep 30 &
+_c54_sl_pid=$!
+_c54_sl_start="$(LC_ALL=C TZ=UTC0 "$_c54_real_ps" -o lstart= -p "$_c54_sl_pid" 2>/dev/null || true)"
+if [ -n "$_c54_sl_start" ]; then
+  printf '%s\n' "$_c54_sl_start" > "$_c54_mdir/$_c54_sl_pid"
+  printf 'label=live-marker-probe\ntree=%s\n' "$_c54_fx/repo" > "$_c54_mdir/${_c54_sl_pid}.meta"
+  _c54_run clean
+  expect_rc 2 "54-F: 独立した生存マーカー（lstart 一致）があれば ps に未検出でも rc=2 で停止"
+  expect_has 'live-marker-probe' "54-F: 生存マーカーのラベルを名指しする"
+  expect_lacks 'FIXTURE-C54-RUN-ALL-EXECUTED' "54-F: suite を実行しない"
+else
+  bad "54-F: テスト用スリーププロセスの lstart を取得できない"
+fi
+kill "$_c54_sl_pid" 2>/dev/null || true
+wait "$_c54_sl_pid" 2>/dev/null || true
+rm -f "$_c54_mdir/${_c54_sl_pid}" "$_c54_mdir/${_c54_sl_pid}.meta"
+
+# 54-G: tests/run-all 配下を cwd にして ../run-all.sh ./verify.sh で呼んでも早期停止する
+_c54_g_rc=0
+_c54_g_out="$(cd "$_c54_fx/repo/tests/run-all" && env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_ALLOW_SKIP -u FF_RUN_ALL_CHANGED -u FF_RUN_ALL_ALLOW_DIRTY \
+  FF_RUN_ALL_JOBS=1 FF_GATE_RECORD_FILE="$_c54_rec" \
+  C54_GRAPH="independent" C54_SLEEPER_PID=4194303 C54_REAL_PS="$_c54_real_ps" \
+  PATH="$_c54_fx/bin:$PATH" bash ../run-all.sh ./verify.sh 2>&1)" || _c54_g_rc=$?
+[ "$_c54_g_rc" -eq 2 ] && ok "54-G: tests/run-all から ./verify.sh 指定時も rc=2 で早期停止する" || bad "54-G: rc=$_c54_g_rc out=$_c54_g_out"
+
+# 54-H: run-all-in-flight が symlink のときは安全側（rc=2）で止める
+_c54_real_mdir="$_c54_mdir"
+rm -rf "$_c54_mdir"
+ln -s /nonexistent "$_c54_mdir"
+_c54_run clean
+expect_rc 2 "54-H: symlink 化した run-all-in-flight ディレクトリでは判定不能 rc=2 で停止する"
+rm -f "$_c54_mdir"
+mkdir -p "$_c54_real_mdir"
+
+# 54-I: SIGTERM 中断時に走行中マーカーと .meta を即時回収する（EXIT trap 無し維持）
+# TERM はマーカーの出現に加えて suite（sleep-probe）の起動の印を待ってから送る。run-all.sh は
+# マーカーを作った後に INT / TERM の trap を置き、suite はその後に起動するので、印が在れば trap は
+# 設置済み。マーカーの出現だけで送ると、作成から trap 設置までの隙間に届いた回は既定動作で死んで
+# マーカーが残り、偽の赤になる（Issue `#2878`。出現直後に送る診断では 20/20 回が suite 未起動のまま残存）。
+cat > "$_c54_fx/repo/tests/sleep-probe.sh" <<'SLPROBE'
+#!/usr/bin/env bash
+: > "${0%.sh}.started"
+printf 'SLEEP_STARTED\n'
+sleep 30
+SLPROBE
+chmod +x "$_c54_fx/repo/tests/sleep-probe.sh"
+_c54_started="$_c54_fx/repo/tests/sleep-probe.started"
+rm -f "$_c54_fx/term.log" "$_c54_started"
+env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_ALLOW_SKIP -u FF_RUN_ALL_CHANGED \
+  FF_RUN_ALL_ALLOW_DIRTY=1 FF_RUN_ALL_JOBS=1 FF_GATE_RECORD_FILE="$_c54_rec" \
+  C54_GRAPH="clean" C54_REAL_PS="$_c54_real_ps" PATH="$_c54_fx/bin:$PATH" \
+  bash "$_c54_runner" "$_c54_fx/repo/tests/sleep-probe.sh" > "$_c54_fx/term.log" 2>&1 &
+_c54_term_pid=$!
+_c54_w=0
+while [ "$_c54_w" -lt 100 ] && { [ ! -e "$_c54_mdir/${_c54_term_pid}" ] || [ ! -e "$_c54_started" ]; }; do
+  sleep 0.1
+  _c54_w=$((_c54_w + 1))
+done
+if [ -e "$_c54_mdir/${_c54_term_pid}" ] && [ -e "$_c54_started" ]; then
+  kill -TERM "$_c54_term_pid" 2>/dev/null || true
+  if wait "$_c54_term_pid" 2>/dev/null; then _c54_term_rc=0; else _c54_term_rc=$?; fi
+  if [ ! -e "$_c54_mdir/${_c54_term_pid}" ] && [ ! -e "$_c54_mdir/${_c54_term_pid}.meta" ]; then
+    ok "54-I: SIGTERM 中断時に走行中マーカーと .meta を即時削除する"
+  else
+    bad "54-I: SIGTERM 中断後もマーカーが残存している"
+  fi
+  # マーカーは正常終了の後片付けでも消える。TERM を無視して suite を完走させた回（trap '' TERM など）を
+  # 上の検査は区別できないので、trap が TERM を再送出して終了した（128 + 15）ことも確かめる。
+  if [ "$_c54_term_rc" -eq 143 ]; then
+    ok "54-I: run-all は TERM で終了した（rc=143。suite を完走させた正常終了ではない）"
+  else
+    bad "54-I: run-all が TERM で終了していない（rc=${_c54_term_rc}。期待は 143）"
+  fi
+else
+  kill "$_c54_term_pid" 2>/dev/null || true
+  wait "$_c54_term_pid" 2>/dev/null || true
+  bad "54-I: TERM 検証用 run-all のマーカー設置と suite の起動を確認できなかった"
+fi
+rm -f "$_c54_fx/repo/tests/sleep-probe.sh" "$_c54_started" "$_c54_fx/term.log"
+
+# 54-J: 並列モード（FF_RUN_ALL_JOBS=2）でも SIGTERM 時に実行中の子 suite を止め、完了後にマーカーを回収する
+cat > "$_c54_fx/repo/tests/sleep-par.sh" <<SLPAR
+#!/usr/bin/env bash
+printf '%s\n' "\$\$" > "${_c54_fx}/par-child.pid"
+sleep 30
+SLPAR
+chmod +x "$_c54_fx/repo/tests/sleep-par.sh"
+rm -f "$_c54_fx/par-child.pid" "$_c54_fx/par.log"
+env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_ALLOW_SKIP -u FF_RUN_ALL_CHANGED \
+  FF_RUN_ALL_ALLOW_DIRTY=1 FF_RUN_ALL_JOBS=2 FF_GATE_RECORD_FILE="$_c54_rec" \
+  C54_GRAPH="clean" C54_REAL_PS="$_c54_real_ps" PATH="$_c54_fx/bin:$PATH" \
+  bash "$_c54_runner" "$_c54_fx/repo/tests/sleep-par.sh" "$_c54_fx/repo/tests/other-probe/verify.sh" > "$_c54_fx/par.log" 2>&1 &
+_c54_par_pid=$!
+_c54_w=0
+while [ "$_c54_w" -lt 60 ] && { [ ! -e "$_c54_mdir/${_c54_par_pid}" ] || [ ! -s "$_c54_fx/par-child.pid" ]; }; do
+  sleep 0.1
+  _c54_w=$((_c54_w + 1))
+done
+if [ -e "$_c54_mdir/${_c54_par_pid}" ] && [ -s "$_c54_fx/par-child.pid" ]; then
+  _c54_cpid="$(cat "$_c54_fx/par-child.pid" 2>/dev/null || true)"
+  kill -TERM "$_c54_par_pid" 2>/dev/null || true
+  if wait "$_c54_par_pid" 2>/dev/null; then _c54_par_rc=0; else _c54_par_rc=$?; fi
+  sleep 0.1
+  if [ ! -e "$_c54_mdir/${_c54_par_pid}" ] && [ ! -e "$_c54_mdir/${_c54_par_pid}.meta" ]; then
+    ok "54-J: 並列モードの SIGTERM 後も走行中マーカーと .meta を即時回収する"
+  else
+    bad "54-J: 並列モード SIGTERM 後もマーカーが残存している"
+  fi
+  # 54-I と同じ理由で、TERM を無視して子 suite の完了まで走った回（マーカーも子も正常終了で消える）を区別する。
+  if [ "$_c54_par_rc" -eq 143 ]; then
+    ok "54-J: 並列モードの run-all は TERM で終了した（rc=143）"
+  else
+    bad "54-J: 並列モードの run-all が TERM で終了していない（rc=${_c54_par_rc}。期待は 143）"
+  fi
+  if [ -n "$_c54_cpid" ] && ! kill -0 "$_c54_cpid" 2>/dev/null; then
+    ok "54-J: 並列実行中の子 suite（PID ${_c54_cpid}）も TERM で停止した"
+  else
+    [ -n "$_c54_cpid" ] && kill -KILL "$_c54_cpid" 2>/dev/null || true
+    bad "54-J: 親だけ終了し、バックグラウンドの子 suite（PID ${_c54_cpid}）が生き残った"
+  fi
+else
+  kill "$_c54_par_pid" 2>/dev/null || true
+  wait "$_c54_par_pid" 2>/dev/null || true
+  bad "54-J: 並列 TERM 検証用 suite の起動・マーカー設置を確認できなかった"
+fi
+rm -f "$_c54_fx/repo/tests/sleep-par.sh" "$_c54_fx/par-child.pid" "$_c54_fx/par.log"
+
+awk '
+  /^  ff_startup_stop_if_concurrent$/ { print "  :"; next }
+  { print }
+' "$_c54_runner" > "$_c54_fx/run-all.mut.sh"
+mv "$_c54_fx/run-all.mut.sh" "$_c54_runner"
+_dg_git -C "$_c54_fx/repo" add -A >/dev/null 2>&1 || true
+_dg_git -C "$_c54_fx/repo" commit -qm "c54-mut" >/dev/null 2>&1 || true
+_c54_run independent
+expect_rc 0 "54-M: 早期停止を無効化した変異は並走下でも rc=0 で通過する（54-A の検出力対照）"
+expect_has 'FIXTURE-C54-RUN-ALL-EXECUTED' "54-M: 変異では suite が実際に走る"
+
+rm -rf "$_c54_fx"
+fi
+
 # suite-cases-end: startup-guards.sh

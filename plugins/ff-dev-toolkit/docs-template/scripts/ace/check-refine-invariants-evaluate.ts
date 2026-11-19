@@ -34,7 +34,10 @@ export function evaluateRefineInvariants(input: {
   readonly archiveBlocks: readonly EntryBlock[];
   readonly patternsContent: string | null;
 }): string[] {
-  const ops = parseChangelogOperations(input.changelogContent ?? input.playbookContent);
+  const ops = parseChangelogOperations(
+    input.changelogContent ?? input.playbookContent,
+    input.changelogContent !== undefined ? { allowHeadingless: true } : undefined,
+  );
   const liveIds = new Set(input.liveBlocks.map((b) => b.id));
   const archiveIds = new Set(input.archiveBlocks.map((b) => b.id));
   const mergedSources = new Set(ops.mergedPairs.map((p) => p.source));

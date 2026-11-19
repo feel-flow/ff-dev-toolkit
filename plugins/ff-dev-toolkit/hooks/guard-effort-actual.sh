@@ -5,7 +5,7 @@
 #
 # `gh pr merge` が閉じようとしている Issue の本文に `ff-effort` ブロックが
 # **あるのに** `effort_ai_actual` が未記入のままなら、マージ前に停止する。
-# `/close-issue`（AC 照合 + 工数の書き戻し）を通らずに `Closes` / `Refs` 付きの
+# `/close-issue`（AC 照合 + 工数の書き戻し）を通らずに closing keyword 付きの
 # PR をマージすると、Issue は閉じるが実績は未記入のままになり、集計器
 # `scripts/effort-report.sh` の較正母集団から `excluded_planned_only` として
 # 静かに落ちる。呼ばれなければ 1 行も実行されない散文のゲートを、マージ操作の
@@ -48,21 +48,35 @@
 #
 # 判定の流れ:
 #   1. heredoc 本文（`<<` / `<<-` のトークン以降、終端行まで）を走査対象から落とし、
-#      クォートの閉じていないセグメントを捨てたうえで、コマンド位置の `gh pr merge`
-#      を含むセグメントを特定する（`echo 'gh pr merge ...'` では発火しない）
+#      シェル準拠の単一パーサ `parse_gh_pr_merge`（クォート状態・`\` 継続行・隣接引用連結・
+#      `$'…'`・コメント・リダイレクト・前置代入・ラッパーを考慮）で、最初に実行される
+#      コマンド位置の `gh pr merge` とその PR 指定・`--repo`・`FF_EFFORT_ACTUAL_ACK=1`・
+#      `--subject` / `--body` / `--body-file`（`-t` / `-b` / `-F`）を抽出する
+#      （`echo 'gh pr merge …'` や後続コマンドの引数では発火しない）。クォートや置換が
+#      閉じていないときは解析を諦めて素通し（fail-open）する
 #   2. PR 指定（番号 / URL / ブランチ。省略時は現在のブランチ）と `--repo` を拾い、
 #      `gh pr view --json number,body,url,closingIssuesReferences` で PR を読む
 #   3. 閉じる Issue の集合は GitHub が解決済みの `closingIssuesReferences` を正本に取る。
-#      それが空のときだけ PR 本文の closing keyword / `Refs` を走査する
-#   4. 各 Issue を `gh issue view --json body,state` で読み、CLOSED は対象から外し、
-#      上の未記入判定に当たるものを集めて deny する
+#      それが空のときだけ PR 本文を走査し、closing keyword と `Refs` を分けて集める。
+#      実行する `gh pr merge` の `--subject` / `--body`（`-t` / `-b` と、`--flag=...` や
+#      複数行文字列を含む）および読める通常ファイルの `--body-file`（`-F`、8 KiB 上限）、
+#      ならびに GitHub MCP の `commit_title` / `commit_message` に closing keyword があれば、
+#      その Issue は本文が `Refs` でも閉じる側に上げる
+#   4. 各 Issue を `gh issue view --json body,state` で読む。CLOSED は対象外。
+#      closing keyword（または closingIssuesReferences、またはマージメッセージ）
+#      で拾った Issue は、未記入なら deny する。コメントの照会が失敗しても、本文と状態は
+#      既に読めているので閉じる側の判定は素通しにしない。
+#      `Refs` だけから拾った未記入 Issue だけコメントを別に読む。その PR 番号の完了報告
+#      （コメント本文に `close-issue-report:PR-` とその PR 番号が完全一致する印）が
+#      あれば通す。印が無ければ deny し、Issue は閉じない前提で `/close-issue` を案内する
 #
-# `Refs` を closing keyword と同じ基準で見る（このマージで閉じるかどうかに関わらず
-# 実績は要る）一方、**閉じない参照**まで停止対象にすると、長命の tracking / Epic Issue
-# を `Refs` で参照する運用のリポジトリでは、その配下の sub-PR のマージが恒常的に止まる。
-# sub-PR は自分の Issue を closing keyword で閉じるので、閉じる集合が取れたときは
-# 本文走査そのものを行わない。これで `Refs` 運用（closing keyword を書かない PR）の
-# 判定は保ったまま、tracking Issue の巻き込みと Issue 個別照会の件数を同時に減らせる。
+# `Refs` だけの PR はこのマージでは Issue を閉じない。未記入を理由に止める代わりに、
+# `/close-issue` の報告印があるかで判定する（報告があれば、継続中として実績を空のまま
+# 残す判断が済んでいる）。印が無いときは止め、`/close-issue` を案内する。
+# closing keyword で閉じる Issue は従来どおり実績の記入を求める。報告印があっても
+# 未記入なら止める（印は `Refs` だけの免除であり、閉じる Issue の記入を代替しない）。
+# 閉じる集合が取れたときは本文を走査しない。走査すると長命の tracking / Epic Issue
+# への `Refs` まで停止対象に入り、その配下の sub-PR が恒常的に止まる。
 #
 # CLOSED の Issue は対象から外す。deny 本文の第 1 選択肢である `/close-issue <PR番号>`
 # は「Issue を閉じながら実績を書き戻す」手順なので、既に閉じた Issue には効かない。
@@ -73,25 +87,37 @@
 #     番号として引かないため、意図的に対象外にしている。`closingIssuesReferences`
 #     から取る場合も、PR と同じリポジトリの Issue だけに絞る）
 #   - `GH-` 接頭辞形式・Issue の完全 URL での参照
-#   - PR 本文以外（コミット件名など）にだけ Issue 参照がある場合
+#   - `--subject` / `--body` を付けないマージで、GitHub が既定の squash メッセージ
+#     （コミット件名だけに参照がある形を含む）から閉じる場合。この hook からは見えない
 #   - `gh` の認証切れ・オフライン・PR 指定を解決できない形（fail-open）
 #   - `closingIssuesReferences` を返さない古い `gh`（PR 取得ごと失敗して素通しする）。
 #     本文走査だけへ落とすフォールバックは置かない — 閉じる集合が取れない状態で `Refs` を
 #     走査すると、上に書いた tracking Issue の恒常停止がそのまま戻るため
 #   - heredoc 本文に書かれた `gh pr merge`（データであって実行されるコマンドではない）
-#   - クォートの閉じていないセグメント。区切り記号（`;` / `&&` / `|`）をクォートの
-#     内側に持つコマンドは、素朴な分割でセグメントが割れた証拠としてそのセグメントを
-#     捨てる。`echo 'gh pr merge 42; gh pr merge 43'` はこれで素通しになるが、
-#     同じ理由で実マージ側も取りこぼしうる（deny 側の誤検知を避けて fail-open へ倒す）
-#   - 変数展開・コマンド置換の中で組み立てられる `gh pr merge`
+#   - クォート・`$()`・`` `...` `` が閉じていない呼び出し（解析不能として fail-open へ倒す）
+#   - `--body-file -`（stdin）・読めない / 8 KiB 超 / 通常ファイル以外の `--body-file`、
+#     および同一コマンド内の先行 `cd` に依存する相対パスの `--body-file`
+#   - 変数展開・コマンド置換の中で組み立てられる `gh pr merge` や、マージメッセージ引数中の
+#     未展開のパラメータ展開（`${var:-…}`）・`$'…'` の 16 進 / 8 進 / Unicode エスケープ（`\xHH` 等）
+#     はシェル展開を評価しないため実値とずれうる（fail-open / 字面どおりの走査）
 #   - 上限（`FF_EFFORT_ACTUAL_GUARD_MAX_ISSUES`）を超えた分の Issue は照会しない。
 #     打ち切りは fail-open（照会しなかった Issue は無かったものとして扱う）で、
 #     上限に達したこと自体は deny の理由にしない
+#   - `Refs` だけの未記入 Issue のコメントは `gh issue view --json comments` の 1 応答で
+#     読む（ページ送りはしない。閉じる Issue にはコメントを要求しない）。
+#     `comments` が無い、配列でない、要素の本文が文字列でない、照会そのものが
+#     失敗したときは、完了報告を読めなかったものとして止めない（fail-open）。
+#     空の配列は「報告が無い」と読み、`Refs` だけの未記入は止める。応答に入り切らなかった
+#     印は「無い」と読む（その形だけ fail-closed）
+#   （なお、ベースブランチが既定ブランチかどうかの比較は行わず、closing keyword が閉じる側に
+#     入ればマージ先を問わず実績の記入を求める）
 #
 # GitHub MCP 経路（PreToolUse / `merge_pull_request`）:
 #   hooks.json は MCP のツール名を matcher に持つエントリからも本ガードを起動する。tool_input の
-#   owner / repo / pullNumber を `gh pr merge <番号> --repo <owner>/<repo>` へ写して上の判定へ流すので、
-#   閉じる Issue の解決・未記入の定義・deny 文は Bash 経路と同じ（違うのは抜け道の案内 1 行だけ）。
+#   owner / repo / pullNumber を `gh pr merge <番号> --repo <owner>/<repo>` へ写し、
+#   `commit_title` / `commit_message` はマージメッセージとして引き継いで上の判定へ流すので、
+#   閉じる Issue の解決・未記入の定義・deny 文は Bash 経路と同じ（違うのは抜け道の案内 1 行だけ。
+#   `Refs` だけの拒否文も同じで、経路差はその 1 行に限る）。
 #   PR / Issue の本文を読むのは gh のままなので、gh が無い・照会に失敗した・照会上限を超えた・
 #   tool_input を読めない・判定表にないツール名・jq 不在のときは止めずに通し、省略した理由を
 #   systemMessage（利用者）と additionalContext（エージェントの文脈）に出す（黙って通さない）。
@@ -153,6 +179,7 @@ if ff_l4_skipped 'effort-actual'; then exit 0; fi
 # 目に見えるが、MCP 経路では gh を使えなくてもマージが通るため、黙って通すとガードが効いて
 # いないことに誰も気づけない。
 GUARD_ROUTE=bash
+MCP_MERGE_TEXT=""
 mcp_skip() { # <理由>  MCP 経路では省略した理由を出して通す。Bash 経路は従来どおり無音で通す
   [ "$GUARD_ROUTE" = "mcp" ] && ff_github_mcp_note "工数実績" "$1"
   exit 0
@@ -202,6 +229,11 @@ if [ "$GUARD_ROUTE" = "mcp" ]; then
     || mcp_skip "gh が PATH に無いため、${mcp_owner}/${mcp_repo} の PR ${mcp_pr} が閉じる Issue の工数実績（ff-effort ブロックの effort_ai_actual）を確認せずに通しました。PR と Issue の本文は gh でしか読めません。"
   command -v awk >/dev/null 2>&1 \
     || mcp_skip "awk が PATH に無いため、${mcp_owner}/${mcp_repo} の PR ${mcp_pr} が閉じる Issue の工数実績を確認せずに通しました。"
+  MCP_MERGE_TEXT="$(printf '%s' "$input" | jq -r '
+    .tool_input | select(type == "object")
+    | [(.commit_title | strings), (.commit_message | strings)]
+    | join("\n")' 2>/dev/null)" || MCP_MERGE_TEXT=""
+  MCP_MERGE_TEXT="${MCP_MERGE_TEXT//$'\r'/}"
   input="$(printf '%s' "$input" | jq -c --arg c "gh pr merge ${mcp_pr} --repo ${mcp_owner}/${mcp_repo}" \
     '{tool_name: "Bash", tool_input: {command: $c}, cwd: (.cwd // "")}' 2>/dev/null)" \
     || mcp_skip "${MCP_TOOL_NAME} の入力を判定用に組み立てられないため、閉じる Issue の工数実績を検査せずに通しました。"
@@ -259,151 +291,450 @@ case "$code_only" in
   *) exit 0 ;;
 esac
 
-# セグメント分割はクォート状態を解釈しない（完全なシェル構文解析は持ち込まない）。
-# そのぶん `echo 'gh pr merge 42; gh pr merge 43'` のようにクォートの内側にある
-# 区切り記号でもセグメントが割れ、文字列の一部が実コマンドに見える。割れたセグメントは
-# 「クォートが閉じていない」という形で判別できるので、その場合は deny 側の誤検知を
-# 避けてセグメントごと捨てる（fail-open）。バックスラッシュのエスケープはクォートの
-# 外とダブルクォートの中だけで効く、というシェルの規則に合わせる。
-quotes_balanced() {
-  printf '%s\n' "$1" | LC_ALL=C awk '
-    BEGIN { q = sprintf("%c", 39); bad = 0 }
-    {
-      st = 0 # 0=クォートの外 1=シングル 2=ダブル
-      n = length($0)
-      for (i = 1; i <= n; i++) {
-        c = substr($0, i, 1)
-        if (st == 0) {
-          if (c == "\\") { i++ }
-          else if (c == q) { st = 1 }
-          else if (c == "\"") { st = 2 }
-        } else if (st == 1) {
-          if (c == q) { st = 0 }
-        } else {
-          if (c == "\\") { i++ }
-          else if (c == "\"") { st = 0 }
+# ---- コマンド位置の `gh pr merge` とオプション・メッセージを解析する ---------------
+# heredoc 除去済みコマンド列を受け取り、最初に実行される `gh pr merge` について
+# FOUND / BYPASS / SEL / REPO / MSG / FILE 行を返す。未閉鎖のクォート・置換等は rc 2。
+parse_gh_pr_merge() {
+  LC_ALL=C awk '
+    BEGIN {
+      sq = sprintf("%c", 39)
+      bt = sprintf("%c", 96)
+    }
+    function is_sep_ch(c) {
+      return (c == " " || c == "\t" || c == "\n" || c == ";" || c == "|" || c == "&" || c == "(" || c == ")" || c == "<" || c == ">")
+    }
+    function add_msg(val,   nparts, parts, k) {
+      gsub(/\r/, "", val)
+      if (val == "") return
+      nparts = split(val, parts, "\n")
+      for (k = 1; k <= nparts; k++) {
+        nmsg++
+        msg_lines[nmsg] = parts[k]
+      }
+    }
+    function add_file(p) {
+      gsub(/\r/, "", p)
+      if (p != "" && index(p, "\n") == 0) {
+        nfiles++
+        files[nfiles] = p
+      }
+    }
+    function read_word(   val, c, ch, nx, esc, depth, closed) {
+      TOK_ASSIGN = match(substr(s, pos), /^[A-Za-z_][A-Za-z0-9_]*=/) ? 1 : 0
+      val = ""
+      while (pos <= slen) {
+        c = substr(s, pos, 1)
+        if (is_sep_ch(c)) break
+        if (c == "$" && substr(s, pos + 1, 1) == sq) {
+          pos += 2
+          closed = 0
+          while (pos <= slen) {
+            ch = substr(s, pos, 1)
+            if (ch == sq) { closed = 1; pos++; break }
+            if (ch == "\\") {
+              pos++
+              if (pos > slen) return -1
+              esc = substr(s, pos, 1)
+              pos++
+              if (esc == "n") val = val "\n"
+              else if (esc == "r") val = val "\r"
+              else if (esc == "t") val = val "\t"
+              else if (esc == sq || esc == "\"" || esc == "\\") val = val esc
+              else val = val "\\" esc
+            } else {
+              val = val ch
+              pos++
+            }
+          }
+          if (!closed) return -1
+          continue
+        }
+        if (c == "$" && substr(s, pos + 1, 1) == "(") {
+          val = val "$("
+          pos += 2
+          depth = 1
+          while (pos <= slen && depth > 0) {
+            ch = substr(s, pos, 1)
+            if (ch == "\\") {
+              if (pos + 1 > slen) return -1
+              val = val substr(s, pos, 2)
+              pos += 2
+            } else if (ch == sq) {
+              val = val sq
+              pos++
+              closed = 0
+              while (pos <= slen) {
+                nx = substr(s, pos, 1)
+                if (nx == sq) { closed = 1; val = val sq; pos++; break }
+                val = val nx
+                pos++
+              }
+              if (!closed) return -1
+            } else if (ch == "\"") {
+              val = val "\""
+              pos++
+              closed = 0
+              while (pos <= slen) {
+                nx = substr(s, pos, 1)
+                if (nx == "\"") { closed = 1; val = val "\""; pos++; break }
+                if (nx == "\\") {
+                  if (pos + 1 > slen) return -1
+                  val = val substr(s, pos, 2)
+                  pos += 2
+                } else {
+                  val = val nx
+                  pos++
+                }
+              }
+              if (!closed) return -1
+            } else if (ch == "(") {
+              depth++; val = val ch; pos++
+            } else if (ch == ")") {
+              depth--; val = val ch; pos++
+            } else {
+              val = val ch; pos++
+            }
+          }
+          if (depth != 0) return -1
+          continue
+        }
+        if (c == bt) {
+          val = val bt
+          pos++
+          closed = 0
+          while (pos <= slen) {
+            ch = substr(s, pos, 1)
+            if (ch == bt) { closed = 1; val = val bt; pos++; break }
+            if (ch == "\\") {
+              if (pos + 1 > slen) return -1
+              val = val substr(s, pos, 2)
+              pos += 2
+            } else {
+              val = val ch
+              pos++
+            }
+          }
+          if (!closed) return -1
+          continue
+        }
+        if (c == sq) {
+          pos++
+          closed = 0
+          while (pos <= slen) {
+            ch = substr(s, pos, 1)
+            if (ch == sq) { closed = 1; pos++; break }
+            val = val ch
+            pos++
+          }
+          if (!closed) return -1
+          continue
+        }
+        if (c == "\"") {
+          pos++
+          closed = 0
+          while (pos <= slen) {
+            ch = substr(s, pos, 1)
+            if (ch == "\"") { closed = 1; pos++; break }
+            if (ch == "\\") {
+              pos++
+              if (pos > slen) return -1
+              esc = substr(s, pos, 1)
+              pos++
+              if (esc == "\n") {
+              } else if (esc == "\"" || esc == "\\" || esc == "$" || esc == bt) {
+                val = val esc
+              } else {
+                val = val "\\" esc
+              }
+            } else {
+              val = val ch
+              pos++
+            }
+          }
+          if (!closed) return -1
+          continue
+        }
+        if (c == "\\") {
+          pos++
+          if (pos > slen) return -1
+          esc = substr(s, pos, 1)
+          pos++
+          if (esc != "\n") val = val esc
+          continue
+        }
+        val = val c
+        pos++
+      }
+      TOK_VAL = val
+      return 0
+    }
+    function next_tok(   c, c2, p2, r1, r2, r3) {
+      TOK_VAL = ""
+      TOK_ASSIGN = 0
+      while (pos <= slen) {
+        c = substr(s, pos, 1)
+        if (c == " " || c == "\t") { pos++; continue }
+        if (c == "\\" && substr(s, pos + 1, 1) == "\n") { pos += 2; continue }
+        if (c == "#") {
+          while (pos <= slen && substr(s, pos, 1) != "\n") pos++
+          continue
+        }
+        c2 = substr(s, pos, 2)
+        if (c2 == "&&" || c2 == "||" || c2 == "|&") { pos += 2; TOK_KIND = "SEP"; return }
+        if (substr(s, pos, 3) == "&>>") { pos += 3; TOK_KIND = "REDIR"; return }
+        if (c2 == "&>") {
+          if (substr(s, pos + 2, 1) == "-") { pos += 3; TOK_KIND = "REDIR_DONE"; return }
+          pos += 2; TOK_KIND = "REDIR"; return
+        }
+        if (c == "\n" || c == ";" || c == "|" || c == "&" || c == "(" || c == ")") {
+          pos++; TOK_KIND = "SEP"; return
+        }
+        if (match(substr(s, pos), /^[0-9]*[<>]/)) {
+          p2 = pos + RLENGTH - 1
+          r1 = substr(s, p2, 1)
+          r2 = substr(s, p2 + 1, 1)
+          r3 = substr(s, p2 + 2, 1)
+          if (r1 == "<" && r2 == "<" && (r3 == "-" || r3 == "<")) {
+            pos = p2 + 3; TOK_KIND = "REDIR"; return
+          }
+          if ((r1 == "<" && (r2 == "<" || r2 == ">")) || (r1 == ">" && (r2 == ">" || r2 == "|"))) {
+            pos = p2 + 2; TOK_KIND = "REDIR"; return
+          }
+          if ((r1 == "<" || r1 == ">") && r2 == "&") {
+            pos = p2 + 2
+            if (match(substr(s, pos), /^([0-9]+|-)([ \t\n;|&()<>#]|$)/)) {
+              match(substr(s, pos), /^([0-9]+|-)/)
+              pos += RLENGTH
+              TOK_KIND = "REDIR_DONE"
+              return
+            }
+            TOK_KIND = "REDIR"
+            return
+          }
+          pos = p2 + 1
+          TOK_KIND = "REDIR"
+          return
+        }
+        if (read_word() != 0) { TOK_KIND = "ERR"; return }
+        TOK_KIND = "WORD"
+        return
+      }
+      TOK_KIND = "EOF"
+    }
+    { s = s (NR > 1 ? "\n" : "") $0 }
+    END {
+      slen = length(s)
+      pos = 1
+      st = "PREFIX"
+      bypass = 0
+      wrap = ""
+      wrap_arg = 0
+      redir_skip = 0
+      gh_opt = ""
+      opt_need = ""
+      end_opts = 0
+      found = 0
+      selector = ""
+      repo = ""
+      nmsg = 0
+      nfiles = 0
+      err = 0
+      while (1) {
+        next_tok()
+        if (TOK_KIND == "EOF") break
+        if (TOK_KIND == "ERR") { err = 1; break }
+        if (TOK_KIND == "REDIR_DONE") continue
+        if (TOK_KIND == "REDIR") { redir_skip = 1; continue }
+        if (TOK_KIND == "SEP") {
+          redir_skip = 0
+          if (st == "MERGE") break
+          st = "PREFIX"
+          bypass = 0
+          wrap = ""
+          wrap_arg = 0
+          gh_opt = ""
+          continue
+        }
+        if (redir_skip) { redir_skip = 0; continue }
+        if (st == "SKIP_CMD") continue
+        if (st == "PREFIX") {
+          if (wrap_arg) { wrap_arg = 0; continue }
+          if (wrap != "") {
+            if (wrap == "timeout_dur") { wrap = ""; continue }
+            if (wrap == "timeout") {
+              if (TOK_VAL == "--") { wrap = "timeout_dur"; continue }
+              if (TOK_VAL == "-k" || TOK_VAL == "-s" || TOK_VAL == "--kill-after" || TOK_VAL == "--signal") { wrap_arg = 1; continue }
+              if (TOK_VAL ~ /^-/) continue
+              wrap = ""; continue
+            }
+            if (wrap == "command") {
+              if (TOK_VAL == "--") { wrap = ""; continue }
+              if (TOK_VAL ~ /^-[pP]+$/) continue
+              if (TOK_VAL ~ /^-/) { st = "SKIP_CMD"; wrap = ""; continue }
+              wrap = ""
+            } else if (wrap == "env") {
+              if (TOK_VAL == "--") { wrap = ""; continue }
+              if (TOK_VAL == "-u" || TOK_VAL == "--unset" || TOK_VAL == "-C" || TOK_VAL == "--chdir" || TOK_VAL == "-S" || TOK_VAL == "--split-string") { wrap_arg = 1; continue }
+              if (TOK_ASSIGN || TOK_VAL ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
+                if (index(TOK_VAL, "FF_EFFORT_ACTUAL_ACK=") == 1) bypass = (TOK_VAL == "FF_EFFORT_ACTUAL_ACK=1" ? 1 : 0)
+                continue
+              }
+              if (TOK_VAL ~ /^-/) continue
+              wrap = ""
+            } else if (wrap == "sudo") {
+              if (TOK_VAL == "--") { wrap = ""; continue }
+              if (TOK_VAL == "-u" || TOK_VAL == "-g" || TOK_VAL == "-p" || TOK_VAL == "-C" || TOK_VAL == "-D" || TOK_VAL == "-R" || TOK_VAL == "-T" || TOK_VAL == "-h" ||
+                  TOK_VAL == "--user" || TOK_VAL == "--group" || TOK_VAL == "--prompt" || TOK_VAL == "--close-from" || TOK_VAL == "--chdir" || TOK_VAL == "--role" ||
+                  TOK_VAL == "--other-user" || TOK_VAL == "--command-timeout" || TOK_VAL == "--chroot" || TOK_VAL == "--host") { wrap_arg = 1; continue }
+              if (TOK_VAL ~ /^-/) continue
+              wrap = ""
+            } else if (wrap == "nice") {
+              if (TOK_VAL == "--") { wrap = ""; continue }
+              if (TOK_VAL == "-n" || TOK_VAL == "--adjustment") { wrap_arg = 1; continue }
+              if (TOK_VAL ~ /^-/) continue
+              wrap = ""
+            } else if (wrap == "exec") {
+              if (TOK_VAL == "--") { wrap = ""; continue }
+              if (TOK_VAL == "-a") { wrap_arg = 1; continue }
+              if (TOK_VAL ~ /^-/) continue
+              wrap = ""
+            } else {
+              if (TOK_VAL == "--") { wrap = ""; continue }
+              if (TOK_VAL ~ /^-/) continue
+              wrap = ""
+            }
+          }
+          if (TOK_VAL == "!" || TOK_VAL == "{" || TOK_VAL == "}" || TOK_VAL == "if" || TOK_VAL == "then" || TOK_VAL == "elif" || TOK_VAL == "else" || TOK_VAL == "while" || TOK_VAL == "until" || TOK_VAL == "do") continue
+          if (TOK_ASSIGN) {
+            if (index(TOK_VAL, "FF_EFFORT_ACTUAL_ACK=") == 1) bypass = (TOK_VAL == "FF_EFFORT_ACTUAL_ACK=1" ? 1 : 0)
+            continue
+          }
+          if (TOK_VAL == "env" || TOK_VAL == "command" || TOK_VAL == "sudo" || TOK_VAL == "nohup" || TOK_VAL == "exec" || TOK_VAL == "time" || TOK_VAL == "nice" || TOK_VAL == "timeout" || TOK_VAL == "builtin" || TOK_VAL == "noglob") {
+            wrap = TOK_VAL; continue
+          }
+          if (TOK_VAL == "gh" || TOK_VAL == "gh.exe" || TOK_VAL ~ /\/gh(\.exe)?$/) {
+            st = "GH"; repo = ""; gh_opt = ""; continue
+          }
+          st = "SKIP_CMD"; continue
+        }
+        if (st == "GH") {
+          if (gh_opt != "") {
+            if (gh_opt == "repo") repo = TOK_VAL
+            gh_opt = ""
+            continue
+          }
+          if (TOK_VAL == "pr") { st = "GH_PR"; continue }
+          if (TOK_VAL == "--repo" || TOK_VAL == "-R") { gh_opt = "repo"; continue }
+          if (index(TOK_VAL, "--repo=") == 1) { repo = substr(TOK_VAL, 8); continue }
+          if (TOK_VAL ~ /^-R./) { repo = substr(TOK_VAL, 3); continue }
+          if (TOK_VAL == "--hostname") { gh_opt = "skip"; continue }
+          if (index(TOK_VAL, "--hostname=") == 1) continue
+          st = "SKIP_CMD"; continue
+        }
+        if (st == "GH_PR") {
+          if (TOK_VAL == "merge") {
+            st = "MERGE"; found = 1; opt_need = ""; end_opts = 0; continue
+          }
+          st = "SKIP_CMD"; continue
+        }
+        if (st == "MERGE") {
+          if (opt_need != "") {
+            if (opt_need == "msg") add_msg(TOK_VAL)
+            else if (opt_need == "file") add_file(TOK_VAL)
+            else if (opt_need == "repo") repo = TOK_VAL
+            opt_need = ""
+            continue
+          }
+          if (!end_opts) {
+            if (TOK_VAL == "--") { end_opts = 1; continue }
+            if (TOK_VAL == "--body" || TOK_VAL == "--subject") { opt_need = "msg"; continue }
+            if (index(TOK_VAL, "--body=") == 1) { add_msg(substr(TOK_VAL, 8)); continue }
+            if (index(TOK_VAL, "--subject=") == 1) { add_msg(substr(TOK_VAL, 11)); continue }
+            if (TOK_VAL == "--body-file") { opt_need = "file"; continue }
+            if (index(TOK_VAL, "--body-file=") == 1) { add_file(substr(TOK_VAL, 13)); continue }
+            if (TOK_VAL == "--repo") { opt_need = "repo"; continue }
+            if (index(TOK_VAL, "--repo=") == 1) { repo = substr(TOK_VAL, 8); continue }
+            if (TOK_VAL == "--match-head-commit" || TOK_VAL == "--author-email") { opt_need = "skip"; continue }
+            if (TOK_VAL ~ /^--/) continue
+            if (TOK_VAL ~ /^-[^-]/) {
+              for (k = 2; k <= length(TOK_VAL); k++) {
+                fch = substr(TOK_VAL, k, 1)
+                frest = substr(TOK_VAL, k + 1)
+                if (fch == "b" || fch == "t") {
+                  if (frest != "") add_msg(frest)
+                  else opt_need = "msg"
+                  break
+                } else if (fch == "F") {
+                  if (frest != "") add_file(frest)
+                  else opt_need = "file"
+                  break
+                } else if (fch == "R") {
+                  if (frest != "") repo = frest
+                  else opt_need = "repo"
+                  break
+                } else if (fch == "A") {
+                  if (frest == "") opt_need = "skip"
+                  break
+                }
+              }
+              continue
+            }
+          }
+          if (selector == "") selector = TOK_VAL
         }
       }
-      if (st != 0) bad = 1
+      if (err) exit 2
+      if (!found) exit 0
+      gsub(/\r/, "", selector); gsub(/\n/, " ", selector)
+      gsub(/\r/, "", repo); gsub(/\n/, " ", repo)
+      print "FOUND 1"
+      print "BYPASS " bypass
+      print "SEL " selector
+      print "REPO " repo
+      for (j = 1; j <= nmsg; j++) print "MSG " msg_lines[j]
+      for (j = 1; j <= nfiles; j++) print "FILE " files[j]
     }
-    END { exit (bad ? 1 : 0) }
-  ' 2>/dev/null
+  '
 }
 
-strip_quotes() {
-  local s="$1"
-  case "$s" in
-    \"*\")
-      s="${s#\"}"
-      s="${s%\"}"
-      ;;
-    \'*\')
-      s="${s#\'}"
-      s="${s%\'}"
-      ;;
-  esac
-  printf '%s' "$s"
-}
-
-# ---- コマンド位置の `gh pr merge` を含むセグメントを特定する -------------------
-# 見つかったら GH_TOKS に `merge` の後ろのトークン列を積む。
 GH_FOUND=0
 GH_BYPASS=0
-GH_TOKS=()
-
-find_gh_segment() {
-  local toks=("$@")
-  local n=${#toks[@]} i=0 t bypass=0
-  while [ "$i" -lt "$n" ]; do
-    t="$(strip_quotes "${toks[$i]}")"
-    case "$t" in
-      FF_EFFORT_ACTUAL_ACK=1)
-        bypass=1
-        i=$((i + 1))
-        continue
+SELECTOR=""
+REPO=""
+merge_text=""
+BODY_FILES=()
+parsed_merge="$(printf '%s\n' "$code_only" | parse_gh_pr_merge 2>/dev/null)" || parsed_merge=""
+if [ -n "$parsed_merge" ]; then
+  pm_rest="${parsed_merge}"$'\n'
+  while [ -n "$pm_rest" ]; do
+    pm_line="${pm_rest%%$'\n'*}"
+    pm_rest="${pm_rest#*$'\n'}"
+    pm_line="${pm_line//$'\r'/}"
+    case "$pm_line" in
+      FOUND\ 1) GH_FOUND=1 ;;
+      BYPASS\ 1) GH_BYPASS=1 ;;
+      BYPASS\ 0) GH_BYPASS=0 ;;
+      SEL\ *) SELECTOR="${pm_line#SEL }" ;;
+      REPO\ *) REPO="${pm_line#REPO }" ;;
+      MSG\ *)
+        pm_msg="${pm_line#MSG }"
+        if [ -n "$merge_text" ]; then
+          merge_text="${merge_text}"$'\n'"${pm_msg}"
+        else
+          merge_text="$pm_msg"
+        fi
         ;;
-      [A-Za-z_]*=*)
-        i=$((i + 1))
-        continue
+      FILE\ *)
+        pm_file="${pm_line#FILE }"
+        [ -n "$pm_file" ] && BODY_FILES[${#BODY_FILES[@]}]="$pm_file"
         ;;
-      env | command | sudo | nohup)
-        i=$((i + 1))
-        while [ "$i" -lt "$n" ]; do
-          case "${toks[$i]}" in
-            -*) i=$((i + 1)) ;;
-            *) break ;;
-          esac
-        done
-        continue
-        ;;
-      *) break ;;
     esac
   done
-  [ "$i" -lt "$n" ] || return 0
-  t="$(strip_quotes "${toks[$i]}")"
-  case "$t" in
-    gh | */gh) : ;;
-    *) return 0 ;;
-  esac
-  [ $((i + 2)) -lt "$n" ] || return 0
-  [ "$(strip_quotes "${toks[$((i + 1))]}")" = "pr" ] || return 0
-  [ "$(strip_quotes "${toks[$((i + 2))]}")" = "merge" ] || return 0
-  GH_FOUND=1
-  GH_BYPASS="$bypass"
-  GH_TOKS=()
-  local k=$((i + 3))
-  while [ "$k" -lt "$n" ]; do
-    GH_TOKS[${#GH_TOKS[@]}]="${toks[$k]}"
-    k=$((k + 1))
-  done
-  return 0
-}
-
-segments="$(printf '%s\n' "$code_only" | awk '{ gsub(/&&|\|\||;|\|/, "\n"); print }')"
-while IFS= read -r seg; do
-  [ -n "$seg" ] || continue
-  case "$seg" in
-    *merge*) : ;;
-    *) continue ;;
-  esac
-  quotes_balanced "$seg" || continue
-  set -f
-  # shellcheck disable=SC2206 # 素朴な空白トークン化（意図的。glob は set -f で抑止）
-  toks=($seg)
-  set +f
-  [ "$GH_FOUND" -eq 1 ] || find_gh_segment "${toks[@]}"
-done <<EOF
-$segments
-EOF
+fi
 
 [ "$GH_FOUND" -eq 1 ] || exit 0
 # 抜け道: 対象コマンドの先頭に置かれた環境代入だけを認める
 [ "$GH_BYPASS" -eq 1 ] && exit 0
-
-# ---- PR 指定と --repo を拾う --------------------------------------------------
-SELECTOR=""
-REPO=""
-n=${#GH_TOKS[@]}
-i=0
-while [ "$i" -lt "$n" ]; do
-  t="$(strip_quotes "${GH_TOKS[$i]}")"
-  case "$t" in
-    --repo | -R)
-      i=$((i + 1))
-      [ "$i" -lt "$n" ] && REPO="$(strip_quotes "${GH_TOKS[$i]}")"
-      ;;
-    --repo=*) REPO="${t#--repo=}" ;;
-    # 値を取るフラグ（次のトークンを PR 指定と誤読しない）
-    --body | -b | --body-file | -F | --subject | -t | --match-head-commit | --author-email)
-      i=$((i + 1))
-      ;;
-    -*) : ;;
-    *)
-      [ -n "$SELECTOR" ] || SELECTOR="$t"
-      ;;
-  esac
-  i=$((i + 1))
-done
 
 GH_ARGS=()
 if [ -n "$REPO" ]; then
@@ -422,6 +753,7 @@ fi
 
 pr_unparsed="${REPO} の PR ${SELECTOR} を gh で読めたが内容を解釈できないため、閉じる Issue の工数実績を確認せずに通しました。"
 pr_number="$(printf '%s' "$pr_json" | jq -r '.number // empty' 2>/dev/null)" || mcp_skip "$pr_unparsed"
+pr_number="${pr_number//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
 pr_body="$(printf '%s' "$pr_json" | jq -r '.body // ""' 2>/dev/null)" || mcp_skip "$pr_unparsed"
 pr_body="${pr_body//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
 [ -n "$pr_number" ] || mcp_skip "$pr_unparsed"
@@ -443,18 +775,109 @@ closing_numbers="${closing_numbers//$'\r'/}"  # Windows の jq.exe は改行を 
 # ---- PR 本文から Issue 参照を集める（closing keyword を書かない `Refs` 運用の PR）--
 # 閉じる集合が取れたときは本文を走査しない。走査すると長命の tracking / Epic Issue への
 # `Refs` まで停止対象に入り、その配下の sub-PR が恒常的に止まる。
-issue_numbers="$closing_numbers"
-[ -n "$issue_numbers" ] || issue_numbers="$(printf '%s\n' "$pr_body" | LC_ALL=C awk '
-{
-  line = " " tolower($0)
-  while (match(line, /[^a-z0-9_](close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[ \t]*:?[ \t]*#[0-9]+/)) {
-    tok = substr(line, RSTART, RLENGTH)
-    sub(/^[^#]*#/, "", tok)
-    if (!(tok in seen)) { seen[tok] = 1; print tok }
-    line = substr(line, RSTART + RLENGTH)
+# キューの 1 行は `C <番号>`（閉じる）か `R <番号>`（Refs だけ）。同じ番号が両方に
+# 出たときは閉じる側（C）に倒す。出現順は本文の左から。番号の正規表現は字句を
+# 連結して書く（公開同期の追加行検査が、ハッシュの直後の数字を参照として拾うため）。
+# 本文の 1 行を `C <番号>` / `R <番号>` に分ける。同じ番号が両方なら C。
+classify_issue_refs() {
+  LC_ALL=C awk '
+  {
+    line = " " tolower($0)
+    refpat = "[#]" "[0-9]+"
+    while (match(line, "[^a-z0-9_](close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[ \t]*:?[ \t]*" refpat)) {
+      raw = substr(line, RSTART, RLENGTH)
+      kw = raw
+      sub(/[ \t]*:?[ \t]*#.*/, "", kw)
+      sub(/^[^a-z]+/, "", kw)
+      num = raw
+      sub(/^[^#]*#/, "", num)
+      if (!(num in seen_at)) {
+        n = n + 1
+        seen_at[num] = n
+        seq[n] = num
+        tag[num] = "R"
+        if (kw !~ /^refs?$/) tag[num] = "C"
+      } else if (kw !~ /^refs?$/) {
+        tag[num] = "C"
+      }
+      line = substr(line, RSTART + RLENGTH)
+    }
   }
-}' 2>/dev/null)"
-[ -n "$issue_numbers" ] || exit 0
+  END {
+    for (i = 1; i <= n; i++) print tag[seq[i]] " " seq[i]
+  }
+  '
+}
+
+if [ -n "$closing_numbers" ]; then
+  queue="$(printf '%s\n' "$closing_numbers" | LC_ALL=C awk 'NF { print "C " $0 }' 2>/dev/null)" || queue=""
+else
+  queue="$(printf '%s\n' "$pr_body" | classify_issue_refs 2>/dev/null)" || queue=""
+fi
+
+# マージコマンド（--subject / --body / --body-file）および GitHub MCP（commit_title /
+# commit_message）が閉じる Issue は、本文の Refs と報告印より閉じる側を優先する。
+if [ "$GUARD_ROUTE" = "mcp" ] && [ -n "$MCP_MERGE_TEXT" ]; then
+  merge_text="$MCP_MERGE_TEXT"
+elif [ "${#BODY_FILES[@]}" -gt 0 ]; then
+  ABS_PATH_HELPER="${BASH_SOURCE[0]%/*}/../scripts/lib/abs-path.sh"
+  # shellcheck source=../scripts/lib/abs-path.sh
+  if [ -r "$ABS_PATH_HELPER" ] && . "$ABS_PATH_HELPER" 2>/dev/null && [ "$(type -t ff_path_is_absolute)" = "function" ]; then
+    for bf in "${BODY_FILES[@]}"; do
+      [ -n "$bf" ] || continue
+      [ "$bf" != "-" ] || continue
+      ff_path_is_absolute "$bf" || bf="${CWD}/${bf}"
+      if [ -f "$bf" ] && [ -r "$bf" ]; then
+        bf_size="$(LC_ALL=C wc -c < "$bf" 2>/dev/null)" || bf_size=""
+        bf_size="${bf_size// /}"
+        bf_size="${bf_size//$'\t'/}"
+        bf_size="${bf_size//$'\n'/}"
+        bf_size="${bf_size//$'\r'/}"
+        case "$bf_size" in
+          '' | *[!0-9]*) continue ;;
+        esac
+        if [ "$bf_size" -le 8192 ] 2>/dev/null; then
+          bf_content="$(cat "$bf" 2>/dev/null; printf X)" || bf_content=""
+          bf_content="${bf_content%X}"
+          bf_content="${bf_content//$'\r'/}"
+          if [ -n "$bf_content" ]; then
+            if [ -n "$merge_text" ]; then
+              merge_text="${merge_text}"$'\n'"${bf_content}"
+            else
+              merge_text="$bf_content"
+            fi
+          fi
+        fi
+      fi
+    done
+  fi
+fi
+if [ -n "$merge_text" ]; then
+  merge_c="$(printf '%s\n' "$merge_text" | classify_issue_refs 2>/dev/null | LC_ALL=C awk '$1 == "C" { print $2 }')" || merge_c=""
+  if [ -n "$merge_c" ]; then
+    queue="$(
+      {
+        printf '%s\n' "$queue"
+        printf '%s\n' "$merge_c" | LC_ALL=C awk 'NF { print "M " $0 }'
+      } | LC_ALL=C awk '
+        $1 == "M" {
+          if (!($2 in kind)) { n++; order[n] = $2 }
+          kind[$2] = "C"
+          next
+        }
+        $1 == "C" || $1 == "R" {
+          if (!($2 in kind)) { n++; order[n] = $2; kind[$2] = $1 }
+          next
+        }
+        END {
+          for (i = 1; i <= n; i++) if (kind[order[i]] == "C") print "C " order[i]
+          for (i = 1; i <= n; i++) if (kind[order[i]] == "R") print "R " order[i]
+        }
+      '
+    )" || queue=""
+  fi
+fi
+[ -n "$queue" ] || exit 0
 
 # 上限は「PR 本文に大量の参照がある形で PreToolUse の timeout: 10 を使い切らない」ための
 # 打ち切りで、無効化スイッチではない。`0` は数値なので文字種の正規化だけでは通り抜け、
@@ -532,13 +955,47 @@ is_effort_unfilled() {
   ' 2>/dev/null
 }
 
+# Refs だけの未記入 Issue について、この PR の完了報告がコメントにあるか。
+# hit = 印がある / miss = 読めたが印が無い / unread = comments を解釈できない。
+# 印は `<!-- close-issue-report:PR-<この PR 番号> -->` の完全な部分文字列
+# （末尾の空白と閉じまで含める。番号の前方一致で隣の PR を拾わない）。
+refs_report_state() {
+  local state
+  state="$(printf '%s' "$1" | jq -r --arg marker "$2" '
+    if (.comments | type) != "array" then "unread"
+    elif any(.comments[]; (type != "object") or ((.body != null) and ((.body | type) != "string"))) then "unread"
+    elif any(.comments[]; ((.body // "") | contains($marker))) then "hit"
+    else "miss"
+    end
+  ' 2>/dev/null)" || state="unread"
+  state="${state//$'\r'/}"
+  case "$state" in
+    hit | miss | unread) printf '%s\n' "$state" ;;
+    *) printf '%s\n' unread ;;
+  esac
+}
+
 unfilled=""
+refs_blocked=""
 # MCP 経路だけが使う: gh で読めなかった Issue（Bash 経路は従来どおり読み飛ばすだけ）
 unread=""
+refs_fetch_unread=""
+refs_comments_unread=""
 truncated=0
 count=0
-while IFS= read -r num; do
-  [ -n "$num" ] || continue
+report_marker="<!-- close-issue-report:PR-${pr_number} -->"
+while IFS= read -r row; do
+  [ -n "$row" ] || continue
+  kind="${row%% *}"
+  num="${row#* }"
+  num="${num//$'\r'/}"
+  case "$kind" in
+    C | R) ;;
+    *) continue ;;
+  esac
+  case "$num" in
+    '' | *[!0-9]*) continue ;;
+  esac
   count=$((count + 1))
   if [ "$count" -gt "$MAX_ISSUES" ]; then
     truncated=1
@@ -546,24 +1003,46 @@ while IFS= read -r num; do
   fi
   issue_json="$(cd "$CWD" 2>/dev/null && gh issue view "$num" ${GH_ARGS[0]:+"${GH_ARGS[@]}"} --json body,state 2>/dev/null)" || issue_json=""
   if [ -z "$issue_json" ]; then
-    unread="${unread:+$unread, }#${num}"
+    if [ "$kind" = "C" ]; then
+      unread="${unread:+$unread, }#${num}"
+    else
+      refs_fetch_unread="${refs_fetch_unread:+$refs_fetch_unread, }#${num}"
+    fi
     continue
   fi
   # 既に CLOSED の Issue は対象外（`/close-issue <PR番号>` が効かず停止が恒久化する）
   issue_state="$(printf '%s' "$issue_json" | jq -r '.state // ""' 2>/dev/null)"
+  issue_state="${issue_state//$'\r'/}"
   [ "$issue_state" = "CLOSED" ] && continue
   issue_body="$(printf '%s' "$issue_json" | jq -r '.body // ""' 2>/dev/null)"
   issue_body="${issue_body//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
   [ -n "$issue_body" ] || continue
   if is_effort_unfilled "$issue_body"; then
-    unfilled="${unfilled:+$unfilled, }#${num}"
+    if [ "$kind" = "C" ]; then
+      # 閉じる Issue の記入は報告印で代替しない
+      unfilled="${unfilled:+$unfilled, }#${num}"
+    else
+      comments_json="$(cd "$CWD" 2>/dev/null && gh issue view "$num" ${GH_ARGS[0]:+"${GH_ARGS[@]}"} --json comments 2>/dev/null)" || comments_json=""
+      if [ -z "$comments_json" ]; then
+        refs_comments_unread="${refs_comments_unread:+$refs_comments_unread, }#${num}"
+      else
+        report_state="$(refs_report_state "$comments_json" "$report_marker")"
+        case "$report_state" in
+          hit) ;;
+          miss) refs_blocked="${refs_blocked:+$refs_blocked, }#${num}" ;;
+          *) refs_comments_unread="${refs_comments_unread:+$refs_comments_unread, }#${num}" ;;
+        esac
+      fi
+    fi
   fi
 done <<EOF
-$issue_numbers
+$queue
 EOF
 
-if [ -z "$unfilled" ]; then
+if [ -z "$unfilled" ] && [ -z "$refs_blocked" ]; then
   [ -z "$unread" ] || mcp_skip "${REPO} の PR ${pr_number} が閉じる Issue（${unread}）を gh で読めないため、その Issue の工数実績を確認せずに通しました。"
+  [ -z "$refs_fetch_unread" ] || mcp_skip "${REPO} の PR ${pr_number} の Refs 先 Issue（${refs_fetch_unread}）を gh で読めないため、その Issue の工数実績を確認せずに通しました。"
+  [ -z "$refs_comments_unread" ] || mcp_skip "${REPO} の PR ${pr_number} の Refs 先 Issue（${refs_comments_unread}）のコメントを読めないため、完了報告の有無を確認せずに通しました。"
   [ "$truncated" -eq 0 ] || mcp_skip "${REPO} の PR ${pr_number} が閉じる Issue が照会上限（${MAX_ISSUES} 件）を超えたため、上限より後の Issue の工数実績を確認せずに通しました。"
   exit 0
 fi
@@ -575,13 +1054,31 @@ else
   bypass_line="2) 実績を書き戻さずに進める場合は、対象コマンドの先頭へ環境代入を付けて再実行する: FF_EFFORT_ACTUAL_ACK=1 gh pr merge ..."
 fi
 
-reason="⛔ ff-dev-toolkit guard（工数実績が未記入のままのマージ）: この PR が閉じる Issue（${unfilled}）の本文には ff-effort ブロックがありますが、effort_ai_actual が未記入です。
+reason=""
+if [ -n "$unfilled" ]; then
+  reason="⛔ ff-dev-toolkit guard（工数実績が未記入のままのマージ）: この PR が閉じる Issue（${unfilled}）の本文には ff-effort ブロックがありますが、effort_ai_actual が未記入です。
 このままマージすると Issue は閉じますが実績は空のままで、scripts/effort-report.sh の較正母集団から excluded_planned_only として静かに落ちます。
 次のいずれかで再実行してください:
   1) AI エージェントへ /close-issue ${pr_number} を実行し、AC 照合と工数実績の書き戻しを済ませてから同じマージコマンドを実行する（推奨）
   ${bypass_line}
 ff-effort ブロックが無い Issue はこのガードの対象外です（遡及付与は強制しません）。
 このガード自体を止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=effort-actual を設定します（ほかの鍵と並べるときはカンマ区切り）。"
+fi
+if [ -n "$refs_blocked" ]; then
+  refs_reason="⛔ ff-dev-toolkit guard（工数実績が未記入のままのマージ）: この PR は Issue（${refs_blocked}）を閉じません（本文の Refs だけで、closing keyword も GitHub の closingIssuesReferences も、実行中のマージコマンドの subject / body も、この Issue を閉じていません）。対象の本文には ff-effort ブロックがありますが、effort_ai_actual が未記入で、この PR の /close-issue 報告（${report_marker}）がコメントにありません。
+このままマージしても Issue は閉じません。実績を空のまま残すのは、/close-issue が継続中として報告したあとに限って通ります。
+次のいずれかで再実行してください:
+  1) AI エージェントへ /close-issue ${pr_number} を実行し、報告コメントを残してから同じマージコマンドを実行する（推奨）。継続中の Issue では実績を未記入のまま残してよい
+  ${bypass_line}
+ff-effort ブロックが無い Issue はこのガードの対象外です（遡及付与は強制しません）。
+このガード自体を止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=effort-actual を設定します（ほかの鍵と並べるときはカンマ区切り）。"
+  if [ -n "$reason" ]; then
+    reason="${reason}
+${refs_reason}"
+  else
+    reason="$refs_reason"
+  fi
+fi
 
 jq -n --arg reason "$reason" \
   '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null

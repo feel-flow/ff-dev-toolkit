@@ -63,6 +63,7 @@
 # 空振り検出: --issue-metrics に存在しない記録ディレクトリを与えると (unmeasured) を出して exit 0 することを 検査 13a が固定し、0 を出す変異（mutation/mut-metrics-zero.py）で 13a が赤になる。
 # 空振り検出: scripts/lib/branch-issue.sh の接頭辞一覧から grok を外すと 15a / 15b が、年-月の判定を外すと 15a が、record-instruction-bytes.sh の docs-template の分岐を外すと 15e が赤になる（2026-11-05 実測）。入力表の空振りは件数 19 の固定が拾う。
 # 空振り検出: estimation.md の目安表 4 行（OBS-531 / OBS-033 / OBS-042 / OBS-559）・固定費の和の式・旧 1 巡固定への逆戻し・並列 bundle 畳み込み・範囲拡大の補正元除外・優先順位/非重複句・close-issue effort.md の task-notification duration_ms 集計・範囲拡大記録（追加分の所要目安 h を含む）を mutation-harness 26 件で検査し、欠落・反転の 25 変異すべて赤（detected 25 / fail 1〜7）・無害追記 1 件緑（green-ok 1 / SURVIVED 0 / FALSE-POSITIVE 0 / NOT-APPLIED 0、正常 439/0/2、2026-11-14 実測）。
+# 空振り検出: references/estimation.md の AI 工数の目安表から「既存の仕組みを踏襲してつなぐ単独 PR の feature」の行を消すと 12 件、適用除外の句全体を「bundle にも当てる」へ差し替えると 2 件、適用条件から未決の設計判断を外す・値を人間工数寄りへ差し替える・人間工数に合わせない句を反転する・複数巡でも幅を変えない句を巡数で積む形へ変える・レビュー対応分だけの補正を「重ねる」へ反転する・同種の合計の補正元を「この行を優先」へ差し替える・固定費を和へ畳む・画面の行との境界を消す・適用除外の後半（検出器・bundle・並列・ADR 横断）だけを「この行を当てる」へ反転する・出所の OBS-262 を差し替える、の各変異で 1 件が赤になり、無害な追記は緑のまま（mutation-harness 13 件: detected 12 / green-ok 1 / SURVIVED 0 / FALSE-POSITIVE 0 / NOT-APPLIED 0。対照と各変異は FF_DEV_TOOLKIT_ROOT・CLAUDE_PLUGIN_ROOT を外して実行。継承したままだと対照の 13i・14j が環境由来で赤になる）。正常は 451/0・既存 skip 2 件（2026-11-19 macOS 実測）。
 #
 # 検査の書き方の規律（レビュー由来）:
 #   - 否定アサーション（「〜が無いこと」）で `if grep -q …; then bad; else ok; fi` を
@@ -775,6 +776,21 @@ contains "$CREATE_ESTIMATION" "下限（**40h**）" "ADR 横断変更の人間�
 contains "$CREATE_ESTIMATION" "8.0h → 4.3h / 乖離率 0.54、6.3h → 4.3h / 0.68、13.5h → 8.3h / 0.61" "ADR 横断変更の実測 3 件と乖離率"
 contains "$CREATE_ESTIMATION" "bundle の固定費と子の内訳」の式で別建てにする" "ADR 横断変更でも固定費は別建て式を使う"
 contains "$CREATE_ESTIMATION" "観測台帳 OBS-531（実測 3 件" "ADR 横断変更の根拠（OBS-531 実測 3 件と乖離率）"
+# 既存の仕組みを踏襲してつなぐ feature の行。人間工数の量に AI 予定を合わせて
+# 過大側へ外れた導入先の実測 3 件から足した。出所の 3 件は全件ゲートが各 1 回なので、固定費は
+# 和へ畳まず別建てにする（ゲートの重い環境で OBS-509 の過小へ戻さない）。
+contains "$CREATE_ESTIMATION" "| 既存の仕組みを踏襲してつなぐ単独 PR の feature（" "既存の仕組みを踏襲してつなぐ feature の行"
+contains "$CREATE_ESTIMATION" "起票時にその再利用を Issue の背景か実在確認で名指しできて、新しい仕組みの設計や未決の設計判断を含まないもの）" "踏襲してつなぐ feature の適用条件（再利用の名指しと未決の設計判断なし）"
+contains "$CREATE_ESTIMATION" "**実装分 1.0〜1.5h + レビュー対応分 0.5〜1.0h** で置く" "踏襲してつなぐ feature の実装分 1.0〜1.5h とレビュー対応分 0.5〜1.0h"
+contains "$CREATE_ESTIMATION" "AI 予定をその人間工数の量に合わせて置かない" "踏襲してつなぐ feature は AI 予定を人間工数の量に合わせない"
+contains "$CREATE_ESTIMATION" "レビューが複数巡に及ぶ見込みでもこの幅で置く" "踏襲してつなぐ feature は複数巡の見込みでも幅を変えない"
+contains "$CREATE_ESTIMATION" "レビュー対応分だけを補正する手順（先勝ちの表・補正元の実績比・既定値の表の同額や「前提・契約を変える」行の 1.5〜2 倍）は当てない" "踏襲してつなぐ feature にレビュー対応分だけの補正を当てない"
+contains "$CREATE_ESTIMATION" "同節の手順 2 で実装分とレビュー対応分の合計を差し替える" "踏襲してつなぐ feature は同種の合計の補正元で差し替える"
+contains "$CREATE_ESTIMATION" "固定費は下の「bundle の固定費と子の内訳」の式で別建てにする（出所の 3 件は全件ゲートが各 1 回で" "踏襲してつなぐ feature の固定費は別建て"
+contains "$CREATE_ESTIMATION" "変更の中心が既存の中核の処理へのつなぎ込みならこの行を採る" "踏襲してつなぐ feature と画面の行の境界"
+contains "$CREATE_ESTIMATION" "中核の処理に触れず画面・型・分岐そのものを変える回は「View・画面の変更」行か" "踏襲してつなぐ feature の適用除外（画面の行）"
+contains "$CREATE_ESTIMATION" "検出器・ゲートは静的検出器・ゲートの 2 行で、bundle・並列サブエージェントの実装と ADR を伴う横断の機能追加はそれぞれ専用の行で積む" "踏襲してつなぐ feature の適用除外（検出器・bundle・並列・ADR 横断）"
+contains "$CREATE_ESTIMATION" "導入先の観測台帳 OBS-262（実測 3 件はすべて過大側、乖離率 0.20 / 0.25 / 0.29" "踏襲してつなぐ feature の出所（OBS-262 の実測 3 件）"
 contains "$CREATE_ESTIMATION" "| 記事・レポート（一次ソース・調査結果が起票時点で確定している） |" "記事・レポート（材料確定）の行"
 contains "$CREATE_ESTIMATION" "1.0〜1.5h + レビュー対応分は実装分の **1/3**" "記事・レポートの実装分 1.0〜1.5h とレビュー対応 1/3"
 contains "$CREATE_ESTIMATION" "予約公開・本番反映・SNS 告知を DoD に含む場合は別項目で 0.5h" "記事・レポートの反映・告知 0.5h 別項目"

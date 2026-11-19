@@ -20,6 +20,27 @@
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-11-20
+
+### 追加
+
+- `plugins/ff-dev-toolkit/skills/pre-commit-check/SKILL.md`: 手順 8 の固定表へ種別 H（`skip-line-contract`）と `plugins/ff-dev-toolkit/tests/lib/precommit-skip-line.sh`（`skip_line_precommit_scan`）を追加し、テストの skip 理由行や許容表の変更時のみ `skip-line-contract` を commit 前に単体実行するよう更新（`plugins/ff-dev-toolkit/tests/skill-frontmatter/verify.sh` の固定表検証と合わせて反映）
+- `plugins/ff-dev-toolkit/skills/retrospective/references/ledger.md`: 「時間損失の単発提案」節を追加。1 回のセッションで大きな時間を失った回（そのセッションで実行したレビューの巡か全体ゲートが 3 以上、または利用者が作業の遅さ・無駄を問うた）に、原因ごとの実測の内訳を報告し、防げた地点（スキルの手順・点検項目・ツールの出力・ゲート）への改善を `Count` の閾値を待たずに提案する。Issue 単位の累計である `EFFORT_*_review_rounds` / `EFFORT_*_gate_runs` はそのまま発火に使わない。台帳に既知の解があったのに失った時間は、「構造案なし」で閉じる前に、その解を失敗が起きる地点へ組み込む案を検討する。`SKILL.md` の「提案の閾値」がこの単発提案を閾値限定の例外に挙げ、振り分け表の ledger.md の行が「時間損失」を名指しする。`tests/retrospective-contract/verify.sh` が各規定に針を張る
+
+### 変更
+
+- 全件ゲート（`tests/run-all.sh` および単体 `tests/public-layout/verify.sh`）走行中の作業ツリー編集・Bash 書込・git 書き込みを PreToolUse で停止する `hooks/guard-gate-in-flight.sh`（抜け道: Bash 区間先頭の `FF_GATE_IN_FLIGHT_ACK=1` / Edit 系のプロセス環境 `FF_GATE_IN_FLIGHT_ACK=1`、無効化: `FF_DEV_TOOLKIT_SKIP=gate-in-flight`）を追加し、共有ライブラリ `tests/lib/gate-in-flight.sh`（`ff_gate_marker_status`）で残骸・再利用 PID マーカーを自動回収するよう統一。あわせて `tests/run-all.sh`（回帰ケース: `tests/run-all/cases/startup-guards.sh`）で run-all 検証を含む実行集合の並走・判定不能時に `rc=2` で早期停止し、委譲先が foreground 上限を超えうる全件ゲートと 600 秒超の連結コマンドを回さず親が直列実行する運用契約を更新
+
+### 修正
+
+- 本文が Refs だけの pull request は、対象 Issue のコメントにその pull request の完了報告があるとき、工数実績が未記入でもマージを止めない。報告が無いときは従来どおり止め、Issue は閉じないことと close-issue の実行を案内する。closing keyword で閉じる Issue と、マージコマンドの subject・body・body-file（8 KiB 上限）および GitHub MCP の commit_title / commit_message が closing keyword で閉じる Issue は、従来どおり実績の記入を求める。
+- `check-refine-invariants` の分割 `playbook/CHANGELOG.md` 採用・走査条件に `## Changelog` 見出しの無い版見出し（`### [x.y.z]`）先頭形式を加え、分割先に整理操作行があるのに 0 件しか読めない場合は非 0 で停止するよう修正
+- テストランナー自己検証の SIGTERM 回収ケース（`tests/run-all/cases/startup-guards.sh` の 54-I）が、走行中マーカーの出現だけでなく suite の起動まで待ってから TERM を送るよう修正。マーカー作成から INT / TERM の trap 設置までの隙間に TERM が届き、マーカーが残ってまれに偽の赤になる問題を解消した。あわせて 54-I と並列モードの 54-J は、run-all が TERM で終了したこと（終了コード 143）も確かめるようにし、TERM を無視して suite を完走させ、正常終了の後片付けでマーカーが消えた回を緑にしないようにした
+
+### ドキュメント
+
+- `/create-issue` の工数見積もりの AI 工数の目安表に、既存の仕組み（判定・ジョブ・API・設定の置き場所）を踏襲してつなぐ単独 PR の feature の行を足した。実装分 1.0〜1.5h とレビュー対応分 0.5〜1.0h で置く。人間工数の表で上位の行を選んでも、AI 予定をその量に合わせない。レビュー対応分の倍率（同額や、前提・契約を変える変更の 1.5〜2 倍）は当てず、固定費は従来どおり別建てにする。この種の feature に当てる行が無く、契約変更の倍率や画面ごとの積み上げで 6.0〜7.5h を置いた実測 3 件が、すべて過大側（乖離率 0.20〜0.29）に外れていた
+
 ## [1.7.0] - 2026-11-18
 
 ### 変更

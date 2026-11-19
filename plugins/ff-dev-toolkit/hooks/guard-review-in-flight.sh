@@ -603,228 +603,45 @@ case "$tool" in
     fi
     [ -n "$code_only" ] || exit 0
     HEREDOC_CODE="$code_only"
-    has_git=0
-    case "$code_only" in
-      *git*) has_git=1 ;;
-    esac
-    # git が「コマンド位置」にあり、かつ書き込み系サブコマンドを取る形だけを対象に
-    # する（`echo git commit ...` のような文字列出力は対象外）。連結演算子で分割し、
-    # 先頭の環境代入・ラッパー・git のグローバルオプションを剥がしてから判定する。
-    # 分割過多は「git がコマンド位置に来ず非発火」に倒れるだけで誤ブロックにならない。
     is_write_git=0
-    cmd_override=0
-    segments="$(printf '%s\n' "$code_only" | awk '{ gsub(/&&|\|\||;|\|/, "\n"); print }')"
-    [ "$has_git" -eq 1 ] || segments=""
-    # 先行区間の `cd <dir>`（`cd <worktree> && git commit`）は後続の git の対象ツリーを動かす。
-    # 追わないと、別 worktree での commit を cwd のツリーの commit と読んで止める（Issue `#1760`）。
-    git_base="$CWD"
-    git_sub_saved=""
-    git_restore=0
-    while IFS= read -r seg; do
-      [ -n "$seg" ] || continue
-      # サブシェル `( cd X … )` の cd は閉じ括弧の後ろへ漏らさない
-      if [ "$git_restore" -eq 1 ]; then git_base="$git_sub_saved"; git_sub_saved=""; git_restore=0; fi
-      case "$seg" in *')' | *') ') [ -n "$git_sub_saved" ] && git_restore=1 ;; esac
-      set -f
-      # shellcheck disable=SC2206 # 素朴な空白トークン化（意図的。glob は set -f で抑止）
-      ctoks=($seg)
-      set +f
-      case "${ctoks[0]:-}" in '(' | '(cd' | '(pushd') [ -n "$git_sub_saved" ] || git_sub_saved="$git_base" ;; esac
-      # `(cd X` / `{ cd X` / `cd -- X` / `cd -P X` / `pushd X`。解決できない行き先（`$VAR` / `-` /
-      # 空白を含む引用パス）は「不明」（"?"）として持ち、cwd と取り違えない
-      cj=0
-      case "${ctoks[0]:-}" in '(' | '{') cj=1 ;; '(cd' | '(pushd') ctoks[0]="${ctoks[0]#(}" ;; esac
-      case "${ctoks[$cj]:-}" in
-        cd | pushd)
-          cj=$((cj + 1))
-          while :; do case "${ctoks[$cj]:-}" in -- | -P | -L | -e | -@) cj=$((cj + 1)) ;; *) break ;; esac; done
-          cdir="${ctoks[$cj]:-}"
-          craw="$cdir"
-          cdir="${cdir#[\"\']}"
-          cdir="${cdir%[\"\']}"
-          if [ -z "$cdir" ] || [ $((cj + 1)) -lt "${#ctoks[@]}" ]; then
-            git_base="?"
-          else
-            case "$cdir" in
-              '~' | '~/'*) git_base="${HOME}${cdir#\~}" ;;
-              /*) git_base="$cdir" ;;
-              # Windows のドライブ付き絶対パス（Git Bash / Cygwin のときだけ。Issue `#2018`）。引用符なしの
-              # `C:\x` は bash がバックスラッシュを落として `C:x` へ cd するので、行き先を不明にする
-              [A-Za-z]:\\* | [A-Za-z]:/*)
-                case "${OSTYPE:-}:$craw" in
-                  msys*:[A-Za-z]:/* | cygwin*:[A-Za-z]:/* | msys*:[\"\']* | cygwin*:[\"\']*) git_base="${cdir//\\//}" ;;
-                  msys*:* | cygwin*:*) git_base="?" ;;
-                  *) [ "$git_base" != "?" ] && git_base="${git_base}/${cdir}" ;;
-                esac
-                ;;
-              -* | *'$'* | '~'* | *'`'*) git_base="?" ;;
-              *) [ "$git_base" != "?" ] && git_base="${git_base}/${cdir}" ;;
-            esac
-            # 行き先が無い cd は失敗し、後続（`;` / `||` の後）は元の cwd で走る。移動した扱いにしない
-            [ "$git_base" = "?" ] || [ -d "$git_base" ] || git_base="?"
-          fi
-          continue
-          ;;
-      esac
-      case "$seg" in
-        *git*) : ;;
-        *) continue ;;
-      esac
-      set -f
-      # shellcheck disable=SC2206 # 素朴な空白トークン化（意図的。glob は set -f で抑止）
-      toks=($seg)
-      set +f
-      n=${#toks[@]}
-      i=0
-      seg_override=0
-      while [ "$i" -lt "$n" ]; do
-        case "${toks[$i]}" in
-          # 対象 git コマンド先頭の環境代入としての解除（guard-checkout-restore.sh の
-          # FF_DISCARD_UNCOMMITTED_ACK と同じ形。Bash ツールで実際に効く唯一の指定方法）
-          FF_REVIEW_LOCK_ACK=1)
-            seg_override=1
-            i=$((i + 1))
-            ;;
-          [A-Za-z_]*=*) i=$((i + 1)) ;;
-          env | command | sudo | nohup) i=$((i + 1)) ;;
-          *) break ;;
-        esac
-      done
-      [ "$i" -lt "$n" ] || continue
-      case "${toks[$i]}" in
-        git | */git) : ;;
-        *) continue ;;
-      esac
-      i=$((i + 1))
-      # -C は「どのリポジトリを触る git か」を決めるので、飛ばさずに解決する
-      # （guard-checkout-restore.sh と同じ: 絶対パスはそのまま、相対は hook 入力の cwd 基準）。
-      gitdir="$git_base"
-      while [ "$i" -lt "$n" ]; do
-        case "${toks[$i]}" in
-          -C)
-            i=$((i + 1))
-            if [ "$i" -lt "$n" ]; then
-              cdir="${toks[$i]}"
-              craw="$cdir"
-              case "$cdir" in
-                \"*\")
-                  cdir="${cdir#\"}"
-                  cdir="${cdir%\"}"
-                  ;;
-                \'*\')
-                  cdir="${cdir#\'}"
-                  cdir="${cdir%\'}"
-                  ;;
-              esac
-              case "$cdir" in
-                /*) gitdir="$cdir" ;;
-                # Windows のドライブ付き絶対パス（Git Bash / Cygwin のときだけ。Issue `#2018`）。引用符なしの
-                # `C:\x` は bash がバックスラッシュを落とすので、行き先を不明にする
-                [A-Za-z]:\\* | [A-Za-z]:/*)
-                  case "${OSTYPE:-}:$craw" in
-                    msys*:[A-Za-z]:/* | cygwin*:[A-Za-z]:/* | msys*:[\"\']* | cygwin*:[\"\']*) gitdir="${cdir//\\//}" ;;
-                    msys*:* | cygwin*:*) gitdir="?" ;;
-                    *) [ "$gitdir" = "?" ] || gitdir="$gitdir/$cdir" ;;
-                  esac
-                  ;;
-                ?*) [ "$gitdir" = "?" ] || gitdir="$gitdir/$cdir" ;;
-              esac
-            fi
-            i=$((i + 1))
-            ;;
-          -c | --git-dir | --work-tree | --namespace | --exec-path) i=$((i + 2)) ;;
-          -*) i=$((i + 1)) ;;
-          *) break ;;
-        esac
-      done
-      [ "$i" -lt "$n" ] || continue
-      # ロックを持つのは cwd の toplevel だけ。別リポジトリ（別 worktree・別 clone）を
-      # 指す git はこのレビューの結果を壊さないので対象外。
-      # 凍結の対象はツリー単位（Issue `#1760`）: 別 worktree のレビューだけが走っている間は cwd の
-      # git 書き込みを止めず、`git -C <対象の worktree>` は止める。
-      # 行き先が不明（`cd "$X"` の後）な git は、凍結対象のツリーが 1 つでもあれば止める側。
-      # toplevel を引けない回は、そのディレクトリがどれかの対象ツリーの中にあるかで決める。
-      if [ "$gitdir" = "?" ]; then
-        :
-      elif [ "$gitdir" != "$CWD" ]; then
-        [ -d "$gitdir" ] || continue
-        if seg_root="$(git -C "$gitdir" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$seg_root" ]; then
-          seg_root="$(phys_dir "$seg_root")"
-          in_protected "$seg_root" || continue
-        else
-          within_protected "$(phys_dir "$gitdir")" || continue
-        fi
-      else
-        [ "$CWD_PROTECTED" -eq 1 ] || continue
-      fi
-      case "${toks[$i]}" in
-        commit | rebase | checkout | switch | merge | reset | apply | cherry-pick | revert | am | pull) : ;;
-        stash)
-          # `git stash list` / `git stash show` は read-only（既存 checkout guard の
-          # 「worktree に触れない形は発火しない」線引きに倣う）
-          j=$((i + 1))
-          while [ "$j" -lt "$n" ]; do
-            case "${toks[$j]}" in
-              -*) j=$((j + 1)) ;;
-              *) break ;;
-            esac
-          done
-          if [ "$j" -lt "$n" ]; then
-            case "${toks[$j]}" in
-              list | show) continue ;;
-            esac
-          fi
-          ;;
-        restore)
-          # `git restore --staged <path>`（--worktree / -W なし）は index だけを触る
-          staged=0
-          worktree=0
-          j=$((i + 1))
-          while [ "$j" -lt "$n" ]; do
-            case "${toks[$j]}" in
-              --) break ;;
-              --staged | -S) staged=1 ;;
-              --worktree | -W) worktree=1 ;;
-            esac
-            j=$((j + 1))
-          done
-          if [ "$staged" -eq 1 ] && [ "$worktree" -eq 0 ]; then
-            continue
-          fi
-          ;;
-        *) continue ;;
-      esac
-      is_write_git=1
-      [ "$seg_override" -eq 1 ] && cmd_override=1
-      break
-    done <<EOF
-$segments
-EOF
-    # git の書き込みでなければ、Bash 経由のファイル書き込みを走査する（Issue `#1710`）。
     is_write_bash=0
+    cmd_override=0
     write_note=""
-    if [ "$is_write_git" -ne 1 ]; then
-      ROOT_PHYS="$(phys_dir "$ROOT")"
-      [ -n "$ROOT_PHYS" ] || ROOT_PHYS="$ROOT"
-      write_scan_rc=1
-      # shellcheck source=../tests/lib/review-write-scan.sh
-      if [ -r "$WRITE_SCAN_LIB" ] && . "$WRITE_SCAN_LIB" 2>/dev/null \
-        && [ "$(type -t ff_write_scan 2>/dev/null)" = "function" ]; then
-        ff_write_scan_init "$ROOT_PHYS" "$(phys_dir "$CWD")" "$OUTPUT_DIR_NAME" "$PROTECT_TREES"
-        ff_write_scan "$cmd" "$HEREDOC_STATE" "$HEREDOC_CODE" "$HEREDOC_BODIES"
-        write_scan_rc=$?
-      else
-        WRITE_REASON="書き込み先を判定できません（走査ライブラリ ${WRITE_SCAN_LIB} を読めない）"
-        WRITE_OVERRIDE=0
-        write_scan_rc=0
+    ROOT_PHYS="$(phys_dir "$ROOT")"
+    [ -n "$ROOT_PHYS" ] || ROOT_PHYS="$ROOT"
+    WS_IS_MSYS=0
+    case "${OSTYPE:-}" in
+      msys* | cygwin*) WS_IS_MSYS=1 ;;
+    esac
+    # shellcheck source=../tests/lib/review-write-scan.sh
+    if [ -r "$WRITE_SCAN_LIB" ] && . "$WRITE_SCAN_LIB" 2>/dev/null \
+      && [ "$(type -t ff_write_scan_init 2>/dev/null)" = "function" ] \
+      && [ "$(type -t ff_worktree_git_write_scan 2>/dev/null)" = "function" ] \
+      && [ "$(type -t ff_write_scan 2>/dev/null)" = "function" ]; then
+      ff_write_scan_init "$ROOT_PHYS" "$(phys_dir "$CWD")" "$OUTPUT_DIR_NAME" "$PROTECT_TREES" FF_REVIEW_LOCK_ACK
+      if ff_worktree_git_write_scan "$code_only" "$CWD" "$WS_IS_MSYS"; then
+        is_write_git=1
+        [ "${WRITE_GIT_OVERRIDE:-0}" -eq 1 ] && cmd_override=1
       fi
-      if [ "$write_scan_rc" -eq 0 ]; then
+      if { [ "$is_write_git" -eq 0 ] || [ "${cmd_override:-0}" -eq 1 ]; } \
+        && ff_write_scan "$cmd" "$HEREDOC_STATE" "$HEREDOC_CODE" "$HEREDOC_BODIES"; then
         is_write_bash=1
-        [ "${WRITE_OVERRIDE:-0}" -eq 1 ] && cmd_override=1
+        if [ "${WRITE_OVERRIDE:-0}" -eq 1 ]; then
+          [ "$is_write_git" -eq 1 ] || cmd_override=1
+        else
+          cmd_override=0
+        fi
         write_note="このコマンドは${WRITE_REASON}。判定できない書き込みは deny 側へ倒します。
 下書き・一時出力は作業ツリーの外（scratchpad や \`mktemp -d\` の一時ディレクトリ）へ書いてください。レビュー出力先 ${ROOT}/${OUTPUT_DIR_NAME}/ への書き込みは止めません。
 "
       fi
+    else
+      is_write_bash=1
+      WRITE_REASON="書き込み先を判定できません（走査ライブラリ ${WRITE_SCAN_LIB} を読めない）"
+      WRITE_OVERRIDE=0
+      write_note="このコマンドは${WRITE_REASON}。判定できない書き込みは deny 側へ倒します。
+下書き・一時出力は作業ツリーの外（scratchpad や \`mktemp -d\` の一時ディレクトリ）へ書いてください。レビュー出力先 ${ROOT}/${OUTPUT_DIR_NAME}/ への書き込みは止めません。
+"
     fi
     [ "$is_write_git" -eq 1 ] || [ "$is_write_bash" -eq 1 ] || exit 0
     ;;

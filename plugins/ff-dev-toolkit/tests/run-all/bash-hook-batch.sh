@@ -44,7 +44,7 @@ assert args[0] == 'bash' and Path(args[1]) == runner
 assert [Path(a) for a in args[2:]] == [root / 'hooks' / (name + '.sh') for name in expected], 'Bash集約子の登録集合が期待と違う'
 assert entry['timeout'] == 30
 assert sum(len(g['hooks']) for g in config['hooks']['PreToolUse']
-           if 'Bash' in g['matcher'].split('|')) == 2
+           if 'Bash' in g['matcher'].split('|')) == 3
 
 with tempfile.TemporaryDirectory(prefix='ff-batch-test-') as temp:
     temp = Path(temp)

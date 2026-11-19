@@ -1696,6 +1696,7 @@ describe("main — 分割 Changelog（playbook/CHANGELOG.md）", () => {
     readonly changelogRel?: string;
     readonly archiveProcess?: string;
     readonly liveProcess?: string;
+    readonly liveTesting?: string;
     readonly crlfChangelog?: boolean;
   }): string {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-refine-inv-split-"));
@@ -1708,7 +1709,7 @@ describe("main — 分割 Changelog（playbook/CHANGELOG.md）", () => {
     const playbookPath = path.join(knowledge, "PLAYBOOK.md");
     fs.writeFileSync(playbookPath, opts.body);
     fs.writeFileSync(path.join(playbookDir, "process.md"), opts.liveProcess ?? LIVE_CANONICAL);
-    fs.writeFileSync(path.join(playbookDir, "testing.md"), LIVE_TARGET);
+    fs.writeFileSync(path.join(playbookDir, "testing.md"), opts.liveTesting ?? LIVE_TARGET);
     fs.writeFileSync(
       path.join(archiveDir, "process.md"),
       opts.archiveProcess ?? ARCHIVE_VARIANT_B,
@@ -1840,6 +1841,149 @@ describe("main — 分割 Changelog（playbook/CHANGELOG.md）", () => {
     const { code, errors } = run();
     expect(code).toBe(1);
     expect(errors).toContain("索引テーブルに残っている");
+  });
+
+  const PROSE_STUB = [
+    BODY_WITHOUT_CHANGELOG,
+    "## Changelog",
+    "",
+    "> **Changelog 本体は [playbook/CHANGELOG.md](playbook/CHANGELOG.md) へ移動した**。",
+    "- 現行: [playbook/CHANGELOG.md](./playbook/CHANGELOG.md)",
+    "",
+  ].join("\n");
+  const HEADINGLESS_SPLIT = `# ACE Playbook Changelog\n\n${PLAYBOOK_CHANGELOG.slice(PLAYBOOK_CHANGELOG.indexOf("### [1.140.0]"))}`;
+
+  it("## Changelog 見出しの無い分割 CHANGELOG でも版見出しから操作を検査する（AC1）", () => {
+    for (const body of [BODY_WITHOUT_CHANGELOG, PROSE_STUB]) {
+      writeSplit({ body, changelog: HEADINGLESS_SPLIT });
+      const { code, errors, logs } = run();
+      expect(errors).toBe("");
+      expect(code).toBe(0);
+      expect(logs).toContain("Compacted 1");
+      expect(logs).toContain("Merged 1");
+      expect(logs).toContain("Promoted 1");
+      expect(logs).toContain("（playbook/CHANGELOG.md）");
+    }
+  });
+
+  it("## Changelog 見出しの無い分割 CHANGELOG で統合元が live に残ると exit 1 になる（AC2）", () => {
+    writeSplit({
+      body: PROSE_STUB,
+      changelog: HEADINGLESS_SPLIT,
+      liveTesting: `${LIVE_TARGET}\n${LIVE_CANONICAL.replace("ACE-41-3", "ACE-430-1")}`,
+    });
+    const { code, errors, logs } = run();
+    expect(code).toBe(1);
+    expect(logs).toContain("Merged 1");
+    expect(logs).toContain("（playbook/CHANGELOG.md）");
+    expect(errors).toContain("統合元が live に残っている");
+  });
+
+  it.each([
+    [
+      "先行のレベル 2 見出しの後ろに版見出しがある場合",
+      "# History\n\n## Notes\n\n### [1.140.0] - 2026-08-14\n\n- Merged: ACE-430-1 → ACE-404-2\n",
+    ],
+    [
+      "版見出しも ## Changelog も無く操作行だけがある場合",
+      "# ACE Playbook Changelog\n\n- Merged: ACE-430-1 → ACE-404-2\n",
+    ],
+    [
+      "版見出し配下が 0 件で後続の別節内に操作行がある場合",
+      "# ACE Playbook Changelog\n\n### [1.140.0] - 2026-08-14\n\n## 補足\n\n- Merged: ACE-430-1 → ACE-404-2\n",
+    ],
+  ])("分割 CHANGELOG に整理操作行があるのに 0 件しか読めないときは非 0 にする（%s）", (_label, changelog) => {
+    writeSplit({ body: PROSE_STUB, changelog });
+    const { code, errors } = run();
+    expect(code).toBe(1);
+    expect(errors).toContain("playbook/CHANGELOG.md");
+  });
+
+  it("操作 0 件の正当な見出し無し分割 CHANGELOG（なし注記のみ）は誤検出せず exit 0", () => {
+    const emptyOps = [
+      "# ACE Playbook Changelog",
+      "",
+      "### [1.140.0] - 2026-08-14",
+      "",
+      "#### 整理（/ace-refine）",
+      "",
+      "- Compacted: なし",
+      "- Archived: なし（ACE-9-9 は次回再評価）",
+      "",
+    ].join("\n");
+    writeSplit({ body: PROSE_STUB, changelog: emptyOps });
+    const { code, errors, logs } = run();
+    expect(errors).toBe("");
+    expect(code).toBe(0);
+    expect(logs).toContain("Compacted 0 / Merged 0 / Promoted 0 / Archived 0（playbook/CHANGELOG.md）");
+  });
+
+  it("見出し無し分割 CHANGELOG でも frontmatter・HTML コメント除外と後続 ## 節境界を維持する", () => {
+    const withFrontmatter = [
+      "---",
+      'title: "Changelog"',
+      "---",
+      "# ACE Playbook Changelog",
+      "",
+      "<!--",
+      "## Notes",
+      "-->",
+      "",
+      PLAYBOOK_CHANGELOG.slice(PLAYBOOK_CHANGELOG.indexOf("### [1.140.0]")),
+      "## 補足",
+      "",
+      "- Compacted: ACE-999-1",
+      "",
+    ].join("\n");
+    writeSplit({ body: PROSE_STUB, changelog: withFrontmatter });
+    const { code, errors, logs } = run();
+    expect(errors).toBe("");
+    expect(code).toBe(0);
+    expect(logs).toContain("Compacted 1 / Merged 1 / Promoted 1 / Archived 0（playbook/CHANGELOG.md）");
+
+    // CRLF 文字列の直接 API 呼び出しでも frontmatter の除外が壊れないこと
+    const crlfWithFrontmatter = withFrontmatter.replace(/\n/gu, "\r\n");
+    const ops = parseChangelogOperations(crlfWithFrontmatter, { allowHeadingless: true });
+    expect(ops.compactedIds).toEqual(["ACE-41-3"]);
+    expect(ops.mergedPairs).toEqual([{ source: "ACE-430-1", target: "ACE-404-2" }]);
+    writeSplit({ body: PROSE_STUB, changelog: withFrontmatter, crlfChangelog: true });
+    const cliCrlf = run();
+    expect(cliCrlf.errors).toBe("");
+    expect(cliCrlf.code).toBe(0);
+    expect(cliCrlf.logs).toContain("Compacted 1 / Merged 1 / Promoted 1 / Archived 0（playbook/CHANGELOG.md）");
+  });
+
+  it("見出し無し分割 CHANGELOG で複数版見出しと evaluateRefineInvariants 直接呼び出しを検査する", () => {
+    const multiVersion = [
+      "# ACE Playbook Changelog",
+      "",
+      "### [1.141.0] - 2026-08-15",
+      "",
+      "- Compacted: ACE-41-3（本文は逐語無改変）",
+      "",
+      "### [1.140.0] - 2026-08-14",
+      "",
+      "- Merged: ACE-430-1 → ACE-404-2",
+      "",
+      "## 補足",
+      "",
+      "- Promoted: ACE-999-1",
+      "",
+    ].join("\n");
+    writeSplit({ body: PROSE_STUB, changelog: multiVersion });
+    const { code, errors, logs } = run();
+    expect(errors).toBe("");
+    expect(code).toBe(0);
+    expect(logs).toContain("Compacted 1 / Merged 1 / Promoted 0 / Archived 0（playbook/CHANGELOG.md）");
+
+    const violations = evaluateRefineInvariants({
+      playbookContent: PROSE_STUB,
+      changelogContent: multiVersion,
+      liveBlocks: [...blocksOf(LIVE_CANONICAL), ...blocksOf(LIVE_TARGET)],
+      archiveBlocks: [...blocksOf(ARCHIVE_VARIANT_B), ...blocksOf(ARCHIVE_MERGED)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations).toEqual([]);
   });
 });
 

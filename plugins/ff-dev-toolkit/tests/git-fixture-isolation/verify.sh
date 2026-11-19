@@ -512,6 +512,7 @@ grok-hooks-sync/verify.sh
 guard-checkout-restore/verify.sh
 guard-default-branch-commit/verify.sh
 guard-exit-code/git-write-chain.sh
+guard-gate-in-flight/verify.sh
 guard-review-in-flight/lane-private-cases.sh
 guard-review-in-flight/verify.sh
 knowledge-delivery/verify.sh

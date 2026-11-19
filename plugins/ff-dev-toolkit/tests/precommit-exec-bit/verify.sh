@@ -82,8 +82,10 @@
 #
 # 一時領域と git が無い環境では skip せず赤で止める（本 suite の検出力は fixture にしか無い）。
 # SKILL容量検査は skill-byte-cases.sh でindexの境界・上限定義の変更・判定不能を測る。
+# skip 理由行・許容表検査は skip-line-cases.sh で index/HEAD の差分・ヘルパー呼び出し・削除のみ・未検査(rc=2)を測る。
 # 空振り検出: index超過の許可は5件、WT読取への逆行は2件、定義異常の無視は3件、multi-review除外は2件、衝突無視は1件が赤。case本体を空にすると末尾sentinelが赤（2026-10-23、正常対照/良性コメント緑を含め変異ハーネスで実測）。
 # 空振り検出: 読み直しWARNの抑止は7件、WT本文の誤使用と対象外断片での抑止は各1件、case空は末尾sentinel1件が赤。staged/集合/保存本文の診断を一般エラーへ変える変異は各1/1/2件が赤（2026-10-24実測）。確定集合の不在/空/不正と一覧・保存本文の読取失敗はW9/W10/W11が固有診断とrc2/WARNなしを要求する。
+# 空振り検出: 種別 H の常時 none 化・正規化時の行番号維持（無関係行シフトで偽陽性）・GIT_LITERAL_PATHSPECS 対応無効化・削除 D の HEAD 比較抑止・未解決衝突 U の通過・lib 不在の none 倒し（rc=0）の 6 変異がすべて rc=1、無害コメント追記 1 件のみ rc=0（7 件 / detected 6 / green-ok 1 / SURVIVED 0 / FALSE-POSITIVE 0 / NOT-APPLIED 0、正常 152 件 pass、2026-11-18 mutation-harness 実測）。
 
 set -euo pipefail
 
@@ -1148,6 +1150,13 @@ SKILL_BYTE_CASES_REACHED=0
 . "$SCRIPT_DIR/skill-byte-cases.sh"
 run_skill_byte_cases
 if [ "$SKILL_BYTE_CASES_REACHED" -ne 1 ]; then bad "SKILL容量caseが末尾へ到達していません"; fi
+
+echo
+SKIP_LINE_CASES_REACHED=0
+# shellcheck source=skip-line-cases.sh
+. "$SCRIPT_DIR/skip-line-cases.sh"
+run_skip_line_cases
+if [ "$SKIP_LINE_CASES_REACHED" -ne 1 ]; then bad "skip理由行caseが末尾へ到達していません"; fi
 
 echo "precommit-exec-bit: passed=${PASS} failed=${FAIL}"
 FF_REACHED_END=1

@@ -2,6 +2,7 @@
 # 空振り検出: 断片内容の条件行Eを消すと208件中2件、条件付き実行例の注記を消すと1件が赤。正常対照と無害なhelperコメントの追加は緑（2026-10-23、変異ハーネス実測）。
 # 空振り検出: 読み直しWARNの規定だけ/最終報告だけを別内容へ変える各変異もrc1で検出（2026-10-24実測、正常210件pass）。
 # 空振り検出: 種別 G の固定表行削除（3 件失敗）・docs-fact-drift 除去（1 件）・adapter-env-isolation-selftest 除去（1 件）・非実在 suite 名置換（2 件、実在照合含む）・既存 M/D 非追加規定削除（1 件）・diff-filter=A を ACMR へ弱める変異（1 件）・実行手順 G コメント削除（1 件）の 7 変異がすべて rc=1、無害追記 1 件のみ rc=0（SURVIVED=0 / FALSE-POSITIVE=0 / NOT-APPLIED=0、正常 227 件 pass、2026-11-14 mutation-harness 実測）。
+# 空振り検出: 種別 H の固定表行削除（3 件失敗）・skip-line-contract の非実在 suite 名置換（2 件、実在照合含む）・既存仕様への非追加規定削除（1 件）・実行手順 H コメント削除（1 件）・手順 6 の削除対象規定除去（1 件）・判定器呼出除去（1 件）・対象なし規定行削除（1 件）・未検査規定行削除（1 件）・出力テンプレート節削除（1 件）の 9 変異がすべて rc=1、無害追記 1 件のみ rc=0（10 件 / detected 9 / green-ok 1 / SURVIVED 0 / FALSE-POSITIVE 0 / NOT-APPLIED 0、正常 238 件 pass、2026-11-18 mutation-harness 実測）。
 #
 # Skill frontmatter と単一正本のポリシー検査（Issue #141 / #145 / #996 / ACE-147-1）。
 #
@@ -311,13 +312,39 @@ check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" '`git diff --cached --na
 check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" '# G が当たった回だけ（新規の tests/<名>/verify.sh が A で無い回は C に追加しない）' \
   '新規 suite で無い回に C へ追加しない実行例'
 
+# 手順 8 の種別 H（skip 理由行・許容表の変更、OBS-550）。
+PRE_COMMIT_SKIPLINE_HEADING='#### skip 理由行の判定'
+check_pre_commit_shell_step "$PRE_COMMIT_CONSISTENCY_HEADING" '「skip 理由行の判定」も 1) が 0 件でも回す' \
+  '削除だけの commit でも種別 H の判定器を回す規定'
+check_pre_commit_shell_step "$PRE_COMMIT_TABLE_HEADING" '| H. skip 理由行・許容表（判定器で決まる条件付き追加。削除だけの回も判定する） |' \
+  '固定表の種別 H（skip 理由行・許容表の条件付き追加）'
+check_pre_commit_shell_step "$PRE_COMMIT_TABLE_HEADING" '| `skip-line-contract` |' \
+  '種別 H が skip-line-contract を名指しする'
+check_pre_commit_shell_step "$PRE_COMMIT_TABLE_HEADING" 'skip の理由行に触れない変更では追加せず' \
+  '種別 H が skip 理由行に触れない変更へ追加しない規定'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" '# H が当たった回だけ（判定器が skip-line-contract: none の回は C に追加しない）' \
+  'skip 理由行に触れない回に C へ追加しない実行例'
+check_pre_commit_shell_step "$PRE_COMMIT_SKIPLINE_HEADING" '. "$f" || exit 2; skip_line_precommit_scan "$r"' \
+  'skip 理由行判定器の呼び出しコマンド（skip_line_precommit_scan）'
+check_pre_commit_shell_step "$PRE_COMMIT_SKIPLINE_HEADING" '| 0 | `skip-line-contract: none` | 対象なし' \
+  '判定器が対象なしを返した回に H の suite を回さない規定'
+check_pre_commit_shell_step "$PRE_COMMIT_SKIPLINE_HEADING" '| 2 | `skip-line 未検査: <理由>` |' \
+  '判定器が読めない回を「対象なし」へ倒さない規定'
+check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '### skip 理由行（種別 H）' \
+  '出力テンプレートの skip 理由行節'
+if [ -f "$PLUGIN_ROOT/tests/lib/precommit-skip-line.sh" ]; then
+  ok "pre-commit-check — 手順 8 が読む skip 理由行判定器が実在する: tests/lib/precommit-skip-line.sh"
+else
+  bad "pre-commit-check — 手順 8 が読む skip 理由行判定器がありません: tests/lib/precommit-skip-line.sh"
+fi
+
 # 固定表（| 種別 | staged パスの条件 | 単体で回す suite |）の 3 列目が名指しする suite 名を
 # 実体（tests/<name>/verify.sh）と機械照合する。表が空・行が減った・suite 名を 1 つも
 # 持たない行があるときは「照合対象ゼロで緑」にならないよう fail-closed で赤にする。
 # 外部コマンドは awk だけを使う（本 suite は一時領域も jq 以外の外部コマンドも要らない
 # 純粋なファイル検査である。here-doc / here-string は一時ファイルを要求するので使わない）。
-# 種別 A〜G（断片内容の追加は対象断片をstageした回だけ、fixture consumer の追加は判定器が当てた回だけ、新規 suite 追加は A のみ）。
-PRE_COMMIT_TABLE_MIN_ROWS=7
+# 種別 A〜H（断片内容・fixture consumer・新規 suite・skip 理由行の判定）。
+PRE_COMMIT_TABLE_MIN_ROWS=8
 
 # want=rows: データ行数 / want=empty: suite 名を 1 つも持たない行番号 / want=names:
 # 重複除去した suite 名（空白区切り）。いずれも 1 行だけを返す。

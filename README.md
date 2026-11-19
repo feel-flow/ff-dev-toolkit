@@ -138,6 +138,7 @@ export FF_DEV_TOOLKIT_SKIP=update-check,wsl-notice
 | `effort-actual` | 工数実績未記入マージガード（`hooks/guard-effort-actual.sh`） | - |
 | `effort-metrics` | 工数の実測記録（`hooks/record-effort-wallclock.sh`・`hooks/record-instruction-bytes.sh`・`scripts/record-gate-minutes.sh`） | - |
 | `exit-code` | 終了コード誤読ガード（`hooks/guard-exit-code.sh`） | `timeout`・`unbounded-wait`・`rg-stdin` |
+| `gate-in-flight` | 全件ゲート走行中の作業ツリーへの書き込みガード（`hooks/guard-gate-in-flight.sh`） | - |
 | `issue-collision` | 同じ番号のブランチ作成と PR 作成のガード（`hooks/guard-issue-collision.sh`） | - |
 | `issue-label` | 起票ラベル契約ガード（`hooks/guard-issue-labels.sh`） | - |
 | `literal-write` | literal-write ガード（`hooks/guard-literal-write.sh`） | - |
@@ -160,6 +161,7 @@ export FF_DEV_TOOLKIT_SKIP=update-check,wsl-notice
 **1 回だけ通す承認（ACK）** — `FF_` + 鍵を大文字・`_` 区切りにしたもの + `_ACK` の名前を `=1` で書き、その呼び出しだけを通します（例 `FF_ZSH_GLOB_ACK=1`）。置き場所（コマンドの先頭・区間の先頭・hook のプロセス環境）は ACK ごとに決まっていて、各 hook の説明と停止文が示します。
 
 - `FF_DISCARD_UNCOMMITTED_ACK=1` — 未コミット変更ガードで、意図して変更を破棄する `git checkout` / `git restore` の先頭に付けます
+- `FF_GATE_IN_FLIGHT_ACK=1` — 全件ゲート走行中の凍結で、その書き込みだけを通します。Bash では書き込みを含む区間の先頭に付け、Bash 以外のツールでは hook のプロセス環境で渡します
 - `FF_ISSUE_LABEL_ACK=1` — 起票ラベル契約ガードで、ラベルの欠けた `gh issue create` の先頭に付けます
 - `FF_REVIEW_LOCK_ACK=1` — レビュー走行中の凍結で、その書き込みだけを通します。Bash では書き込みを含む区間の先頭に付け、Bash 以外のツールでは hook のプロセス環境で渡します
 - 名前の変わらない ACK: `FF_CREDENTIAL_OUTPUT_ACK` / `FF_DEFAULT_BRANCH_COMMIT_ACK` / `FF_EFFORT_ACTUAL_ACK` / `FF_EXIT_CODE_ACK` / `FF_ISSUE_COLLISION_ACK` / `FF_LITERAL_WRITE_ACK` / `FF_LONG_GATE_BACKGROUND_ACK` / `FF_MERGE_CLOSING_ACK` / `FF_PR_DRAFT_ACK` / `FF_REVIEW_ROUND_ACK` / `FF_RG_STDIN_ACK` / `FF_SHELL_SAVE_ACK` / `FF_SUB_ISSUE_ID_ACK` / `FF_TIMEOUT_ACK` / `FF_UNBOUNDED_WAIT_ACK` / `FF_WSL_PATHCONV_ACK` / `FF_WSL_SHELL_ACK` / `FF_ZSH_EXPANSION_ACK` / `FF_ZSH_GLOB_ACK`
@@ -285,11 +287,12 @@ Codex の Bash 相当ツールでの実発火は未実測。
 - 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP=background-cwd`
 - 絶対パス・コマンド置換（`cd "$(git rev-parse --show-toplevel)"`）・変数展開・チルダの `cd`、引数なしの `cd`、`cd -`、オプション付きの `cd` は止めない
 
-**工数実績未記入マージガード（`guard-effort-actual.sh`）** — `gh pr merge` が閉じようとしている Issue の本文に `ff-effort` ブロックが存在するのに `effort_ai_actual` が未記入のまま残っている場合、マージ前に停止する。`ff-effort` ブロック自体が無い Issue では発火しない。
+**工数実績未記入マージガード（`guard-effort-actual.sh`）** — `gh pr merge` が閉じようとしている Issue の本文に `ff-effort` ブロックが存在するのに `effort_ai_actual` が未記入のまま残っている場合、マージ前に停止する。`ff-effort` ブロック自体が無い Issue では発火しない。本文が Refs だけで閉じる集合が空のときは、対象 Issue のコメントにその pull request の完了報告（`<!-- close-issue-report:PR-N -->` の N がその pull request 番号と一致する印）がある場合だけ未記入でも止めない。報告が無ければ止め、Issue は閉じない前提で案内する。closing keyword で閉じる Issue は報告があっても実績の記入を求める。マージコマンドの subject・body・読める通常ファイルの body-file（8 KiB 上限）および GitHub MCP の commit_title / commit_message に closing keyword があるときも同じ。
 
-- 通し方: `/close-issue` で実績を書き戻してからマージする、またはコマンド先頭に環境代入 `FF_EFFORT_ACTUAL_ACK=1` を付けて再実行する
+- 通し方: `/close-issue` で実績を書き戻してからマージする（Refs だけのときは完了報告コメントを残す。継続中の Issue は実績を未記入のまま残してよい）、またはコマンド先頭に環境代入 `FF_EFFORT_ACTUAL_ACK=1` を付けて再実行する
 - 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP=effort-actual`
-- 既知の限界: heredoc・クォートの閉じていないセグメント・変数展開やコマンド置換で組み立てる `gh pr merge`、`gh` の認証切れ・オフラインなどでは判定できず素通しする（fail-open）
+- 既知の限界（判定できず素通しする形）: heredoc・クォートや置換が閉じていないコマンド・変数展開やコマンド置換で組み立てる `gh pr merge`・引数中の未展開 `${var:-…}` や `$'…'` の 16 進 / 8 進エスケープ、`--body-file -`（stdin）・読めない / 8 KiB 超 / 通常ファイル以外の `body-file`、および `gh` の認証切れ・オフラインなど（fail-open）
+- 既定ブランチ以外の扱い: ベースブランチと既定ブランチの比較はせず、closing keyword が閉じる側に入ればマージ先を問わず実績の記入を求める
 
 **squash closing keyword ガード（`guard-merge-closing-keyword.sh`）** — 通常の `gh pr merge --squash` が `Refs` 対象の Issue を閉じる実効件名・本文を持つ場合、共有 checker で検出して停止する。非空の subject と明示 body（空文字も有効）を項目ごとに優先し、省略値は GitHub の SQUASH メッセージプレビューを読む。空 subject は gh が送信せず既定へ戻るため、安全な明示値としては扱わない。`finish.sh precheck` でも空 subject は拒否する。
 
@@ -376,6 +379,15 @@ Codex の Bash 相当ツールでの実発火は未実測。
 - 作業ディレクトリの project の外や、祖先の ACL を検証できない場所（Windows の `%TEMP%` の下の scratchpad など）の `.sh` は、保存前の内容を読み取り境界で読めない。Edit はそこで止めず、**ファイルを読まずに** `old_string` → `new_string` の断片だけを同じ検出器で検査する（`pipefail` は設定ありと仮定）。違反なしは「縮退検査」の 1 行（`systemMessage`。利用者向けの表示で、エージェントには届かない）を残して通し、違反は縮退の旨を本文に添えて deny する。`new_string` の末尾が行継続（`\` / `|` / `&&` / `||`）で終わるときと、境界が場所以外の理由（NUL を含む・開けない権限・ACL を照合できない等）で拒否したときは判定不能で止める。断片の外の綴りと繋がってできる違反は見えないので、追跡対象の `.sh` はコミット前検査と全件ゲートが引き続き見る。作業ディレクトリ自体が `%TEMP%` の下にあると、その中の Edit もすべて縮退検査になる。Write は保存前を空として全文を検査する
 - 抜け道: Write / Edit にはコマンド先頭の環境代入が無いため、hook のプロセス環境（ホストの env 設定・起動時の export）へ `FF_SHELL_SAVE_ACK=1` を渡す
 - 既知の限界: Bash 経由の書き込み（heredoc・スクリプトからの文字列置換・`sed -i`）は Write / Edit ではないので届かない。その経路はコミット前検査と全件ゲートが受け持つ。パスが `.sh` で終わらない shell スクリプト（拡張子なし・`.bash`）と MultiEdit は対象外。Edit の `old_string` が現在の内容にバイト一致しない（改行コードの差を除いても一致しない）ときは判定不能として止まるので、ファイルの現在の内容から写し直す（保存前を読めない縮退検査では照合しない）
+
+### 全件ゲート走行中ガード（PreToolUse / Edit・Write・MultiEdit・NotebookEdit・Bash）
+
+**全件ゲート走行中ガード（`guard-gate-in-flight.sh`）** — `tests/run-all.sh`（または単体起動の `tests/public-layout/verify.sh`）が走行している間、同じ作業ツリーへのファイル書き込み（`Edit` / `Write` / `MultiEdit` / `NotebookEdit`、および Bash 経由のシェル出力・テキスト置換・ファイル操作・`git add` / `commit` / `checkout` / `reset` 等の git 書き込み）を PreToolUse 境界で停止する。走行中の作業ツリーを途中で書き換えると、実行中 bash スクリプトのオフセットずれや途中変更によりゲート結果が無効になるため。
+
+- **生存判定の共有**: `tests/run-all.sh` と共通のライブラリ `tests/lib/gate-in-flight.sh`（`ff_gate_marker_status`）が `<git-dir>/ff-dev-toolkit/run-all-in-flight/<PID>` を調べ、プロセス不在または開始時刻不一致（PID 再利用）の残骸マーカーは自動回収して通す
+- **止めない操作**: ツリー外（scratchpad / `mktemp -d` 等）・`.review-results/`・gitignore 済みのファイル・マーカーの無い別 worktree・読み取り専用の `git status` / `git diff` / `git log` 等は止めない
+- **抜け道と解除**: 先に該当ゲートの完了を待つか `TaskStop` / `kill` で止めるのが正規手順。やむを得ず 1 回だけ通す場合は Bash 区間先頭に `FF_GATE_IN_FLIGHT_ACK=1` を付ける（Edit 等は hook のプロセス環境）。セッション全体での無効化は `FF_DEV_TOOLKIT_SKIP=gate-in-flight`
+- **fail-closed 境界**: `jq` / `git` 不在・リポジトリ外・マーカー無しは素通し。候補呼び出しで `tests/lib/gate-in-flight.sh` が読めない・壊れている場合、および走行中マーカーが存在する作業ツリーで `tests/lib/review-write-scan.sh` 等の走査不能や `FF_GATE_IN_FLIGHT_ACK=1` の安全検査を行えない書き込みは deny 側へ倒す（`hooks/hooks.json` では `timeout: 30`、`onFailure: "block"` を設定）
 
 ## 前提
 
