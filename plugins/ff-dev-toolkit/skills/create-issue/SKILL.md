@@ -64,7 +64,7 @@ fi
 呼び出し元が確認を挟まない運用（フルオート等）の場合、または依頼が「Issue 作って」のように起票の実行そのものである場合は、**種別・優先度・参照文書を会話コンテキストから推定し、確認なしで手順 2 以降へ進む**（[ワークフロー運用原則](../../docs-template/05-operations/deployment/workflow-principles.md)「原則1: ノンストップフロー（フルオート）」）。ヒアリングを必須にすると、自律フローからスキルごとスキップされて `gh issue create` の直接実行へ流れる。
 
 <!--9b2e01fad7d25caa-->
-MCP: 取得値: MCP で同じ repo の既存候補と label name、認証主体 login を取得。形式: title / 本文ファイル原文 / 実在 labels / 必要 assignees の構造化引数。渡し先: 既存 create_issue へ渡し、返った number / url と fresh body / labels を後読する。@me は実 login、out-of-scope はアサイン中立を保持。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
+MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: create_issue へ既定では assignees を省略して渡し、返った number / url と fresh body / labels / assignees を確認する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
 
 推定してよいのは種別・優先度・参照文書まで。**受け入れ条件（AC）とストーリー要素の中身は推測で埋めない**（手順 4 の「ストーリーが埋まっているか」を含め、非対話でも同じ基準で適用する）。材料が無ければ止めてユーザーに確認する。工数だけは推定する（手順 3）。
 

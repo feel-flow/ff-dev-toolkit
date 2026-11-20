@@ -21,7 +21,7 @@
 # 複合コマンド拒否ガードとも衝突しない。
 #
 # なぜ共有ファイルに切り出さず複製するのか: 2 つの起票手順は同じ骨格を持つが中身が違う
-# （照合する候補の系統が 2 系統 / 3 系統、`--assignee` の既定が付ける / 付けない）。共有ファイル
+# （照合する候補の系統が 2 系統 / 3 系統）。共有ファイル
 # にすると差分を分岐として書くことになり、起票コマンドの直前に他スキルの分岐が混ざる。加えて
 # 照合と報告の判定規則は起票コマンドと同じファイルの直前で読まれる必要があり、規則と起票
 # コマンドを別ファイルへ分断すると、起票コマンドだけを読んで実在確認ごと飛ばす経路ができる。
@@ -79,6 +79,7 @@
 # 空振り検出: create-issue 手順 4 から「マージ前に達成できるか」の行を消すと 6 件（検査 11 の 5 件 + 検査 10 の集合差 1 件）、「AC が前提にする値・資料・配置を実測したか」の行を消すと 3 件（検査 11 の 2 件 + 集合差 1 件）、refine-issue の観点「検証可能性」の行を消すと 1 件、close-issue の references/ac-judgement.md の post-merge 前置きを消すと 2 件が赤になる（2026-09-27 実測。両ファイルから同時に消えて集合一致のまま緑になる形は検査 11 の実体固定が塞ぐ）。
 # 空振り検出: create-issue の本線 SKILL.md に `gh issue create` の起票フェンスを足すと 124 件中 1 件、references/estimation.md に引数付きの `gh label list` を足すと 124 件中 1 件、references/filing.md の fixture の行全体一致行（`#### priority の判定基準`）を書き換えると 124 件中 1 件、estimation.md を消して filing.md 以外の走査対象が本線だけへ縮むと 1 件が赤になる（2026-09-24 実測。起票コマンドが照合規則のファイルの外へ出る・複製された契約行が片側だけ変わる・走査対象が縮む変更を「契約あり」へ倒さない）。本線を 20,001 B へ膨らませると 131 件中 1 件、本線から「条件付きで読む references」節と filing.md / estimation.md へのリンクを消すと 1 件、references/sub/steps.md や references/.hidden.md に起票フェンスを置くと 131 件中 1 件が赤になる（2026-09-24 実測。本線が上限を超える・移設先へ導く経路が消える・glob の外へ置かれる変更を「契約あり」へ倒さない）。
 # 空振り検出: create-issue 手順 4 の `post-merge:` の印、refine-issue の同じ印、close-issue ac-judgement の「見立て」の行をそれぞれ消すと赤になる（基準 145 件緑。2026-11-07 macOS 実測。3 つの入口の 1 つだけが印を落とす変更を「契約あり」へ倒さない）。
+# 空振り検出: retrospective の起票コマンドを消すと件数不足、別の console フェンスに担当付き起票を足すと件数超過、Git Workflow の「着手時の自己アサイン」見出しを変えると節の欠落で赤になる。3 経路の起票コマンドへ `--assignee @me` を戻しても各経路で赤になる（基準 159 件緑、2026-11-20 macOS 実測）。
 
 set -euo pipefail
 
@@ -96,6 +97,8 @@ OUT_OF_SCOPE="$PLUGIN_ROOT/skills/out-of-scope-issue/SKILL.md"
 # out-of-scope-issue の起票手順（ラベルの実在確認 → 起票）の置き場所。
 OUT_OF_SCOPE_FILING="$PLUGIN_ROOT/skills/out-of-scope-issue/references/filing.md"
 OUT_OF_SCOPE_REFS="$PLUGIN_ROOT/skills/out-of-scope-issue/references"
+RETROSPECTIVE_FILING="$PLUGIN_ROOT/skills/retrospective/references/filing.md"
+GIT_WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
 # 2 つの役割を持つ: (1) `gh label create` 検出器の生きた対照（refine-issue は
 # needs-spec を実際に作る）、(2) 検査 10 の同期対象そのもの（手順 4 の対応表）。
 REFINE_ISSUE="$PLUGIN_ROOT/skills/refine-issue/SKILL.md"
@@ -190,16 +193,14 @@ lacks_argument_line() {
 # `\` を外して 1 行に畳むだけで**検査対象が 0 件**になり、違反ゼロとして緑になる。
 # そのため期待件数も渡して固定する（0 件になったら赤）。
 #
-# assignee_mode: yes = そのコマンドが --assignee を持つこと / no = 持たないこと
 gh_issue_commands_bound() {
-  local file="$1" verb="$2" expected="$3" assignee_mode="$4" label="$5" out
-  out="$(awk -v verb="$verb" -v expected="$expected" -v mode="$assignee_mode" '
+  local file="$1" verb="$2" expected="$3" label="$4" out
+  out="$(awk -v verb="$verb" -v expected="$expected" '
     function check(c, ln) {
       n++
       if (index(c, "--repo \"$expected_repo\"") == 0) print "  " ln " 行目: --repo \"$expected_repo\" が無い"
       has_a = (index(c, "--assignee") > 0 || match(c, /(^|[[:space:]])-a([[:space:]]|$)/) > 0)
-      if (mode == "yes" && !has_a) print "  " ln " 行目: --assignee が無い"
-      if (mode == "no"  &&  has_a) print "  " ln " 行目: --assignee があってはならない"
+      if (has_a) print "  " ln " 行目: --assignee があってはならない"
     }
     { sub(/\r$/, "") }
     in_fence == 0 { if ($0 ~ /^[[:space:]]*```[[:space:]]*(bash|sh|shell|zsh)[[:space:]]*$/) in_fence = 1; next }
@@ -223,7 +224,7 @@ gh_issue_commands_bound() {
     }
     END {
       if (collecting) check(cmd, start)
-      if (n != expected + 0) print "  実行される gh issue " verb " が " n " 件（期待 " expected " 件）— 検査対象が黙って増減している"
+      if (n != expected + 0) print "  実行される gh issue " verb " が " (n + 0) " 件（期待 " expected " 件）— 検査対象が黙って増減している"
     }
   ' "$file")"
   if [ -z "$out" ]; then ok "$label"; else bad "$label"; printf '%s\n' "$out" >&2; fi
@@ -538,13 +539,13 @@ section_contains "$CREATE_ISSUE" "$CI_FINAL_REPORT_HEADING" "**省略したラ�
 contains "$CREATE_ISSUE_FILING" 'expected_repo="OWNER/REPO"' "対象リポジトリを明示的に固定（references/filing.md）"
 # 実行される gh コマンドを 1 件ずつ検査する。件数も固定して、行継続を畳むだけで
 # 検査対象が 0 件になる（= 違反ゼロで緑）空振りを防ぐ。
-gh_issue_commands_bound "$CREATE_ISSUE_FILING" create 1 yes "create-issue（references/filing.md）の gh issue create が --repo と --assignee を持つ"
+gh_issue_commands_bound "$CREATE_ISSUE_FILING" create 1 "create-issue（references/filing.md）の gh issue create が --repo を持ち --assignee を持たない"
 gh_issue_command_lines "$CREATE_ISSUE_FILING" create 1 "create-issue（references/filing.md）: 素の言及以外の gh issue create は起票フェンスの 1 行だけ"
-gh_issue_commands_bound "$OUT_OF_SCOPE_FILING" create 1 no  "out-of-scope-issue（references/filing.md）の gh issue create が --repo を持ち --assignee を持たない"
+gh_issue_commands_bound "$OUT_OF_SCOPE_FILING" create 1 "out-of-scope-issue（references/filing.md）の gh issue create が --repo を持ち --assignee を持たない"
 gh_issue_command_lines "$OUT_OF_SCOPE_FILING" create 1 "out-of-scope-issue（references/filing.md）: 素の言及以外の gh issue create は起票フェンスの 1 行だけ"
 # Epic の照会（引数付きのインラインコード）が 1 行。検索そのものは本線にある。
 gh_issue_command_lines "$OUT_OF_SCOPE_FILING" list 1 "out-of-scope-issue（references/filing.md）: 素の言及以外の gh issue list は Epic 照会の 1 行だけ"
-gh_issue_commands_bound "$OUT_OF_SCOPE" list   2 no  "out-of-scope-issue の gh issue list が --repo を持つ（主要語検索 + bundle の列挙の 2 件）"
+gh_issue_commands_bound "$OUT_OF_SCOPE" list   2 "out-of-scope-issue の gh issue list が --repo を持つ（主要語検索 + bundle の列挙の 2 件）"
 
 # 起票コマンドはラベルの実在確認と同じファイル（references/filing.md）にだけ置く。本線や他の
 # references へ起票コマンドが現れると、実在確認を読まずに起票できる経路が再びできる。filing.md
@@ -701,14 +702,13 @@ contains "$CREATE_ISSUE" '`follow-up` 系のラベルは付けない' "着手前
 # ---- 4. out-of-scope-issue 固有 ------------------------------------------------
 contains "$OUT_OF_SCOPE_FILING" '照合する候補は §3.2 で決めた type / priority / follow-up の 3 系統' "候補は type / priority / follow-up の 3 系統"
 
-# ---- 5. 意図的な非対称の固定（アサイン） ----------------------------------------
-# create-issue は着手前の起票ゲートなので同梱 Git Workflow に従い @me を付ける。
-# out-of-scope-issue の起票は backlog 化であって着手ではないのでアサインしない。
-# 「揃えよう」としてどちらかを崩す変更を検出する。
-has_argument_line "$CREATE_ISSUE_FILING" "$ASSIGNEE_PATTERN" "着手前起票はアサインを既定にする（references/filing.md に引数行として存在）"
-lacks_argument_line "$OUT_OF_SCOPE_FILING" "$ASSIGNEE_PATTERN" "follow-up 起票はアサインを既定にしない（references/filing.md。本線と他の references は検査 1 のループで見る）"
-contains "$CREATE_ISSUE_FILING" "この非対称は意図的で" "アサインの非対称が意図的だと本文に明記されている（references/filing.md）"
-contains "$OUT_OF_SCOPE_FILING" "アサインについて本スキルは中立" "follow-up 側のアサイン中立方針が残っている"
+# ---- 5. 起票時の未アサインと着手手順への導線 -----------------------------------
+gh_issue_commands_bound "$RETROSPECTIVE_FILING" create 1 "retrospective の直接起票が --repo を持ち --assignee を持たない"
+gh_issue_command_lines "$RETROSPECTIVE_FILING" create 1 "retrospective の起票例は直接起票フェンスの 1 件だけ"
+for filing in "$CREATE_ISSUE_FILING" "$OUT_OF_SCOPE_FILING" "$RETROSPECTIVE_FILING"; do
+  contains "$filing" 'deployment/git-workflow.md#着手時の自己アサイン)' "起票手順から着手時の自己アサインへ案内する（${filing#"$PLUGIN_ROOT/"}）"
+done
+section_contains "$GIT_WORKFLOW" '#### 着手時の自己アサイン' 'issues/<Issue番号>/assignees' "着手時の自己アサイン節で既存担当を維持する追加 API を使う"
 
 # ---- 6. ラベル作成はしない（両スキル共通） --------------------------------------
 # 起票ゲートが消費プロジェクトのラベル体系を増やすと分類が場当たりに膨らむ。

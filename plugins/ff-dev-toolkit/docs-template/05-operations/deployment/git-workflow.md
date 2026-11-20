@@ -124,7 +124,6 @@ expected_repo="OWNER/REPO"
 ISSUE_URL="$(gh issue create \
   --repo "$expected_repo" \
   --label "{実在を確認したラベル}" \
-  --assignee "@me" \
   --title "feat: ユーザー認証機能を実装" \
   --body-file "{本文ファイルのパス}")"
 [[ -n "$ISSUE_URL" ]] || { echo "gh issue create が Issue URL を返しませんでした" >&2; exit 1; }
@@ -134,6 +133,8 @@ printf 'ISSUE_URL=%s ISSUE_NUM=%s\n' "$ISSUE_URL" "$ISSUE_NUM"
 ```
 
 `--label` は手順 2 の照合を通った候補の数だけ繰り返す（0 件なら行ごと削る。候補名を直書きしない）。`{本文ファイルのパス}` は手順 1 で書いたファイル。`gh issue create` の終了コードが 0 で Issue URL を取得できた場合だけ成功として扱う。
+
+担当者の指定がなければ未アサインで起票する。続けて作業する場合も、[着手時の自己アサイン](#着手時の自己アサイン)で担当を記録する。
 
 **ポイント**:
 
@@ -146,6 +147,30 @@ printf 'ISSUE_URL=%s ISSUE_NUM=%s\n' "$ISSUE_URL" "$ISSUE_NUM"
 ### ステップ2: ブランチ作成
 
 **原則**: 必ずdevelopの最新から分岐する
+
+#### 着手時の自己アサイン
+
+対応する Issue が確定したら、新規・既存を問わず作業開始時に担当者を確認する。作業ブランチを作る場合は分岐前に行う。対象は実際の着手単位とし、`bundle` では親 Issue を使う。バックログへの起票・追記や着手判断のための調査は未着手のまま扱う。担当者について利用者や導入先が明示した運用があれば、その指定を優先する。
+
+```bash
+gh issue view "<Issue番号>" --repo "<host>/<owner>/<repo>" --json state,assignees
+```
+
+対象が open で担当者一覧が空のとき、同じホスト（GitHub.com なら `github.com`）の認証ユーザーの login を取得し、担当者の追加専用 API に渡す。すでに担当者がいれば維持する。
+
+```bash
+gh api --hostname "<host>" user --jq .login
+```
+
+```bash
+gh api --hostname "<host>" --method POST "repos/<owner>/<repo>/issues/<Issue番号>/assignees" --field "assignees[]=<取得したlogin>"
+```
+
+同じ Issue を再取得し、取得した login が担当者一覧にあることを確認する。担当者を取得できない場合は空と扱わない。権限やツールの制約で自己アサインを完了できなければ、理由を伝えて作業を続ける。
+
+GitHub MCP 経路では、認証ユーザーの login と同じ Issue の state・assignees を取得し、上の条件で `add_issue_assignees` 相当の追加操作に owner/repo・番号・login を渡す。追加後は同じ Issue の担当者一覧で login を確認する。追加専用の操作が使えなければ、利用可能な CLI で同じ追加 API を呼ぶ。担当者一覧の置換は並行して追加された担当者を消すおそれがある。
+
+#### 工数の確認とブランチ作成
 
 既存 Issue への着手時は、分岐前に本文の `<!-- ff-effort:begin -->` ブロックの有無を確認する。無ければ `/create-issue` の工数ブロック契約（SKILL.md 手順 3・6 と `references/estimation.md`）に従って見積もりを Issue 本文へ追記し、あれば作り直さず着手を続ける。bundle では本体と子を確認し、既存の予定値を上書きしない。ブランチ名に Issue 番号がある `git switch -c` / `git checkout -b` / `git branch -m` の後にも、hook（`hooks/warn-missing-ff-effort.sh`）が同じ確認を注意として返す（止めない）。
 

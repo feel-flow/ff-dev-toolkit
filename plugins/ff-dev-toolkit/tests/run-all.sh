@@ -944,7 +944,7 @@ else
     # 起票スキル 2 本（create-issue / out-of-scope-issue）に意図的に複製されている
     # verify-then-skip ラベル契約（body-file + 単純コマンド分割方式。Issue #715）の
     # 散文照合と、起票フェンスが複合構文を含まないことの構造検査、
-    # 両者の意図的な非対称（候補の系統・アサイン方針）の固定。jq / gh / yq 不要の静的検査。
+    # 候補の系統の違いと共通の起票時アサイン方針を固定する。jq / gh / yq 不要の静的検査。
     # 検査対象の一方 out-of-scope-issue を共有するので、out-of-scope 系・retrospective 系の
     # 契約検査群に続けて置く。
     "$SCRIPT_DIR/issue-label-contract/verify.sh"

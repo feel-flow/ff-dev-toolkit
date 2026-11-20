@@ -1,11 +1,11 @@
 ---
 title: "DEPLOYMENT"
-version: "1.9.0"
+version: "1.9.1"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-11-05"
-changeImpact: "medium"
+updated: "2026-11-20"
+changeImpact: "low"
 ---
 
 # DEPLOYMENT.md - デプロイメント・運用ガイド
@@ -51,6 +51,8 @@ changeImpact: "medium"
 
 ### よく使うコマンド
 
+ブランチを作成する前に `deployment/git-workflow.md` の「着手時の自己アサイン」に従う。未配置なら、本書冒頭の「構成」にある案内に従ってコピーする。
+
 ```bash
 # 1. Issue作成
 gh issue create --title "feat: ..." --body "..."
@@ -81,7 +83,7 @@ Git Flowベースで、**テスト・セルフレビュー（PR 作成後・マ�
 **段が減ることはない。** 変更規模で変わるのは各段の重さで、フルではさらに段が増える（下の tier を参照）。
 
 1. **Issue作成** - 作業の起点
-2. **ブランチ作成** - `feature/#{issue-num}-{name}`
+2. **ブランチ作成** - `deployment/git-workflow.md` の「着手時の自己アサイン」に従ってから `feature/#{issue-num}-{name}` を作る
 3. **実装・コミット** - AI駆動開発
 4. **テスト・検証** - `npm run quality:local` 等
 5. **PR作成** - push の直後に通常 PR として作る（構造化されたPR本文）
@@ -310,6 +312,10 @@ PRマージ後のブランチ切り替え忘れを防ぐため、セッション
 ## Changelog
 
 - 2026-09-08 追記: プラグイン変数がない直接利用でも取得できる公開配布元を明記（ai-spec-driven-development#525）。
+
+### [1.9.1] - 2026-11-20
+
+- クイックスタートとブランチ作成の段から、着手時の自己アサイン手順を参照する。
 
 ### [1.9.0] - 2026-11-05
 

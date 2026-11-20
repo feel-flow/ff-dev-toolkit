@@ -3,7 +3,7 @@
 `/out-of-scope-issue` の SKILL.md §1.3 で B と判定した、または §1.0 で構造的対策の Issue が要ると判断した発見について、SKILL.md「3.1 類似 Issue の検索（新規作成より先）」で統合できる既存 Issue が無かったとき（`bundle` の sub-issue として起票する場合を含む）に読む。ラベルの実在確認（§3.2・§3.3 ステップ 2）と起票コマンド（§3.3 ステップ 3）はこのファイルの中で隣接させてあり、互いに分断しない — 途中から読んで素の `gh issue create` を叩かない。
 
 <!--f8d4548f5124ca45-->
-MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: 既存 create_issue へ assignees を省略して渡し、返った number / url と fresh body / labels を後読する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
+MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: 既存 create_issue へ担当者の指定がなければ assignees を省略して渡し、返った number / url と fresh body / labels / assignees を後読する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
 
 ## 起票手順（SKILL.md「3. Issue 化フロー」の続き）
 
@@ -12,7 +12,7 @@ MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形
 無ラベルの follow-up Issue は backlog で「発生源が PR レビュー由来か独立要望か」「優先度は何か」を失う。一方、**存在しないラベル名を渡すと `gh issue create` 自体が失敗する**ため、ラベル名を直書きで固定することもできない（本スキルは複数プロジェクトで動く）。そこで **実在確認 → 存在するものだけ付与 → 省略したものは報告**（verify-then-skip）とする。
 
 <!--e4f1b1990b9841a5-->
-MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: 既存 create_issue へ assignees を省略して渡し、返った number / url と fresh body / labels を後読する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
+MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: 既存 create_issue へ担当者の指定がなければ assignees を省略して渡し、返った number / url と fresh body / labels / assignees を後読する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
 
 付与を試みるのは次の 3 系統。具体的なラベル名は消費プロジェクトの分類に合わせる（下は代表例であり、この名前でなければならないという意味ではない）。
 
@@ -79,7 +79,7 @@ Markdown 本文へ script で文字列パッチを当てる場合は [Markdown �
 統合できる既存 Issue がなければ、その場で `gh issue create` を実行する（複数発見を SKILL.md §3.1b で束ねた場合は、束ねた 1 単位につき 1 回。テンプレートの `## 概要` と受け入れ条件は発見ごとの箇条書き・チェックボックスに分けて埋める）。再試行時や検索から時間が空いた場合は直前に SKILL.md §3.1 の検索を再実行し、同じ発見の Issue がすでに作られていないことを確認する。**「別 Issue にする」と言うだけで PR 本文に書いて終わらせない**。`gh issue create` の終了コードが 0 で Issue URL を取得できた場合だけ成功として扱い、発行された Issue 番号を PR 本文 / コミットメッセージ / レビューコメントに記載する。
 
 <!--8fd09bfa4e62b3db-->
-MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: 既存 create_issue へ assignees を省略して渡し、返った number / url と fresh body / labels を後読する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
+MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: 既存 create_issue へ担当者の指定がなければ assignees を省略して渡し、返った number / url と fresh body / labels / assignees を後読する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
 
 **起票は PR 作成より前に行う。** GitHub は Issue と PR で採番列を共有するため、PR 作成前に「次に発行されるはずの番号」を推測して PR 本文へ書くと、その番号を PR 自身が取り、PR 本文が自分自身を「別 Issue」として指すことになる。番号が確定するのは `gh issue create` / `gh pr create` を実行した後だけで、事前に推測する余地はない。やむを得ず起票を PR 作成の後に回す場合は、PR 本文へ番号を書かず `<!-- follow-up issue: TBD -->` などのプレースホルダを置き、起票直後に `gh pr edit --body-file` で埋める（番号を書かないまま放置する＝宣言だけ残る失敗とも両立する対処）。
 
@@ -92,12 +92,12 @@ MCP: 取得値: MCP の Issue / PR 作成結果の実 number/url と最新 PR bo
 
 **起票時の AC の現状確認**: AC に検証コマンド（テスト・ゲートの段・grep など）を書く場合は、起票時に 1 回実行し、何が・どれだけ失敗しているかを確かめてから対象範囲を書く。ゲート全体・スイート全体を対象にする場合は、その失敗の全体を見て範囲を決める。範囲を 1 件に絞るなら AC もその 1 件に書く。これは [/create-issue 手順 4](../../create-issue/SKILL.md) のチェック項目「AC が前提にする値・資料・配置を実測したか」と同じ趣旨で、起票が必要と判定した後に行う起票内容の裏付けであり、発見そのものの A/B 判定をやり直す理由にしない。
 
-**アサインについて本スキルは中立**とする。`--assignee` は付けも禁じもしない。スコープ外発見の起票は backlog 化であって着手ではないため、「作成時にアサインする」か「着手時にアサインする」かは消費プロジェクトの Git Workflow が決める。プロジェクト側のルールが無い場合は付けない（未アサイン = 未着手が既定の読み方になるため）。この既定を「便利だから」で `--assignee @me` へ戻さないこと。
+**アサインについて**: 担当者の指定がなければ未アサインで起票する。後日対応する場合は、[着手時の自己アサイン](../../../docs-template/05-operations/deployment/git-workflow.md#着手時の自己アサイン)に従う。
 
 起票は、**状態をシェル変数でコマンド間に持ち越さない 3 ステップ**で実行する。各ステップは単独の Write / 単純コマンドで完結するため、複合コマンドを拒否する実行環境（worktree 隔離セッションのコマンドガード等）でもそのまま通る。ラベル誤報告の防止（旧 1 ブロック方式の主目的）も失われない — 付与するラベルは `gh issue create` 自体の argv に載り、実行ログがそのまま証跡になる。
 
 <!--5eb700af193d5fcc-->
-MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: 既存 create_issue へ assignees を省略して渡し、返った number / url と fresh body / labels を後読する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
+MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: 既存 create_issue へ担当者の指定がなければ assignees を省略して渡し、返った number / url と fresh body / labels / assignees を後読する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
 
 #### ステップ 1: 本文を一時ファイルへ書く
 
@@ -156,16 +156,16 @@ gh issue create \
 ```
 
 <!--aec43bbfd7dc5a01-->
-MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: 既存 create_issue へ assignees を省略して渡し、返った number / url と fresh body / labels を後読する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
+MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: 既存 create_issue へ担当者の指定がなければ assignees を省略して渡し、返った number / url と fresh body / labels / assignees を後読する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
 
 `--label` はステップ 2 の照合を通った候補の数だけ繰り返す（0 件なら渡さない）。
 
 失敗した場合（終了コードが非 0、または出力に Issue URL が無い）は成功形式の報告（§3.6）を返さず、エラー内容と再試行方法を報告する。§3.6 の報告と省略ラベルの理由（§3.2 の表で書き分ける）は、記憶からではなく**実行した `gh label list` の出力と `gh issue create` の実行ログをそのまま読む** — 記憶で書くと、実際には付かなかったラベルを「付いた」と報告できてしまう。
 
 <!--795d65ffa39db2ee-->
-MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: 既存 create_issue へ assignees を省略して渡し、返った number / url と fresh body / labels を後読する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
+MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: 既存 create_issue へ担当者の指定がなければ assignees を省略して渡し、返った number / url と fresh body / labels / assignees を後読する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
 
-> **重複について**: このラベル照合〜起票の手順は `create-issue` の [references/filing.md](../../create-issue/references/filing.md) と意図的に同じ内容を持つ（違いは候補の系統 — 本スキルは `follow-up` を足した 3 系統、`create-issue` は type / priority の 2 系統 — と `--assignee` の既定だけ）。本スキルでは起票手順ごとこのファイルへ切り出したが、照合と報告の判定規則は起票コマンドと同じファイルの直前に置き、両者を分断しない（分断すると、起票コマンドだけを読んで実在確認ごと飛ばす経路ができる）。ドリフトは `tests/issue-label-contract/verify.sh` が両ファイルを突き合わせて検出する。**fixture に載せた契約行を片方だけ書き換える／削除すると red になる**（fixture 未収載の複製文までは検出しない）ので、変更は必ず両方へ入れること。
+> **重複について**: このラベル照合〜起票の手順は `create-issue` の [references/filing.md](../../create-issue/references/filing.md) と共通で、ラベル候補の系統が異なる。本スキルでは起票手順ごとこのファイルへ切り出したが、照合と報告の判定規則は起票コマンドと同じファイルの直前に置き、両者を分断しない（分断すると、起票コマンドだけを読んで実在確認ごと飛ばす経路ができる）。ドリフトは `tests/issue-label-contract/verify.sh` が両ファイルを突き合わせて検出する。**fixture に載せた契約行を片方だけ書き換える／削除すると red になる**（fixture 未収載の複製文までは検出しない）ので、変更は必ず両方へ入れること。
 
 ### 3.4 Title prefix
 

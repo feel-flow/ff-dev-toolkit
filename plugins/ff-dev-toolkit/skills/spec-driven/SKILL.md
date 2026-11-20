@@ -105,6 +105,8 @@ fi
 
 ### Step 5: G3 実装ゲート
 
+GitHub Issue の実装に入る場合は、ブランチ作成前に [Git Workflow の着手時の自己アサイン](../../docs-template/05-operations/deployment/git-workflow.md#着手時の自己アサイン) に従う。
+
 escape を値として含む本文・生成 script の作成/再編集前は、[リテラル書き込みの既定経路](../../docs-template/05-operations/deployment/markdown-patch-discipline.md#リテラル書き込みの既定経路)を読む。
 
 1. 単位ごとに「実装 → テスト → 確認」を回す（一括実装しない）

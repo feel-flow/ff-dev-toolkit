@@ -3,7 +3,7 @@
 `/create-issue` の SKILL.md 手順 5 で priority を判定するときから、手順 6 で本文を組み立てて起票するまでに読む（毎回）。本文中の「手順 N」は SKILL.md の手順を指す。ラベルの照合規則と起票コマンド（ステップ 3）はこのファイルの中で隣接させてあり、互いに分断しない — 途中から読んで素の `gh issue create` を叩かない。
 
 <!--3c982d9f3ad7287b-->
-MCP: 取得値: MCP で同じ repo の既存候補と label name、認証主体 login を取得。形式: title / 本文ファイル原文 / 実在 labels / 必要 assignees の構造化引数。渡し先: 既存 create_issue へ渡し、返った number / url と fresh body / labels を後読する。@me は実 login、out-of-scope はアサイン中立を保持。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
+MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: create_issue へ既定では assignees を省略して渡し、返った number / url と fresh body / labels / assignees を確認する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
 
 ## 起票手順（SKILL.md 手順 5〜6 の続き）
 
@@ -12,7 +12,7 @@ MCP: 取得値: MCP で同じ repo の既存候補と label name、認証主体 
 無ラベルの Issue は backlog 一覧で種別も優先度も読めない。一方、**存在しないラベル名を渡すと `gh issue create` 自体が失敗する**ため、ラベル名を直書きで固定することもできない（本スキルは複数プロジェクトで動く）。そこで **実在確認 → 存在するものだけ付与 → 省略したものは報告**（verify-then-skip）とする。
 
 <!--f5189136e9565f73-->
-MCP: 取得値: MCP で同じ repo の既存候補と label name、認証主体 login を取得。形式: title / 本文ファイル原文 / 実在 labels / 必要 assignees の構造化引数。渡し先: 既存 create_issue へ渡し、返った number / url と fresh body / labels を後読する。@me は実 login、out-of-scope はアサイン中立を保持。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
+MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: create_issue へ既定では assignees を省略して渡し、返った number / url と fresh body / labels / assignees を確認する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
 
 **照合と起票の実行は下の 3 ステップで、状態をシェル変数でコマンド間に持ち越さない単純コマンドの分割方式で行う。** 本手順は「何を候補にするか」を決めるところまでを担う。候補の系統は SKILL.md 手順 5 の表にある。
 
@@ -84,7 +84,7 @@ fi
 起票は、**状態をシェル変数でコマンド間に持ち越さない 3 ステップ**で実行する。各ステップは単独の Write / 単純コマンドで完結するため、複合コマンドを拒否する実行環境（worktree 隔離セッションのコマンドガード等）でもそのまま通る。付与するラベルは `gh issue create` 自体の argv に載り、実行ログがそのまま証跡になる。
 
 <!--8239c9337d2f17d1-->
-MCP: 取得値: MCP で同じ repo の既存候補と label name、認証主体 login を取得。形式: title / 本文ファイル原文 / 実在 labels / 必要 assignees の構造化引数。渡し先: 既存 create_issue へ渡し、返った number / url と fresh body / labels を後読する。@me は実 login、out-of-scope はアサイン中立を保持。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
+MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: create_issue へ既定では assignees を省略して渡し、返った number / url と fresh body / labels / assignees を確認する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
 
 #### ステップ 1: 本文を一時ファイルへ書く
 
@@ -121,24 +121,23 @@ expected_repo="OWNER/REPO"
 gh issue create \
   --repo "$expected_repo" \
   --label "{実在を確認したラベル}" \
-  --assignee "@me" \
   --title "{prefix}: {何が・誰が どう良くなるか（references/writing.md）}" \
   --body-file "{本文ファイルのパス}"
 ```
 
-<!--5d6121badaf549d3-->
-MCP: 取得値: MCP で同じ repo の既存候補と label name、認証主体 login を取得。形式: title / 本文ファイル原文 / 実在 labels / 必要 assignees の構造化引数。渡し先: 既存 create_issue へ渡し、返った number / url と fresh body / labels を後読する。@me は実 login、out-of-scope はアサイン中立を保持。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
+<!--6cb06012cd9497ae-->
+MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: create_issue へ既定では assignees を省略して渡し、返った number / url と fresh body / labels / assignees を確認する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
 
 `--label` はステップ 2 の照合を通った候補の数だけ繰り返す（0 件なら渡さない）。
 
 `gh issue create` の終了コードが 0 で Issue URL を取得できた場合だけ成功として扱う。失敗した場合は成功形式の報告を返さず、エラー内容と再試行方法を報告する。手順 7 で報告するラベル（付与・省略とその理由）は、記憶からではなく**実行した `gh label list` の出力と `gh issue create` の実行ログをそのまま読む** — 記憶で書くと、実際には付かなかったラベルを「付いた」と報告できてしまう。
 
 <!--fb7d6f83d8f26835-->
-MCP: 取得値: MCP で同じ repo の既存候補と label name、認証主体 login を取得。形式: title / 本文ファイル原文 / 実在 labels / 必要 assignees の構造化引数。渡し先: 既存 create_issue へ渡し、返った number / url と fresh body / labels を後読する。@me は実 login、out-of-scope はアサイン中立を保持。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
+MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: create_issue へ既定では assignees を省略して渡し、返った number / url と fresh body / labels / assignees を確認する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
 
-**アサインについて**: 本スキルは着手前の起票ゲートなので、同梱の Git Workflow（`docs-template/05-operations/deployment/git-workflow.md` ステップ1）に従い `--assignee "@me"` を既定とする。`out-of-scope-issue` がアサイン中立なのは、あちらの起票が backlog 化であって着手ではないため — この非対称は意図的で、「便利だから」で揃えないこと。消費プロジェクトの Git Workflow が別の規定を持つ場合はそちらに従う。
+**アサインについて**: 担当者の指定がなければ未アサインで起票する。続けて対応する場合は、[着手時の自己アサイン](../../../docs-template/05-operations/deployment/git-workflow.md#着手時の自己アサイン)に従う。
 
-> **重複について**: このラベル照合〜起票の手順は `out-of-scope-issue` の [references/filing.md](../../out-of-scope-issue/references/filing.md) §3.3 と意図的に同じ内容を持つ（違いは候補の系統と `--assignee` の既定だけ）。どちらも照合と報告の判定規則を起票コマンドと同じファイルの直前に置き、両者を分断しない（分断すると、起票コマンドだけを読んで実在確認ごと飛ばす経路ができる）。ドリフトは `tests/issue-label-contract/verify.sh` が両ファイルを突き合わせて検出する。**fixture に載せた契約行を片方だけ書き換える／削除すると red になる**（fixture 未収載の複製文までは検出しない）ので、変更は必ず両方へ入れること。
+> **重複について**: このラベル照合〜起票の手順は `out-of-scope-issue` の [references/filing.md](../../out-of-scope-issue/references/filing.md) §3.3 と共通で、ラベル候補の系統が異なる。どちらも照合と報告の判定規則を起票コマンドと同じファイルの直前に置き、両者を分断しない（分断すると、起票コマンドだけを読んで実在確認ごと飛ばす経路ができる）。ドリフトは `tests/issue-label-contract/verify.sh` が両ファイルを突き合わせて検出する。**fixture に載せた契約行を片方だけ書き換える／削除すると red になる**（fixture 未収載の複製文までは検出しない）ので、変更は必ず両方へ入れること。
 
 
 ### 7. 完了報告

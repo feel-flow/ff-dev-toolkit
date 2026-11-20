@@ -313,7 +313,7 @@ docs/04-quality/TESTING.mdのテスト戦略に従って、以下の機能のユ
 ### ワークフロー
 
 1. **Issue作成** → 対象を `expected_repo="OWNER/REPO"` と確定し、`gh issue create --repo "$expected_repo" --title "タイトル" --body "説明"`
-2. **Branch作成** → `git checkout -b feature/123-description`（developから）
+2. **Branch作成** → `docs/05-operations/deployment/git-workflow.md` の「着手時の自己アサイン」に従ってから、develop から作業ブランチを切る。手順書が未配置なら `docs/05-operations/DEPLOYMENT.md` の「構成」にある案内に従ってコピーする
 3. **実装** → MASTER.mdの規約に従う
 4. **テスト実行** → 全テスト合格必須
 5. **Commit** → `git commit -m "feat: #123 説明"`
