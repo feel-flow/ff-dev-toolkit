@@ -36,7 +36,11 @@ asdd_hook_enabled hooks || exit 0
 #   1. リポジトリにあるスキル名が、どのインストール実体にも無い
 #   2. 同一プラグインのインストール実体が複数 version で併存している
 #      （1 つだけを見て「最新」と判定しない。全パスと version を列挙する。
-#      同一 version の cache + marketplace checkout は通常構成なので無音）
+#      同一 version の cache + marketplace checkout は通常構成なので無音）。
+#      Claude Code が不要の印（.orphaned_at）を付けた cache は、どの登録からも参照されず
+#      新しいセッションが読み込まないので数えない。いまのセッションの読み込み先
+#      （CLAUDE_PLUGIN_ROOT）は印があっても数える。画面に出す systemMessage は版の数と
+#      範囲の 1 行に留め、全パスと version の列挙は additionalContext に置く（Issue `#2891`）
 #   3. インストール実体を 1 つも発見できない → 「検出不能」と報告して exit 0
 #
 # リポジトリ側の skills/ が見つからない環境（配布先の利用者プロジェクトなど）は
@@ -233,8 +237,13 @@ add_install() {
 }
 
 # cache: ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/
+# Claude Code が不要の印（.orphaned_at）を付けた版は、どの登録からも参照されず新しいセッションが
+# 読み込まないので数えない（Issue `#2891`。実測では 12 件中 6 件がこの印付きだった）。いまのセッションの
+# 読み込み先なら、下の CLAUDE_PLUGIN_ROOT の追加が印に関係なく数える。CLAUDE_PLUGIN_ROOT の無い起動
+# （hooks.json は必ず渡すので手動実行だけ）では、$0 から求めた読み込み先が印付きなら数えない。
 for plugin_json in "$claude_home"/plugins/cache/*/*/*/.claude-plugin/plugin.json; do
   [ -f "$plugin_json" ] || continue
+  [ -e "${plugin_json%/.claude-plugin/plugin.json}/.orphaned_at" ] && continue
   add_install "${plugin_json%/.claude-plugin/plugin.json}"
 done
 
@@ -331,8 +340,23 @@ fi
 # --- coexistence-list (mutation target: do not collapse to 1 via head -n 1) ---
 # 併存はユニーク version が 2 以上のときだけ。同一 version の cache と
 # marketplace checkout は Claude Code の通常構成なので無音にする。
+# 画面の 1 行要約に使う最古と最新の版も、同じ走査で組み込みだけを使って求める（unknown は除く）。
+semver_lt() {
+  # $1 < $2 なら 0。どちらも is_semver を通った値。先頭の 0 を 8 進数と読まないよう 10# を付ける
+  local a1 a2 a3 b1 b2 b3 r
+  a1="${1%%.*}"; r="${1#*.}"; a2="${r%%.*}"; a3="${r#*.}"
+  b1="${2%%.*}"; r="${2#*.}"; b2="${r%%.*}"; b3="${r#*.}"
+  [ $((10#$a1)) -lt $((10#$b1)) ] && return 0
+  [ $((10#$a1)) -gt $((10#$b1)) ] && return 1
+  [ $((10#$a2)) -lt $((10#$b2)) ] && return 0
+  [ $((10#$a2)) -gt $((10#$b2)) ] && return 1
+  [ $((10#$a3)) -lt $((10#$b3)) ]
+}
 uniq_versions=0
 seen_versions=""
+oldest_version=""
+newest_version=""
+has_unknown=0
 rest="$installs"
 while [ -n "$rest" ]; do
   line="${rest%%"$NL"*}"
@@ -340,7 +364,27 @@ while [ -n "$rest" ]; do
   has_line "$seen_versions" "${line%%	*}" && continue
   seen_versions="$seen_versions${line%%	*}$NL"
   uniq_versions=$((uniq_versions + 1))
+  v="${line%%	*}"
+  if [ "$v" = "unknown" ]; then has_unknown=1; continue; fi
+  # 10 桁以上の要素は bash の整数の範囲を超えうる（2^63 を超えると負数になり、最古と最新が逆に出る）。
+  # 範囲の比較には使わず、判定できない版として扱う
+  case "$v" in *[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) has_unknown=1; continue ;; esac
+  if [ -z "$oldest_version" ] || semver_lt "$v" "$oldest_version"; then oldest_version="$v"; fi
+  if [ -z "$newest_version" ] || semver_lt "$newest_version" "$v"; then newest_version="$v"; fi
 done
+# 判定できた版が 1 つだけなら範囲にせず、その版と「判定できない実体を含む」を並べる。桁あふれの版は
+# 別々の版として数えるので、判定できた版が 1 つも無い併存もありうる
+if [ -z "$oldest_version" ]; then
+  version_range="どの版も判定できない"
+else
+  version_range="v${oldest_version}"
+  if [ "$oldest_version" != "$newest_version" ]; then
+    version_range="v${oldest_version}〜v${newest_version}"
+  fi
+  if [ "$has_unknown" -eq 1 ]; then
+    version_range="${version_range}、版を判定できない実体を含む"
+  fi
+fi
 drift_coexist=0
 if [ "$uniq_versions" -gt 1 ]; then
   drift_coexist=1
@@ -388,12 +432,15 @@ if [ "$drift_loaded_set" -eq 1 ]; then
   ctx="${ctx}いま読み込まれている ff-dev-toolkit のコピー（${own_root}）に無いスキル: ${loaded_missing_joined}。別のインストール実体に在っても、セッションが呼べるのはこのコピーのスキルだけなので、これらは Unknown skill になる。リポジトリ内の正本 plugins/ff-dev-toolkit/skills/<name>/SKILL.md を直接読んで手順を代替実行できる。"
 fi
 if [ "$drift_coexist" -eq 1 ]; then
+  # 欠けたスキルを伴わない併存だけのときは、画面には版の数と範囲だけを 1 行で出し、全パスと version の
+  # 列挙は ctx に置く（Issue `#2891`。12 件・約 1,200 文字の列挙を毎回の起動と compact で出していた）。
+  # 欠けたスキルの通知に続けるときは、従来どおり全パスを画面にも並べる（欠落の通知の文面は変えない）
   if [ -n "$sys" ]; then
     sys="${sys} インストール実体が複数バージョン併存しています: ${install_lines}"
   else
-    sys="⚠️ ff-dev-toolkit のインストール実体が複数バージョン併存しています: ${install_lines}（リポジトリ v${repo_version}）"
+    sys="⚠️ ff-dev-toolkit のインストール実体の版が ${uniq_versions} 種類併存しています（${version_range}、リポジトリ v${repo_version}）。パスの一覧と掃除手順は AI に渡しています。"
   fi
-  ctx="${ctx}併存しているインストール実体（1 つだけを最新と見なさない）: ${install_lines}。リポジトリ version は v${repo_version}。"
+  ctx="${ctx}併存しているインストール実体（1 つだけを最新と見なさない）: ${install_lines}。リポジトリ version は v${repo_version}。Claude Code が不要の印（.orphaned_at）を付けた cache は、このセッションの読み込み先でない限り数えていない。"
 fi
 
 ctx="${ctx} 古いキャッシュは自動削除しない。掃除手順（削除は必ず再起動の後 — 稼働中セッションの hook は発火のたびに起動時スナップショットのディスク実体を読むため、先に削除するとそのセッションの SessionStart / Stop hook が残りの間ずっと壊れる）: (1) claude plugin marketplace update （引数なし。marketplace 名はユーザーの登録名に依存するため） (2) claude plugin list で登録 ID を確認する。ID は プラグイン名@marketplace名 の形式で、素の名前を渡すと Plugin not found で失敗する (3) claude plugin update に (2) で確認した ID を渡す (4) 適用には Claude Code の再起動が必要 (5) 再起動後に、通知のパスのうちリポジトリ version より古い ~/.claude/plugins/cache/<marketplace>/ff-dev-toolkit/<version>/ を手動で削除する。ただし稼働中の別セッションが残っている場合、そのセッションがロードしているバージョンは削除しない。この通知を止めたい場合は FF_DEV_TOOLKIT_SKIP=skill-drift-check（ほかの鍵と並べるときはカンマ区切り）を設定する。"

@@ -8,8 +8,10 @@
 # 固定する経路（Issue の 4 GWT + 配線 + 検出力）:
 #   - リポジトリのスキル集合がどのインストール実体より多い → 欠けているスキル名を
 #     名指しし、リポジトリ version とインストール実体の version を併記する
-#   - インストール実体が複数バージョン併存 → 全パスと version を列挙する
-#     （1 つだけを見て「最新」と判定しない）
+#   - インストール実体が複数バージョン併存 → 全パスと version を additionalContext に列挙し
+#     （1 つだけを見て「最新」と判定しない）、systemMessage は版の数と範囲の 1 行に留める（Issue `#2891`）
+#   - Claude Code が不要の印（.orphaned_at）を付けた cache は数えない。ただし CLAUDE_PLUGIN_ROOT なら数える。
+#     印付きの写しにしか無いスキルは「どのインストール実体にも無い」と名指しする（2b 節）
 #   - version とスキル集合が一致する 1 実体 → 無出力
 #   - インストール実体 0 件 → 「検出不能」を報告して exit 0
 #   - 更新案内は素の plugin 名に依存しない（掃除手順と検出不能の両方。
@@ -29,6 +31,11 @@
 #   サブシェル数の比較は、xtrace に現れた PID が 2 種類未満（BASH_ENV の PS4 が効いていない）なら赤。
 # 変異検出: スキル 1 件ごとに basename を起動する形へ戻すと、9 節で 30 件側の起動回数が増えて赤。他プラグインの名前を
 #   "$(...)" で受ける形（fork だけで外部コマンドは起こさない）へ戻すと、30 件側のサブシェル数が増えて赤（2026-10-04 実測）。
+# 空振り検出: 2b 節の「印付きなら無出力」「印付きの写しにしか無いスキルを名指しする」は、印を外した同じ fixture の
+#   対照と組にしてある（fixture が併存も union も起こしていなければ対照が赤）。併存列挙の変異は通知そのものが消えた回を
+#   赤にする（要約は列挙のコピーを通らずに版を出すので、出力全体の版ではなく additionalContext のパスで測る）。
+# 変異検出: 印の判定（.orphaned_at で continue する行）を外した写しは、2b 節の無出力と印付きスキルの 2 件が赤になり、
+#   8 節の不要の印の変異対照が rc=1 で止まる（2026-11-20 実測。正常対照は /bin/bash 3.2 で 103 件成功）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -236,17 +243,31 @@ run_hook \
 assert_clean "併存列挙"
 assert_json "併存列挙"
 MSG="$(sysmsg)"
-if printf '%s' "$MSG" | grep -F "0.28.0" >/dev/null \
-  && printf '%s' "$MSG" | grep -F "0.19.0" >/dev/null; then
-  ok "併存列挙: 全 version を列挙する（1 つだけを最新と判定しない）"
+CTX="$(addctx)"
+if printf '%s' "$CTX" | grep -F "0.28.0" >/dev/null \
+  && printf '%s' "$CTX" | grep -F "0.19.0" >/dev/null; then
+  ok "併存列挙: additionalContext に全 version を列挙する（1 つだけを最新と判定しない）"
 else
-  bad "併存列挙: version の列挙が不足: $MSG"
+  bad "併存列挙: additionalContext の version の列挙が不足: $CTX"
 fi
-if printf '%s' "$MSG" | grep -F "cache/mp/ff-dev-toolkit/0.28.0" >/dev/null \
-  && printf '%s' "$MSG" | grep -F "cache/mp/ff-dev-toolkit/0.19.0" >/dev/null; then
-  ok "併存列挙: 全パスを列挙する"
+if printf '%s' "$CTX" | grep -F "cache/mp/ff-dev-toolkit/0.28.0" >/dev/null \
+  && printf '%s' "$CTX" | grep -F "cache/mp/ff-dev-toolkit/0.19.0" >/dev/null; then
+  ok "併存列挙: additionalContext に全パスを列挙する"
 else
-  bad "併存列挙: パスの列挙が不足: $MSG"
+  bad "併存列挙: additionalContext のパスの列挙が不足: $CTX"
+fi
+# 画面の 1 行要約（Issue `#2891`）: 版の数・最古と最新・リポジトリの版を含み、パスを含まない
+if printf '%s' "$MSG" | grep -F "2 種類" >/dev/null \
+  && printf '%s' "$MSG" | grep -F "v0.19.0〜v0.28.0" >/dev/null \
+  && printf '%s' "$MSG" | grep -F "リポジトリ v0.40.0" >/dev/null; then
+  ok "併存列挙: systemMessage は版の数・範囲・リポジトリの版を要約する"
+else
+  bad "併存列挙: systemMessage の要約が不足: $MSG"
+fi
+if [ -n "$MSG" ] && ! printf '%s' "$MSG" | grep -F "cache/mp/ff-dev-toolkit" >/dev/null; then
+  ok "併存列挙: systemMessage にパスを並べない"
+else
+  bad "併存列挙: systemMessage が空、またはパスを並べている: $MSG"
 fi
 if [ -d "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.28.0" ] \
   && [ -d "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.19.0" ]; then
@@ -282,13 +303,12 @@ run_hook \
   FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
   FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
 assert_clean "異 version の cache+marketplace"
-if sysmsg | grep -F "cache/mp/ff-dev-toolkit/0.28.0" >/dev/null \
-  && sysmsg | grep -F "marketplaces/mp/plugins/ff-dev-toolkit" >/dev/null \
-  && sysmsg | grep -F "0.28.0" >/dev/null \
-  && sysmsg | grep -F "0.40.0" >/dev/null; then
-  ok "異 version の cache+marketplace: 全パスと version を列挙する"
+# 版は列挙の項目（「パス (v版)」）で測る。素の 0.40.0 は「リポジトリ version は v0.40.0」にも当たる
+if addctx | grep -F "cache/mp/ff-dev-toolkit/0.28.0 (v0.28.0)" >/dev/null \
+  && addctx | grep -F "marketplaces/mp/plugins/ff-dev-toolkit (v0.40.0)" >/dev/null; then
+  ok "異 version の cache+marketplace: additionalContext に全パスと version を列挙する"
 else
-  bad "異 version の cache+marketplace: 列挙が不足: $(sysmsg)"
+  bad "異 version の cache+marketplace: 列挙が不足: $(addctx)"
 fi
 
 # 隣の別プラグインは数えない（name フィルタ）
@@ -322,6 +342,213 @@ if sysmsg | grep -F "0.28.0" >/dev/null \
   ok "スキル union: 併存は報告し、欠けていないスキルは名指ししない"
 else
   bad "スキル union: 欠落の誤報または併存漏れ: $(sysmsg)"
+fi
+
+# ---- 2b. 不要の印（.orphaned_at）の付いた cache（Issue `#2891`）--------------------
+# 印付きの古い版だけが残っている → 数えないので無音
+REPO="$TMP/repo-orphan"
+CLAUDE="$TMP/claude-orphan"
+make_plugin "$REPO/plugins/ff-dev-toolkit" "0.40.0" alpha beta
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.40.0" "0.40.0" alpha beta
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.28.0" "0.28.0" alpha beta
+printf '1794181077798' > "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.28.0/.orphaned_at"
+run_hook \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
+if [ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ]; then
+  ok "不要の印: 印付きの古い cache だけが違う版なら無出力"
+else
+  bad "不要の印: 印付きの cache を併存として数えた: output=[$OUT]"
+fi
+if [ -d "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.28.0" ]; then
+  ok "不要の印: 印付きの cache を削除しない"
+else
+  bad "不要の印: 検査後に印付きの cache が消えている"
+fi
+# 対照: 同じ fixture で印を外すと併存を通知する（上の無出力が fixture の不備でないことの確認）
+rm -f "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.28.0/.orphaned_at"
+run_hook \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
+if addctx | grep -F "cache/mp/ff-dev-toolkit/0.28.0" >/dev/null; then
+  ok "不要の印の対照: 印が無ければ同じ fixture で併存を通知する"
+else
+  bad "不要の印の対照: 印が無くても通知しない（fixture が併存を起こしていない）: output=[$OUT]"
+fi
+
+# 印付きでも、いまのセッションの読み込み先なら数える
+printf '1794181077798' > "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.28.0/.orphaned_at"
+run_hook \
+  CLAUDE_PLUGIN_ROOT="$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.28.0" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
+assert_clean "不要の印（読み込み先）"
+if addctx | grep -F "cache/mp/ff-dev-toolkit/0.28.0" >/dev/null \
+  && addctx | grep -F "cache/mp/ff-dev-toolkit/0.40.0" >/dev/null \
+  && sysmsg | grep -F "2 種類" >/dev/null; then
+  ok "不要の印（読み込み先）: CLAUDE_PLUGIN_ROOT なら印付きでも数えて併存を通知する"
+else
+  bad "不要の印（読み込み先）: 読み込み先の印付き cache を数えていない: output=[$OUT]"
+fi
+
+# 印付きの写しにしか無いスキルは「どのインストール実体にも無い」
+REPO="$TMP/repo-orphan-skill"
+CLAUDE="$TMP/claude-orphan-skill"
+make_plugin "$REPO/plugins/ff-dev-toolkit" "0.40.0" alpha beta
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.40.0" "0.40.0" alpha
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.28.0" "0.28.0" alpha beta
+run_hook \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
+# 対照: 印が無ければ union に beta が在るので欠落は出ない
+if [ -n "$OUT" ] && ! sysmsg | grep -F "無いスキル:" >/dev/null; then
+  ok "不要の印（スキル）の対照: 印が無ければ union に在るスキルを欠落と言わない"
+else
+  bad "不要の印（スキル）の対照: 印が無いのに欠落を報告した、または通知が無い: output=[$OUT]"
+fi
+printf '1794181077798' > "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.28.0/.orphaned_at"
+run_hook \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
+assert_clean "不要の印（スキル）"
+if sysmsg | grep -F "無いスキル: beta" >/dev/null; then
+  ok "不要の印（スキル）: 印付きの写しにしか無いスキルを名指しする"
+else
+  bad "不要の印（スキル）: 印付きの写しにしか無いスキルを名指ししない: $(sysmsg)"
+fi
+
+# 3 版の印なし cache: 画面は 1 行の要約、パスは additionalContext に 3 件
+REPO="$TMP/repo-three"
+CLAUDE="$TMP/claude-three"
+make_plugin "$REPO/plugins/ff-dev-toolkit" "1.10.0" alpha
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/1.9.0" "1.9.0" alpha
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/1.10.0" "1.10.0" alpha
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.178.0" "0.178.0" alpha
+run_hook \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
+assert_clean "3 版の要約"
+MSG="$(sysmsg)"
+CTX="$(addctx)"
+# 改行は json_escape が落とすので行数では測れない。長さの上限で要約であることを測る
+# （実測の要約は約 250 バイト。旧形式は 3 件の列挙だけで 400 バイトを超える）
+msg_bytes="$(printf '%s' "$MSG" | wc -c | tr -d ' ')"
+# 範囲は数値で比べる（文字列比較なら 1.10.0 < 1.9.0、0.178.0 > 1.10.0 になる）
+if [ -n "$MSG" ] && [ "$msg_bytes" -le 400 ] \
+  && printf '%s' "$MSG" | grep -F "3 種類" >/dev/null \
+  && printf '%s' "$MSG" | grep -F "v0.178.0〜v1.10.0" >/dev/null \
+  && ! printf '%s' "$MSG" | grep -F "cache/mp" >/dev/null; then
+  ok "3 版の要約: systemMessage は 400 バイト以内で、版の数と数値順の範囲を出しパスを含まない"
+else
+  bad "3 版の要約: systemMessage が要約になっていない（${msg_bytes} バイト）: $MSG"
+fi
+if printf '%s' "$CTX" | grep -F "cache/mp/ff-dev-toolkit/1.9.0" >/dev/null \
+  && printf '%s' "$CTX" | grep -F "cache/mp/ff-dev-toolkit/1.10.0" >/dev/null \
+  && printf '%s' "$CTX" | grep -F "cache/mp/ff-dev-toolkit/0.178.0" >/dev/null; then
+  ok "3 版の要約: additionalContext に 3 件すべてのパスを並べる"
+else
+  bad "3 版の要約: additionalContext のパスが不足: $CTX"
+fi
+
+# 先頭に 0 がある版（10# が無いと 8 進数として読んで stderr に出る）と、patch だけが違う版
+REPO="$TMP/repo-octal"
+CLAUDE="$TMP/claude-octal"
+make_plugin "$REPO/plugins/ff-dev-toolkit" "0.10.0" alpha
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.09.0" "0.09.0" alpha
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.10.0" "0.10.0" alpha
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.8.0" "0.8.0" alpha
+run_hook \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
+assert_clean "先頭 0 の版"
+if sysmsg | grep -F "v0.8.0〜v0.10.0" >/dev/null; then
+  ok "先頭 0 の版: 10 進数として比べて範囲を出す"
+else
+  bad "先頭 0 の版: 範囲が数値順でない: $(sysmsg)"
+fi
+REPO="$TMP/repo-patch"
+CLAUDE="$TMP/claude-patch"
+make_plugin "$REPO/plugins/ff-dev-toolkit" "1.10.1" alpha
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/1.10.1" "1.10.1" alpha
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/1.10.0" "1.10.0" alpha
+run_hook \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
+assert_clean "patch だけ違う版"
+if sysmsg | grep -F "v1.10.0〜v1.10.1" >/dev/null; then
+  ok "patch だけ違う版: patch で順序を決める"
+else
+  bad "patch だけ違う版: 範囲が数値順でない: $(sysmsg)"
+fi
+
+# 判定できない版（prerelease など is_semver を通らないもの）が混ざる: 範囲に同じ版を 2 回並べず、
+# 判定できない実体を含むことを示す
+REPO="$TMP/repo-unknown"
+CLAUDE="$TMP/claude-unknown"
+make_plugin "$REPO/plugins/ff-dev-toolkit" "0.40.0" alpha
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.40.0" "0.40.0" alpha
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/1.2.0-rc.1" "1.2.0-rc.1" alpha
+run_hook \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
+assert_clean "判定できない版の混在"
+if sysmsg | grep -F "2 種類" >/dev/null \
+  && sysmsg | grep -F "v0.40.0、版を判定できない実体を含む" >/dev/null \
+  && ! sysmsg | grep -F "v0.40.0〜v0.40.0" >/dev/null; then
+  ok "判定できない版の混在: 判定できた版と「判定できない実体を含む」を並べる"
+else
+  bad "判定できない版の混在: 要約が矛盾している: $(sysmsg)"
+fi
+
+# 10 桁以上の要素（bash の整数の範囲を超えうる）: 範囲の比較に使わず、最古と最新を逆に出さない
+REPO="$TMP/repo-huge"
+CLAUDE="$TMP/claude-huge"
+make_plugin "$REPO/plugins/ff-dev-toolkit" "1.0.0" alpha
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/1.0.0" "1.0.0" alpha
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/9223372036854775808.0.0" "9223372036854775808.0.0" alpha
+run_hook \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
+assert_clean "桁あふれの版"
+if sysmsg | grep -F "v1.0.0、版を判定できない実体を含む" >/dev/null \
+  && ! sysmsg | grep -F "9223372036854775808.0.0〜" >/dev/null; then
+  ok "桁あふれの版: 範囲の比較に使わず、判定できない実体として添える"
+else
+  bad "桁あふれの版: 範囲が逆、または添え書きが無い: $(sysmsg)"
+fi
+REPO="$TMP/repo-huge-only"
+CLAUDE="$TMP/claude-huge-only"
+make_plugin "$REPO/plugins/ff-dev-toolkit" "1.0.0" alpha
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/10000000000.0.0" "10000000000.0.0" alpha
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/20000000000.0.0" "20000000000.0.0" alpha
+run_hook \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
+assert_clean "桁あふれの版だけ"
+if sysmsg | grep -F "2 種類" >/dev/null && sysmsg | grep -F "どの版も判定できない" >/dev/null; then
+  ok "桁あふれの版だけ: 版の数を出し、範囲は「どの版も判定できない」と書く"
+else
+  bad "桁あふれの版だけ: 要約が不正: $(sysmsg)"
+fi
+
+# 欠けたスキルの通知に続く併存は、従来どおり全パスを画面にも並べる（欠落の通知の文面は変えない）
+REPO="$TMP/repo-missing-coexist"
+CLAUDE="$TMP/claude-missing-coexist"
+make_plugin "$REPO/plugins/ff-dev-toolkit" "0.40.0" alpha beta
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.40.0" "0.40.0" alpha
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.28.0" "0.28.0" alpha
+run_hook \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
+assert_clean "欠落と併存"
+MSG="$(sysmsg)"
+if printf '%s' "$MSG" | grep -F "無いスキル: beta" >/dev/null \
+  && printf '%s' "$MSG" | grep -F "インストール実体が複数バージョン併存しています: " >/dev/null \
+  && printf '%s' "$MSG" | grep -F "cache/mp/ff-dev-toolkit/0.28.0 (v0.28.0)" >/dev/null \
+  && printf '%s' "$MSG" | grep -F "cache/mp/ff-dev-toolkit/0.40.0 (v0.40.0)" >/dev/null; then
+  ok "欠落と併存: 欠けたスキルの通知に続けて、従来どおり全パスと版を並べる"
+else
+  bad "欠落と併存: 従来の文面が崩れている: $MSG"
 fi
 
 # ---- 3. 一致している 1 実体は無出力 ------------------------------------------
@@ -623,11 +850,13 @@ make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.19.0" "0.19.0" alpha beta
 run_hook \
   FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
   FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
-if printf '%s' "$OUT" | grep -F "0.28.0" >/dev/null \
-  && printf '%s' "$OUT" | grep -F "0.19.0" >/dev/null; then
-  ok "変異対照: 未変異の隔離コピーは両 version を列挙する"
+# 列挙は additionalContext のパスで測る。systemMessage の要約（版の範囲）は列挙のコピーを
+# 通らずに両方の版を出すので、出力全体の version で測ると変異を見逃す（Issue `#2891`）
+if addctx | grep -F "cache/mp/ff-dev-toolkit/0.28.0" >/dev/null \
+  && addctx | grep -F "cache/mp/ff-dev-toolkit/0.19.0" >/dev/null; then
+  ok "変異対照: 未変異の隔離コピーは両方のパスを列挙する"
 else
-  echo "✗ 変異対照: 未変異コピーが両 version を列挙しない: output=[$OUT]" >&2
+  echo "✗ 変異対照: 未変異コピーが両方のパスを列挙しない: output=[$OUT]" >&2
   exit 1
 fi
 cat > "$TMP/mut-coexist.sed" << 'MUT_COEXIST'
@@ -650,12 +879,58 @@ run_hook \
   FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
 has_028=0
 has_019=0
-printf '%s' "$OUT" | grep -F "0.28.0" >/dev/null && has_028=1
-printf '%s' "$OUT" | grep -F "0.19.0" >/dev/null && has_019=1
-if [ "$has_028" -eq 1 ] && [ "$has_019" -eq 1 ]; then
-  bad "併存列挙を 1 件に潰す変異: 両方の version がまだ出る（検出力なし）"
+addctx | grep -F "cache/mp/ff-dev-toolkit/0.28.0" >/dev/null && has_028=1
+addctx | grep -F "cache/mp/ff-dev-toolkit/0.19.0" >/dev/null && has_019=1
+if [ -z "$OUT" ]; then
+  bad "併存列挙を 1 件に潰す変異: 通知そのものが消えた（列挙だけを測れていない）"
+elif [ "$has_028" -eq 1 ] && [ "$has_019" -eq 1 ]; then
+  bad "併存列挙を 1 件に潰す変異: 両方のパスがまだ出る（検出力なし）"
 else
   ok "併存列挙を 1 件に潰す変異: 全件列挙が崩れる（検出力の実測）"
+fi
+
+# 不要の印の判定を外す変異: 印付きの古い cache を数え、無音のはずの fixture で併存を通知する
+ORPHAN_NEEDLE='[ -e "${plugin_json%/.claude-plugin/plugin.json}/.orphaned_at" ] && continue'
+MUT_ROOT="$TMP/mut-orphan/plugin"
+prepare_mut_plugin "$MUT_ROOT"
+HOOK="$MUT_ROOT/hooks/check-skill-drift.sh"
+REPO="$TMP/repo-mut-orphan"
+CLAUDE="$TMP/claude-mut-orphan"
+make_plugin "$REPO/plugins/ff-dev-toolkit" "0.40.0" alpha beta
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.40.0" "0.40.0" alpha beta
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.28.0" "0.28.0" alpha beta
+printf '1794181077798' > "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.28.0/.orphaned_at"
+run_hook \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
+if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
+  ok "変異対照: 未変異の隔離コピーは印付きの cache を数えない"
+else
+  echo "✗ 変異対照: 未変異コピーが印付きの cache で通知した: output=[$OUT]" >&2
+  exit 1
+fi
+cat > "$TMP/mut-orphan.sed" << 'MUT_ORPHAN'
+s/^  \[ -e "\${plugin_json%\/\.claude-plugin\/plugin\.json}\/\.orphaned_at" \] && continue$/  :/
+MUT_ORPHAN
+sed_hits="$(grep -cF "$ORPHAN_NEEDLE" "$HOOK" || true)"
+if [ "$sed_hits" -ne 1 ]; then
+  echo "✗ 不要の印の変異対象が ${sed_hits} 件（期待 1）。適用せず終了" >&2
+  exit 1
+fi
+sed -f "$TMP/mut-orphan.sed" "$HOOK" > "$HOOK.mut"
+mv -f "$HOOK.mut" "$HOOK"
+after_hits="$(grep -cF "$ORPHAN_NEEDLE" "$HOOK" || true)"
+if [ "$after_hits" -ne 0 ]; then
+  echo "✗ 不要の印の変異が当たっていません（元の判定行が残っている）" >&2
+  exit 1
+fi
+run_hook \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
+if addctx | grep -F "cache/mp/ff-dev-toolkit/0.28.0" >/dev/null; then
+  ok "不要の印の判定を外す変異: 印付きの cache を併存として通知する（検出力の実測）"
+else
+  bad "不要の印の判定を外す変異: まだ無音（検出力なし）: output=[$OUT]"
 fi
 
 # 登録 ID 形式の案内を除く変異。3 段コマンドの断片検査だけでは、形式説明だけを
