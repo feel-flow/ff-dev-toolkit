@@ -150,13 +150,13 @@ printf 'ISSUE_URL=%s ISSUE_NUM=%s\n' "$ISSUE_URL" "$ISSUE_NUM"
 
 #### 着手時の自己アサイン
 
-対応する Issue が確定したら、新規・既存を問わず作業開始時に担当者を確認する。作業ブランチを作る場合は分岐前に行う。対象は実際の着手単位とし、`bundle` では親 Issue を使う。バックログへの起票・追記や着手判断のための調査は未着手のまま扱う。担当者について利用者や導入先が明示した運用があれば、その指定を優先する。
+対応する Issue が確定したら、新規・既存を問わず作業開始時に自己アサインし、紐づく GitHub Project の Status を更新する。作業ブランチを作る場合は分岐前に行う。対象は実際の着手単位とし、`bundle` では親 Issue を使う。バックログへの起票・追記や着手判断のための調査は未着手のまま扱う。利用者や導入先が担当者・Status の運用を明示していれば、その指定を優先する。
 
 ```bash
 gh issue view "<Issue番号>" --repo "<host>/<owner>/<repo>" --json state,assignees
 ```
 
-対象が open で担当者一覧が空のとき、同じホスト（GitHub.com なら `github.com`）の認証ユーザーの login を取得し、担当者の追加専用 API に渡す。すでに担当者がいれば維持する。
+対象が open のとき、同じホスト（GitHub.com なら `github.com`）の認証ユーザーの login を取得する。その login が担当者一覧に無ければ、担当者の追加専用 API で自分を追加する。先に割り当てられている担当者は維持する。
 
 ```bash
 gh api --hostname "<host>" user --jq .login
@@ -169,6 +169,52 @@ gh api --hostname "<host>" --method POST "repos/<owner>/<repo>/issues/<Issue番�
 同じ Issue を再取得し、取得した login が担当者一覧にあることを確認する。担当者を取得できない場合は空と扱わない。権限やツールの制約で自己アサインを完了できなければ、理由を伝えて作業を続ける。
 
 GitHub MCP 経路では、認証ユーザーの login と同じ Issue の state・assignees を取得し、上の条件で `add_issue_assignees` 相当の追加操作に owner/repo・番号・login を渡す。追加後は同じ Issue の担当者一覧で login を確認する。追加専用の操作が使えなければ、利用可能な CLI で同じ追加 API を呼ぶ。担当者一覧の置換は並行して追加された担当者を消すおそれがある。
+
+##### GitHub Project の Status を更新する
+
+担当者を確認した後、同じ open Issue に紐づく Project 項目をすべて取得する。導入先が Projects を使わないと明示している場合は、この手順を省略する。アーカイブ済みの項目と閉じた Project は対象から外す。
+
+```bash
+gh api graphql --hostname "<host>" --paginate --slurp \
+  -f owner="<owner>" -f repo="<repo>" -F number="<Issue番号>" -f query='
+query($owner: String!, $repo: String!, $number: Int!, $endCursor: String) {
+  repository(owner: $owner, name: $repo) {
+    issue(number: $number) {
+      state
+      projectItems(first: 100, after: $endCursor, includeArchived: false) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          project {
+            id url closed
+            field(name: "Status") {
+              ... on ProjectV2SingleSelectField { id options { id name } }
+            }
+          }
+          fieldValueByName(name: "Status") {
+            ... on ProjectV2ItemFieldSingleSelectValue { optionId name }
+          }
+        }
+      }
+    }
+  }
+}'
+```
+
+全ページの取得が成功し、`projectItems.nodes` に対象項目がなければそのまま着手する。`projectItems` が `null` の場合は照会不能とする。
+
+各 Project の単一選択フィールド `Status` について、導入先が指定した着手中の選択肢を使う。指定がなければ `In Progress` または同じ意味と一意に判断できる実在の選択肢を使う。現在値が空、または Project 上の着手前の状態（例: `Todo`）なら更新する。すでに着手中・レビュー中・完了などの場合は状態を維持する。選択肢や現在値の意味を確定できなければ、その Project の URL と理由を伝える。
+
+更新直前に同じ照会をやり直し、Issue が open、Project が開いていて同じ項目が存在し、現在値が空または着手前であることを再確認する。すでに同じ選択肢の ID が設定されていれば更新済みと扱う。再取得した Project・項目・Status フィールド・選択肢の ID を渡し、そのフィールドだけを更新する。
+
+```bash
+GH_HOST="<host>" gh project item-edit --project-id "<project.id>" --id "<item.id>" \
+  --field-id "<project.field.id>" --single-select-option-id "<option.id>"
+```
+
+同じ Issue の Project 項目を再取得し、対象項目の `optionId` が選んだ ID と一致することを確認する。Project との紐づけは既存の項目を使う。GitHub MCP を使う場合も同じ項目と選択肢を確認し、Status だけを書き換える操作と再取得を行う。Project 操作が使えない MCP では CLI を使う。
+
+GitHub CLI の OAuth 認証では照会に `read:project` または `project`、更新に `project` のスコープが要る。更新するには対象 Project の編集権限も必要になる。取得エラーや未完のページがあれば照会不能として扱い、権限・ツールの制約や再取得の不一致で更新を確認できなければ、自己アサインの結果と区別して理由を短く伝えて作業を続ける。
 
 #### 工数の確認とブランチ作成
 
