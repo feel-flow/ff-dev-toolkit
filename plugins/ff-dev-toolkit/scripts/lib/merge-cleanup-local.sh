@@ -89,11 +89,22 @@ wt_unlink_ignored_links() { # <worktree>
   fi
 }
 
-wt_remove() { # <worktree>
+wt_remove() { # <worktree> <branch> <oid>
   if [ "$WT_UNLINK_IGNORED_LINKS" = "1" ]; then
+    wt_confirm_head "$@" || return 1
     wt_unlink_ignored_links "$1" || return 1
   fi
+  wt_confirm_head "$@" || return 1
   "${WT_REMOVE_GIT[@]}" worktree remove "$1"
+}
+
+worktree_branch_requested() {
+  local requested
+  [ "$1" = "$PR_HEAD" ] && return 0
+  for requested in ${EXTRA_WORKTREE_BRANCHES[@]+"${EXTRA_WORKTREE_BRANCHES[@]}"}; do
+    [ "$1" = "$requested" ] && return 0
+  done
+  return 1
 }
 
 MC_DRY_OBJ_DIR=""
@@ -180,13 +191,13 @@ GONE_BRANCHES="$(git for-each-ref \
   refs/heads/ | grep -v '^$' || true)"
 
 if [ "$DRY_RUN" = "1" ]; then
-  # 仮想 prune。実行時に「リモート削除 → prune → 新たに [gone] → その worktree」と
-  # 連鎖して消えるものを、副作用なしで予告へ足す（dry_virtual_prune_gone_branches の
+  # 仮想 prune。実行時に「リモート削除 → prune → 新たに [gone]」となるブランチを、
+  # 副作用なしで削除・保全判定へ足す（dry_virtual_prune_gone_branches の
   # コメント参照）。fetch --prune は撃たない = リポジトリ状態は変えない。
   DRY_EXTRA_GONE_LIST="$WORK_TMP/dry_extra_gone.list"
   if dry_virtual_prune_gone_branches > "$DRY_EXTRA_GONE_LIST"; then
     if [ -s "$DRY_EXTRA_GONE_LIST" ]; then
-      echo "ℹ️ (dry-run) 実行時の削除と fetch --prune で新たに [gone] になるブランチを予告へ含めます（そのブランチと worktree も実行時には消えます）:"
+      echo "ℹ️ (dry-run) 実行時の削除と fetch --prune で新たに [gone] になるブランチを予告へ含めます（削除可否は以下で判定します）:"
       sed 's/^/  - /' "$DRY_EXTRA_GONE_LIST"
       if [ -n "$GONE_BRANCHES" ]; then
         GONE_BRANCHES="${GONE_BRANCHES}
@@ -264,12 +275,31 @@ else
     # worktree path を porcelain 出力から抽出（スペース含むパスにも対応）
     WORKTREE_PATH=""
     current_wt=""
+    if ! WORKTREE_LIST_STEP5="$(git worktree list --porcelain)"; then
+      FAILED_ITEMS+=("${branch}: worktree の一覧を取得できないためローカル削除せず")
+      continue
+    fi
     while IFS= read -r line; do
       case "$line" in
         "worktree "*) current_wt="${line#worktree }" ;;
         "branch refs/heads/$branch") WORKTREE_PATH="$current_wt"; break ;;
       esac
-    done < <(git worktree list --porcelain)
+    done <<<"$WORKTREE_LIST_STEP5"
+
+    if [ -n "$WORKTREE_PATH" ] && [ "$WORKTREE_PATH" != "$REPO_ROOT" ] \
+      && ! worktree_branch_requested "$branch"; then
+      echo "  ℹ️ 対象 PR と個別指定の範囲外のため worktree を保全: ${WORKTREE_PATH}"
+      SKIPPED_LEFTOVERS+=("${branch}: 対象 PR と個別指定の範囲外のため worktree を保全 (${WORKTREE_PATH})")
+      continue
+    fi
+    if [ -n "$WORKTREE_PATH" ] && [ "$WORKTREE_PATH" != "$REPO_ROOT" ] && [ "$branch" = "$PR_HEAD" ]; then
+      TARGET_WT_OID="$(git rev-parse --verify "refs/heads/$branch" 2>/dev/null || true)"
+      if [ "$PR_CROSS_REPO" != "false" ] || [ -z "$TARGET_WT_OID" ] || [ "$TARGET_WT_OID" != "$PR_HEAD_OID" ]; then
+        echo "  ⚠️ 指定 PR の同一リポジトリの head と照合できないため worktree の削除をスキップします: ${WORKTREE_PATH}"
+        FAILED_ITEMS+=("${branch}: 指定 PR の同一リポジトリの head と照合できないため worktree を保護 (${WORKTREE_PATH})")
+        continue
+      fi
+    fi
 
     # optional post-branch-cleanup hook（DDEV stop など project 固有処理の差し込みポイント）
     HOOK="$REPO_ROOT/.claude/hooks/post-branch-cleanup.sh"
@@ -307,7 +337,9 @@ else
       WT_LOCAL_OID="$(git rev-parse "refs/heads/$branch" 2>/dev/null || true)"
       WT_MERGED_MATCH=0
       if [ "$GUARDS_OK" = "1" ] && [ -n "$WT_LOCAL_OID" ] \
-        && grep -qxF "$(printf '%s\t%s' "$branch" "$WT_LOCAL_OID")" "$MERGED_LIST"; then
+        && ! grep -qxF "$branch" "$OPEN_LIST" \
+        && grep -qxF "$(printf '%s\t%s' "$branch" "$WT_LOCAL_OID")" "$MERGED_LIST" \
+        && { [ "$branch" != "$PR_HEAD" ] || [ "$WT_LOCAL_OID" = "$PR_HEAD_OID" ]; }; then
         WT_MERGED_MATCH=1
       fi
 
@@ -358,6 +390,9 @@ else
         if [ "$GUARDS_OK" != "1" ]; then
           echo "  ⚠️ マージ済み PR 一覧と照合できないため（fail-closed）、worktree の削除をスキップします: ${WORKTREE_PATH}"
           FAILED_ITEMS+=("${branch}: マージ済み PR 一覧と照合できないため worktree を保護 (${WORKTREE_PATH})")
+        elif grep -qxF "$branch" "$OPEN_LIST"; then
+          echo "  ⚠️ open PR がブランチを使っているため worktree の削除をスキップします: ${WORKTREE_PATH}"
+          FAILED_ITEMS+=("${branch}: open PR がブランチを使っているため worktree を保護 (${WORKTREE_PATH})")
         elif grep -qxF "$(printf '%s\tnull' "$branch")" "$MERGED_LIST"; then
           echo "  ⚠️ worktree が残っていますが、MERGED 一覧側の OID が null で照合材料がないため削除をスキップします: ${WORKTREE_PATH}"
           FAILED_ITEMS+=("${branch}: [gone] だが MERGED 一覧側の OID が null のため worktree を保護 (${WORKTREE_PATH})")
@@ -376,6 +411,10 @@ else
         dry_run_skip "git worktree unlock ${WORKTREE_PATH} / rm -rf ${WORKTREE_PATH}/.review-results"
         WT_AGENT_NOTES="claude agent ロックの解除と使い捨てパス除去（dry-run のため未実施）"
       elif [ "$WT_AGENT_PATH" = "1" ]; then
+        if ! wt_confirm_head "$WORKTREE_PATH" "$branch" "$WT_LOCAL_OID"; then
+          FAILED_ITEMS+=("$branch: worktree の HEAD 再照合失敗 ($WORKTREE_PATH)")
+          continue
+        fi
         WT_UNLOCK_OUT=""
         if WT_UNLOCK_OUT="$(git worktree unlock "$WORKTREE_PATH" 2>&1)"; then
           echo "  ℹ️ claude agent ロックを解除しました（(名前, OID) が MERGED PR の head と一致）: ${WT_LOCK_REASON:-（理由の記載なし）}"
@@ -420,20 +459,29 @@ else
       # 注意: .gitignore 対象のファイル（.env 等）は clean 扱いのまま削除される。
       # 惜しいファイルを worktree の ignored 領域にだけ置く運用は避けること（コマンド doc にも明記）
       WORKTREE_RM_OUT=""
+      if [ "$DRY_RUN" != "1" ]; then
+        WT_INVENTORY_OK=0
+        if wt_inventory "$WORKTREE_PATH" > "$WORK_TMP/wt-before-remove.z"; then
+          WT_INVENTORY_OK=1
+        fi
+      fi
       if [ "$DRY_RUN" = "1" ]; then
         # clean 確認・ロック判定は実行時と同じ条件を通過済み。削除だけ見送る。
         if [ "$WT_UNLINK_IGNORED_LINKS" = "1" ]; then
           dry_run_skip "ignored のリンク（ジャンクション）をリンクだけ外す: ${WORKTREE_PATH}"
         fi
         dry_run_skip "${WT_REMOVE_GIT[*]} worktree remove ${WORKTREE_PATH}"
-      elif ! WORKTREE_RM_OUT="$(wt_remove "$WORKTREE_PATH" 2>&1)"; then
+      elif ! WORKTREE_RM_OUT="$(wt_remove "$WORKTREE_PATH" "$branch" "$WT_LOCAL_OID" 2>&1)"; then
         echo "  ❌ worktree 削除に失敗: $WORKTREE_RM_OUT"
+        WORKTREE_RM_STATE="$(worktree_remove_failure_state "$WORKTREE_PATH" "$WT_INVENTORY_OK")"
+        printf '%s\n' "$WORKTREE_RM_STATE" | sed 's/^/     /'
         echo "     ブランチ削除もスキップします。手動対応してください。"
         if [ "$WT_AGENT_PATH" = "1" ]; then
-          if git worktree lock --reason "$WT_LOCK_REASON" "$WORKTREE_PATH" 2>&1; then
+          if wt_confirm_head "$WORKTREE_PATH" "$branch" "$WT_LOCAL_OID" \
+            && git worktree lock --reason "$WT_LOCK_REASON" "$WORKTREE_PATH" 2>&1; then
             echo "     解除していた claude agent ロックを元の理由で復元しました。"
           else
-            echo "  ⚠️ ロックの復元にも失敗しました（unlock されたまま残ります）: $WORKTREE_PATH"
+            echo "  ⚠️ ロックを復元できませんでした。上記の登録状態を確認してください: $WORKTREE_PATH"
           fi
         fi
         FAILED_ITEMS+=("$branch: worktree 削除失敗 ($WORKTREE_PATH)")

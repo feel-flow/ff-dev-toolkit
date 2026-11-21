@@ -111,7 +111,12 @@ rm -f "$BASE_OWNER/base-owner-dirty.txt"
 set +e
 # 呼び出し元の hook 抑止 env を持ち込まない（CI や開発シェルで HUSKY=0 が export されて
 # いると、削除 push 側から HUSKY=0 を外しても 31b が緑のまま空振りする）
-PATH="$MOCK:$PATH" env -u SKIP_SIMPLE_GIT_HOOKS -u HUSKY bash "$TARGET" 10 > "$TMP/run.log" 2>&1
+PATH="$MOCK:$PATH" env -u SKIP_SIMPLE_GIT_HOOKS -u HUSKY bash "$TARGET" \
+  --worktree-branch 'feature/#20-wt-match' --worktree-branch 'feature/#21-wt-mismatch' \
+  --worktree-branch 'feature/#22-wt-nojsonl' --worktree-branch 'feature/#39-wt-nocwd' \
+  --worktree-branch 'feature/#23-wt-opaque' --worktree-branch 'feature/#24-wt-symlink' \
+  --worktree-branch 'feature/#28-wt-multicwd' --worktree-branch 'feature/#29-wt-variant-b' \
+  --worktree-branch 'feature/#30-wt-scanerr' --worktree-branch 'feature/#38-wt-unreadable' 10 > "$TMP/run.log" 2>&1
 EXIT_CODE=$?
 set -e
 

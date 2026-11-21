@@ -26,6 +26,7 @@
 # 変異検出: 説明文つき誘導スタブの判定から固定候補リンクの条件を外す・履歴らしい行の条件を外す・版見出しで始まる分割側の読み取りを外す・レベル 2 見出しでの遮断を外す・選択後の判定を本体と同じ読み方へ戻す、の 5 変異は stub ケースで各 rc=1（2026-11-11 WSL 実測。無変異は 201 件 pass）。
 # 変異検出: 件名の Issue 解決から本文 Refs を外す・別リポジトリ参照の除外を外す・closing Issue の優先を外す・title の解決を外す、の 4 変異は 18 の Refs ケースで各 rc=1（2026-11-11 WSL 実測）。
 # 変異検出: PR 問い合わせを常に失敗へ変える・候補から chore/docs を外す・解決した Issue の保留保存を外すと、それぞれ 18 が赤（2026-10-17 実測）。
+# 変異検出: 括弧付き候補を外す・--pr を無視する・default / detached 以外で直近マージを問い合わせると 19 が赤。
 # 空振り検出: 静的契約部分で現在ブランチの取得行を除去・既存知見ブランチの PR 分岐条件を反転・default 不変更の規定を反転・新規専用 PR の即 commit を保留へ反転すると各 rc=1（2026-10-22 実測）。針は各 1 行を要求し、0 件・重複を緑にしない。
 # 空振り検出: 呼出側の祖先・許可パス・件名と停止の実測を削る3変異と、helper の責務を誤保証へ変える変異は各 rc=1。通常追記は rc=0。保護判定で専用 Git fixture への移動を外すと、origin/HEAD の無い写しで14件が赤になる（2026-10-22 同梱 mutation-harness 実測）。
 # 空振り検出: 分割先の明示stageガード除去・固定候補片側消失・旧書式追加の0件化・layout fixture helper空化は隔離layout実測で各rc=1、通常追記と対照はrc=0（2026-10-25 mutation-harness、4 detected / 1 green-ok）。
@@ -108,9 +109,14 @@ expect_contains_in() { # <file> <needle> <label>
 echo "== ace-curate knowledge commit 契約検査 =="
 
 expect_fixed_count_routes \
-  'finish.sh" knowledge-commit add --ace-playbook docs/08-knowledge/PLAYBOOK.md --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" --category "<category[, category...]>"' \
+  'finish.sh" knowledge-commit add --ace-playbook docs/08-knowledge/PLAYBOOK.md --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" ${origin[@]+"${origin[@]}"} --category "<category[, category...]>"' \
   2 \
-  "既定・PR 両経路が共通の書き込み口へ ACE_ID・要約・カテゴリを渡す（件名は書き込み口が短い形式で作る）"
+  "既定・PR 両経路が共通の書き込み口へ ACE_ID・要約・出典 PR 引数・カテゴリを渡す"
+
+expect_fixed_count_routes \
+  'if [[ "$ACE_MODE" == sources ]]; then origin=(--issue "${ISSUE_NUMBER:?}"); else origin=(--pr "${PR_NUMBER:?}"); fi' \
+  2 \
+  "PR と資料単独は、対応する確定済みの PR または Issue を渡す"
 
 expect_fixed_count_routes \
   'commit_type="knowledge"' \
@@ -118,9 +124,9 @@ expect_fixed_count_routes \
   "既定・PR 両経路それぞれで commit_type の既定値が knowledge（AC3: 既定フロー不変。Issue #1147）"
 
 expect_fixed_count_routes \
-  'finish.sh" knowledge-commit commit --type "${commit_type}"' \
+  'finish.sh" knowledge-commit commit --type "${commit_type}" ${origin[@]+"${origin[@]}"}' \
   2 \
-  "既定・PR 両経路の commit が commit_type 変数を書き込み口へ渡す"
+  "既定・PR 両経路の commit が commit_type と出典 PR 引数を書き込み口へ渡す"
 
 expect_fixed_count \
   'if [[ "$ace_defer" == 1 ]]; then' \
@@ -1291,6 +1297,244 @@ HOOK
       echo '  ✗ type 制約だけの hook で docs を選ばない・不要な Issue を足した' >&2; exit 1;
     }
     echo '  ✓ 従来件名/stdout はバイト同一、type 制約のみなら chore/docs を hook で検証する'
+
+    # 19. 括弧付き Issue 参照（Issue 2849）。hook は knowledge を拒否し、末尾の括弧だけを受理する。
+    #     出典がブランチ名に無いときは --pr、default / detached では直近マージ PR。非 default は問い合わせない。
+    #     番号記号は hook の文字クラスと実行時の結合だけで書き、ソースに短縮参照を置かない。
+    paren_issue=6147
+    decoy_issue=6000
+    explicit_pr=7001
+    listed_pr=7002
+    decoy_pr=7003
+    paren_bin="$KC_TMP/paren-bin"
+    mkdir -p "$paren_bin"
+    cat >"$paren_bin/gh" <<GH
+#!/bin/sh
+printf '%s\n' "\$*" >>"\$PAREN_GH_LOG"
+jq_filter=''
+prev=''
+for arg in "\$@"; do
+  [ "\$prev" = --jq ] && jq_filter="\$arg"
+  prev="\$arg"
+done
+case "\$1 \$2" in
+  "pr list")
+    printf '%s\n' '[{"number":${decoy_pr},"mergedAt":"2020-01-01T00:00:00Z"},{"number":${listed_pr},"mergedAt":"2024-06-01T00:00:00Z"}]'
+    ;;
+  "pr view")
+    issue=${paren_issue}
+    [ "\$3" = "${decoy_pr}" ] && issue=${decoy_issue}
+    printf '%s' "{\"closingIssuesReferences\":[],\"title\":\"docs: record\",\"body\":\"Refs \\u0023\${issue}\"}" | jq -r "\${jq_filter:-.}"
+    ;;
+  *) exit 97 ;;
+esac
+GH
+    chmod +x "$paren_bin/gh"
+    P="$KC_TMP/paren-repo"
+    new_repo "$P" "Knowledge Test" "knowledge-test@example.com"
+    git init -q --bare "$KC_TMP/paren-origin.git"
+    git -C "$KC_TMP/paren-origin.git" symbolic-ref HEAD refs/heads/master
+    git -C "$P" remote add origin "$KC_TMP/paren-origin.git"
+    git -C "$P" push -q origin HEAD:refs/heads/master
+    git -C "$P" fetch -q origin
+    git -C "$P" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/master
+    cd "$P" || exit 1
+    default_name="$(git symbolic-ref --short HEAD)"
+    mkdir -p .githooks
+    git config core.hooksPath .githooks
+    printf '%s\n' '#!/bin/sh' 'exit 0' >.githooks/commit-msg
+    chmod +x .githooks/commit-msg
+    export PAREN_GH_LOG="$KC_TMP/paren-gh.log" PAREN_LIST_PR="$listed_pr"
+    : >"$PAREN_GH_LOG"
+    export PATH="$paren_bin:$PATH"
+    printf '%s\n' '- legacy on default' >>docs/08-knowledge/OBSERVATIONS.md
+    out="$(kc add --source obs --id OBS-paren-legacy --summary '従来形' -- docs/08-knowledge/OBSERVATIONS.md)"
+    kc commit >/dev/null
+    if [ "$out" = "$(printf 'KNOWLEDGE_PENDING=1\nKNOWLEDGE_SUBJECT=knowledge: OBS-paren-legacy 従来形')" ] \
+      && [ "$(git log -1 --format=%s)" = 'knowledge: OBS-paren-legacy 従来形' ] \
+      && [ ! -s "$PAREN_GH_LOG" ]; then
+      echo '  ✓ default branch でも従来件名が通る回は PR を問い合わせない'
+    else
+      echo "  ✗ default branch の従来件名を変えた・PR を問い合わせた（out=${out} log=$(cat "$PAREN_GH_LOG")）" >&2; exit 1
+    fi
+    cat >.githooks/commit-msg <<'HOOK'
+#!/bin/sh
+grep -Eq '^(chore|docs): .+\(#[0-9]+\)$' "$1" && exit 0
+echo 'parenthesized issue required'
+exit 1
+HOOK
+    chmod +x .githooks/commit-msg
+    git switch -q -c chore/plain
+    : >"$PAREN_GH_LOG"
+    printf '%s\n' '- explicit pr' >>docs/08-knowledge/OBSERVATIONS.md
+    rc=0
+    out="$(kc add --pr "$explicit_pr" --source obs --id OBS-paren --summary '括弧' -- docs/08-knowledge/OBSERVATIONS.md 2>"$KC_TMP/paren.err")" || rc=$?
+    if [ "$rc" -eq 0 ]; then kc commit >/dev/null || rc=$?; fi
+    pr_view_ok=0
+    pr_list_hit=0
+    grep -q "pr view ${explicit_pr} --json closingIssuesReferences,title,body" "$PAREN_GH_LOG" && pr_view_ok=1
+    grep -q '^pr list ' "$PAREN_GH_LOG" && pr_list_hit=1
+    if [ "$rc" -ne 0 ] || [ "$(git log -1 --format=%s)" != "chore: OBS-paren 括弧 (#${paren_issue})" ] \
+      || [ "$pr_view_ok" -ne 1 ] || [ "$pr_list_hit" -ne 0 ]; then
+      echo "  ✗ --pr の commit 件名が括弧付きでない（rc=${rc} subject=$(git log -1 --format=%s) err=$(cat "$KC_TMP/paren.err") log=$(cat "$PAREN_GH_LOG")）" >&2; exit 1
+    fi
+    git switch -q -c chore/plain-pending
+    : >"$PAREN_GH_LOG"
+    printf '%s\n' '- explicit pending' >>docs/08-knowledge/OBSERVATIONS.md
+    rc=0
+    out="$(kc add --pr "$explicit_pr" --source obs --id OBS-paren-pending --summary '保留' -- docs/08-knowledge/OBSERVATIONS.md 2>"$KC_TMP/paren.err")" || rc=$?
+    pend="$(git rev-parse --absolute-git-dir)/ff-knowledge-pending"
+    pr_view_ok=0
+    pr_list_hit=0
+    grep -q "pr view ${explicit_pr} --json closingIssuesReferences,title,body" "$PAREN_GH_LOG" && pr_view_ok=1
+    grep -q '^pr list ' "$PAREN_GH_LOG" && pr_list_hit=1
+    if [ "$rc" -ne 0 ] || ! grep -qx "KNOWLEDGE_SUBJECT=chore: OBS-paren-pending 保留 (#${paren_issue})" <<<"$out" \
+      || ! grep -qx $'I\t'"${paren_issue}" "$pend" || ! grep -qx $'T\tchore' "$pend" \
+      || [ "$pr_list_hit" -ne 0 ] || [ "$pr_view_ok" -ne 1 ]; then
+      echo "  ✗ --pr の括弧付き件名を選べない（rc=${rc} out=${out} err=$(cat "$KC_TMP/paren.err") log=$(cat "$PAREN_GH_LOG")）" >&2; exit 1
+    fi
+    kc commit >/dev/null
+    if [ "$(git log -1 --format=%s)" != "chore: OBS-paren-pending 保留 (#${paren_issue})" ]; then
+      echo "  ✗ commit が括弧付き件名を裸の参照へ戻した（$(git log -1 --format=%s)）" >&2; exit 1
+    fi
+    echo '  ✓ --pr の本文 Refs から末尾の括弧付き件名を選び、commit でも同じ形を保つ'
+    git switch -q -c chore/plain-multi
+    n=1
+    while [ "$n" -le 6 ]; do
+      printf '%s\n' "- multi$n" >>docs/08-knowledge/OBSERVATIONS.md
+      id="$(printf 'OBS-PAREN-LONG-%05d' "$n")"
+      rc=0
+      kc add --pr "$explicit_pr" --source obs --id "$id" --summary '長い要約' -- docs/08-knowledge/OBSERVATIONS.md >/dev/null 2>"$KC_TMP/paren.err" || rc=$?
+      if [ "$rc" -ne 0 ]; then
+        echo "  ✗ 括弧付き複数件名の add が止まる（n=${n} rc=${rc} err=$(cat "$KC_TMP/paren.err")）" >&2; exit 1
+      fi
+      n=$((n + 1))
+    done
+    kc commit >/dev/null
+    if [ "$(git log -1 --format=%s)" != "chore: OBS-PAREN-LONG-00001 ほか 5 件 (#${paren_issue})" ]; then
+      echo "  ✗ 100 字超の括弧付き複数件名が括弧を落とした（$(git log -1 --format=%s)）" >&2; exit 1
+    fi
+    echo '  ✓ 100 字を超える括弧付き複数件名は括弧を残して短縮する'
+    cat >.githooks/commit-msg <<'HOOK'
+#!/bin/sh
+grep -Eq '^(chore|docs): .+\(Refs #[0-9]+\)$' "$1" && exit 0
+echo 'refs parenthesis required'
+exit 1
+HOOK
+    chmod +x .githooks/commit-msg
+    git switch -q -c chore/plain-refs
+    : >"$PAREN_GH_LOG"
+    printf '%s\n' '- refs form' >>docs/08-knowledge/OBSERVATIONS.md
+    rc=0
+    out="$(kc add --pr "$explicit_pr" --source obs --id OBS-refs-form --summary '参照' -- docs/08-knowledge/OBSERVATIONS.md 2>"$KC_TMP/paren.err")" || rc=$?
+    if [ "$rc" -eq 0 ]; then kc commit >/dev/null || rc=$?; fi
+    if [ "$rc" -ne 0 ] || [ "$(git log -1 --format=%s)" != "chore: OBS-refs-form 参照 (Refs #${paren_issue})" ]; then
+      echo "  ✗ (Refs) だけを受理する hook でその形を選ばない（rc=${rc} subject=$(git log -1 --format=%s) err=$(cat "$KC_TMP/paren.err")）" >&2; exit 1
+    fi
+    echo '  ✓ (#N) を拒否して (Refs #N) だけを受理する hook では Refs の形を選ぶ'
+    git switch -q "$default_name"
+    : >"$PAREN_GH_LOG"
+    cat >.githooks/commit-msg <<'HOOK'
+#!/bin/sh
+grep -Eq '^(chore|docs): .+\(#[0-9]+\)$' "$1" && exit 0
+echo 'parenthesized issue required'
+exit 1
+HOOK
+    chmod +x .githooks/commit-msg
+    printf '%s\n' '- default merged' >>docs/08-knowledge/OBSERVATIONS.md
+    rc=0
+    out="$(kc add --source obs --id OBS-default-paren --summary '既定' -- docs/08-knowledge/OBSERVATIONS.md 2>"$KC_TMP/paren.err")" || rc=$?
+    if [ "$rc" -eq 0 ]; then kc commit >/dev/null || rc=$?; fi
+    list_ok=0
+    view_ok=0
+    decoy_view=0
+    grep -q "pr list --base ${default_name} --state merged --limit 30 --search sort:updated-desc --json number,mergedAt" "$PAREN_GH_LOG" && list_ok=1
+    grep -q "pr view ${listed_pr} --json closingIssuesReferences,title,body" "$PAREN_GH_LOG" && view_ok=1
+    grep -q "pr view ${decoy_pr} " "$PAREN_GH_LOG" && decoy_view=1
+    if [ "$rc" -ne 0 ] || [ "$(git log -1 --format=%s)" != "chore: OBS-default-paren 既定 (#${paren_issue})" ] \
+      || [ "$list_ok" -ne 1 ] || [ "$view_ok" -ne 1 ] || [ "$decoy_view" -ne 0 ]; then
+      echo "  ✗ default branch の直近マージ PR から括弧付き件名を選べない（rc=${rc} subject=$(git log -1 --format=%s) log=$(cat "$PAREN_GH_LOG") err=$(cat "$KC_TMP/paren.err")）" >&2; exit 1
+    fi
+    echo '  ✓ default branch は直近にマージされた PR から末尾の括弧付き件名を選ぶ'
+    git switch -q --detach
+    git symbolic-ref --delete refs/remotes/origin/HEAD
+    : >"$PAREN_GH_LOG"
+    printf '%s\n' '- detached merged' >>docs/08-knowledge/OBSERVATIONS.md
+    rc=0
+    out="$(kc add --source obs --id OBS-detached-paren --summary '離脱' -- docs/08-knowledge/OBSERVATIONS.md 2>"$KC_TMP/paren.err")" || rc=$?
+    if [ "$rc" -eq 0 ]; then kc commit >/dev/null || rc=$?; fi
+    list_ok=0
+    view_ok=0
+    decoy_view=0
+    grep -q "pr list --base ${default_name} --state merged --limit 30 --search sort:updated-desc --json number,mergedAt" "$PAREN_GH_LOG" && list_ok=1
+    grep -q "pr view ${listed_pr} --json closingIssuesReferences,title,body" "$PAREN_GH_LOG" && view_ok=1
+    grep -q "pr view ${decoy_pr} " "$PAREN_GH_LOG" && decoy_view=1
+    if [ "$rc" -ne 0 ] || [ "$(git log -1 --format=%s)" != "chore: OBS-detached-paren 離脱 (#${paren_issue})" ] \
+      || [ "$list_ok" -ne 1 ] || [ "$view_ok" -ne 1 ] || [ "$decoy_view" -ne 0 ]; then
+      echo "  ✗ detached HEAD の直近マージ PR から括弧付き件名を選べない（rc=${rc} subject=$(git log -1 --format=%s) log=$(cat "$PAREN_GH_LOG")）" >&2; exit 1
+    fi
+    echo '  ✓ detached HEAD で origin/HEAD が無くても、リモートの既定ブランチの直近 PR から括弧付き件名を選ぶ'
+    : >"$PAREN_GH_LOG"
+    printf '%s\n' '- 資料から得た知見' >>docs/08-knowledge/playbook/a.md
+    material_issue=7105
+    FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash "$FINISH" knowledge-commit add --issue "$material_issue" \
+      --source ace --id "ACE-i${material_issue}-1" --summary '資料の出典' -- docs/08-knowledge/playbook/a.md >/dev/null
+    rc=0
+    FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash "$FINISH" knowledge-commit commit --issue 7106 >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -ne 1 ] || [[ "$(kc status)" != *KNOWLEDGE_PENDING=1* ]]; then
+      echo "  ✗ 保留中の出典と異なる Issue を commit で受理した（rc=${rc}）" >&2; exit 1
+    fi
+    kc commit >/dev/null
+    if [ "$(git log -1 --format=%s)" != "chore: ACE-i${material_issue}-1 資料の出典 (#${material_issue})" ] \
+      || [ -s "$PAREN_GH_LOG" ]; then
+      echo "  ✗ 資料単独の確定済み Issue を使えない、または PR を照会した" >&2; exit 1
+    fi
+    echo '  ✓ 資料単独は確定済み Issue を保留・commit へ引き継ぎ、PR を照会しない'
+
+    : >"$PAREN_GH_LOG"
+    printf '%s\n' '- 出典PRが確定した振り返り' >>docs/08-knowledge/OBSERVATIONS.md
+    FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash "$FINISH" knowledge-commit add --pr "$explicit_pr" \
+      --source obs --id OBS-retro-source --summary '振り返り' -- docs/08-knowledge/OBSERVATIONS.md >/dev/null
+    FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash "$FINISH" knowledge-commit commit --pr "$explicit_pr" >/dev/null
+    if [ "$(git log -1 --format=%s)" != "chore: OBS-retro-source 振り返り (#${paren_issue})" ] \
+      || ! grep "^pr view ${explicit_pr} " "$PAREN_GH_LOG" >/dev/null \
+      || grep '^pr list ' "$PAREN_GH_LOG" >/dev/null; then
+      echo "  ✗ 振り返りに渡した PR を使えない、または直近 PR を照会した" >&2; exit 1
+    fi
+    echo '  ✓ 振り返りは確定した PR だけを照会し、その Issue を使う'
+
+    git switch -q -c chore/no-source-paren
+    before_lines="$(wc -l <"$PAREN_GH_LOG" | tr -d ' ')"
+    printf '%s\n' '- no source' >>docs/08-knowledge/OBSERVATIONS.md
+    rc=0
+    out="$(kc add --source obs --id OBS-no-paren --summary '出典なし' -- docs/08-knowledge/OBSERVATIONS.md 2>/dev/null)" || rc=$?
+    if [ "$rc" -ne 4 ] || ! grep -qx KNOWLEDGE_COMMIT=hook-rejected <<<"$out" \
+      || [[ "$(kc status)" != *KNOWLEDGE_PENDING=0* ]] || [ -n "$(git diff --cached --name-only)" ] \
+      || [ "$(wc -l <"$PAREN_GH_LOG" | tr -d ' ')" != "$before_lines" ]; then
+      echo "  ✗ 出典の無い非 default で PR を推測した・痕跡を残した（rc=${rc} out=${out}）" >&2; exit 1
+    fi
+    git checkout -q -- docs/08-knowledge/OBSERVATIONS.md
+    echo '  ✓ 出典の無い非 default は直近マージを見ずに rc4、stage/保留無し'
+    for invalid_pr in '' 0; do
+      rc=0
+      kc add --pr "$invalid_pr" --source obs --id OBS-bad-pr --summary '不正' -- docs/08-knowledge/OBSERVATIONS.md >/dev/null 2>&1 || rc=$?
+      if [ "$rc" -ne 2 ]; then
+        echo "  ✗ add が不正な --pr を受理した（値=${invalid_pr} rc=${rc}）" >&2; exit 1
+      fi
+      rc=0
+      kc commit --pr "$invalid_pr" >/dev/null 2>&1 || rc=$?
+      if [ "$rc" -ne 2 ]; then
+        echo "  ✗ commit が不正な --pr を受理した（値=${invalid_pr} rc=${rc}）" >&2; exit 1
+      fi
+    done
+    echo '  ✓ --pr は 1 以上の PR 番号でなければ rc2'
+    rc=0
+    FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash "$FINISH" knowledge-commit add --issue "$material_issue" --pr "$explicit_pr" \
+      --source obs --id OBS-conflicting-source --summary '不正' -- docs/08-knowledge/OBSERVATIONS.md >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -ne 2 ] || [[ "$(kc status)" != *KNOWLEDGE_PENDING=0* ]] || [ -n "$(git diff --cached --name-only)" ]; then
+      echo "  ✗ 相反する出典指定を受理した、または保留・stage を更新した（rc=${rc}）" >&2; exit 1
+    fi
+    echo '  ✓ --pr と --issue の併用は stage 前に拒否する'
 
     # 17. stage 対象の PLAYBOOK.md の Changelog「#### カウンター更新」配下の Helpful +1 行は、Jev の生成器
     #     （scripts/jev/build-ace-eval-sets.ts の parseChangelog）が受理する 1 行 1 ID の契約形だけを通す（Issue `#2107`）。

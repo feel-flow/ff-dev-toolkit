@@ -328,6 +328,9 @@ FB="$(sed -n 's/^KNOWLEDGE_FLUSH_BRANCH=//p' "$TMP/k11.out")"
 check '[ "$RC" -eq 0 ] && grep -qx "KNOWLEDGE_FLUSH=pr" "$TMP/k11.out" && case "$FB" in knowledge/flush-?*) true ;; *) false ;; esac && [ -n "$(origin_sha "$FB")" ] && [ "$(origin_sha develop)" = "$D_PRE" ] && grep -q -- "--base develop --head $FB --title chore: " "$KD_GH_LOG"' \
   "K11: flush --pr は使い捨ての knowledge/flush-* から PR を作り、develop へは直接送らない" "$TMP/k11.err"
 check '[ "$(git -C "$W/origin.git" rev-parse "$FB^2")" = "$(origin_sha knowledge/staging)" ]' "K11: PR のブランチは staging を取り込む merge commit（staging 自体を PR の head にしない）"
+run "$TMP/k11last" kc flush --branch knowledge/flush-pr-last --type chore --pr
+check '[ "$RC" -eq 0 ] && grep -qx "KNOWLEDGE_FLUSH=pr" "$TMP/k11last.out" && [ -n "$(origin_sha knowledge/flush-pr-last)" ] && [ "$(origin_sha develop)" = "$D_PRE" ]' \
+  "K11: 値を取らない --pr を末尾に置いても PR 経路へ進む" "$TMP/k11last.err"
 
 # ── K12: target の前提崩れ ──────────────────────────────────────────────────
 cd "$W/b"

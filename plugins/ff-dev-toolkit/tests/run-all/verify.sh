@@ -144,6 +144,7 @@
 # 空振り検出: case 35 の pipe-and-chain（Issue `#2593`）は、検出の print を外す・pipefail の宣言を無視する・解除を宣言扱いにする・フェンス開始で状態を戻さない・`||` まで対象にする・tail / tee 以外で終わる左辺まで止める・`|&` を background と読む 7 変異が各 rc=1。無変異対照は rc=0（2026-11-04 WSL 実測）
 # 空振り検出: case 52 は独立した run-all.sh（4194303:/x/run-all.sh）を与えると rc 2、プロセス一覧の取得失敗は rc 2、並走なしは GUARD_PASSED。ガード内のシェルの exit 2 行だけを外した写しは並走を名指した stderr（4194303:/x/run-all.sh）のあと GUARD_PASSED で rc 0（awk の END exit 2 は残す）。並走を ○ skip や GUARD_PASSED だけにすると 52-A が赤（2026-11-05 実測）。
 # 空振り検出: case 53 は suite へ両方を継承する修正前の run-all.sh で 53-B / 53-C / 53-E が逐次・並列とも赤、変異の対象行の不在で 53-M1 / 53-M2 が赤（8 件）。FF_GATE_RECORD_FILE だけを外す版では 53-B が逐次・並列とも赤（FF_GATE_RECORD の継承）。逐次・並列の各呼び出しだけを外した写しは、その経路の suite が親の 2 つの値を受け取る（2026-11-07 WSL 実測）。一時領域・fixture を作れない回と、並列を指定したのに並列経路で走らない回は構造上赤（未実測）。
+# 空振り検出: case 55（自動待機・リリース待機・相互待ち回避・上限停止・待機中 HEAD 更新再評価 55-L2・未検証親除外防止 55-O・単体 verify 可視化 55-P・start-reclaim.lock 回収 55-K）は mutation-harness で 5 変異すべて detected（wait-ignore-flag=30 fail / wait-drop-timeout-blocker-name=4 fail / wait-drop-waiting-exclusion=5 fail / wait-drop-release-scan=5 fail / wait-drop-cross-release-scan=2 fail、SURVIVED 0、対照 932 件 pass、追記後の最終対照 全 943 件 pass）に加え、case 55-M で waiting 除外無効化が rc=2 で落ちることを実測（2026-11-21 実測）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -175,13 +176,39 @@ done
 
 [ -f "$RUNNER" ] || { echo "✗ run-all.sh が見つかりません: $RUNNER" >&2; exit 1; }
 
-# 並走検出（別 worktree の run-all.sh、またはプロセス一覧が取れない回）。走査の前に止める。
-# 親の run-all.sh の系譜は除外する。系譜の外の独立した run-all.sh が見える回は rc 2 で、
-# 全件ゲートの子として起動していてもこの suite は非 0 になり、ランナーは緑に数えない
-# （ランナーの集計は変えない。復帰は並走が終わってから、またはプロセス一覧が取れてから回し直す）。
+GATE_WAIT_MARKER_FILE=""
+GATE_ACTIVE_MARKER_FILE=""
+
+ff_verify_wait_cleanup() {
+  if [[ -n "${GATE_WAIT_MARKER_FILE:-}" ]]; then
+    if declare -F ff_gate_wait_marker_remove >/dev/null 2>&1; then
+      ff_gate_wait_marker_remove "$GATE_WAIT_MARKER_FILE"
+    else
+      rm -f -- "$GATE_WAIT_MARKER_FILE" 2>/dev/null || true
+    fi
+    GATE_WAIT_MARKER_FILE=""
+  fi
+  if [[ -n "${GATE_ACTIVE_MARKER_FILE:-}" ]]; then
+    if declare -F ff_gate_active_marker_remove >/dev/null 2>&1; then
+      ff_gate_active_marker_remove "$GATE_ACTIVE_MARKER_FILE"
+    else
+      rm -f -- "$GATE_ACTIVE_MARKER_FILE" "${GATE_ACTIVE_MARKER_FILE}.meta" 2>/dev/null || true
+    fi
+    GATE_ACTIVE_MARKER_FILE=""
+  fi
+  if declare -F ff_gate_wait_lock_release >/dev/null 2>&1; then
+    ff_gate_wait_lock_release 2>/dev/null || true
+  fi
+}
+
+# 並走・待機判定（別 worktree の run-all.sh、worktree/active マーカー、別ツリーの public-layout/verify.sh、
+# 進行中リリースの ff-release-in-flight / release-dev-toolkit.sh、またはプロセス・マーカー状態が取れない回）。
+# 親および同一ゲートの系譜と、waiting（待機専用）マーカーで確認できるプロセス・その子孫は除外する。
+# FF_RUN_ALL_WAIT=1 指定時は先行完了まで上限付き（FF_RUN_ALL_WAIT_MAX_SECONDS、既定 3600 秒）で自動待機し、
+# 上限超過・不正設定・非待機の並走検出時は走査の前に rc=2（判定不能は緑にしない）で停止する。
 # 抽出に失敗した回も ○ skip にせず rc 2（判定不能は緑にしない）。
 ff_verify_concurrency_guard() {
-  local extract others="" rc=0
+  local extract others="" rc=0 wait_rc=0
   extract="$(mktemp "${TMPDIR:-/tmp}/run-all-other-gates.XXXXXX" 2>/dev/null)" || {
     echo "✗ 判定不能: 並走検出の抽出先を作れません（プロセス一覧の判定が成立していない。実行できなかった）" >&2
     exit 2
@@ -209,6 +236,95 @@ ff_verify_concurrency_guard() {
     exit 2
   fi
   rm -f "$extract"
+  if [ -r "$TESTS_DIR/lib/gate-in-flight.sh" ]; then
+    # shellcheck source=../lib/gate-in-flight.sh
+    . "$TESTS_DIR/lib/gate-in-flight.sh"
+  fi
+  if declare -F ff_gate_parse_wait_config >/dev/null 2>&1; then
+    if ! ff_gate_parse_wait_config; then
+      ff_verify_wait_cleanup
+      exit 2
+    fi
+    if [[ "${GATE_WAIT_ENABLED:-0}" -eq 1 ]]; then
+      trap 'if declare -F ff_gate_signal_cleanup >/dev/null 2>&1; then ff_gate_signal_cleanup INT ""; else ff_verify_wait_cleanup; trap - INT; kill -s INT "$$" 2>/dev/null || exit 1; fi' INT
+      trap 'if declare -F ff_gate_signal_cleanup >/dev/null 2>&1; then ff_gate_signal_cleanup TERM ""; else ff_verify_wait_cleanup; trap - TERM; kill -s TERM "$$" 2>/dev/null || exit 1; fi' TERM
+      wait_rc=0
+      ff_gate_wait_for_slot "$TESTS_DIR" "tests/run-all/verify.sh" ff_startup_other_gates || wait_rc=$?
+      if [[ "$wait_rc" -ne 0 ]]; then
+        if [[ -n "${GATE_WAIT_TIMEOUT_BLOCKERS:-}" ]]; then
+          echo "✗ 判定不能: 待機上限（${GATE_WAIT_MAX_SECONDS} 秒）に達したため停止しました（実行できなかった）。待機対象:" >&2
+          printf '%s\n' "$GATE_WAIT_TIMEOUT_BLOCKERS" >&2
+          echo "  復帰: 上の実行が終わってから再実行するか、FF_RUN_ALL_WAIT_MAX_SECONDS で上限を調整してください" >&2
+        else
+          echo "✗ 判定不能: 待機制御または並走判定を継続できないため停止しました（実行できなかった）" >&2
+          if [[ -n "${GATE_BLOCKER_UNKNOWN:-}" ]]; then
+            echo "  取得できた候補:" >&2
+            printf '%s\n' "$GATE_BLOCKER_UNKNOWN" >&2
+          fi
+          echo "  復帰: プロセス一覧とマーカー／待機領域が正常な状態で、この suite を回す" >&2
+        fi
+        ff_verify_wait_cleanup
+        exit 2
+      fi
+      if [[ "${GATE_DID_WAIT:-0}" -eq 1 ]]; then
+        echo "▶ 先行処理の終了を確認しました（待機 ${GATE_WAIT_ELAPSED} 秒）。tests/run-all/verify.sh を開始します" >&2
+      fi
+      return 0
+    fi
+    others="$(ff_startup_other_gates)" || rc=$?
+    ff_gate_collect_blockers "$TESTS_DIR" "$others" "$rc"
+    if [[ "${GATE_HAS_BLOCKER:-0}" -eq 1 ]]; then
+      echo "✗ 判定不能: 別の全件ゲート／公開検査／リリースが動いています（実行できなかった）。並走:" >&2
+      printf '%s\n' "$GATE_BLOCKERS" >&2
+      case "$GATE_BLOCKERS" in
+        *release:*)
+          echo "  復帰: 先行するゲート／リリースが終わってからこの suite を回す（自動で待つ場合は FF_RUN_ALL_WAIT=1。期限切れの担当を前の実行の停止確認後に引き継ぐ場合は scripts/release-dev-toolkit.sh --take-over を確認）" >&2
+          ;;
+        *)
+          echo "  復帰: 並走中の tests/run-all.sh（または public-layout）が終わってから、この suite を回す（自動で待つ場合は FF_RUN_ALL_WAIT=1）" >&2
+          ;;
+      esac
+      exit 2
+    fi
+    if [[ "${GATE_HAS_UNKNOWN:-0}" -eq 1 ]]; then
+      if [[ "$rc" -ne 0 ]]; then
+        echo "✗ 判定不能: プロセス一覧を取得できないため並走を判定できません（実行できなかった）" >&2
+      else
+        echo "✗ 判定不能: ゲート状態マーカーを判定できないため並走を判定できません（実行できなかった）" >&2
+      fi
+      if [[ -n "${GATE_BLOCKER_UNKNOWN:-}" ]]; then
+        echo "  取得できた候補:" >&2
+        printf '%s\n' "$GATE_BLOCKER_UNKNOWN" >&2
+      fi
+      echo "  復帰: プロセス一覧が取れる状態で、この suite を回す" >&2
+      exit 2
+    fi
+    if [[ "${FF_RUN_ALL_VERIFY_STOP_AFTER_GUARD:-}" != "1" && "${FF_RUN_ALL_NESTED:-0}" == "0" ]] \
+      && declare -F ff_gate_active_marker_write >/dev/null 2>&1; then
+      trap 'if declare -F ff_gate_signal_cleanup >/dev/null 2>&1; then ff_gate_signal_cleanup INT ""; else ff_verify_wait_cleanup; trap - INT; kill -s INT "$$" 2>/dev/null || exit 1; fi' INT
+      trap 'if declare -F ff_gate_signal_cleanup >/dev/null 2>&1; then ff_gate_signal_cleanup TERM ""; else ff_verify_wait_cleanup; trap - TERM; kill -s TERM "$$" 2>/dev/null || exit 1; fi' TERM
+      GATE_ACTIVE_MARKER_FILE="$(ff_gate_active_marker_write "tests/run-all/verify.sh" 2>/dev/null || true)"
+      rc=0
+      others="$(ff_startup_other_gates)" || rc=$?
+      ff_gate_collect_blockers "$TESTS_DIR" "$others" "$rc"
+      if [[ "${GATE_HAS_BLOCKER:-0}" -eq 1 ]]; then
+        ff_verify_wait_cleanup
+        echo "✗ 判定不能: 別の全件ゲート／公開検査／リリースが動いています（実行できなかった）。並走:" >&2
+        printf '%s\n' "$GATE_BLOCKERS" >&2
+        exit 2
+      fi
+      if [[ "${GATE_HAS_UNKNOWN:-0}" -eq 1 ]]; then
+        ff_verify_wait_cleanup
+        echo "✗ 判定不能: プロセス一覧またはゲート状態マーカーを判定できません（実行できなかった）" >&2
+        exit 2
+      fi
+    fi
+    return 0
+  fi
+  if [[ -n "${FF_RUN_ALL_WAIT:-}" && "${FF_RUN_ALL_WAIT}" != "0" ]]; then
+    echo "✗ 判定不能: 待機ライブラリ tests/lib/gate-in-flight.sh を読み込めないか FF_RUN_ALL_WAIT=\"${FF_RUN_ALL_WAIT}\" を検証できません" >&2
+    exit 2
+  fi
   others="$(ff_startup_other_gates)" || rc=$?
   if [[ "$rc" -ne 0 ]]; then
     echo "✗ 判定不能: プロセス一覧を取得できないため並走を判定できません（実行できなかった）" >&2
@@ -228,6 +344,8 @@ ff_verify_concurrency_guard() {
 }
 ff_verify_concurrency_guard
 if [[ "${FF_RUN_ALL_VERIFY_STOP_AFTER_GUARD:-}" == "1" ]]; then
+  ff_verify_wait_cleanup
+  trap - INT TERM
   echo "GUARD_PASSED"
   exit 0
 fi
@@ -237,6 +355,9 @@ fi
 if _ff_tmp_probe="$(mktemp -d "${TMPDIR:-/tmp}/run-all-preflight.XXXXXX" 2>&1)" && [ -d "$_ff_tmp_probe" ]; then
   RUN_WORK="$_ff_tmp_probe"
 else
+  if declare -F ff_verify_wait_cleanup >/dev/null 2>&1; then
+    ff_verify_wait_cleanup
+  fi
   echo "○ skip: 一時ディレクトリを作成できないため run-all self-test をスキップ（検査は1件も実行されていません）"
   printf '  mktemp: %s\n' "$_ff_tmp_probe"
   exit 0
@@ -247,6 +368,9 @@ fi
 FF_REACHED_END=0
 ff_cleanup() {
   ff_rc=$?
+  if declare -F ff_verify_wait_cleanup >/dev/null 2>&1; then
+    ff_verify_wait_cleanup
+  fi
   rm -rf "$RUN_WORK"
   if [ "$FF_REACHED_END" != "1" ] && [ "$ff_rc" -eq 0 ]; then ff_rc=1; fi
   exit "$ff_rc"
@@ -276,6 +400,7 @@ _ff_guard_real_ps="$(command -v ps)"
 {
   printf '%s\n' '#!/usr/bin/env bash'
   printf '%s\n' 'real_ps="${FF_VERIFY_REAL_PS:?}"'
+  printf '%s\n' 'if [ "${1:-}" = "-o" ]; then exec "$real_ps" "$@"; fi'
   printf '%s\n' 'if [ "${1:-}" = "-ww" ] && [ "${2:-}" = "-eo" ]; then'
   printf '%s\n' '  case "${FF_VERIFY_GRAPH:-}" in fail) exit 1 ;; esac'
   printf '%s\n' '  pid="$PPID"'
@@ -306,12 +431,14 @@ ff_guard_invoke() { # <script> <graph>
   _ff_guard_err="$RUN_WORK/guard-err"
   _ff_guard_rc=0
   _ff_guard_out="$(
-    FF_RUN_ALL_VERIFY_STOP_AFTER_GUARD=1 \
-    FF_VERIFY_GRAPH="$_ff_guard_graph" \
-    FF_VERIFY_SLEEPER_PID=4194303 \
-    FF_VERIFY_REAL_PS="$_ff_guard_real_ps" \
-    PATH="$_ff_guard_stub:$PATH" \
-    bash "$_ff_guard_script" 2>"$_ff_guard_err"
+    env -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_POLL_INTERVAL \
+      FF_RUN_ALL_WAIT_DIR="$RUN_WORK/guard-wait" \
+      FF_RUN_ALL_VERIFY_STOP_AFTER_GUARD=1 \
+      FF_VERIFY_GRAPH="$_ff_guard_graph" \
+      FF_VERIFY_SLEEPER_PID=4194303 \
+      FF_VERIFY_REAL_PS="$_ff_guard_real_ps" \
+      PATH="$_ff_guard_stub:$PATH" \
+      bash "$_ff_guard_script" 2>"$_ff_guard_err"
   )" || _ff_guard_rc=$?
   _ff_guard_err_text="$(cat "$_ff_guard_err")"
 }
@@ -381,11 +508,11 @@ run_runner() {
     return 0
   fi
   if [ "${RUN_FAST:-0}" = "1" ]; then
-    if RUN_OUT="$(env -u FF_RUN_ALL_FULL FF_RUN_ALL_FAST=1 FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+    if RUN_OUT="$(env -u FF_RUN_ALL_FULL -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_DIR -u FF_RUN_ALL_WAIT_POLL_INTERVAL FF_RUN_ALL_FAST=1 FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
   elif [ "${RUN_FULL:-0}" = "1" ]; then
-    if RUN_OUT="$(env -u FF_RUN_ALL_FAST FF_RUN_ALL_FULL=1 FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+    if RUN_OUT="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_DIR -u FF_RUN_ALL_WAIT_POLL_INTERVAL FF_RUN_ALL_FULL=1 FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
   else
-    if RUN_OUT="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+    if RUN_OUT="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_DIR -u FF_RUN_ALL_WAIT_POLL_INTERVAL FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
   fi
 }
 
@@ -394,7 +521,7 @@ run_runner() {
 # 超えると発生する）。`grep -c` は入力を最後まで読むのでその反転が起きない。マッチ 0 件でも
 # 本関数は数値を受け取って比較するだけなので、grep の rc=1 が set -e に触れない。
 out_matches() {
-  [ "$(printf '%s\n' "$RUN_OUT" | grep -c "$1")" -gt 0 ]
+  [ "$(printf '%s\n' "$RUN_OUT" | grep -c -e "$1")" -gt 0 ]
 }
 
 expect_has() {

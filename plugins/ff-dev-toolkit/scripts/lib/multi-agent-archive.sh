@@ -46,6 +46,20 @@ archive_validate_lane_control() {
   done
 }
 
+# Recovery basename plus an ownership marker for this repository and this directory.
+# Name-only files, symlinks, and unmarked directories are not recovery roots.
+archive_is_initialized_recovery() { # <item>
+  local item="$1" base repo marker
+  base="${item##*/}"
+  ff_review_output_is_recovery_basename "$base" || return 1
+  [[ -d "$item" && ! -L "$item" ]] || return 1
+  [[ -n "${REPO_ROOT:-}" ]] || return 1
+  repo="$(CDPATH='' cd -P -- "$REPO_ROOT" && pwd -P)" || return 1
+  marker="${item}/.multi-agent-output-owner"
+  [[ -f "$marker" && ! -L "$marker" ]] || return 1
+  ff_review_output_marker_matches_identity "$marker" "$repo" "$item"
+}
+
 # GLOBIGNORE と dotglob の呼出元設定に左右されず、dotfile/壊れた link も列挙する。
 # 3 glob の重複だけを exact path 比較で除く。空集合と読取不能を区別する。
 archive_collect_live() {
@@ -62,6 +76,10 @@ archive_collect_live() {
     [[ -e "$item" || -L "$item" ]] || continue
     base="${item##*/}"
     case "$base" in .multi-agent-run.lock|.multi-agent-output-owner|.review-in-flight.d|.evidence|.prev-*) continue ;; esac
+    # An initialized recovery root is a separate run. Leave that directory in
+    # place. A matching name alone (regular file, symlink, or a directory
+    # without this repository's ownership marker) stays an unknown entry.
+    archive_is_initialized_recovery "$item" && continue
     seen=false
     for prior in ${ARCHIVE_ITEMS[@]+"${ARCHIVE_ITEMS[@]}"}; do [[ "$prior" != "$item" ]] || seen=true; done
     [[ "$seen" != true ]] || continue

@@ -62,6 +62,12 @@
 #                           without a project-config output_dir, a built-in default dir left
 #                           unmarked by a pre-boundary version is moved unread into the new
 #                           private root as .prev-<timestamp>-legacy/
+#                           Must not be a subdirectory of .review-results, .explore-results, or .implement-results (exit 2).
+#                           The directory itself is allowed. The only exception is one .recovery-<YYYYMMDD>-<HHMMSS>-<PID>-<label>
+#                           directly under an initialized default root. The parent archive leaves that
+#                           directory in place only when it carries this repository's ownership marker.
+#                           A case-insensitive filesystem treats a different spelling of that root as the
+#                           same directory, including before the root exists and when the directory is empty.
 #   --base <branch>         Base branch for diff (default: auto-detect from origin/HEAD, fallback: develop).
 #                           A bare branch name resolves to whichever of the local ref and
 #                           origin/<branch> is not stale, without fetching: when the local ref is a
@@ -822,6 +828,7 @@ main() {
   if [[ "$ARCHIVE_ONLY" == true ]]; then
     validate_mode
     [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$(get_default_output_dir review)"
+    validate_output_dir_not_nested || exit $?
     run_archive_only
     exit $?
   fi
@@ -873,6 +880,7 @@ main() {
     print_reviewers_state
     exit $?
   fi
+  validate_output_dir_not_nested || exit $?
 
   # 信頼度の報告閾値は CLI を 1 つも起動する前に検証する — 不正値で課金した後の
   # レポート生成で落ちる形にしない（parse_ignore_paths と同じ理由）。

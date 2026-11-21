@@ -61,7 +61,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 | `out-of-scope-issue` | スコープ外の発見を `YAGNI（対応も Issue 化もしない）→ 軽微ならインライン修正 → Issue 化` の順で判定。Issue 化前に類似 Issue を検索し、同じ完了条件ならコメントで集約。本文 AC は明示許可と競合確認がある場合だけ最小追記し、独立する場合だけ関連 Issue を作成 |
 | `check-plugin-versions` | GitHub・Claude Code 登録・Desktop セッションの版を読み取り専用で照合。更新ありと確認不可を区別する |
 | `gh-auth-doctor` | gh の 401 / 未ログインに当たったとき、文脈ごと（Windows ではこのシェル・PowerShell・WSL、Mac / Linux では 1 つ）に `gh api user` で認証を測り、壊れている文脈にだけ復旧手順を出す。このシェルは device flow でコードを提示して直す。ログアウトは案内しない |
-| `workflow-doctor` | 導入先の入口規範（CLAUDE.md / AGENTS.md / .cursor / グローバル CLAUDE.md / Stop hook）が out-of-scope-issue の判定順（YAGNI → インライン → 既存 bundle へ追記 → bundle 単位で新規）を上書きしていないかを read-only で検査。旧文言・節の必須語・bundle の受け皿・ラベル・親無し Issue を重大度付きで報告し、置換案を印字する（--fix は持たない） |
+| `workflow-doctor` | 導入先の入口規範（CLAUDE.md / AGENTS.md / .cursor / グローバル CLAUDE.md / Stop hook）が out-of-scope-issue の判定順（YAGNI → インライン → 既存 bundle へ追記 → bundle 単位で新規）を上書きしていないかを read-only で検査。旧文言・節の必須語・bundle の受け皿・ラベル・親無し Issue・作業ツリーに残る CRLF を重大度付きで報告し、置換案を印字する（--fix は持たない） |
 | `removal-sweep` | 撤去（機能・設定・UI 要素の削除）PR の残存参照を 3 系統（識別子 / 表示文言 / 構造セレクタ・モック応答）で走査するチェックリスト。E2E がデプロイ済み成果物を指す構成の警告を含む |
 
 以下のワークフロースキルのうち 14 件は v0.15.0 で旧 Commands から Agent Skills 標準へ移行したもので、残りはその後に追加しました（`/ace-refine` は v0.18.0）。Claude Code では `/ff-dev-toolkit:<name>`、Codex では `$ff-dev-toolkit:<name>`、両方で自然文による自動発火を利用できます。
@@ -332,6 +332,7 @@ Codex の Bash 相当ツールでの実発火は未実測。
 - `command -v` で見つからない `timeout` / `gtimeout` は実行前に止める。案内は perl の alarm。このコマンドに限って通すときは先頭に `FF_TIMEOUT_ACK=1` を付ける
 - パターンはあるのに検索パスの無い `rg`（`rg -n 'pat' -g '!node_modules'`）は実行前に止める（パターンの無い `rg` は使い方の誤りで即座に終わり、`command -v rg` は起動ではないので止めない）。ripgrep は検索パスを省くと、標準入力が端末でないとき cwd ではなく標準入力を検索するので、Bash ツール（標準入力が端末でなく EOF も来ない）では出力の無いまま timeout まで待ち続ける。案内は検索パスの明示（`rg … .`）か `</dev/null`。パイプの受け側（`cmd | rg …`）・標準入力のリダイレクト・`--files` / `--type-list` / `--version` は止めない。`$(…)` の中の `rg` も外の標準入力を受け継ぐので走査する。判定の正本は `tests/lib/rg-stdin-scan.sh`。このコマンドに限って通すときは先頭に並ぶ代入として `FF_RG_STDIN_ACK=1` を付ける。`rg` の起動語を含む呼び出しに限り、判定ヘルパの不在・走査の失敗は判定不能として止める
 - セミコロンで繋いだ一意なパイプの並びは、区間のどれかが非 0 なら非 0 で終わる書き換え候補にする。一意でない区間、関数、サブシェル、背景起動は書き換えず止める
+- 単一の `producer | tail -N && next` は、パイプの出力を一時ログへ受け、左側と `tail` が成功したときだけ後続を実行する候補にする。対応する Claude Code 経路で、全ガードの再検査が完了し候補が拒否されなかった場合に採用する
 - 1 回の Bash 呼び出しで fail-fast でない git 書き込み（`git add` / `git commit` / `git push` / `git merge` と事前の比較コマンド `cmp`）を `;` や改行等で繋ぐ連鎖も実行前に止める（`git add` 失敗後に既 stage 分だけ `git commit` する形・`cmp` 不一致後に `git commit` する形・`commit-msg` 拒否後に空ブランチへ `git push -u` する形の 3 形を含む。判定の正本は `tests/lib/git-write-chain-scan.sh`）。`&&`・`set -e`（`&&` 左辺など `errexit` が抑止される文脈を除く）・`if`・`$?` の終了コード分岐で守られた形は素通しする。入力書き換えに対応した Claude Code 環境で一意なトップレベル連鎖は先頭へ `set -e; ` を付けた `updatedInput` で通し、書換不能な形（コマンド置換・`bash -c`・パイプマスク・既設 `set -e` / `set +e` の逆効果など）や非対応ホストは `deny` に留める。免除はコマンド先頭の `FF_EXIT_CODE_ACK=1`（括弧や複合文が先頭なら `FF_EXIT_CODE_ACK=1;`）、無効化は `FF_DEV_TOOLKIT_SKIP=exit-code`。`git` と書きサブコマンド語を含む候補コマンドに限り、ヘルパの不在・走査失敗・未終端構文は判定不能として止める（fail-closed）
 - 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP=exit-code`
 - **このガードだけは判定を完了できないとき fail-closed**（判定不能である旨を出して止める）。対象は検出器の欠落・破損、heredoc 除去ヘルパの欠落・破損、走査 `awk` の失敗、`jq` フィルタの実行失敗、検出器出力の解釈不能、ASDD ゲートの検証不能（`.asdd/config.json` があるのに node が無い・設定を読めない。機能を無効にした場合は従来どおり無音で通る）。ただしその面は `$?` / `PIPESTATUS` / ゲート綴りを含む**候補コマンドに限る**ので、検出器が壊れても無関係な Bash 呼び出しは止まらない

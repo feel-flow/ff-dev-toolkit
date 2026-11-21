@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Runtime contract for the literal-write guard hook (Issue `#1787` / 導入先 OBS-130).
+# 空振り検出: 引用なし heredoc のバッククォート判定を外すと HF1 が素通しになり、区切り語の引用を無視すると HN1 が拒否される。M31 と M32 はどちらも変異を適用できたことから確認する。
 #
 # 配布物 hooks/guard-literal-write.sh を stdin JSON で直接駆動し、受け入れ条件の各分岐を固定する:
 #   F. シェルの値が別言語のプログラムへ届かず、ファイル本文が無音で変わる形を実行前に deny する
@@ -445,6 +446,122 @@ else
   echo "  ○ skip: node が無いため P5 は未検査"
 fi
 
+# ---- 引用なし heredoc のコマンド置換 ------------------------------------------
+
+H_BACKTICK="$(cat <<'CASE'
+python3 - <<PY
+print("`printf example`")
+PY
+CASE
+)"
+H_DOLLAR="$(cat <<'CASE'
+node - <<JS
+console.log('$(printf example)')
+JS
+CASE
+)"
+H_QUOTED="$(cat <<'CASE'
+python3 - <<'PY'
+print("`printf example` $(printf example)")
+PY
+CASE
+)"
+H_ESCAPED="$(cat <<'CASE'
+perl - <<PERL
+print '\`printf example\` \$(printf example) $$(';
+PERL
+CASE
+)"
+H_CONTINUED="$(cat <<'CASE'
+ruby - <<RUBY
+puts '$\
+(printf example)'
+RUBY
+CASE
+)"
+
+run_hook "$H_BACKTICK"
+assert_fire 'HF1: Python の区切り語を引用しない heredoc でバッククォートを拒否'
+case "$REASON" in
+  *"<<'PY'"*環境変数*ファイル*) ok 'HF1: 区切り語を引用し値を環境変数かファイルで渡す案内' ;;
+  *) bad "HF1: 引用と値の渡し方の案内が無い: [$REASON]" ;;
+esac
+RUN_EXTRA='{"model":"codex"}' run_hook "$H_DOLLAR"
+assert_fire 'HF2: Codex でも Node.js の引用なし heredoc のドル括弧を拒否'
+run_hook "$H_CONTINUED"
+assert_fire 'HF3: Ruby の引用なし heredoc で継続行に分かれたドル括弧を拒否'
+run_hook "$H_QUOTED"
+assert_pass 'HN1: 区切り語を引用すると本文のバッククォートとドル括弧を通す'
+run_hook "$H_ESCAPED"
+assert_pass 'HN2: エスケープ済みの記号と PID 展開の後の括弧を通す'
+run_hook "${H_BACKTICK/python3 -/cat}"
+assert_pass 'HN3: cat へ渡す heredoc の扱いを維持する'
+run_hook "$(cat <<'CASE'
+cat <<PY | python3 -
+print("`printf example`")
+PY
+CASE
+)"
+assert_fire 'HF4: 引数なしの cat からパイプで渡すインタプリタの本文にも適用する'
+run_hook "$(cat <<'CASE'
+python3 tool.py <<PY
+`printf example`
+PY
+CASE
+)"
+assert_pass 'HN4: 外部スクリプトの標準入力データに送る heredoc は対象外'
+run_hook "$(cat <<'CASE'
+python3 - <<''
+print("`printf example`")
+CASE
+)"$'\n\n'
+assert_pass 'HN5: 引用された空の区切り語で終わる本文は展開しない'
+run_hook "$(cat <<'CASE'
+python3 - <<P\
+Y
+print("`printf example`")
+PY
+CASE
+)"
+assert_fire 'HF5: 継続行で構成した区切り語でも引用なしとして判定する'
+run_hook "$(cat <<'CASE'
+python3 - <<PY
+print("\`example\`")
+P\
+Y
+CASE
+)"
+assert_pass 'HN6: 引用なし heredoc は論理行で区切り語に一致する'
+run_hook "$(cat <<'CASE'
+python3 - 0<<$'P\x59'
+print("`printf example`")
+PY
+CASE
+)"
+assert_pass 'HN7: ANSI-C 引用の区切り語は引用解除して照合する'
+cat > "$TEST_TMP/quoted-delimiter.txt" <<'CASE'
+python3 - <<"P\"Y"
+print("`printf example`")
+P"Y
+CASE
+run_hook "$(cat "$TEST_TMP/quoted-delimiter.txt")"
+assert_pass 'HN8: 二重引用符で囲んだ区切り語にエスケープ済みの引用符を含められる'
+run_hook "$(cat <<'CASE'
+bash -c 'python3 - <<""
+print("`printf example`")
+
+'
+CASE
+)"
+assert_pass 'HN9: 入れ子のシェルでも空の区切り語に必要な末尾改行が残る'
+run_hook "$(cat <<'CASE'
+python3 - 3<<DATA
+`printf example`
+DATA
+CASE
+)"
+assert_pass 'HN10: 標準入力以外に接続された heredoc はプログラム本文として扱わない'
+
 # ---- 述語 D / P（Issue `#2450` / `#2496`）の回避形行列 -------------------------------------
 # 各ケースは引用付き heredoc から読むので、suite のシェルはバックスラッシュ・バッククォートを解釈しない
 # （OBS-324。このファイルは Write / Edit で書き、保存バイトを od -c で確かめてある）。
@@ -628,6 +745,15 @@ CASE
 )"
 run_hook "$D_FIRE_CATPIPE" CLAUDECODE=1
 assert_fire 'DF19: 引数なしの cat の引用付き heredoc をパイプで受けるインタプリタ（cat <<PY | python3 -）'
+run_hook "$(cat <<'CASE'
+cat <<'PY' | python3 - 3<<DATA
+print("a\\nb")
+PY
+extra
+DATA
+CASE
+)" CLAUDECODE=1
+assert_fire 'DF19b: 別のファイル記述子のデータは従来のパイプ先検査を妨げない'
 D_FIRE_DEVSTDIN="$(cat <<'CASE'
 python3 /dev/stdin <<'PY'
 print("a\\nb")
@@ -1015,7 +1141,7 @@ if mutate_dp '/pfrom\[cur\] = pp; i++; continue }$/d' M20; then
   run_on "$MUTDP/hooks/guard-literal-write.sh" "$D_FIRE_CATPIPE" CLAUDECODE=1
   if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "M20: パイプの送り側を記録しない変異は DF19（cat <<PY | python3 -）を素通しし、D の検査が赤になる"; else bad "M20: 変異が効いていない: decision=[$DECISION]"; fi
 fi
-if mutate_dp 's/ || script == "\/dev\/stdin") d_stdin(id, lang)$/) d_stdin(id, lang)/' M23; then
+if mutate_dp 's/ || script == "\/dev\/stdin") stdin_heredoc_rules(id, lang)$/) stdin_heredoc_rules(id, lang)/' M23; then
   run_on "$MUTDP/hooks/guard-literal-write.sh" "$D_FIRE_DEVSTDIN" CLAUDECODE=1
   if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "M23: /dev/stdin をスクリプト引数として読まない変異は DF20 を素通しし、D の検査が赤になる"; else bad "M23: 変異が効いていない: decision=[$DECISION]"; fi
 fi
@@ -1074,6 +1200,22 @@ mutate_lib() { # <sed-script> <label>
   fi
   return 0
 }
+if mutate_lib '/if (ch == "`") return "backtick"/d' M31; then
+  run_on "$MUT/hooks/guard-literal-write.sh" "$H_BACKTICK"
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
+    ok "M31: バッククォートの検出を外すと HF1 が素通しになる"
+  else
+    bad "M31: バッククォートの検出を外した変異が効いていない: out=[$OUT]"
+  fi
+fi
+if mutate_lib 's/^    if (!pquoted\[k\]) {$/    if (1) {/' M32; then
+  run_on "$MUT/hooks/guard-literal-write.sh" "$H_QUOTED"
+  if [ "$DECISION" = "deny" ]; then
+    ok "M32: 区切り語の引用を無視すると HN1 が拒否される"
+  else
+    bad "M32: 区切り語の引用を無視する変異が効いていない: out=[$OUT]"
+  fi
+fi
 if mutate_lib '/if (inplace) rule_a(prog\[q\])/d' M1; then
   run_on "$MUT/hooks/guard-literal-write.sh" "${FIRE_CASES[0]}"
   if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "M1: 述語 A の呼び出しを消した変異は F1 を素通しし、F の検査が赤になる"; else bad "M1: 変異が効いていない: decision=[$DECISION]"; fi

@@ -76,6 +76,7 @@ if exit_is_complete "$EXIT_OWN_MAIN" \
   ok "main tree からの起動は従来どおり完走し、対象 worktree とブランチを削除する"
 else
   bad "main tree からの起動が期待どおりでない (exit=${EXIT_OWN_MAIN})"
+  tail -25 "$TMP/run-own-main.log" >&2
 fi
 
 # 45.3 main tree が bare で、cd 先として案内できるパスが取れない構成
@@ -307,6 +308,7 @@ WT_GONE_REAL="$(cd "$TMP/wt-dry-gone" && pwd -P)"
 WT_DIRTY_REAL="$(cd "$TMP/wt-dry-dirty" && pwd -P)"
 WT_CHAIN_REAL="$(cd "$TMP/wt-dry-chain" && pwd -P)"
 WT_STALE_REAL="$(cd "$TMP/wt-dry-stale" && pwd -P)"
+DRY_WT_ARGS=(--worktree-branch feature/dry-gone-clean --worktree-branch feature/dry-gone-dirty --worktree-branch "$DRY_STALE")
 
 write_pr_view_json() {
   # $1: 出力先 / $2: head 名 / $3: head OID / $4: タイトル
@@ -447,7 +449,7 @@ fi
 # 46.3 --dry-run は削除対象を一覧表示し、リポジトリ状態を 1 つも変えない
 repo_state_snapshot "$TMP/state-before-dry.txt"
 set +e
-PATH="$MOCK:$PATH" bash "$TARGET" --dry-run 63 > "$TMP/run-dry-63.log" 2>&1
+PATH="$MOCK:$PATH" bash "$TARGET" --dry-run "${DRY_WT_ARGS[@]}" 63 > "$TMP/run-dry-63.log" 2>&1
 EXIT_DRY=$?
 set -e
 repo_state_snapshot "$TMP/state-after-dry.txt"
@@ -607,7 +609,7 @@ fi
 #      あわせて 46.3 の snapshot が「変化を検出できる」ことの self-test にする
 #      （検出できない snapshot なら、不変の主張は空振りになる）。
 set +e
-PATH="$MOCK:$PATH" bash "$TARGET" 63 > "$TMP/run-real-63.log" 2>&1
+PATH="$MOCK:$PATH" bash "$TARGET" "${DRY_WT_ARGS[@]}" 63 > "$TMP/run-real-63.log" 2>&1
 EXIT_REAL=$?
 set -e
 repo_state_snapshot "$TMP/state-after-real.txt"
@@ -763,7 +765,7 @@ fi
 # 46.11a GUARDS_OK=0 の通常実行: 一致するはずの worktree も fail-closed で残す（AC 4）
 : > "$TMP/ghfail-merged.enabled"
 set +e
-PATH="$MOCK:$PATH" bash "$TARGET" 63 > "$TMP/run-real-63-failclosed.log" 2>&1
+PATH="$MOCK:$PATH" bash "$TARGET" --worktree-branch "$DRY_FC" 63 > "$TMP/run-real-63-failclosed.log" 2>&1
 EXIT_REAL_FC=$?
 set -e
 rm -f "$TMP/ghfail-merged.enabled"
@@ -788,7 +790,7 @@ fi
 
 # 46.11b GUARDS_OK=1 の通常実行: (名前, OID) 一致は削除し、先祖 OID 不一致は保護する（AC 2 + 陽性対照）
 set +e
-PATH="$MOCK:$PATH" bash "$TARGET" 63 > "$TMP/run-real-63-ac2.log" 2>&1
+PATH="$MOCK:$PATH" bash "$TARGET" --worktree-branch "$DRY_FC" --worktree-branch "$DRY_ADV" 63 > "$TMP/run-real-63-ac2.log" 2>&1
 EXIT_REAL_AC2=$?
 set -e
 
@@ -815,7 +817,8 @@ sed 's|if \[ "\$WT_MERGED_MATCH" != "1" \]; then|if false; then|' \
 mv "$TMP/mutant-wtmatch/lib/merge-cleanup-local.new" "$TMP/mutant-wtmatch/lib/merge-cleanup-local.sh"
 MUTANT_WTMATCH="$TMP/mutant-wtmatch/merge-cleanup.sh"
 set +e
-PATH="$MOCK:$PATH" bash "$MUTANT_WTMATCH" --dry-run 63 > "$TMP/run-dry-63-mut-wtmatch.log" 2>&1
+PATH="$MOCK:$PATH" bash "$MUTANT_WTMATCH" --dry-run --worktree-branch "$DRY_ADV" \
+  --worktree-branch feature/dry-gone-clean 63 > "$TMP/run-dry-63-mut-wtmatch.log" 2>&1
 set -e
 if ! cmp -s "$PLUGIN_ROOT/scripts/lib/merge-cleanup-local.sh" "$TMP/mutant-wtmatch/lib/merge-cleanup-local.sh" \
   && grep -qF "削除対象の worktree: ${WT_GONE_REAL}" "$TMP/run-dry-63-mut-wtmatch.log" \

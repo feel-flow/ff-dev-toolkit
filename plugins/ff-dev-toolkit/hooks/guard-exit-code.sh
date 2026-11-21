@@ -757,7 +757,7 @@ if [ "${CLAUDECODE:-}" = 1 ] && [ -n "${CLAUDE_PROJECT_DIR:-}" ] \
     rewritten="$(ff_exit_code_rewrite "$cmd")" || rewritten=""
     if [ -n "$rewritten" ]; then
       printf '%s' "$input" | jq --arg command "$rewritten" \
-        '{hookSpecificOutput: {hookEventName: "PreToolUse", updatedInput: (.tool_input + {command: $command}), additionalContext: "終了コードガード: 一意なパイプ（単一、または ; で区切った同じ形の並び）の出力を一時ログへ受け、表示後に測定コマンドの終了コードを返す書き換え候補を作成しました。区間のどれかが非 0 ならその終了コードで終わります。採用・実行は再検査と通常の権限判定に従います。"}}' || deny_unavailable '書き換え JSON を組み立てられません'
+        '{hookSpecificOutput: {hookEventName: "PreToolUse", updatedInput: (.tool_input + {command: $command}), additionalContext: "終了コードガード: 出力を一時ログへ受け、測定コマンドの終了コードを終了判定と後続コマンドの条件に使う書き換え候補を作成しました。採用・実行は再検査と通常の権限判定に従います。"}}' || deny_unavailable '書き換え JSON を組み立てられません'
       exit 0
     fi
   fi

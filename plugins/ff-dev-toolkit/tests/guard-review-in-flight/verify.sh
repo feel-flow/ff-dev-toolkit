@@ -3128,7 +3128,7 @@ N_LANES_BEFORE="$(lane_count)"
 run_hook "$(agent_json pr-review-toolkit:code-reviewer "" n3-agent)" "$N_DEF"
 assert_n_deny "(n4) 2 巡目の fix の後の 3 巡目（Agent 起動）を deny する"
 case "$REASON" in
-  *'3 巡目'*'/out-of-scope-issue'*'bundle'*'FF_REVIEW_ROUND_ACK=1'*) ok "(n4) deny 文が 3 巡目・bundle 統合への案内・1 回限りの通過口を出す" ;;
+  *'3 巡目'*'/out-of-scope-issue'*'bundle'*'通す前に元 Issue の AC 充足・実運用入力の到達性・同系統パッチ連鎖を点検し'*'記録付き棄却'*'スコープ外と確認した指摘は別 Issue 化'*'上位手段・設計見直しへ切り替えて収束'*'方針転換などでこの 1 巡だけ通す必要がある場合'*'FF_REVIEW_ROUND_ACK=1'*) ok "(n4) deny 文が 3 巡目・bundle 統合への案内・3 巡目前点検・1 回限りの通過口を出す" ;;
   *) bad "(n4) deny 文に案内が欠けている: reason=[$REASON]" ;;
 esac
 # 停止文の共通形（末尾 3 行。scripts/lib/stop-block.sh / Issue `#2712`）: 巡回上限の deny も規則を名指しして終え、
@@ -3462,7 +3462,7 @@ n_commit "script r4"
 # shellcheck disable=SC2086 # N_MA_ARGS は語分割して渡す固定の引数列
 n_ma -- multi-review.sh $N_MA_ARGS
 case "$N_MA_ERR" in
-  *'レビュー巡回の上限'*'3 巡目'*)
+  *'レビュー巡回の上限'*'3 巡目'*'通す前に元 Issue の AC 充足・実運用入力の到達性・同系統パッチ連鎖を点検し'*)
     if [ "$RC" -eq 4 ] && [ ! -e "$LOCK" ]; then ok "(n16) multi-review.sh 経由の 3 巡目を本体が exit 4 で止め、何も起動しない"; else bad "(n16) rc=$RC"; fi ;;
   *) bad "(n16) multi-review.sh 経由の 3 巡目が止まらない: rc=$RC err=[$N_MA_ERR]" ;;
 esac

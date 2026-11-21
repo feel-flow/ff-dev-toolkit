@@ -2,10 +2,20 @@
 # finish/verify.sh から呼ぶ、生成 MERGE_COMMAND の real Git 回帰検査。
 # gh の merge 成否だけを stub にし、ref の照会・lease 削除・拒否・race は bare Git で測る。
 
+_ff_finish_e4_guard() ( # <fixture cwd> [env assignment...]
+  local hook="$PLUGIN_ROOT/hooks/guard-exit-code.sh"
+  # shellcheck source=../lib/adapter-env-isolation.sh
+  . "$PLUGIN_ROOT/tests/lib/adapter-env-isolation.sh"
+  isolate_hook_env FF_DEV_TOOLKIT_SKIP "$hook"
+  cd "$1" || exit 1
+  shift
+  env "$@" bash "$hook"
+)
+
 _ff_finish_merge_delete_cases() {
   local e_dir="$TMP/merge-delete" e_work e_origin e_decoy_origin e_decoy e_hooks e_ref
   local e_head e_alt e_json e_cmd e_case e_cases e_rows=0 e_rc e_after e_pushes e_expected_rc e_expected_ref e_expected_pushes
-  local e_output e_log e_restore_root e_precheck_rc e_upload_pack e_upload_command e_result
+  local e_output e_log e_restore_root e_precheck_rc e_upload_pack e_upload_command e_result e_payload
   local e_message e_context e_run_cwd e_inherited_repo e_inherited_host e_pin_rows=0 e_host_rows=0
   e_work="$e_dir/consumer It's 日本語"
   e_origin="$e_dir/origin.git"
@@ -149,6 +159,26 @@ UPLOAD
     bad "E4 fixture: 実 precheck の生成が成立しない（rc=${e_precheck_rc}）: ${OUT} / ${ERR}"
     g -C "$e_work" worktree remove --force "$e_dir/held-develop" >/dev/null 2>&1 || true
     return 0
+  fi
+
+  # 生成した文字列を GitHub に送らず、PreToolUse の実ガードへ同じ入力として渡す。
+  e_payload="$(jq -cn --arg command "$e_cmd" --arg cwd "$e_work" \
+    '{tool_name:"Bash",tool_input:{command:$command},cwd:$cwd,hook_event_name:"PreToolUse"}')"
+  e_rc=0
+  e_result="$(printf '%s' "$e_payload" | _ff_finish_e4_guard "$e_work")" || e_rc=$?
+  if [ "$e_rc" -eq 0 ] && [ -z "$e_result" ]; then
+    ok 'E4 guard: 実 precheck のマージと lease 削除の連鎖を許可する'
+  else
+    bad "E4 guard: 生成済みの連鎖を停止した（rc=${e_rc}）: ${e_result}"
+  fi
+  # 同じ入力で走査器のエラーが届くことを確かめ、ガード未実行による無出力を区別する。
+  e_rc=0
+  e_result="$(printf '%s' "$e_payload" | _ff_finish_e4_guard "$e_work" FF_GIT_WRITE_CHAIN_AWK=false)" || e_rc=$?
+  if [ "$e_rc" -eq 0 ] && printf '%s' "$e_result" | jq -e \
+    '.hookSpecificOutput | .permissionDecision == "deny" and (.permissionDecisionReason | contains("git-write-chain-unavailable"))' >/dev/null; then
+    ok 'E4 guard liveness: 同じ生成コマンドで走査器が失敗すると判定不能の deny を返す'
+  else
+    bad "E4 guard liveness: 走査器の失敗がガードの拒否に届かない（rc=${e_rc}）: ${e_result}"
   fi
 
   e_cases='already-missing expected changed merge-failed query-failed race-missing race-changed reject-delete plugin-gone lease-before-push'

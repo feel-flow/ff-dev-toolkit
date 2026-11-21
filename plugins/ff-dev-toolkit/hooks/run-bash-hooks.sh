@@ -5,31 +5,42 @@ input=""
 IFS= read -r -d '' input || true
 # 明示的な無効化だけをここで短絡する。設定の判定不能は各ガードへ渡し、
 # exit-code guard の候補限定 fail-closed を全コマンドの拒否へ拡大しない。
+# ただし書き換えの再検査では、検査できなかった場合も親へ失敗を返す。
+incomplete_status=0
+if [ "${ff_bash_hooks_revalidated:-0}" = 1 ]; then incomplete_status=2; fi
 if source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh"; then
   asdd_rc=0
   asdd_hook_enabled hooks || asdd_rc=$?
-  [ "$asdd_rc" -ne 3 ] || exit 0
+  case "$asdd_rc" in
+    0) ;;
+    3) exit "$incomplete_status" ;;
+    *) [ "$incomplete_status" -eq 0 ] || exit "$incomplete_status" ;;
+  esac
+elif [ "$incomplete_status" -ne 0 ]; then
+  exit "$incomplete_status"
 fi
 if [ "$#" -eq 0 ]; then
   echo 'ff-dev-toolkit: 集約する hook がありません' >&2
-  exit 0
+  exit "$incomplete_status"
 fi
 if batch_dir="$(mktemp -d "${TMPDIR:-/tmp}/ff-bash-hooks.XXXXXX")" && [ -d "$batch_dir" ]; then
   :
 else
   echo 'ff-dev-toolkit: hook の一時領域を作成できません' >&2
-  exit 0
+  exit "$incomplete_status"
 fi
 pids=()
 expired_notes=()
 json_timeout=""
 timer=""
+incomplete=0
 # 拒否された呼び出しは前段の生成も走っていない。各ガードの理由文は違反形だけを示すため、
 # 前段のファイルが在る前提で次の呼び出しを組む往復を集約側の1行で防ぐ。
 not_run_note='この呼び出しは 1 つも実行されていません（同じ呼び出しの前段で作るつもりだったファイル・書き込みも存在しません）。生成と、ガードに当たる反映は別の呼び出しに分けて再実行してください。'
 finish() {
-  # exit 2 ではホストは stderr を理由文として示すため、その末尾へ1回だけ足す。
-  [ "$blocking" -ne 2 ] || printf '%s\n' "$not_run_note" >&2
+  if [ "$incomplete" -ne 0 ] && [ "$incomplete_status" -ne 0 ]; then blocking="$incomplete_status"; fi
+  # exit 2 の未実行注記はホストへ返す親の末尾に一度だけ足す。
+  if [ "$blocking" -eq 2 ] && [ "$incomplete_status" -eq 0 ]; then printf '%s\n' "$not_run_note" >&2; fi
   exit "$blocking"
 }
 emit_timeout_only() {
@@ -67,8 +78,8 @@ cleanup() {
 notices_delivered=0
 notice_owner=0
 trap cleanup EXIT
-trap 'exit 0' HUP INT TERM
-printf '%s' "$input" > "$batch_dir/input" || exit 0
+trap 'exit "$incomplete_status"' HUP INT TERM
+printf '%s' "$input" > "$batch_dir/input" || exit "$incomplete_status"
 if [ "${ff_bash_hooks_revalidated:-0}" != 1 ]; then
   notice_owner=1
   export FF_BASH_HOOKS_NOTICE_LOG="$batch_dir/notices.log"
@@ -78,6 +89,7 @@ for hook in "$@"; do
   # 破損した1本だけを除外し、他の子の拒否判定を失わない。
   if [ ! -r "$hook" ] || [ ! -s "$hook" ]; then
     echo "ff-dev-toolkit: hook を読み込めません: $hook" >&2
+    incomplete=1
     continue
   fi
   # 従来の独立した並行 hook と同じプロセス境界を保つ。変数や exit は漏れない。
@@ -125,17 +137,24 @@ for ((index=0; index<hook_count; index++)); do
     timeout_line="ff-dev-toolkit: hook $((index + 1)) は時間内に完了しませんでした"
     echo "$timeout_line" >&2
     expired_notes+=("$timeout_line")
+    incomplete=1
     continue
   fi
   # シグナルで中断された完了済みの子は、その終了コードを取り直す。
   if [ "$rc" -gt 128 ]; then rc=0; wait "$pid" || rc=$?; fi
   unset 'pids[index]'
-  cat "$batch_dir/$index.err" >&2
+  cat "$batch_dir/$index.err" >&2 || incomplete=1
   if [ "$rc" -ne 0 ]; then
     echo "ff-dev-toolkit: hook $((index + 1)) が終了コード $rc を返しました" >&2
+    incomplete=1
     [ "$rc" -ne 2 ] || blocking=2
   fi
-  [ ! -s "$batch_dir/$index.out" ] || outputs[${#outputs[@]}]="$batch_dir/$index.out"
+  if [ ! -f "$batch_dir/$index.out" ] || [ ! -r "$batch_dir/$index.out" ]; then
+    echo "ff-dev-toolkit: hook $((index + 1)) の結果を読み込めません" >&2
+    incomplete=1
+  elif [ -s "$batch_dir/$index.out" ]; then
+    outputs[${#outputs[@]}]="$batch_dir/$index.out"
+  fi
 done
 kill "$timer" 2>/dev/null || true
 wait "$timer" 2>/dev/null || true
@@ -216,6 +235,7 @@ else
     reject_rewrite 'ff-dev-toolkit: 書き換え hook の出力を解釈できないため停止しました。'
   fi
   echo 'ff-dev-toolkit: 解釈できない hook 出力を除外しました' >&2
+  incomplete=1
 fi
 done
 [ "${#valid[@]}" -gt 0 ] || { emit_timeout_only; finish; }
@@ -245,7 +265,7 @@ merged="$(jq -s --arg note "$deny_note" --arg timeout "$json_timeout" '
             | sort_by((. // "" | tostring | split("\n") | map(select(length > 0)) | last // "") | startswith("次の一手: ")))
           | join("\n"))
       }} end)
-' "${valid[@]}")" || { echo 'ff-dev-toolkit: hook の結果を集約できません' >&2; finish; }
+' "${valid[@]}")" || { echo 'ff-dev-toolkit: hook の結果を集約できません' >&2; incomplete=1; finish; }
 # 互いに異なる書き換えは合成しない。1案だけを全ガードへ再投入してから採用する。
 rewrites="$(jq -cs '[.[].hookSpecificOutput.updatedInput // empty] | unique' "${valid[@]}")" || reject_rewrite '書き換え案を集約できません。'
 rewrite_count="$(printf '%s' "$rewrites" | jq 'length')"
@@ -267,7 +287,7 @@ if [ "$rewrite_count" -gt 0 ] && [ "$blocking" -ne 2 ] \
     printf '%s\n' 'ff-dev-toolkit: 書き換え後の再検査が失敗したため停止しました。' >&2
     finish
   fi
-  rechecked="$(cat "$batch_dir/rechecked.json")"
+  rechecked="$(cat "$batch_dir/rechecked.json")" || reject_rewrite '書き換え後の再検査結果を読み込めません。'
   [ -n "$rechecked" ] || rechecked='{}'
   printf '%s' "$rechecked" | jq -e 'type == "object"' >/dev/null || reject_rewrite '書き換え後の再検査出力が不正です。'
   # 採用の一文はガードの書き換え通知に添える。ガードが通知を出さなかった回（同じセッションで出し済み。
@@ -299,8 +319,9 @@ else
   # 判定を読めない回も「届いた」に数えない（記録を消す = 次の呼び出しで改めて出す側へ倒す）。
   final_decision="$(printf '%s' "$merged" | jq -r '.hookSpecificOutput.permissionDecision // "none"' 2>/dev/null)" || final_decision=""
   final_decision="${final_decision//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
-  if printf '%s\n' "$merged" && [ "${#expired_notes[@]}" -eq 0 ] \
-    && [ -n "$final_decision" ] && [ "$final_decision" != deny ]; then
+  if ! printf '%s\n' "$merged"; then
+    incomplete=1
+  elif [ "${#expired_notes[@]}" -eq 0 ] && [ -n "$final_decision" ] && [ "$final_decision" != deny ]; then
     notices_delivered=1
   fi
 fi

@@ -5,6 +5,11 @@
 <!--1d51d61fe9bb3156-->
 MCP: 取得値: MCP の同じ PR の title/body/全 commits/closingIssuesReferences/statusCheckRollup と全 threads。形式: 完全 raw JSON と checks-retry attempt / after-checks cursor / 別取得 after-threads。渡し先: finish.sh precheck --github-input /absolute/index.json の同じ実行へ渡す。checks 取得不能を [] にしない。不足時: MCP 必須不足は operation / field / page を示して停止。
 
+### 1b. PR 本文中の closing keyword 参照の扱い（`CLOSES_TEXT_ONLY=`）
+
+- コード span・コードブロック・HTML コメント内の closing keyword 引用（`CLOSES_TEXT_ONLY_KIND=quoted`）は `CLOSES=` や `AC_UNCHECKED=` へ混ぜず、案内用の info を出してそのまま継続する。
+- 散文や引用ブロック（`blockquote`）内の意図しない closing keyword 参照（`CLOSES_TEXT_ONLY_KIND=prose` / `both`）も `CLOSES=` や `AC_UNCHECKED=` へ混ぜない一方、書き誤りまたは独立行宣言の書き漏れとして `PRECHECK=blocked`（rc 1）で止める。閉じる対象なら独立行の `Closes #N` へ移し、非対象なら closing keyword を外すか `Refs` 形式へ直してから再実行する。
+
 ### 2. closing keyword 抵触検査の分岐（Refs 運用の Issue がある場合）
 
 `gh pr view --json closingIssuesReferences` は PR 本文しか見ない（コミットメッセージは見ない）ため、`Refs #N` を本文に書いた PR でもコミット件名の `fix: #N` でマージ時に Issue が閉じる。検出されるのは **closing keyword と Issue 参照が隣接している場合のみ**（「どこかに keyword、どこかに番号」で判定すると、ほぼ全ての PR で発火してゲートが無視されるようになる）。2a と 2b の両方が要るのは、コミット件名・本文は**書き換えられない**からで、2a だけを条件にするとコミット由来の抵触は改題では解消できず永久に赤になる。

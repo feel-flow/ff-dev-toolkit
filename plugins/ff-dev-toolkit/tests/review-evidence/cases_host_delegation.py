@@ -66,7 +66,9 @@ class HostDelegationCases:
                    FF_DEV_TOOLKIT_SKIP='codex-auto-update',
                    FF_DEV_TOOLKIT_ROOT=str(root), MULTI_AGENT_REVIEW_MAIN='claude-code',
                    MULTI_AGENT_REVIEW_SUB='codex-cli', MULTI_AGENT_CROSS_REVIEW='auto')
-        self.output = self.output / "partial output's"
+        # 継続実行は既定 .review-results の子に置かない。子は起動前に exit 2 になる。
+        # 空白と引用符は再実行コマンドの quoting 検査のために残す。
+        self.output = self.external / "partial output's"
         self.receipt = self.output / 'review-evidence.json'
         sentinel = stub_bin.parent / 'command-substitution-must-not-run'
         description = "AC's quoted text; $(touch %s)\nSecond AC line" % shlex.quote(str(sentinel))

@@ -1,6 +1,6 @@
 ---
 name: workflow-doctor
-description: Use when checking that a consumer project's entry-point rules (CLAUDE.md / AGENTS.md / .cursor rules / global CLAUDE.md / Stop hooks) do not override the contracts the toolkit skills implement — the out-of-scope decision order (YAGNI → inline fix → append to an open bundle → file per bundle), "create PRs as regular, not draft", and "the host itself is the primary self-reviewer; add another CLI only when available". 導入先の入口規範がスキルの契約と矛盾していないかを read-only で検査し、ずれを重大度付きで報告したうえで、そのリポジトリで実測した事実を根拠にした提案まで出す（「発見 = 起票」の旧文言、節の必須語、Stop hook の reminder、bundle の受け皿、ラベルの実在、親無し Issue、RETROSPECTIVE_FILING、Draft PR の指示と残存、特定 CLI のレビュー常時必須、実在しないレビュー用 npm script、CLAUDE.md / AGENTS.md のパリティ）。「ワークフローを診断して」「スキルが効いているか確認」「workflow doctor」「Issue が増え続ける原因を調べて」「Draft PR のままになる」「レビューが別の CLI で動く」と言われたとき、/ace-setup・/setup-ai-config の末尾、/retrospective の冒頭で使用する。
+description: Use when checking that a consumer project's entry-point rules (CLAUDE.md / AGENTS.md / .cursor rules / global CLAUDE.md / Stop hooks) do not override the contracts the toolkit skills implement — the out-of-scope decision order (YAGNI → inline fix → append to an open bundle → file per bundle), "create PRs as regular, not draft", and "the host itself is the primary self-reviewer; add another CLI only when available". 導入先の入口規範がスキルの契約と矛盾していないかを read-only で検査し、ずれを重大度付きで報告したうえで、そのリポジトリで実測した事実を根拠にした提案まで出す（「発見 = 起票」の旧文言、節の必須語、Stop hook の reminder、bundle の受け皿、ラベルの実在、親無し Issue、RETROSPECTIVE_FILING、Draft PR の指示と残存、特定 CLI のレビュー常時必須、実在しないレビュー用 npm script、CLAUDE.md / AGENTS.md のパリティ、作業ツリーが CRLF のまま残る追跡ファイル）。「ワークフローを診断して」「スキルが効いているか確認」「workflow doctor」「Issue が増え続ける原因を調べて」「Draft PR のままになる」「レビューが別の CLI で動く」「置換が改行で空振りする」と言われたとき、/ace-setup・/setup-ai-config の末尾、/retrospective の冒頭で使用する。
 ---
 
 # /workflow-doctor — 導入先の入口規範とスキルの契約の矛盾検査
@@ -44,9 +44,10 @@ fi
 
 - 導入先の git リポジトリで作業中であること（`--root` で明示してもよい）
 - 4〜6・11 の検査は認証済み `gh` を使う。無い環境・使いたくない回は `--offline` で SKIP にする（SKIP は緑ではない）
+- 13 の検査は `git` で index と属性を読むだけで `gh` を使わない。`--offline` でも回る。`git` を読めない回は SKIP になる
 - **read-only**。ファイルを書かず、Issue も作らない。`--fix` は**意図的に持たない** — CLAUDE.md の節を定型文へ自動置換すると導入先の文脈（節の前後・他節からの参照）を壊しうるため、置換案を `FIXTEXT` 行で印字し、適用は人（またはこのスキルを呼んだホスト）が差分を見て行う
 
-<!--0a415404daec6e99-->
+<!--6bc48b3ac4a02f60-->
 MCP: 取得値: MCP で同じ repo の labels / bundle / open Issues と parent、自分の Draft PR を取得。形式: doctor fixture の operation / scope / raw と全 page を index に保存。渡し先: workflow-doctor.sh --github-input /absolute/index.json へ渡す（repo 省略は origin）。表の旧文言は実行しない。不足時: 任意取得の不足は SKIP で継続。@me の実主体を照合し、403 を parent=null にしない。--offline は file も読まない。
 
 ## 実行
@@ -63,7 +64,7 @@ Terminal 能力は [長時間ゲートの進捗表示](../../docs-template/05-op
 
 能力3条件を確認済みの当該セッションでは、上の実行行の末尾に `--terminal-capability available` を追加して起動する。能力を確認できない自動呼び出しでは既定の `unknown` を保ち、その診断を実施済みとはしない。
 
-## 検査項目（12）
+## 検査項目（13）
 
 | 番号 | 検査 | 見る場所 | ずれの例（導入先で実測） | 重大度 |
 | --- | --- | --- | --- | --- |
@@ -79,8 +80,9 @@ Terminal 能力は [長時間ゲートの進捗表示](../../docs-template/05-op
 | 10 | 入口のパリティ | `<root>/CLAUDE.md` と `<root>/AGENTS.md` | 両方があるとき、契約の必須語（`YAGNI` / `bundle`）が片方にしか無い（Claude Code は CLAUDE.md だけ、Codex / grok は AGENTS.md だけを読む） | WARN |
 | 11 | Draft の実態 | `gh pr list --draft --author @me` | 自分が author の open な Draft PR が残っている（`knowledge:` の ACE PR は自律フローの人の確認待ちなので除外し INFO） | WARN |
 | 12 | 長時間ゲートの表示 | 検査 1 と同じ入口文書（available 時だけ） | 長時間・ゲート・suite・push と background の固定規定が同じ行にある。条件付き fallback と background 禁止は除外。行位置と FIXTEXT を示す。文書の欠落・空・読取不能・検索失敗は FAIL | WARN / FAIL |
+| 13 | 作業ツリーの行末 | `<root>/.gitattributes` と `git ls-files --eol` | LF 固定の規則（`eol=lf`）が当たっていない `w/crlf` の追跡ファイル、規則は当たっているのに `w/crlf` のまま残った追跡ファイル（取り出し直しが要る。index も CRLF のものは、先に renormalize が要る件数を添える）を件数つきで示す（導入先の実測: `core.autocrlf=true`・`.gitattributes` なしの作業ツリーで script の置換が空振りした）。`eol=crlf` / `-text` を指定したファイルは意図した指定として数えない。規則が無く `w/crlf` も 0 件なら INFO。`git` を読めない・作業ツリーのルートでない・追跡ファイル 0 件は SKIP | WARN / INFO |
 
-<!--fd1330bd8bb5c506-->
+<!--5fa5641c5185a4bf-->
 MCP: 取得値: MCP で同じ repo の labels / bundle / open Issues と parent、自分の Draft PR を取得。形式: doctor fixture の operation / scope / raw と全 page を index に保存。渡し先: workflow-doctor.sh --github-input /absolute/index.json へ渡す（repo 省略は origin）。表の旧文言は実行しない。不足時: 任意取得の不足は SKIP で継続。@me の実主体を照合し、403 を parent=null にしない。--offline は file も読まない。
 
 - 出力は 1 行 1 所見（`<LEVEL>\t<番号>\t<所見>`）。`FIXTEXT` 行は置換案。`SUGGEST` 行は提案（下の「提案」節）で、SUMMARY の直前にまとめて出る。末尾に `SUMMARY fail=<n> warn=<n> skip=<n>`
@@ -89,6 +91,8 @@ MCP: 取得値: MCP で同じ repo の labels / bundle / open Issues と parent�
 - 検査 1 は英字の大文字・小文字を区別しない。「即座に」の直後が Issue / GitHub Issue の実測形を検出し、「即座に修正」等の別述語と後段の Issue 作成を結び付けない。検査語は固定文字列と `.*` だけで書く（多バイトの文字クラスは BSD grep の C ロケールで一致 0 件 = fail-open になる。導入先の実測）。`grep` の rc≥2 は FAIL として報告し「0 件」に畳まない
 
 ## 結果の読み方と直し方
+
+- **WARN 13（作業ツリーの行末）**: [まず作業ツリーを LF に固定する](../../docs-template/05-operations/deployment/markdown-patch-discipline.md#まず作業ツリーを-lf-に固定する) の手順に従う（手順はこの節に複製しない）。CRLF を意図して選んだ導入先は、該当ファイルへ `eol=crlf` を指定すれば数えられなくなる。WARN 単独は rc0。検査はファイルを書き換えない。
 
 - **WARN 12（background 固定）**: 同じ行に Terminal 能力による分岐と fallback を示すか、上の「長時間ゲートの進捗表示」を参照する。検査は行単位の候補検出で、文書全体の意味解析ではない。別行にある条件は結び付けない。WARN 単独は rc0。自動修正はしない。
 
@@ -118,12 +122,13 @@ MCP: 取得値: MCP で通常へ戻す同じ PR の number / isDraft を取得�
    - 検査 10: 片方の入口文書が無く、もう一方を読む CLI（`codex` / `grok` / `claude`）が PATH に在る → 欠けている入口文書の追加
    - 検査 11: 残っている Draft PR → `gh pr ready <番号>`
    - 検査 4・6: open な bundle が 0 件で親無し Issue がある → テーマ別の bundle と `scripts/link-sub-issues.sh`
+   - 検査 13: `w/crlf` の追跡ファイルが残っている → 行末を LF に固定して取り出し直す（根拠は件数と `core.autocrlf` の実値。手順は正本の文書を指す）
 2. **ホスト層（文脈）**: このスキルを実行したホストは、FAIL / WARN / SUGGEST とリポジトリの文脈（README・既存スクリプト・使える CLI・CLAUDE.md / AGENTS.md の節構成）を合わせて、報告の最後に**提案を最大 3 件**に絞って出す。各提案は次の 3 点を持つ:
    - **根拠**: 実測した事実（SUGGEST の `根拠:` 欄、FAIL / WARN の行、自分で開いたファイルの行）。推測だけの提案は出さない
    - **変更案**: そのリポジトリで動く具体的な書き換え（FIXTEXT を、そのリポジトリの節構成・既存の語に合わせて具体化したもの）
    - **適用先**: 書き換えるファイルのパスと、PR で直すか（リポジトリ内）・直接編集か（`$HOME` 配下のグローバル CLAUDE.md）
 
-<!--b44e23e9d487ddef-->
+<!--6c6b48525ad5e02a-->
 MCP: 取得値: MCP で同じ Draft PR の number / isDraft、Issue の body を取得。形式: JSON の実値から SUGGEST の根拠を保持。渡し先: SUGGEST の提案のみ報告する。明示実行時の ready は既存 MCP ready tool、本文は競合確認後の update_issue へ原文を渡す。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
 
 SUGGEST は FAIL / WARN / SKIP に数えず、終了コードも変えない。提案は**適用しない**（read-only は維持。適用は差分を見たうえで人か呼び出し元が行う）。
@@ -143,3 +148,4 @@ MCP: 取得値: MCP で同じ repo の labels / bundle / open Issues と parent�
 - 検査 1 は「旧文言を廃止した経緯」として逐語引用する文にも当たる（意図した fail-closed）。経緯は `docs/08-knowledge/` の証跡側へ書き、入口文書では逐語引用しない
 - 検査 8 / 9 の否定・条件付きの除外は語で判定する。除外語を含む行に旧規定が同居していると見逃す（fail-open 側の既知の限界）。逆に検査 1 と同じく、経緯として旧文言を逐語引用した行には当たる
 - 検査 4〜6・11 の SKIP は「問題なし」ではない。`--offline` で回した回は報告に SKIP を残す
+- 検査 13 は追跡ファイルだけを見る（未追跡のファイルと、git を通らない書き込みで混ざった改行は対象外）。作業ツリーの改行が混在するファイル（`w/mixed`）は数えない。規則の有無は直下の `.gitattributes` だけで判定し（一部のパスだけに `eol=lf` を当てた規則も「規則あり」と読む）、件数の分類は git が解決した属性（下位の `.gitattributes` を含む）で行う

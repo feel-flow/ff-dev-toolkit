@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 空振り検出: PR 本文中の Closes 引用と散文の分離（F2820-1..10、基準 513 件緑）。merge-message.sh で CLOSES_RAW に P / Q を戻す変異は 4 件赤、finish-precheck.sh の CLOSES_TEXT_ONLY_PROSE 停止分岐を外す変異は 2 件赤（F2820-2 / F2820-4）、ff_merge_strip_quoted のキーワード引数を外す変異は 1 件赤（512/1、F2820-9、rc=1）になる（2026-11-21 macOS 実測）。
+# 空振り検出: マージ用本文を旧構文に戻すと、生成済みのコマンドを実フックへ渡す E4 guard が git-write-chain-unavailable で赤になる。生成できない入力は E4 fixture、ガードを無効化して空出力にすると E4 guard liveness が赤になる（macOS / Bash 3.2）。
 # 空振り検出: MG7 の時刻による揺れ（Issue `#2845`）。対照は 500/0、修正後は 501/0。修正前の比較のまま時計だけを 1 時間進めると 496/4（MG7 の 4 状態。不一致は EFFORT_7_wallclock_actual_h の 1 行）、修正後に値を伏せる処理を外すと 497/4（同じ 4 件。不一致の行が出る）、時計の差し替えを実時計へ素通しにすると 500/1（MG7-clock。5 回とも同じ値）、MERGEABLE のとき mergeStateStatus が CLEAN 以外なら stdout へ 1 行足す変異（finish-precheck.sh）は 497/4（MG7 の 4 状態）で赤（2026-11-18 macOS 実測、/bin/bash 3.2、全変異の bash 構文 rc 0）。
 # 空振り検出: 参照行の書き忘れ判定（Issue `#2823`）を旧 no-target 分岐へ戻す変異で、本文・件名・タイトルの候補（B6a〜c）と件名が読めない入力（B6d）がすべて rc 0 となり赤。候補なし（B6）は緑のまま（2026-11-17 macOS 実測）。
 # 空振り検出: 同じ Issue のレビュー対応前へ実装だけ戻すと、数字だけの CSS 色を含む候補なし（B6）と、複数候補で番号を選ばない案内（B6e）が赤（B まで 55/2、修正後 57/0、2026-11-17 macOS 実測）。
@@ -630,16 +632,17 @@ BASE_OID="$(g -C "$WORK" rev-parse origin/develop)"
 
 # PR JSON を組み立てる: <body> <statusCheckRollup JSON>
 write_pr_json() {
-  local files_json='[{"path":"x.txt"}]'
+  local files_json='[{"path":"x.txt"}]' closing_refs_json='null'
   [ -z "${PR_FILES_JSON:-}" ] || files_json="$PR_FILES_JSON"
+  [ -z "${PR_CLOSING_REFS_JSON:-}" ] || closing_refs_json="$PR_CLOSING_REFS_JSON"
   jq -n --arg body "$1" --arg head "$HEAD_OID" --arg base "$BASE_OID" --argjson rollup "$2" --argjson number "$PRN" --argjson cross "${PR_CROSS:-false}" \
-    --argjson files "$files_json" \
+    --argjson files "$files_json" --argjson closing_override "$closing_refs_json" \
     --arg title "${PR_TITLE:-feat(#${PRN}): x}" --arg headline "${PR_HEADLINE:-fix: #${REFN} x}" --arg cbody "${PR_COMMIT_BODY:-body}" \
     --arg head_ref "${PR_HEAD_REF:-feature/#7-x}" --arg base_ref "${PR_BASE_REF:-develop}" \
     --arg mergeable "${PR_MERGEABLE:-MERGEABLE}" --arg merge_state "${PR_MERGE_STATE_STATUS:-CLEAN}" '{
     number: $number, state: "OPEN", isDraft: false, headRefName: $head_ref, headRefOid: $head, baseRefOid: $base, isCrossRepository: $cross,
     baseRefName: $base_ref, title: $title, body: $body,
-    closingIssuesReferences: (if ($body | test("Closes")) then [{url: ("https://github.com/owner/repo/issues/" + ($number | tostring))}] else [] end),
+    closingIssuesReferences: (if $closing_override != null then $closing_override elif ($body | test("Closes")) then [{url: ("https://github.com/owner/repo/issues/" + ($number | tostring))}] else [] end),
     commits: [{oid: $head, messageHeadline: $headline, messageBody: $cbody}],
     statusCheckRollup: $rollup, additions: 20, deletions: 3, files: $files,
     mergeable: $mergeable, mergeStateStatus: $merge_state
@@ -1869,6 +1872,149 @@ if [ "$M_EMIT_RC" -eq 2 ] && [ -z "$M_EMIT_OUT" ] && has_text "$M_EMIT_DEFAULT" 
 else
   bad "M11: ff_merge_emit の方式引数の扱いが違う（rc=${M_EMIT_RC}）: [${M_EMIT_OUT}] / [${M_EMIT_DEFAULT}]"
 fi
+
+# ── F''. precheck: PR 本文中の Closes 引用と散文の分離 ────
+OTHERN=88
+# 1) Closes + コード span / フェンス内 citation: CLOSES_TEXT_ONLY に分離、AC 対象外、info のみで継続
+: >"$STUB_LOG"
+PR_CLOSING_REFS_JSON="[{\"url\":\"https://github.com/owner/repo/issues/${PRN}\"}]" \
+  write_pr_json "$(printf 'Closes #%s\n\n補足で `Closes #%s` と\n```\nFixes #%s\n```\nを引用。' "$PRN" "$OTHERN" "$OTHERN")" '[]'
+STUB_ISSUE_BODY="" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 0 ] && has_line "$OUT" "CLOSES=owner/repo#${PRN}" \
+  && ! has_line "$OUT" "CLOSES=owner/repo#${OTHERN}" \
+  && has_line "$OUT" "CLOSES_TEXT_ONLY=owner/repo#${OTHERN}" \
+  && has_line "$OUT" "CLOSES_TEXT_ONLY_KIND=quoted" \
+  && ! has_text "$STUB_LOG" "issues/${OTHERN}" \
+  && has_text "$ERR" "受け入れ条件の照合対象には含めません" \
+  && has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "F2820-1: コード span・フェンス内の Closes 引用は CLOSES_TEXT_ONLY(quoted) に分け、AC 照合へ混ぜず info のみで通す"
+else
+  bad "F2820-1: quoted Closes の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+
+# 2) Closes + 散文内 closing keyword: AC 照合に混ぜず PRECHECK=blocked(rc 1) で言い換え案内
+: >"$STUB_LOG"
+PR_CLOSING_REFS_JSON="[{\"url\":\"https://github.com/owner/repo/issues/${PRN}\"}]" \
+  write_pr_json "$(printf 'Closes #%s\n\n背景の Closes #%s を確認済み。' "$PRN" "$OTHERN")" '[]'
+STUB_ISSUE_BODY="- [ ] remaining-ac" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "PRECHECK=blocked" \
+  && has_line "$OUT" "CLOSES=owner/repo#${PRN}" \
+  && ! has_line "$OUT" "CLOSES=owner/repo#${OTHERN}" \
+  && has_line "$OUT" "CLOSES_TEXT_ONLY=owner/repo#${OTHERN}" \
+  && has_line "$OUT" "CLOSES_TEXT_ONLY_KIND=prose" \
+  && ! has_text "$OUT" "AC_UNCHECKED=owner/repo#${OTHERN}" \
+  && ! has_text "$STUB_LOG" "issues/${OTHERN}" \
+  && has_text "$ERR" "CLOSES_TEXT_ONLY=" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "F2820-2: 散文中の意図しない Closes は AC 照合に混ぜず PRECHECK=blocked で止め、言い換えを案内する"
+else
+  bad "F2820-2: prose Closes の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+
+# 3) Refs + コード span 内 Closes 引用: Closes 運用へ誤分類せず issue view なしで通す
+: >"$STUB_LOG"
+PR_CLOSING_REFS_JSON='[]' \
+  write_pr_json "$(printf 'Refs #%s（open 維持）\n\n経緯: `Closes #%s` を `Refs #%s` へ変更。' "$REFN" "$REFN" "$REFN")" '[]'
+run_finish "$WORK" precheck 7 --subject "chore: update notes" --body "Refs #${REFN}"
+if [ "$RC" -eq 0 ] && has_line "$OUT" "REFS=owner/repo#${REFN}" \
+  && ! has_line "$OUT" "CLOSES=owner/repo#${REFN}" \
+  && has_line "$OUT" "CLOSES_TEXT_ONLY=owner/repo#${REFN}" \
+  && has_line "$OUT" "CLOSES_TEXT_ONLY_KIND=quoted" \
+  && ! awk 'index($0, "issue view") { f = 1 } END { exit f ? 0 : 1 }' "$STUB_LOG"; then
+  ok "F2820-3: Refs PR のコード span 引用 Closes は Closes 運用に倒さず issue view なしで通す"
+else
+  bad "F2820-3: Refs + quoted Closes の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+
+# 4) Refs + 散文内 closing keyword: Closes へ混ぜず issue view なしで PRECHECK=blocked(rc 1) で止める
+: >"$STUB_LOG"
+PR_CLOSING_REFS_JSON='[]' \
+  write_pr_json "$(printf 'Refs #%s（open 維持）\n\n経緯: Closes #%s は別件。' "$REFN" "$OTHERN")" '[]'
+run_finish "$WORK" precheck 7 --subject "chore: update notes" --body "Refs #${REFN}"
+if [ "$RC" -eq 1 ] && has_line "$OUT" "PRECHECK=blocked" \
+  && has_line "$OUT" "REFS=owner/repo#${REFN}" \
+  && ! has_line "$OUT" "CLOSES=owner/repo#${OTHERN}" \
+  && has_line "$OUT" "CLOSES_TEXT_ONLY=owner/repo#${OTHERN}" \
+  && has_line "$OUT" "CLOSES_TEXT_ONLY_KIND=prose" \
+  && ! awk 'index($0, "issue view") { f = 1 } END { exit f ? 0 : 1 }' "$STUB_LOG"; then
+  ok "F2820-4: Refs + 散文 Closes は CLOSES に混ぜず issue view なしで PRECHECK=blocked で止める"
+else
+  bad "F2820-4: Refs + prose Closes の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+
+# 5) 非デフォルト base 救済 (ACE-1037-1): 独立行 Closes は API 空でも CLOSES= に入り AUTO_CLOSE_UNRELIABLE=1
+PR_CLOSING_REFS_JSON='[]' write_pr_json "Closes #${PRN}" '[]'
+run_finish "$WORK" precheck 7
+if [ "$RC" -eq 0 ] && has_line "$OUT" "CLOSES=owner/repo#${PRN}" \
+  && has_line "$OUT" "AUTO_CLOSE_UNRELIABLE=1" \
+  && has_line "$OUT" "CLOSES_TEXT_ONLY_KIND=none"; then
+  ok "F2820-5: 独立行 Closes は API 空（非デフォルト base）でも CLOSES= と AUTO_CLOSE_UNRELIABLE=1 で救済される"
+else
+  bad "F2820-5: 非デフォルト base 救済が壊れている（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+
+# 6) 対象空（CLOSES/REFS とも空）+ 散文 owner/repo#N: PRECHECK=no-target で抜けず PRECHECK=blocked(rc 1) で止める
+PR_CLOSING_REFS_JSON='[]' PR_TITLE="chore: clean" PR_HEADLINE="chore: clean" \
+  write_pr_json "背景の Closes owner/repo#${OTHERN} を確認済み。" '[]'
+run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "PRECHECK=blocked" && ! has_line "$OUT" "PRECHECK=no-target" \
+  && has_line "$OUT" "CLOSES_TEXT_ONLY=owner/repo#${OTHERN}" \
+  && has_line "$OUT" "CLOSES_TEXT_ONLY_KIND=prose" \
+  && has_text "$ERR" "CLOSES_TEXT_ONLY="; then
+  ok "F2820-6: 対象空 + 散文 owner/repo#N は no-target で抜けず dedicated CLOSES_TEXT_ONLY で PRECHECK=blocked"
+else
+  bad "F2820-6: 対象空 + 散文 owner/repo#N の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+
+# 7) 対象空 + コード引用のみ: PRECHECK=no-target(rc 0) となり引用先の Closes 追記を誤案内しない
+PR_CLOSING_REFS_JSON='[]' PR_TITLE="chore: clean" PR_HEADLINE="chore: clean" \
+  write_pr_json "Example: \`Closes #${OTHERN}\` was removed." '[]'
+run_finish "$WORK" precheck 7
+if [ "$RC" -eq 0 ] && has_line "$OUT" "PRECHECK=no-target" && ! has_line "$OUT" "PRECHECK=blocked" \
+  && has_line "$OUT" "CLOSES_TEXT_ONLY=owner/repo#${OTHERN}" \
+  && has_line "$OUT" "CLOSES_TEXT_ONLY_KIND=quoted" \
+  && ! has_text "$ERR" "Refs #${OTHERN} または Closes #${OTHERN}"; then
+  ok "F2820-7: 対象空 + コード引用のみの Closes は PRECHECK=no-target になり不要な追記案内で止めない"
+else
+  bad "F2820-7: 対象空 + quoted Closes の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+
+# 8) Refs PR + 4 スペース字下げコード / 複数行インラインコード span 内 Closes: REFS_ONLY を維持し通る
+PR_CLOSING_REFS_JSON='[]' \
+  write_pr_json "$(printf 'Refs #%s（open 維持）\n\n    Closes #%s\n\n例: `see\nCloses #%s\nend` 終了。' "$REFN" "$REFN" "$OTHERN")" '[]'
+run_finish "$WORK" precheck 7 --subject "chore: update notes" --body "Refs #${REFN}"
+if [ "$RC" -eq 0 ] && has_line "$OUT" "REFS=owner/repo#${REFN}" \
+  && ! has_line "$OUT" "CLOSES=owner/repo#${REFN}" \
+  && ! has_line "$OUT" "CLOSES=owner/repo#${OTHERN}" \
+  && has_line "$OUT" "CLOSES_TEXT_ONLY_KIND=quoted"; then
+  ok "F2820-8: 4スペース字下げコード・複数行インラインコード span 内の Closes は Refs を打ち消さず quoted 分類になる"
+else
+  bad "F2820-8: 字下げ・複数行コード span の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+
+# 9) 対象空 + コードスパン内の単独 #N 言及: 書き忘れ候補として PRECHECK=blocked(rc 1) で止める
+PR_CLOSING_REFS_JSON='[]' PR_TITLE="chore: update note" PR_HEADLINE="chore: update note" \
+  write_pr_json "対応対象は \`#${REFN}\` です" '[]'
+run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "PRECHECK=blocked" && ! has_line "$OUT" "PRECHECK=no-target" \
+  && has_text "$ERR" "候補があります（#${REFN}）"; then
+  ok "F2820-9: コード表記の単独 #N は書き忘れ候補に残り PRECHECK=blocked で止める"
+else
+  bad "F2820-9: コード表記の単独 #N の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+
+# 10) Refs PR + フェンス内 4 スペース ``` の次行 Closes + 複数段落 HTML コメント直後のフェンス内 Closes: REFS_ONLY を維持
+PR_CLOSING_REFS_JSON='[]' \
+  write_pr_json "$(printf 'Refs #%s（open 維持）\n\n```md\n    ```\nCloses #%s\n```\n\n<!-- p1\n\np2 -->\n~~~bash\nCloses #%s\n~~~' "$REFN" "$REFN" "$OTHERN")" '[]'
+run_finish "$WORK" precheck 7 --subject "chore: update notes" --body "Refs #${REFN}"
+if [ "$RC" -eq 0 ] && has_line "$OUT" "REFS=owner/repo#${REFN}" \
+  && ! has_line "$OUT" "CLOSES=owner/repo#${REFN}" \
+  && ! has_line "$OUT" "CLOSES=owner/repo#${OTHERN}" \
+  && has_line "$OUT" "CLOSES_TEXT_ONLY_KIND=quoted"; then
+  ok "F2820-10: フェンス内4スペース三連バッククォート次行と複数段落コメント直後のフェンス内 Closes を誤昇格させず Refs を維持する"
+else
+  bad "F2820-10: フェンス終端・複数段落コメント直後の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+
 write_pr_json "Closes #${PRN}" '[]'
 
 # PR_COMMITS は head のコミット数ぶん出る（先頭 1 行だけを出す退行を 1 コミットの fixture では拾えないため、

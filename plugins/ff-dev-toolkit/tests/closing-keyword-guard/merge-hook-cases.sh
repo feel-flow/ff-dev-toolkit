@@ -330,6 +330,11 @@ STUB
   mc_test_assert note 'MSYSでは時間枠を使い切ったら以後を未検査と通知'; mode=""
   case "$out" in *時間枠*) ok 'merge hook: MSYSの通知が時間枠の使い切りを名指しする' ;; *) bad "merge hook: MSYSの時間枠の通知が無い (out=[$out])" ;; esac
   if [ $((SECONDS-started)) -lt 12 ]; then ok 'merge hook: MSYSで遅い照会が続いても照会の時間枠（8秒）と解析の余裕の内に戻る'; else bad 'merge hook: MSYSの全体の時間枠が成立しない'; fi
+  jq --arg ref "$ref" '.data.node.body="Refs \($ref)\n経緯で `Closes \($ref)` を引用"' "$tmp/base.json" >"$response"
+  mc_test_run 'gh pr merge 7 --squash'; mc_test_assert deny 'PR本文の引用内ClosesだけではRefs運用を解除せずcommit抵触を止める'
+  jq --arg ref "$ref" '.data.node.body=("Refs " + $ref + "\n```md\n    ```\nCloses " + $ref + "\n```")' "$tmp/base.json" >"$response"
+  mc_test_run 'gh pr merge 7 --squash'; mc_test_assert deny 'フェンス内4スペース字下げ```の次行ClosesではRefs運用を解除しない'
+  cp "$tmp/base.json" "$response"
   if [ "$count" -gt 0 ] && [ $((PASS+FAIL)) -gt "$before" ]; then ok 'merge hook: case集合は空でない'; else bad 'merge hook: case集合が空'; fi
   rm -rf "$tmp"
 }

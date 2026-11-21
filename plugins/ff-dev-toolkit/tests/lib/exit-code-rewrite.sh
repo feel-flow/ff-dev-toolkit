@@ -1,9 +1,48 @@
 #!/usr/bin/env bash
-# 値を評価せず、一意な producer | tail/head + echo rc だけを書き換える。
+# 値を評価せず、一意な producer | tail/head + echo rc と producer | tail && next を書き換える。
 # 単一は従来のバイト列。; で区切った同じ形の並びは、最初の非 0 で終わる 1 本にまとめる。
-# 一意でない区間・関数・サブシェル・& は非 0（書き換えない）。bash 3.2 互換。
+# 一意でない区間・関数・サブシェル・背景起動は非 0（書き換えない）。bash 3.2 互換。
+ff_exit_code_simple_segment() {
+  local segment="$1"
+  case "$segment" in
+    *'|'*|*';'*|*'&'*|*'<'*|*'>'*|*'$'*|*'`'*|*'('*|*')'*|*'{'*|*'}'*|*'['*|*']'*|*'\'*|*'*'*|*'?'*|*'#'*|*$'\n'*) return 1 ;;
+    *[[:blank:]]cd\ *) return 1 ;;
+  esac
+  case "${segment%%[[:blank:]]*}" in
+    bash|sh|node|python|python3|npm|pnpm|npx|timeout|git|printf|test|true|false|cat|ls|rg|grep|tsc|tsx|vitest|/*|./*|../*) return 0 ;;
+    gh) [ "${2:-}" = after ]; return ;;
+  esac
+  return 1
+}
+
+ff_exit_code_rewrite_chain() {
+  local original="$1" pattern producer count after stderr_redirect="" body
+  [[ "$original" != *$'\r'* ]] || return 1
+  pattern='^[[:blank:]]*([^|;]+)[[:blank:]]+[|][[:blank:]]+tail[[:blank:]]+(-[0-9]+|-n[[:blank:]]+[0-9]+)[[:blank:]]+&&[[:blank:]]+([^|;]+)[[:blank:]]*$'
+  [[ "$original" =~ $pattern ]] || return 1
+  producer="${BASH_REMATCH[1]}"; count="${BASH_REMATCH[2]}"; after="${BASH_REMATCH[3]}"
+  while [[ "$producer" = *[[:blank:]] ]]; do producer="${producer%?}"; done
+  while [[ "$producer" = [[:blank:]]* ]]; do producer="${producer#?}"; done
+  case "$producer" in
+    *' 2>&1') producer="${producer% 2>&1}"; stderr_redirect=' 2>&1' ;;
+  esac
+  ff_exit_code_simple_segment "$producer" && ff_exit_code_simple_segment "$after" after || return 1
+  printf '%s\n' "$original" | bash -n 2>/dev/null || return 1
+  # ログを直接開かせず、元のパイプと同様、書き手が閉じるまで標準出力を読み切る。
+  body="$(printf '%s\n' 'ff_log="$(mktemp /tmp/ff-exit-code.XXXXXX)" || exit $?' \
+    'trap '\''rm -f -- "$ff_log"'\'' EXIT' 'set -o pipefail' 'ff_tail_rc=0' \
+    "if ( $producer )${stderr_redirect} | cat > \"\$ff_log\"; then" \
+    '  ff_rc=0' 'else' '  ff_rc=$?' 'fi' \
+    "tail $count \"\$ff_log\" || ff_tail_rc=\$?" \
+    'if [ "$ff_rc" -ne 0 ]; then exit "$ff_rc"; fi' \
+    'exit "$ff_tail_rc"')"
+  printf '%s\n' "$body" | bash -n 2>/dev/null || return 1
+  # 後続をシェル本文に入れず、ホストの権限判定に元のコマンドを見せる。
+  printf 'bash -c %q && %s\n' "$body" "$after"
+}
+
 ff_exit_code_rewrite_one() {
-  local original="$1" pattern producer filter count label first body
+  local original="$1" pattern producer filter count label body
   pattern='^[[:blank:]]*([^|;]+)[[:blank:]]+[|][[:blank:]]+(tail|head)[[:blank:]]+(-[0-9]+|-n[[:blank:]]+[0-9]+)[[:blank:]]*;[[:blank:]]*echo[[:blank:]]+"?([A-Za-z_][A-Za-z0-9_]*=)?(\$\?|\$\{PIPESTATUS\[0\]\})"?[[:blank:]]*$'
   [[ "$original" =~ $pattern ]] || return 1
   producer="${BASH_REMATCH[1]}"; filter="${BASH_REMATCH[2]}"
@@ -12,15 +51,7 @@ ff_exit_code_rewrite_one() {
   while [[ "$producer" = *' ' ]]; do producer="${producer% }"; done
   producer="${producer% 2>&1}"
   while [[ "$producer" = ' '* || "$producer" = $'\t'* ]]; do producer="${producer#?}"; done
-  case "$producer" in
-    *'|'*|*';'*|*'&'*|*'<'*|*'>'*|*'$'*|*'`'*|*'('*|*')'*|*'{'*|*'}'*|*'['*|*']'*|*'\'*|*'*'*|*'?'*|*'#'*|*$'\n'*) return 1 ;;
-    command\ *|builtin\ *|cd\ *|export\ *|unset\ *|set\ *|source\ *|.\ *|eval\ *|exec\ *|read\ *|trap\ *|return\ *|exit\ *|*[[:blank:]]cd\ *) return 1 ;;
-  esac
-  first="${producer%%[[:blank:]]*}"
-  case "$first" in
-    bash|sh|node|python|python3|npm|pnpm|npx|timeout|git|printf|test|true|false|cat|ls|rg|grep|tsc|tsx|vitest|/*|./*|../*) : ;;
-    *) return 1 ;;
-  esac
+  ff_exit_code_simple_segment "$producer" || return 1
   printf '%s\n' "$original" | bash -n 2>/dev/null || return 1
   # programを引数に渡すことで、producerは元のstdinを継承する。
   body="$(printf '%s\n' 'ff_log="$(mktemp /tmp/ff-exit-code.XXXXXX)" || exit $?' \
@@ -31,7 +62,7 @@ ff_exit_code_rewrite_one() {
 }
 
 ff_exit_code_take_unit() {
-  local original="$1" pattern producer filter count label first
+  local original="$1" pattern producer filter count label
   pattern='^[[:blank:]]*([^|;]+)[[:blank:]]+[|][[:blank:]]+(tail|head)[[:blank:]]+(-[0-9]+|-n[[:blank:]]+[0-9]+)[[:blank:]]*;[[:blank:]]*echo[[:blank:]]+"?([A-Za-z_][A-Za-z0-9_]*=)?(\$\?|\$\{PIPESTATUS\[0\]\})"?[[:blank:]]*$'
   [[ "$original" =~ $pattern ]] || return 1
   producer="${BASH_REMATCH[1]}"; filter="${BASH_REMATCH[2]}"
@@ -39,15 +70,7 @@ ff_exit_code_take_unit() {
   while [[ "$producer" = *' ' ]]; do producer="${producer% }"; done
   producer="${producer% 2>&1}"
   while [[ "$producer" = ' '* || "$producer" = $'\t'* ]]; do producer="${producer#?}"; done
-  case "$producer" in
-    *'|'*|*';'*|*'&'*|*'<'*|*'>'*|*'$'*|*'`'*|*'('*|*')'*|*'{'*|*'}'*|*'['*|*']'*|*'\'*|*'*'*|*'?'*|*'#'*|*$'\n'*) return 1 ;;
-    command\ *|builtin\ *|cd\ *|export\ *|unset\ *|set\ *|source\ *|.\ *|eval\ *|exec\ *|read\ *|trap\ *|return\ *|exit\ *|*[[:blank:]]cd\ *) return 1 ;;
-  esac
-  first="${producer%%[[:blank:]]*}"
-  case "$first" in
-    bash|sh|node|python|python3|npm|pnpm|npx|timeout|git|printf|test|true|false|cat|ls|rg|grep|tsc|tsx|vitest|/*|./*|../*) : ;;
-    *) return 1 ;;
-  esac
+  ff_exit_code_simple_segment "$producer" || return 1
   ff_u_piece="$(printf '%s\n' 'ff_log="$(mktemp /tmp/ff-exit-code.XXXXXX)" || exit $?' \
     "( $producer ) > \"\$ff_log\" 2>&1" 'ff_rc=$?' \
     "$filter $count \"\$ff_log\"" 'rm -f -- "$ff_log"' \
@@ -85,6 +108,10 @@ ff_exit_code_rewrite_many() {
 
 ff_exit_code_rewrite() {
   local original="$1" out
+  if out="$(ff_exit_code_rewrite_chain "$original")"; then
+    printf '%s\n' "$out"
+    return 0
+  fi
   if out="$(ff_exit_code_rewrite_one "$original")"; then
     printf '%s\n' "$out"
     return 0

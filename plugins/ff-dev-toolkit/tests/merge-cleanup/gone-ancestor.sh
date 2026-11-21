@@ -328,7 +328,7 @@ ga_assert 'clean normal run does not record fetched PR head in FETCH_HEAD (--no-
 # まず通常実行と同じ対象が削除予定/保護されることを --dry-run でも確認
 git -C "$TMP_GA/repo-protected" show-ref > "$TMP_GA/prot-before.refs"
 git -C "$TMP_GA/repo-protected" worktree list --porcelain > "$TMP_GA/prot-before.wt"
-run_ga_cleanup "$TMP_GA/repo-protected" "$TMP_GA/prot-dry.log" --dry-run
+run_ga_cleanup "$TMP_GA/repo-protected" "$TMP_GA/prot-dry.log" --dry-run --worktree-branch fix/wt-anc
 ga_assert "protected dry-run exits 2 PARTIAL (rc=${GA_LAST_RC})" test "$GA_LAST_RC" -eq 2
 git -C "$TMP_GA/repo-protected" show-ref > "$TMP_GA/prot-after-dry.refs"
 git -C "$TMP_GA/repo-protected" worktree list --porcelain > "$TMP_GA/prot-after-dry.wt"
@@ -350,7 +350,7 @@ ga_assert 'protected dry-run protects fork-anc' \
 ga_assert 'protected dry-run protects linked worktree holding ancestor' \
   grep -qF 'fix/wt-anc: [gone] だが MERGED PR と OID 不一致のため worktree を保護' "$TMP_GA/prot-dry.log"
 
-run_ga_cleanup "$TMP_GA/repo-protected" "$TMP_GA/prot-real.log"
+run_ga_cleanup "$TMP_GA/repo-protected" "$TMP_GA/prot-real.log" --worktree-branch fix/wt-anc
 ga_assert "protected normal run exits 2 PARTIAL (rc=${GA_LAST_RC})" test "$GA_LAST_RC" -eq 2
 for b in fix/non-anc fix/anc-unreachable "$GA_QUOTE_BRANCH" fix/dup-anc fix/fork-anc fix/wt-anc; do
   ga_assert "must retain protected branch ${b}" ga_branch_exists "$TMP_GA/repo-protected" "$b"

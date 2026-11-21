@@ -346,7 +346,7 @@ cmd_precheck() {
   echo "MERGE_METHOD=${MERGE_METHOD}"
 
   # ── 1. 対象 Issue の検出（PR 本文からの抽出は機械で行う。目視で拾わない） ──
-  local PR_BODY REFS_RAW CLOSES_RAW API_CLOSES_TOKENS CLOSES_UNION REFS_ONLY EXTRACT_RC
+  local PR_BODY REFS_RAW CLOSES_RAW CLOSES_PROSE_RAW CLOSES_QUOTED_RAW API_CLOSES_TOKENS CLOSES_UNION CLOSES_TEXT_ONLY_PROSE CLOSES_TEXT_ONLY_QUOTED CLOSES_TEXT_ONLY REFS_ONLY EXTRACT_RC
   PR_BODY="$(printf '%s' "$PR_JSON" | jq -r '.body // ""')"
   local KEYWORD_LIST
   KEYWORD_LIST="$(FF_DEV_TOOLKIT_ROOT="$plugin_root" bash "$plugin_root/scripts/check-closing-keywords.sh" --list-keywords)" \
@@ -358,30 +358,58 @@ cmd_precheck() {
   ff_merge_issue_sets "$TARGET_REPO" "$PR_BODY" "$API_CLOSES_TOKENS" "$KEYWORD_LIST" \
     || die_env "Refs / Closes 参照の抽出に失敗しました" "判定helperとawk/sortの動作を確かめる"
 
-  local tok
+  local tok closes_text_only_kind="none" closes_text_only_list
   while IFS= read -r tok; do [[ -n "$tok" ]] && printf 'CLOSES=%s\n' "$tok"; done <<<"$CLOSES_UNION"
   while IFS= read -r tok; do [[ -n "$tok" ]] && printf 'REFS=%s\n' "$tok"; done <<<"$REFS_ONLY"
+  while IFS= read -r tok; do [[ -n "$tok" ]] && printf 'CLOSES_TEXT_ONLY=%s\n' "$tok"; done <<<"$CLOSES_TEXT_ONLY"
+  if [[ -n "$CLOSES_TEXT_ONLY_PROSE" && -n "$CLOSES_TEXT_ONLY_QUOTED" ]]; then
+    closes_text_only_kind="both"
+  elif [[ -n "$CLOSES_TEXT_ONLY_PROSE" ]]; then
+    closes_text_only_kind="prose"
+  elif [[ -n "$CLOSES_TEXT_ONLY_QUOTED" ]]; then
+    closes_text_only_kind="quoted"
+  fi
+  echo "CLOSES_TEXT_ONLY_KIND=${closes_text_only_kind}"
+  if [[ -n "$CLOSES_TEXT_ONLY_QUOTED" && -z "$CLOSES_TEXT_ONLY_PROSE" ]]; then
+    closes_text_only_list="$(printf '%s\n' "$CLOSES_TEXT_ONLY_QUOTED" | awk 'NF{s=s (c++ ? ", " : "") $0} END{print s}')"
+    echo "ℹ️  PR 本文のコード span / コードブロック / HTML コメント内に closing keyword 付き参照があります（${closes_text_only_list}）。受け入れ条件の照合対象には含めません" >&2
+  fi
   local api_close_count body_close_count auto_unreliable=0
   api_close_count="$(printf '%s\n' "${API_CLOSES_TOKENS}" | awk 'NF{c++} END{print c+0}')"
   body_close_count="$(printf '%s\n' "${CLOSES_RAW}" | awk 'NF{c++} END{print c+0}')"
   if [[ "$api_close_count" -eq 0 && "$body_close_count" -gt 0 ]]; then auto_unreliable=1; fi
   echo "AUTO_CLOSE_UNRELIABLE=${auto_unreliable}"
-  # 両群とも空のときだけ、PR 本文・タイトル・コミット件名に参照行の書き忘れがないかを見る。
-  # 候補は案内専用。対象集合に足さず、checks の待機・鮮度照合・merge コマンド生成へも進まない。
+  # 両群とも空のとき: まず散文/blockquote の意図しない closing keyword 参照（owner/repo#N を含む）を
+  # 専用案内で止める。それ以外は引用内の closing keyword 付き参照だけを除外して
+  # 本文（コード表記の単独 #N を含む）・タイトル・コミット件名から書き忘れ候補を探す。
   if [[ -z "$CLOSES_UNION" && -z "$REFS_ONLY" ]]; then
-    local issue_ref_hints
-    issue_ref_hints="$(jq -er '
+    if [[ -n "$CLOSES_TEXT_ONLY_PROSE" ]]; then
+      local empty_prose_list
+      empty_prose_list="$(printf '%s\n' "$CLOSES_TEXT_ONLY_PROSE" | awk 'NF{s=s (c++ ? ", " : "") $0} END{print s}')"
+      echo "PRECHECK=blocked"
+      die_stop "PR 本文の散文・引用ブロック内に意図しない closing keyword 付き参照（${empty_prose_list}）があります（CLOSES_TEXT_ONLY= / CLOSES_TEXT_ONLY_KIND=${closes_text_only_kind}）" \
+        "閉じる意図が無い参照なら closing keyword を外すか Refs 形式に直し、閉じる対象なら独立行の 'Closes #N' へ移してから finish.sh precheck を再実行する"
+    fi
+    local unq_file issue_ref_hints jq_rc=0
+    unq_file="$(mktemp)" || die_env "一時ファイルを作れません" "TMPDIR を書ける場所へ向けて再実行する"
+    if ! ff_merge_strip_quoted "$PR_BODY" "$KEYWORD_LIST" >"$unq_file"; then
+      rm -f "$unq_file"
+      die_env "PR 本文から引用内の closing keyword 参照を除外できません" "判定helperとawkの動作を確かめる"
+    fi
+    issue_ref_hints="$(jq -er --rawfile body_unquoted "$unq_file" '
       if (.title | type) != "string" or (.body | type) != "string" or (.commits | type) != "array"
         or any(.commits[]; (.messageHeadline | type) != "string")
       then error("invalid title, body or commits[].messageHeadline")
       else
-        [(.title, .body, .commits[].messageHeadline)
+        [(.title, $body_unquoted, .commits[].messageHeadline)
           # 宣言の区切りやコード表記が伴う数字色だけを除外する。散文の行末は CSS の証拠にしない。
           | gsub("(?i)\\b(?:[a-z-]*color|background|fill|stroke)[ \\t]*:[ \\t]*#(?:[0-9]{8}|[0-9]{6}|[0-9]{4}|[0-9]{3})(?=[ \\t]*[;}\\x60])"; " ")
           | scan("(?<![A-Za-z0-9_/#])#[1-9][0-9]*(?![A-Za-z0-9_])")]
         | unique | join(", ")
       end
-    ' <<<"$PR_JSON")" || die_env "PR 本文・タイトル・コミット件名の Issue 参照を確認できません" "gh pr view ${PR_NUMBER} --json title,body,commits または --github-input の入力を確かめて再実行する"
+    ' <<<"$PR_JSON")" || jq_rc=$?
+    rm -f "$unq_file"
+    [ "$jq_rc" -eq 0 ] || die_env "PR 本文・タイトル・コミット件名の Issue 参照を確認できません" "gh pr view ${PR_NUMBER} --json title,body,commits または --github-input の入力を確かめて再実行する"
     if [[ -n "$issue_ref_hints" ]]; then
       local example_ref="$issue_ref_hints"
       [[ "$issue_ref_hints" != *,* ]] || example_ref='#N'
@@ -550,6 +578,19 @@ cmd_precheck() {
     if [[ "$unacked" -eq 1 && -z "$blocked_reason" ]]; then
       blocked_reason="Closes 対象の Issue 本文に未チェックの受け入れ条件が残っています（AC_UNCHECKED=）"
       blocked_next="未チェックを確認してチェックしてから finish.sh precheck を再実行する。マージ後にしか測れない項目は本文を Refs に変えて手順 1 から再実行する。対象外として残す項目は理由を本文に書き、--ack-unchecked <owner/repo#N> を付けて再実行する"
+    fi
+  fi
+  if [[ -n "$CLOSES_TEXT_ONLY_PROSE" ]]; then
+    local prose_list prose_reason prose_next
+    prose_list="$(printf '%s\n' "$CLOSES_TEXT_ONLY_PROSE" | awk 'NF{s=s (c++ ? ", " : "") $0} END{print s}')"
+    prose_reason="PR 本文の散文・引用ブロック内に意図しない closing keyword 付き参照（${prose_list}）があります（CLOSES_TEXT_ONLY= / CLOSES_TEXT_ONLY_KIND=${closes_text_only_kind}）"
+    prose_next="閉じる意図が無い参照なら closing keyword を外すか Refs 形式に直し、閉じる対象なら独立行の 'Closes #N' へ移してから finish.sh precheck を再実行する"
+    if [[ -z "$blocked_reason" ]]; then
+      blocked_reason="$prose_reason"
+      blocked_next="$prose_next"
+    else
+      blocked_reason="${blocked_reason}／さらに${prose_reason}"
+      blocked_next="${blocked_next}。あわせて${prose_next}"
     fi
   fi
   ff_precheck_post_merge_verdict

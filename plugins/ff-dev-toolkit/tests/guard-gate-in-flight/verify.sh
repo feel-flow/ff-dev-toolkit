@@ -3,6 +3,7 @@
 # 実装・マーカー書込・共有判定 lib・Bash/Edit 系書き込み走査・抜け道・fail-closed・public-layout 連動を固定する。
 #
 # 空振り検出: mutation-harness で 5 件すべて detected・SURVIVED 0・未変異対照 88 件 pass（edit-live-bypass=13 fail / bash-git-write-bypass=4 fail / dead-pid-no-reclaim=rc1 / symlink-deleted=2 fail / missing-lib-fail-open=1 fail）。
+# 空振り検出: G8（別 detach worktree での baseline 実行中は元ツリーを凍結しない）は mutation-harness で 2 変異すべて detected（g8-edit-common-dir-leak=17 fail / g8-bash-collapse-protect-trees=13 fail、SURVIVED 0、対照 98 件 pass、2026-11-21 実測）。
 #
 # run-all-required: no — jq / git 不在での skip を許容する
 
@@ -466,6 +467,59 @@ SYNC
   fi
 else
   echo "ℹ️  G7: yq 不在または HOME キャッシュ配置外の前提のため合成起動を省略"
+fi
+
+echo
+echo "== G8: 別 detach worktree の baseline 走行中は元ツリーでの修正と commit を止めない =="
+# 本ケースは hook 層（Edit/Write/Bash/git commit）が元ツリーを凍結しないことの実測。
+# .sh 修正時の /pre-commit-check が呼ぶ tests/run-all/verify.sh の自動待機は run-all/verify.sh case 55-I で測る。
+BWT="$WORK/baseline-wt"
+if git -C "$R1" worktree add -q --detach "$BWT" HEAD >/dev/null 2>&1; then
+  BWT_GD="$(git -C "$BWT" rev-parse --absolute-git-dir)"
+  BWT_MDIR="$(ff_gate_marker_dir "$BWT_GD")"
+  mkdir -p "$BWT_MDIR"
+  sleep 30 &
+  BWT_PID=$!
+  SL_PIDS="$SL_PIDS $BWT_PID"
+  BWT_START="$(ff_gate_ps_lstart "$BWT_PID" || true)"
+  [ -n "$BWT_START" ] || { bad "G8: baseline sleeper の lstart を取得できない"; exit 1; }
+  BWT_MARKER="$BWT_MDIR/$BWT_PID"
+  printf '%s\n' "$BWT_START" > "$BWT_MARKER"
+  printf 'label=tests/run-all.sh\ntree=%s\n' "$BWT" > "${BWT_MARKER}.meta"
+
+  expect_deny "G8: baseline worktree 自体の Edit を deny" "$(mk_edit_json Edit "$BWT" "$BWT/tracked.sh")" 0
+  expect_deny "G8: baseline worktree 自体の Write を deny" "$(mk_edit_json Write "$BWT" "$BWT/new.sh")" 0
+  expect_deny "G8: baseline worktree 自体の git commit を deny" "$(mk_bash_json "$BWT" "git commit -m bwt")" 1
+
+  expect_allow "G8: 元の作業ツリーでの Edit は許可される" "$(mk_edit_json Edit "$R1" "$R1/tracked.sh")"
+  expect_allow "G8: 元の作業ツリーでの Write は許可される" "$(mk_edit_json Write "$R1" "$R1/review-fix.sh")"
+  expect_allow "G8: 元の作業ツリーへの Bash 書き込みは許可される" "$(mk_bash_json "$R1" "echo fix >> \"$R1/tracked.sh\"")"
+  expect_allow "G8: 元の作業ツリーでの git add は許可される" "$(mk_bash_json "$R1" "git add tracked.sh")"
+  expect_allow "G8: 元の作業ツリーでの git commit は許可される" "$(mk_bash_json "$R1" "git commit -m fix")"
+
+  BWT_PRE_HEAD="$(git -C "$BWT" rev-parse HEAD)"
+  printf 'fix-line\n' >> "$R1/tracked.sh"
+  git -C "$R1" add tracked.sh
+  git -C "$R1" commit -qm "G8 review fix during baseline"
+  R1_POST_HEAD="$(git -C "$R1" rev-parse HEAD)"
+  BWT_POST_HEAD="$(git -C "$BWT" rev-parse HEAD)"
+  BWT_DIRTY="$(git -C "$BWT" status --porcelain)"
+  if [ "$R1_POST_HEAD" != "$BWT_PRE_HEAD" ] && [ "$BWT_POST_HEAD" = "$BWT_PRE_HEAD" ] && [ -z "$BWT_DIRTY" ]; then
+    ok "G8: 元ツリーで修正〜commit を進めても baseline worktree は元の HEAD かつ clean（DIRTY=no）を保つ"
+  else
+    bad "G8: baseline worktree の独立性が崩れた（r1=${R1_POST_HEAD} bwt_pre=${BWT_PRE_HEAD} bwt_post=${BWT_POST_HEAD} dirty=${BWT_DIRTY}）"
+  fi
+
+  ff_gate_marker_remove "$BWT_MARKER"
+  kill "$BWT_PID" 2>/dev/null || true
+  wait "$BWT_PID" 2>/dev/null || true
+  if git -C "$R1" worktree remove --force "$BWT" >/dev/null 2>&1 && [ ! -e "$BWT" ]; then
+    ok "G8: baseline 終了後に git worktree remove で一時 worktree を回収できる"
+  else
+    bad "G8: 一時 worktree を回収できない: $BWT"
+  fi
+else
+  bad "G8: 別 detach worktree を作成できない"
 fi
 
 echo

@@ -140,7 +140,7 @@ add_merged_clean_gone_worktree 'feature/#25-wt-off' "$TMP/wt-25"
 NAME_OFF="$(transcript_name_of "$TMP/wt-25")"
 make_transcript_dir "$NAME_OFF" "$(cd "$TMP/wt-25" && pwd -P)"
 set +e
-FF_MERGE_CLEANUP_TRANSCRIPTS=off PATH="$MOCK:$PATH" bash "$TARGET" 12 > "$TMP/run-off.log" 2>&1
+FF_MERGE_CLEANUP_TRANSCRIPTS=off PATH="$MOCK:$PATH" bash "$TARGET" --worktree-branch 'feature/#25-wt-off' 12 > "$TMP/run-off.log" 2>&1
 set -e
 if [ -f "$FF_MERGE_CLEANUP_PROJECTS_DIR/$NAME_OFF/session.jsonl" ] \
   && [ -z "$(archive_of "$NAME_OFF")" ] \
@@ -156,7 +156,7 @@ add_merged_clean_gone_worktree 'feature/#26-wt-bogus' "$TMP/wt-26"
 NAME_BOGUS="$(transcript_name_of "$TMP/wt-26")"
 make_transcript_dir "$NAME_BOGUS" "$(cd "$TMP/wt-26" && pwd -P)"
 set +e
-FF_MERGE_CLEANUP_TRANSCRIPTS=bogus PATH="$MOCK:$PATH" bash "$TARGET" 12 > "$TMP/run-bogus.log" 2>&1
+FF_MERGE_CLEANUP_TRANSCRIPTS=bogus PATH="$MOCK:$PATH" bash "$TARGET" --worktree-branch 'feature/#26-wt-bogus' 12 > "$TMP/run-bogus.log" 2>&1
 EXIT_BOGUS=$?
 set -e
 if [ "$EXIT_BOGUS" -eq 2 ] \
@@ -172,7 +172,7 @@ add_merged_clean_gone_worktree 'feature/#27-wt-tarfail' "$TMP/wt-27"
 NAME_TARFAIL="$(transcript_name_of "$TMP/wt-27")"
 make_transcript_dir "$NAME_TARFAIL" "$(cd "$TMP/wt-27" && pwd -P)"
 set +e
-MOCK_TAR_FAIL=1 PATH="$MOCK:$PATH" bash "$TARGET" 12 > "$TMP/run-tarfail.log" 2>&1
+MOCK_TAR_FAIL=1 PATH="$MOCK:$PATH" bash "$TARGET" --worktree-branch 'feature/#27-wt-tarfail' 12 > "$TMP/run-tarfail.log" 2>&1
 EXIT_TARFAIL=$?
 set -e
 if [ "$EXIT_TARFAIL" -eq 2 ] \
@@ -190,7 +190,7 @@ add_merged_clean_gone_worktree 'feature/#31-wt-corrupt' "$TMP/wt-31"
 NAME_CORRUPT="$(transcript_name_of "$TMP/wt-31")"
 make_transcript_dir "$NAME_CORRUPT" "$(cd "$TMP/wt-31" && pwd -P)"
 set +e
-MOCK_TAR_CORRUPT=1 PATH="$MOCK:$PATH" bash "$TARGET" 12 > "$TMP/run-corrupt.log" 2>&1
+MOCK_TAR_CORRUPT=1 PATH="$MOCK:$PATH" bash "$TARGET" --worktree-branch 'feature/#31-wt-corrupt' 12 > "$TMP/run-corrupt.log" 2>&1
 EXIT_CORRUPT=$?
 set -e
 if [ "$EXIT_CORRUPT" -eq 2 ] \
@@ -214,7 +214,7 @@ COLLIDE_STAMP="19990101-000000"
 COLLIDE_EXISTING="$FF_MERGE_CLEANUP_TRANSCRIPT_ARCHIVE_DIR/$NAME_COLLIDE-$COLLIDE_STAMP.tar.gz"
 echo "precious-existing-archive" > "$COLLIDE_EXISTING"
 set +e
-MOCK_FIXED_STAMP="$COLLIDE_STAMP" PATH="$MOCK:$PATH" bash "$TARGET" 12 > "$TMP/run-collide.log" 2>&1
+MOCK_FIXED_STAMP="$COLLIDE_STAMP" PATH="$MOCK:$PATH" bash "$TARGET" --worktree-branch 'feature/#32-wt-collide' 12 > "$TMP/run-collide.log" 2>&1
 set -e
 COLLIDE_COUNT="$(ls "$FF_MERGE_CLEANUP_TRANSCRIPT_ARCHIVE_DIR/$NAME_COLLIDE"-*.tar.gz 2>/dev/null | wc -l | tr -d ' ')"
 if [ -f "$COLLIDE_EXISTING" ] \
@@ -231,7 +231,7 @@ add_merged_clean_gone_worktree 'feature/#36-wt-append' "$TMP/wt-36"
 NAME_APPEND="$(transcript_name_of "$TMP/wt-36")"
 make_transcript_dir "$NAME_APPEND" "$(cd "$TMP/wt-36" && pwd -P)"
 set +e
-MOCK_TAR_APPEND=1 PATH="$MOCK:$PATH" bash "$TARGET" 12 > "$TMP/run-append.log" 2>&1
+MOCK_TAR_APPEND=1 PATH="$MOCK:$PATH" bash "$TARGET" --worktree-branch 'feature/#36-wt-append' 12 > "$TMP/run-append.log" 2>&1
 EXIT_APPEND=$?
 set -e
 if [ "$EXIT_APPEND" -eq 2 ] \
@@ -250,7 +250,7 @@ NAME_FUTURE_MTIME="$(transcript_name_of "$TMP/wt-40")"
 make_transcript_dir "$NAME_FUTURE_MTIME" "$(cd "$TMP/wt-40" && pwd -P)"
 touch -t 203701010000 "$FF_MERGE_CLEANUP_PROJECTS_DIR/$NAME_FUTURE_MTIME/session.jsonl"
 set +e
-PATH="$MOCK:$PATH" bash "$TARGET" 12 > "$TMP/run-future-mtime.log" 2>&1
+PATH="$MOCK:$PATH" bash "$TARGET" --worktree-branch 'feature/#40-wt-future-mtime' 12 > "$TMP/run-future-mtime.log" 2>&1
 EXIT_FUTURE_MTIME=$?
 set -e
 if { [ "$EXIT_FUTURE_MTIME" -eq 0 ] || [ "$EXIT_FUTURE_MTIME" -eq 2 ]; } \
@@ -271,7 +271,7 @@ BROKEN_STAMP="19990202-000000"
 BROKEN_LINK="$FF_MERGE_CLEANUP_TRANSCRIPT_ARCHIVE_DIR/$NAME_BROKEN-$BROKEN_STAMP.tar.gz"
 ln -s "$TMP/no-such-target" "$BROKEN_LINK"
 set +e
-MOCK_FIXED_STAMP="$BROKEN_STAMP" PATH="$MOCK:$PATH" bash "$TARGET" 12 > "$TMP/run-broken.log" 2>&1
+MOCK_FIXED_STAMP="$BROKEN_STAMP" PATH="$MOCK:$PATH" bash "$TARGET" --worktree-branch 'feature/#37-wt-brokenlink' 12 > "$TMP/run-broken.log" 2>&1
 set -e
 if [ -L "$BROKEN_LINK" ] \
   && [ ! -e "$TMP/no-such-target" ] \
@@ -288,7 +288,7 @@ make_transcript_dir "$NAME_NODIR" "$(cd "$TMP/wt-33" && pwd -P)"
 echo "not a directory" > "$TMP/blocking-file"
 set +e
 FF_MERGE_CLEANUP_TRANSCRIPT_ARCHIVE_DIR="$TMP/blocking-file/archives" \
-  PATH="$MOCK:$PATH" bash "$TARGET" 12 > "$TMP/run-nodir.log" 2>&1
+  PATH="$MOCK:$PATH" bash "$TARGET" --worktree-branch 'feature/#33-wt-nodir' 12 > "$TMP/run-nodir.log" 2>&1
 EXIT_NODIR=$?
 set -e
 if [ "$EXIT_NODIR" -eq 2 ] \
@@ -307,7 +307,7 @@ add_merged_clean_gone_worktree 'feature/#35-wt-dufail' "$TMP/wt-35"
 NAME_DUFAIL="$(transcript_name_of "$TMP/wt-35")"
 make_transcript_dir "$NAME_DUFAIL" "$(cd "$TMP/wt-35" && pwd -P)"
 set +e
-MOCK_DU_FAIL=1 PATH="$MOCK:$PATH" bash "$TARGET" 12 > "$TMP/run-dufail.log" 2>&1
+MOCK_DU_FAIL=1 PATH="$MOCK:$PATH" bash "$TARGET" --worktree-branch 'feature/#35-wt-dufail' 12 > "$TMP/run-dufail.log" 2>&1
 set -e
 if [ ! -d "$FF_MERGE_CLEANUP_PROJECTS_DIR/$NAME_DUFAIL" ] \
   && [ -n "$(archive_of "$NAME_DUFAIL")" ] \
@@ -330,7 +330,7 @@ printf '{"type":"user","cwd":"%s"}\n' "$(cd "$TMP/wt-34" && pwd -P)" \
   > "$CONFIG_HOME/projects/$NAME_REALCONF/session.jsonl"
 set +e
 env -u FF_MERGE_CLEANUP_PROJECTS_DIR -u FF_MERGE_CLEANUP_TRANSCRIPT_ARCHIVE_DIR \
-  CLAUDE_CONFIG_DIR="$CONFIG_HOME" PATH="$MOCK:$PATH" bash "$TARGET" 12 > "$TMP/run-realconf.log" 2>&1
+  CLAUDE_CONFIG_DIR="$CONFIG_HOME" PATH="$MOCK:$PATH" bash "$TARGET" --worktree-branch 'feature/#34-wt-realconf' 12 > "$TMP/run-realconf.log" 2>&1
 set -e
 if [ ! -d "$CONFIG_HOME/projects/$NAME_REALCONF" ] \
   && [ -n "$(ls "$CONFIG_HOME/transcript-archives/$NAME_REALCONF"-*.tar.gz 2>/dev/null || true)" ]; then

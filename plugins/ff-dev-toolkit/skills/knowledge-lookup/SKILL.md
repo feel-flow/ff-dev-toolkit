@@ -51,13 +51,23 @@ GitHub MCP などで取得済みの raw JSON を使う場合は `--github-input 
 
 ### キーワード検索（実装・レビュー前）
 
-検索語の選び方・途中の引き直し・語と結果の記録は [git-workflow の「着手前の Playbook 参照（ACE Reuse）」](../../docs-template/05-operations/deployment/git-workflow.md#着手前の-playbook-参照ace-reuse)を正本として実行する。実装語／作業クラス語の各検索に、1つ以上のキーワードを渡す。既定は OR、`--all` で AND。
+検索語の選び方・途中の引き直し・語と結果の記録は [git-workflow の「着手前の Playbook 参照（ACE Reuse）」](../../docs-template/05-operations/deployment/git-workflow.md#着手前の-playbook-参照ace-reuse)を正本として実行する。`--impl`（実装語）と `--class`（作業クラス語）の両方に 1 つ以上のキーワードを渡す。既定は OR、`--all` で AND。片軸だけが指定された場合（もう一方が未指定または空白のみ）は標準エラーへ警告を出し、`RECORD` 行に `class=未指定` / `impl=未指定` が付く。従来の位置引数指定も後方互換として残る（`-` 始まりの語を位置引数 `--` の後ろで渡す場合を含む）。
 
 ```bash
-FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/knowledge-lookup.sh" --root "$(git rev-parse --show-toplevel)" <キーワード>...
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/knowledge-lookup.sh" --root "$(git rev-parse --show-toplevel)" --impl <実装語>... --class <作業クラス語>...
 ```
 
-出力は store ごと・状態ごとのグループで並ぶ。末尾の `RECORD ace=… obs=…` 行を正本節の各検索の結果欄へ転記する（ヒット ID / `0 件` / `Playbook なし` / `読み取り失敗（理由）`。台帳側の語は `台帳なし`）。`RECORD` 自体に検索語や時点は含まれないため、それらを結果と対応付ける記録方法も正本節に従う。
+出力は store ごと・状態ごとのグループで並ぶ（`--impl` / `--class` 使用時の text 出力では、Playbook が読めた回に標準出力末尾へ Playbook タイトル由来の「作業クラス語の候補」節も出る）。両系統（`--impl` と `--class` の両方）を渡した場合は、実装語と作業クラス語の結果を分けて出力し、`RECORD impl ace=… obs=…` と `RECORD class ace=… obs=…` を別々に返すため、それぞれの系統欄へそのまま転記できる。`RECORD` 行の形式（ヒット ID / `0 件` / `Playbook なし` / `読み取り失敗（理由）`。台帳側の語は `台帳なし`）と検索語・時点との対応付けは正本節に従う。
+
+### 語ごとの検索（多数の語を 1 回で引く）
+
+多数の語を 1 語ずつ別々に引きたいとき（`/ace-curate` の重複照合など）は、語の数だけ呼び出さず `--each` に並べて 1 回で引く。起動のたびに払う読み取り境界の検査と store の読み取りが 1 回で済む。
+
+```bash
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/knowledge-lookup.sh" --root "$(git rev-parse --show-toplevel)" --each -- <語>...
+```
+
+語は `--` の後ろへ並べる（`-` で始まる語やオプションと同じ綴りの語を、オプションとして読ませない）。渡した順に語ごとの節（`=== 語: <語> ===`）と `RECORD each ace=… obs=… keyword=<語>` を返す（語は行の最後の欄。最初の ` keyword=` から行末までが語）。`--format tsv` では、その語の行の後にその語の `RECORD each` が来る。末尾の `SUMMARY` は語をまたいだ重複なしの件数と `each_keywords=<語数>`。空白だけの語は数えず、改行・復帰・タブを含む語は rc 1。`--impl` / `--class`・`--all` とは併用できない（rc 1）。着手前の参照は二系統（`--impl` / `--class`）の形のままにする。
 
 ### promoted × open の突き合わせ（`/retrospective` 観察チェックリスト第 0 項）
 
@@ -95,6 +105,8 @@ MCP: 取得値: MCP で同じ repository の state=open Issue 全件の number /
 | 1 | 引数エラー（キーワード無し・未知のオプション） |
 | 2 | 検索不成立 — 両 store とも不在、または在るのに読めない・エントリ見出し（`### ACE-…:` / `### OBS-NNN:`）を 1 件も認識できない（書式変更を 0 件ヒットの緑へ倒さない） |
 | 3 | plugin root ガードの停止（handoff と実体位置の不一致・消えた root）。「ff-dev-toolkit更新後にこのskillを再呼び出してください」の案内に従う。検索不成立（2）とは別の番号にしてあるので、3 を「検索した結果」と読まない |
+
+rc 2 の標準エラーが `止めた層: 環境` / `止めた規則: knowledge-read-boundary（…）` / `次の一手: …` の 3 行で終わる回は、対象のフォルダー（またはその祖先）を本人・管理者・SYSTEM 以外が変更できると読み取り境界が判定している（Windows の ACL。`knowledge-read: 止めた場所:` の行が場所と主体を名指す）。権限を外したり grep で代用したりせず、`次の一手` の `git … worktree add -f --detach …`（前の worktree が置き場に残っている回は `git … switch --detach …`）をそのまま実行し、`次の一手` が指す場所を cwd（`--root`）にして同じ操作をやり直す。`/ace-curate`・`/retrospective` の書き込みも同じ worktree で続ける。置き場は同じ検査を通ったときだけ名指しされ、通らない回・git リポジトリでない回・commit が無い回の `次の一手` は置き場の条件だけになる。できた worktree は元のリポジトリの `.git`（hook・設定・オブジェクト）を共有する — このコマンドも、その worktree での以後の git 操作も、元のリポジトリで git を実行するのと同じ前提に立つ（境界が守るのは、知見ファイルの実体を他の主体が書き換えられない場所から読むことまで）。
 
 store の実配置は既定パス（`docs/08-knowledge/PLAYBOOK.md` / `OBSERVATIONS.md`）の不在だけで「未導入」と結論しない。ACE Playbook は `--playbook` → `ACE_PLAYBOOK_PATH` → 記録済み配置（`AGENTS.md` / `CLAUDE.md` / `docs/MASTER.md` に書かれた `PLAYBOOK.md` のパス）→ 既定パス → root 配下の探索の順で解決する。この順は `/ace-curate` / `/ace-refine` の「配置先の解決」と同じで、両スキルは `--resolve-playbook` で本スクリプトの同じ関数を呼ぶ。観測台帳は既定パス → 探索。探索は候補が 1 件ならそれを採り、複数候補は曖昧として採らず `--playbook` / `--ledger` の明示を求める（推測で 1 つを選ばない）。`docs-template/` 配下は探索からだけ外す — 記録・環境変数で名指しされた `docs-template/08-knowledge/PLAYBOOK.md`（テンプレ配布リポジトリの実体）は採る。
 

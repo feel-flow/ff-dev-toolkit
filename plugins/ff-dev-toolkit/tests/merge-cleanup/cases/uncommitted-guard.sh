@@ -397,7 +397,7 @@ echo resident > "$TMP/wt-40/videos/slug-x/spec.md"
 make_ignorable_dirt "$CALLER"
 set +e
 FF_MERGE_CLEANUP_IGNORE_PATHS="$IGNORE_BOTH" \
-  PATH="$MOCK:$PATH" bash "$TARGET" 12 > "$TMP/run-ignore-wt.log" 2>&1
+  PATH="$MOCK:$PATH" bash "$TARGET" --worktree-branch 'feature/#40-wt-ignored-dirty' 12 > "$TMP/run-ignore-wt.log" 2>&1
 EXIT_IGNORE_WT=$?
 set -e
 if [ "$EXIT_IGNORE_WT" -eq 2 ] \

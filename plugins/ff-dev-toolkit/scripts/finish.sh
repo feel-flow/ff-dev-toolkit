@@ -7,8 +7,8 @@
 # 使い方:
 #   finish.sh precheck <PR番号> [--subject <件名> --body <本文>] [--gate-record <記録のパス>] [--merge-method squash|merge] [--ack-unchecked <owner/repo#N>] [--ack-post-merge <owner/repo#N> --ack-post-merge-reason <理由>]
 #   finish.sh cleanup [--dry-run] [--verbose] <PR番号>
-#   finish.sh knowledge-commit add    [--claim <文書>] [--ace-playbook <PLAYBOOK>] <knowledge-commit.sh add の引数>
-#   finish.sh knowledge-commit commit [--type <type>] [--force]
+#   finish.sh knowledge-commit add    [--claim <文書>] [--ace-playbook <PLAYBOOK>] [--pr <PR番号> | --issue <Issue番号>] <knowledge-commit.sh add の引数>
+#   finish.sh knowledge-commit commit [--pr <PR番号> | --issue <Issue番号>] [--type <type>] [--force]
 #   finish.sh knowledge-commit status | discard
 #   finish.sh knowledge-commit probe
 #   finish.sh knowledge-commit push
@@ -89,7 +89,9 @@
 # precheck の出力（stdout、`KEY=値` は行頭一致。複数値のキーは行を繰り返す）:
 #   PR_NUMBER= PR_STATE= PR_IS_DRAFT= PR_HEAD_REF= PR_HEAD_OID= PR_BASE_REF= PR_TITLE=
 #   TARGET_REPO=owner/repo  MERGE_METHOD=squash|merge
-#   CLOSES=owner/repo#N（繰り返し） REFS=owner/repo#N（繰り返し） AUTO_CLOSE_UNRELIABLE=0|1
+#   CLOSES=owner/repo#N（繰り返し） REFS=owner/repo#N（繰り返し）
+#   CLOSES_TEXT_ONLY=owner/repo#N（繰り返し） CLOSES_TEXT_ONLY_KIND=none|quoted|prose|both
+#   AUTO_CLOSE_UNRELIABLE=0|1
 #   AC_UNCHECKED=owner/repo#N<TAB>行（Closes 対象の本文にある未チェック。繰り返し）
 #   AC_UNCHECKED_COUNT=<件数>（Closes 対象があるとき） AC_ACKED=owner/repo#N（--ack-unchecked を渡したとき）
 #   POST_MERGE_ACKED=owner/repo#N<TAB>理由（--ack-post-merge を渡したとき。繰り返し）
@@ -141,7 +143,8 @@
 # 終了コード（precheck）:
 #   0  マージへ進める（FRESH_STATUS=0、または 2 でも RERUN_FULL_GATE=no）
 #   0  対象 Issue が無い（PRECHECK=no-target。以降の判定を行わない）
-#   1  止める（Issue 番号の候補はあるが Closes 群・Refs 群とも空 / checks 失敗 /
+#   1  止める（Issue 番号の候補はあるが Closes 群・Refs 群とも空 / 散文・引用ブロックに
+#      CLOSES_TEXT_ONLY がある / checks 失敗 /
 #      判定の途中で PR が変わった / 鮮度不一致 / 改題で消せる抵触 / 実際に
 #      渡す squash メッセージの抵触 / Refs 群があるのに --subject と --body が無い / merge commit 方式で
 #      コミットが Refs 運用の Issue を閉じる / 返信の無いレビュースレッドがある / Closes 対象の本文に
@@ -377,8 +380,8 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: finish.sh precheck <PR番号> [--subject <件名> --body <本文>] [--gate-record <記録のパス>] [--merge-method squash|merge] [--ack-unchecked <owner/repo#N>] [--ack-post-merge <owner/repo#N> --ack-post-merge-reason <理由>]
        finish.sh cleanup [--dry-run] [--verbose] <PR番号>
-       finish.sh knowledge-commit add [--claim <文書>] [--ace-playbook <PLAYBOOK>] --source ace|obs --id <ID> --summary <要約> [--category <c>] [--type <t>] -- <path>...
-       finish.sh knowledge-commit commit [--type <t>] [--force]
+       finish.sh knowledge-commit add [--claim <文書>] [--ace-playbook <PLAYBOOK>] [--pr <PR番号> | --issue <Issue番号>] --source ace|obs --id <ID> --summary <要約> [--category <c>] [--type <t>] -- <path>...
+       finish.sh knowledge-commit commit [--pr <PR番号> | --issue <Issue番号>] [--type <t>] [--force]
        finish.sh knowledge-commit status | discard | probe | push
        finish.sh knowledge-commit pr --branch <名> --title <件名> [--body <本文>]
        finish.sh knowledge-commit target

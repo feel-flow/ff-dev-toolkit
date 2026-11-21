@@ -3,6 +3,7 @@
 #
 # merge-cleanup.sh の破壊的経路の回帰テスト。
 # 空振り検出: detached linked caller の判定を除いた mutant は独立 fixture の dry-run 検査で赤になる。
+# 空振り検出: 対象ブランチでの絞り込みを外すと、独立 fixture の dry-run が別のマージ済み worktree を保全しないため赤になる。
 # 空振り検出: agent branch専用fixtureが削除処理の欠落・祖先判定欠落・worktree判定欠落・remote判定欠落を赤にする。
 # 空振り検出: gone ancestor専用fixture（gone-ancestor.sh）が、祖先削除の欠落（no-ancestor）・取得不能/3値判定の祖先誤認（fetch-fail-as-ancestor）・複数同名PR緩和（allow-multi-pr）・dry-run本体リポジトリ汚染（dry-pollutes-repo）の各変異を赤にする（2026-11-18 macOS / Bash 3.2 実測）。
 # 空振り検出: msys の core.longpaths=true を外した mutant は long-paths.sh の呼び出し記録の照合で赤になる。Windows の実機では、深い node_modules の削除が git の「Filename too long」で失敗して赤になる（2026-10-30 実測、Issue `#2479`）。
@@ -647,6 +648,22 @@ if bash "$SCRIPT_DIR/detached-caller.sh" "$TMP/detached-mutant/merge-cleanup.sh"
   exit 1
 else
   ok "detached caller の判定を除いた mutant を fixture が赤にする"
+fi
+
+stage_cleanup_mutant "$TMP/worktree-scope-mutant"
+sed 's/! worktree_branch_requested "\$branch"; then/false; then/' \
+  "$TMP/worktree-scope-mutant/lib/merge-cleanup-local.sh" > "$TMP/worktree-scope-mutant/changed.sh"
+mv "$TMP/worktree-scope-mutant/changed.sh" "$TMP/worktree-scope-mutant/lib/merge-cleanup-local.sh"
+if cmp -s "$PLUGIN_ROOT/scripts/lib/merge-cleanup-local.sh" "$TMP/worktree-scope-mutant/lib/merge-cleanup-local.sh"; then
+  bad "worktree の範囲を絞る mutant が原本と同一（空振り）"
+  exit 1
+fi
+if bash "$SCRIPT_DIR/detached-caller.sh" "$TMP/worktree-scope-mutant/merge-cleanup.sh" > "$TMP/worktree-scope-mutant.log" 2>&1; then
+  bad "別のマージ済み worktree の保全を外しても fixture が通った"
+elif ! grep -qF 'dry did not protect the other merged worktree' "$TMP/worktree-scope-mutant.log"; then
+  bad "worktree の範囲を絞る mutant が別の理由で落ちた"
+else
+  ok "別のマージ済み worktree の保全を外した mutant を dry-run の検査が赤にする"
 fi
 
 # Issue `#2479`: Windows の長いパスの worktree は core.longpaths=true で消し、サマリーに名指しする

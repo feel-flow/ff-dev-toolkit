@@ -7,10 +7,12 @@
 # 時間境界: stdin+stub ghの実hookで通常0.44s、1MiB metadata0.49s、64KiB command通知0.03s、累積timeout4.23s、1MiB+6KiB literal+2PR+0.8sの4照会で2個目deny4.34s。旧上限なしの64KiBは18.14sで不採用、最終版は各照会1秒/計4回と固定入力・復旧上限で通知へ戻す（Issue `#2377` 以降、MSYS / Cygwin だけ各照会3秒・最初の照会から8秒、他の OS は各照会1秒で、最初の照会から5秒の枠は4回の照会を切らない）。実gh merge/native発火の測定ではない。
 # 変異検出: gh 照会の上限（Issue `#2377`。2026-10-27 WSL 実測、基準 377 件緑）。MSYS / Cygwin の上限を他の OS と同じ各 1 秒へ戻すと MSYS と Cygwin の 2 秒の照会の 2 件が赤、時間枠の判定を外すと時間枠の通知の名指しと戻り時間の 2 件が赤。引用も展開も含まない語の速い経路（mc_literal_var）の結果を変えると 91 件が赤。
 # 空振り検出: 抽出先 scripts/lib/finish-precheck.sh を空にすると必須ファイル非空の確認で rc1 になる（2026-10-22 実測。入口に名前だけが残っても参照抽出を検査したことにしない）。
+# 空振り検出: 終端フェンス 0..3 space 制限を旧 `sub(/^[ \t]*/, ...)` へ戻す変異と段落先読みを旧 `!in_comment` へ戻す変異は各 rc 1（基準 500 件緑、M1/M2 KILLED。2026-11-21 macOS 実測）。
 # 空振り検出: mc_stop の本体を return 0 だけにすると（関数名は残し、MC_STOP_REASON も同じセグメントの ACK 通知も出さない）、未解決変数・env/command option・path gh・先行 cwd・代入と先行 cd・global flag・別セグメントの ACK・timeout wrapper・cwd/環境の遷移・wrapper 後続・GH_HOST・引用した pr の未解決変数・builtin と grouping の先行 cd・bash -c・bash -lc・bash -c の複文・bash -o の後続・squash の未知 flag の停止検査 61 件が赤になる（363 件成功、suite rc=1。2026-10-31 macOS 実測。説明文字列・別サブコマンドの引数・引用した pr の照会・bash -lc の echo・複文 echo・bash -o の説明文字列は緑のまま）。
 # 空振り検出: Issue `#2599` の例外の文言更新を 2 回目に送る検査 15 件（基準 439 件緑）。ac-judgement.md の新しい節をアンカーごと消すと 11 件、節の見出しだけを変えると 10 件、SKILL.md 手順 5 の「（例外は 5b）」と 5b の順序・リンクを元へ戻すと 2 件、順序の文を 5b から 5a へ移すと 1 件、弱める書き換えの禁止から経路の限定を外す・2 回目の範囲からスコープ変更の削除と追加を外す・送らずに止めた回の扱いを消す・report.md の「AC 文言の更新」の行を消すとそれぞれ 1 件が赤になり、report.md を空にすると必須ファイルの確認で中断する（2026-11-06 WSL 実測）。
 # 空振り検出: Refs 運用の判定（基準 467 件緑）。判定の節の見出しを変えてフェンスを抜き出せなくすると赤、印の正規表現をチェック済みも数える形・文中の語にも当たる形・字下げを拒む形へ変えるとそれぞれ赤、本文をパイプで grep -q へ渡す形は pipefail と大きな本文の検査で赤、gh の失敗を飲む形・別の Issue を読む形・Refs と Closes を取り違える形もそれぞれ赤、`fix(#N):` を抵触へ倒す検査器と全角括弧が続く `Refs #N（…）` を読めない抽出器も赤になる。bundle の子の扱い・複数 Refs の書き方・gh の無いホストの経路を消す変更も赤。等価な printf への置換と文言の言い換えは緑のまま（2026-11-08 macOS 実測。mutation-harness 29 件で期待 red 27 件を検出、SURVIVED 0）。
 # 空振り検出: MERGE_COMMAND 単独実行と PR なし検証完了 close の節スコープ針（基準 491 件緑）。SKILL / merge-gate の単独呼び出し・読み戻し分離、prless-close 参照・ISSUE_NUMBER 正規化・open PR 照会・既 CLOSED 停止・sub_issues 確認・0 件時スキップ・diff 判定器・sed 禁止・rc 分岐・FRESH_UPDATED_AT・marker・1 件上書き / 2 件以上重複停止・--reason completed・stateReason・404 と API 失敗区別の 20 変異が各 1 件 red（490/1・rc=1）で detected、無害コメント 1 件は green-ok（2026-11-14 macOS 実測、mutation-harness 19 red + 1 green 緑、および FRESH_UPDATED_AT replace-all 単独 1 件 detected、SURVIVED 0 / FALSE-POSITIVE 0）。
+# 変異検出: 引用・散文中の Closes 分離（基準 495 件緑）。merge-message.sh の CLOSES_RAW から P / Q を除外する条件を外して D || P || Q へ戻す単独変異で、judge_refs_sets 3 件と merge hook 引用内 Closes の計 4 件が赤（491/4、rc=1）になる（2026-11-21 macOS 実測）。
 #
 # closing keyword 抵触検査の回帰テスト。
 #
@@ -406,7 +408,7 @@ else
 fi
 
 SHARED_KEYWORDS_PATTERN="$(bash "$GUARD" --list-keywords | awk 'NF{s=s (n++ ? "|" : "") $0} END{print s}')"
-CLOSES_AWK_SRC="$(extract_skill_awk_after 'CLOSES_RAW=')" || CLOSES_AWK_SRC=""
+CLOSES_AWK_SRC="$(extract_skill_awk_after 'ff_merge_classify_closes() {')" || CLOSES_AWK_SRC=""
 if [[ -n "$CLOSES_AWK_SRC" ]]; then
   ok "closing keyword の awk プログラムを finish.sh から抽出できる"
 else
@@ -414,33 +416,58 @@ else
 fi
 
 if [[ -n "$CLOSES_AWK_SRC" ]]; then
+  H='#'
+  TAB=$'\t'
   CLOSES_SAMPLE="$(printf '%s\n' \
-    'Closes #100' \
-    'Fixes #2' \
-    'RESOLVES owner/repo#42' \
-    'close #21' \
-    'Fixed #22' \
-    'Resolve #23' \
-    'resolved owner/other#24' \
-    'Closes #1, fixes owner/repo#3' \
-    'Refs #620' \
-    'related #3' \
-    'See #9' \
-    'hotfix #8' \
-    'enclose #7' \
-    'auto_fix #88' \
-    'v2fix #89' \
-    'Closed: #11' \
-    'fix owner/other#15')"
+    "Closes ${H}100" \
+    "Fixes ${H}2" \
+    "RESOLVES owner/repo${H}42" \
+    "close ${H}21" \
+    "Fixed ${H}22" \
+    "Resolve ${H}23" \
+    "resolved owner/other${H}24" \
+    "Closes ${H}1, fixes owner/repo${H}3" \
+    "- Closed: ${H}11" \
+    "Refs ${H}620" \
+    "related ${H}3" \
+    "See ${H}9" \
+    "hotfix ${H}8" \
+    "enclose ${H}7" \
+    "auto_fix ${H}88" \
+    "v2fix ${H}89" \
+    "fix owner/other${H}15")"
   CLOSES_EXTRACTED="$(printf '%s\n' "$CLOSES_SAMPLE" \
     | LC_ALL=C awk -v keywords="$SHARED_KEYWORDS_PATTERN" "$CLOSES_AWK_SRC" | LC_ALL=C sort -u)" || CLOSES_EXTRACTED="(awk 実行に失敗)"
-  CLOSES_EXPECTED="$(printf '%s\n' \
-    '#1' '#100' '#11' '#2' '#21' '#22' '#23' \
-    'owner/other#15' 'owner/other#24' 'owner/repo#3' 'owner/repo#42')"
+  CLOSES_EXPECTED="$(printf "D${TAB}%s\n" \
+    "${H}1" "${H}100" "${H}11" "${H}2" "${H}21" "${H}22" "${H}23" \
+    "owner/other${H}15" "owner/other${H}24" "owner/repo${H}3" "owner/repo${H}42")"
   if [[ "$CLOSES_EXTRACTED" == "$CLOSES_EXPECTED" ]]; then
-    ok "抽出した awk が closing keyword 9 語と 1 行複数参照を取り出し、Refs・裸番号・語中一致は拾わない"
+    ok "抽出した awk が closing keyword 9 語と 1 行複数参照を D 分類で取り出し、Refs・裸番号・語中一致は拾わない"
   else
     bad "closing keyword awk の出力が期待と不一致（expected: $(printf '%s' "$CLOSES_EXPECTED" | tr '\n' ' ') / actual: $(printf '%s' "$CLOSES_EXTRACTED" | tr '\n' ' ')）"
+  fi
+
+  CLOSES_QUOTED_PROSE_SAMPLE="$(printf '%s\n' \
+    "本文で \`Closes ${H}50\` を引用" \
+    '```' \
+    "Closes ${H}51" \
+    '```' \
+    "<!-- Closes ${H}52 -->" \
+    "理由により Closes ${H}53 を参照" \
+    "> Fixes ${H}54" \
+    "" \
+    "    Closes ${H}55" \
+    "" \
+    "例 \`see" \
+    "Closes ${H}56" \
+    "end\` 終了")"
+  CLOSES_QP_EXTRACTED="$(printf '%s\n' "$CLOSES_QUOTED_PROSE_SAMPLE" \
+    | LC_ALL=C awk -v keywords="$SHARED_KEYWORDS_PATTERN" "$CLOSES_AWK_SRC" | LC_ALL=C sort -u)" || CLOSES_QP_EXTRACTED="(awk 実行に失敗)"
+  CLOSES_QP_EXPECTED="$(printf "%s${TAB}${H}%s\n" P 53 P 54 Q 50 Q 51 Q 52 Q 55 Q 56)"
+  if [[ "$CLOSES_QP_EXTRACTED" == "$CLOSES_QP_EXPECTED" ]]; then
+    ok "抽出した awk がコード span（単/複数行）・字下げコード・フェンス・コメント内を Q、散文・blockquote 内を P に分け、D へ混ぜない"
+  else
+    bad "closing keyword の Q/P 分類が期待と不一致（expected: $(printf '%s' "$CLOSES_QP_EXPECTED" | tr '\n' ' ') / actual: $(printf '%s' "$CLOSES_QP_EXTRACTED" | tr '\n' ' ')）"
   fi
 
   CLOSES_EMPTY="$(printf '%s\n' 'Refs #620' 'related #3' 'See #9' 'hotfix #8' 'auto_fix #88' 'v2fix #89' \
@@ -783,29 +810,65 @@ ${JUDGE_LARGE_FILLER}" 0 pipefail
 assert_judge "pipefail と大きな本文でも印を読む" 0 "Refs"
 
 # 規約どおりの本文の 1 行目を、/close-issue の抽出器が Refs として読むこと。
-# 別 Issue の closing keyword を理由へ書くと Closes へ入る（規約の但し書きの根拠）。
+# 散文やコード span の closing keyword は CLOSES= に混ぜず、PROSE / QUOTED に分ける。
 judge_refs_sets() { # <PR 本文>
   (
     # shellcheck source=../../scripts/lib/merge-message.sh
     . "$PLUGIN_ROOT/scripts/lib/merge-message.sh"
     ff_merge_issue_sets owner/repo "$1" "" "$(bash "$GUARD" --list-keywords 2>/dev/null)" || exit 1
-    printf 'REFS=%s CLOSES=%s\n' "$REFS_ONLY" "$CLOSES_UNION"
+    printf 'REFS=%s CLOSES=%s TEXT_PROSE=%s TEXT_QUOTED=%s\n' "$REFS_ONLY" "$CLOSES_UNION" "$CLOSES_TEXT_ONLY_PROSE" "$CLOSES_TEXT_ONLY_QUOTED"
   ) 2>/dev/null
 }
 # 番号は変数で持つ（公開ミラーへ同期される test の追加行に裸の番号参照を書かない）
 JUDGE_NUM=373
 JUDGE_OTHER_NUM=99
 JUDGE_SETS="$(judge_refs_sets "Refs #${JUDGE_NUM}（公開リリース後の確認が残るため open を維持する）")" || JUDGE_SETS="抽出失敗"
-if [[ "$JUDGE_SETS" == "REFS=owner/repo#${JUDGE_NUM} CLOSES=" ]]; then
+if [[ "$JUDGE_SETS" == "REFS=owner/repo#${JUDGE_NUM} CLOSES= TEXT_PROSE= TEXT_QUOTED=" ]]; then
   ok "規約どおりの 1 行目は Refs だけに分類される"
 else
   bad "規約どおりの 1 行目が Refs だけに分類されない（${JUDGE_SETS}）"
 fi
 JUDGE_SETS="$(judge_refs_sets "Refs #${JUDGE_NUM}（Closes #${JUDGE_OTHER_NUM} は別件）")" || JUDGE_SETS="抽出失敗"
-if [[ "$JUDGE_SETS" == "REFS=owner/repo#${JUDGE_NUM} CLOSES=owner/repo#${JUDGE_OTHER_NUM}" ]]; then
-  ok "理由の文の closing keyword は Closes 対象として読まれる"
+if [[ "$JUDGE_SETS" == "REFS=owner/repo#${JUDGE_NUM} CLOSES= TEXT_PROSE=owner/repo#${JUDGE_OTHER_NUM} TEXT_QUOTED=" ]]; then
+  ok "理由の文の散文 closing keyword は CLOSES に入れず TEXT_PROSE へ分類する"
 else
-  bad "理由の文の closing keyword の扱いが規約の但し書きと違う（${JUDGE_SETS}）"
+  bad "理由の文の散文 closing keyword の扱いが期待と違う（${JUDGE_SETS}）"
+fi
+JUDGE_SETS="$(judge_refs_sets "Refs #${JUDGE_NUM}（\`Closes #${JUDGE_OTHER_NUM}\` を引用）")" || JUDGE_SETS="抽出失敗"
+if [[ "$JUDGE_SETS" == "REFS=owner/repo#${JUDGE_NUM} CLOSES= TEXT_PROSE= TEXT_QUOTED=owner/repo#${JUDGE_OTHER_NUM}" ]]; then
+  ok "コード span 内の closing keyword 引用は CLOSES にも TEXT_PROSE にも入れず TEXT_QUOTED へ分類する"
+else
+  bad "コード span 内 closing keyword 引用の扱いが期待と違う（${JUDGE_SETS}）"
+fi
+JUDGE_SETS="$(judge_refs_sets "$(printf 'Closes #%s\n\n本文 `Fixes #%s` の例' "$JUDGE_NUM" "$JUDGE_OTHER_NUM")")" || JUDGE_SETS="抽出失敗"
+if [[ "$JUDGE_SETS" == "REFS= CLOSES=owner/repo#${JUDGE_NUM} TEXT_PROSE= TEXT_QUOTED=owner/repo#${JUDGE_OTHER_NUM}" ]]; then
+  ok "独立行 Closes とコード span 引用が混在すると独立行のみ CLOSES、引用のみ TEXT_QUOTED になる"
+else
+  bad "独立行 Closes とコード span 引用の混在分類が期待と違う（${JUDGE_SETS}）"
+fi
+JUDGE_SETS="$(judge_refs_sets "$(printf 'Refs #%s\n\n    Closes #%s' "$JUDGE_NUM" "$JUDGE_NUM")")" || JUDGE_SETS="抽出失敗"
+if [[ "$JUDGE_SETS" == "REFS=owner/repo#${JUDGE_NUM} CLOSES= TEXT_PROSE= TEXT_QUOTED=owner/repo#${JUDGE_NUM}" ]]; then
+  ok "4スペース字下げコード内の Closes は Refs 運用を打ち消さず TEXT_QUOTED になる"
+else
+  bad "4スペース字下げコード内 Closes の分類が期待と違う（${JUDGE_SETS}）"
+fi
+JUDGE_SETS="$(judge_refs_sets "$(printf 'Refs #%s\n\n例 `see\nCloses #%s\nend`' "$JUDGE_NUM" "$JUDGE_OTHER_NUM")")" || JUDGE_SETS="抽出失敗"
+if [[ "$JUDGE_SETS" == "REFS=owner/repo#${JUDGE_NUM} CLOSES= TEXT_PROSE= TEXT_QUOTED=owner/repo#${JUDGE_OTHER_NUM}" ]]; then
+  ok "複数行インラインコード span 内の Closes は CLOSES に混ぜず TEXT_QUOTED になる"
+else
+  bad "複数行インラインコード span 内 Closes の分類が期待と違う（${JUDGE_SETS}）"
+fi
+JUDGE_SETS="$(judge_refs_sets "$(printf 'Refs #%s\n\n```md\n    ```\nCloses #%s\n```' "$JUDGE_NUM" "$JUDGE_NUM")")" || JUDGE_SETS="抽出失敗"
+if [[ "$JUDGE_SETS" == "REFS=owner/repo#${JUDGE_NUM} CLOSES= TEXT_PROSE= TEXT_QUOTED=owner/repo#${JUDGE_NUM}" ]]; then
+  ok "フェンス内の4スペース字下げ三連バッククォートは終端にならず次行の Closes も TEXT_QUOTED のまま Refs を守る"
+else
+  bad "フェンス内の4スペース字下げ三連バッククォートの扱いが期待と違う（${JUDGE_SETS}）"
+fi
+JUDGE_SETS="$(judge_refs_sets "$(printf 'Refs #%s\n\n<!-- comment para 1\n\ncomment close -->\n~~~bash\nCloses #%s\n~~~' "$JUDGE_NUM" "$JUDGE_OTHER_NUM")")" || JUDGE_SETS="抽出失敗"
+if [[ "$JUDGE_SETS" == "REFS=owner/repo#${JUDGE_NUM} CLOSES= TEXT_PROSE= TEXT_QUOTED=owner/repo#${JUDGE_OTHER_NUM}" ]]; then
+  ok "複数段落 HTML コメント閉鎖の直後にあるコードフェンスが開き中の Closes が TEXT_QUOTED になる"
+else
+  bad "複数段落 HTML コメント直後のコードフェンス判定が期待と違う（${JUDGE_SETS}）"
 fi
 
 rm -rf "$JUDGE_DIR"

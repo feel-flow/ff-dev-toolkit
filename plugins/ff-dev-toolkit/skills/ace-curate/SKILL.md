@@ -170,15 +170,16 @@ domainでは同梱契約の4行形式でEvidence / Verification / Distill-Toを�
 
 **既定（推奨）— デフォルトブランチ直マージ**: 保護されていない default branch にのみ適用。**保護判定（必須・直 push を試す前に行う）**は手順 1 の `probe`（編集前）で済ませ、ここでは現在のブランチで分岐する。既存知見ブランチは PR 経由へ。判定・commitlint・保留合流は [references/curate.md](references/curate.md)。script での追記は [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う。
 
-MCP raw の利用時は下の各 knowledge-commit 呼出しに同じ `--github-input /absolute/index.json` を付ける（取得形と PLAN / read-back は [curate.md](references/curate.md#github-file-input)）。
+MCP raw 利用時は各呼出しに同じ `--github-input /absolute/index.json` を付ける（[手順](references/curate.md#github-file-input)）。
 
 ```bash
 commit_type="knowledge"
+if [[ "$ACE_MODE" == sources ]]; then origin=(--issue "${ISSUE_NUMBER:?}"); else origin=(--pr "${PR_NUMBER:?}"); fi
 protected=0   # 保護判定は手順 1 で済み、保護時は知見ブランチ上にいる
-FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit add --ace-playbook docs/08-knowledge/PLAYBOOK.md --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" --category "<category[, category...]>" --type "${commit_type}" || exit 1
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit add --ace-playbook docs/08-knowledge/PLAYBOOK.md --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" ${origin[@]+"${origin[@]}"} --category "<category[, category...]>" --type "${commit_type}" || exit 1
 ace_defer="${ACE_DEFER_TO_RETRO:-0}"   # 事前注入 hook が 1 を指示した回だけ add で止め /retrospective へ合流
 if [[ "$ace_defer" == 1 ]]; then echo "commit と push は /retrospective の書き込みへ合流させます"; exit 0; fi
-FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit commit --type "${commit_type}" || exit 1
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit commit --type "${commit_type}" ${origin[@]+"${origin[@]}"} || exit 1
 current_branch="$(git branch --show-current)" || exit 1
 if [[ "$current_branch" == chore/ace-from-* ]]; then ACE_BRANCH="$current_branch"; protected=1; fi
 if [[ "$protected" == 1 ]]; then push_rc=3; else FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit push; push_rc=$?; fi

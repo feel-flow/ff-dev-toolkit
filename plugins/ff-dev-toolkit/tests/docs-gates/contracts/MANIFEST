@@ -9,6 +9,7 @@ git-workflow-heredoc.tsv
 git-workflow-sub-issues.tsv
 knowledge-work-class.tsv
 review-wait-prep.tsv
+baseline-worktree.tsv
 bot-review-wait.tsv
 review-alternative-before-wait.tsv
 isolated-command-form.tsv

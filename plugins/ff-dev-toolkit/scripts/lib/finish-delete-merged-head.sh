@@ -16,7 +16,7 @@ ff_is_hardcoded_protected_branch() {
 # 一致したパターンを stdout へ返す。一致しなければ非 0。空配列は展開しない。
 ff_matched_extra_protect_pattern() {
   local pat=""
-  [ "${#ff_protect_extra_patterns[@]}" -gt 0 ] || return 1
+  [ "${ff_protect_extra_patterns[0]+set}" = set ] || return 1
   for pat in "${ff_protect_extra_patterns[@]}"; do
     # 非引用はパターンとして glob を効かせる意図的な形（引用すると文字列一致に退化する）
     # shellcheck disable=SC2254
@@ -37,9 +37,11 @@ ff_is_protected_branch() {
 # 空・未設定は release/*。none は追加なし。develop / main / master / staging/* はここでは外さない。
 ff_protect_branch_prepare() {
   local raw="${FF_MERGE_CLEANUP_PROTECT_BRANCHES:-}" item="" rest=""
-  ff_protect_extra_patterns=()
+  local pattern_count=0
+  # 埋め込まれた本文を git 書き込みガードが走査できるよう、配列の compound assignment を使わない。
+  unset ff_protect_extra_patterns
   if [ -z "$raw" ]; then
-    ff_protect_extra_patterns=('release/*')
+    ff_protect_extra_patterns[0]='release/*'
     return 0
   fi
   if [ "$raw" = "none" ]; then
@@ -63,7 +65,8 @@ ff_protect_branch_prepare() {
         return 2
         ;;
     esac
-    ff_protect_extra_patterns+=("$item")
+    ff_protect_extra_patterns[pattern_count]="$item"
+    pattern_count=$((pattern_count + 1))
   done
   return 0
 }
@@ -78,9 +81,11 @@ ff_delete_merged_head_main() {
   local branch="$2"
   local expected="$3"
   local ref="refs/heads/${branch}"
+  # 正規表現の括弧と縦棒をシェルの構文として字句解析させない。
+  local oid_pattern='^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$'
   local remote_oid=""
   local verdict=0
-  if ! git check-ref-format "$ref" || ! [[ "$expected" =~ ^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$ ]]; then
+  if ! git check-ref-format "$ref" || ! [[ "$expected" =~ $oid_pattern ]]; then
     echo "head 削除の ref / OID が不正です。削除しません" >&2
     exit 2
   fi
@@ -106,7 +111,7 @@ ff_delete_merged_head_main() {
         case "$out" in ''|*$'\n'*) echo "head の照会応答が空か複数行です。削除しません" >&2; return 1 ;; esac
         IFS=$'\t' read -r remote_oid actual_ref extra <<<"$out"
         if [[ "$actual_ref" != "$ref" || -n "$extra" ]] \
-          || ! [[ "$remote_oid" =~ ^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$ ]]; then
+          || ! [[ "$remote_oid" =~ $oid_pattern ]]; then
           echo "head の照会応答が不正です。削除しません" >&2
           return 1
         fi

@@ -74,6 +74,19 @@
 #   W16. ACL helper は 1 回きりの起動で PSModulePath を受け取らず、呼び出し元の値は変わらない（Issue `#2566`）。ここでは
 #        常駐を持たない shell の 1 回きりの起動だけを測り、常駐側は knowledge-lookup-resident-acl が測る
 #   W17. Windows の Git Bash で PowerShell 7 を入れた機械では、PowerShell 7 の PSModulePath を受け継いでも実 ACL の検査が判定を返す
+#   G1〜G12. 読み取る対象（root かその祖先）を境界が場所を名指して止めたときの次の一手（root-stop-guide.sh。
+#        Issue `#2648`）: 境界の行をそのまま通し、stderr の末尾 3 行を停止文の共通形で終える・出した
+#        `git worktree add -f --detach` をそのまま実行できる・置き場に前の worktree が残る 2 回目は switch を出す・
+#        同じ名前の別物は避ける・既定の置き場も通らない回と git リポジトリでない root にはコマンドを約束しない・
+#        場所の名指しが無い拒否には何も足さない・通る root は従来どおり・stop-block.sh を読めない配布物でも 3 行で止まる・
+#        --root 無し（cwd から解決）でも同じ（G10）・下位ディレクトリの root は worktree の中の同じ場所を指す（G11）・
+#        フォルダーだけ消えて登録が残った前の worktree でも通る（G12）。
+#        stub の Windows（windows-acl-fixture.sh）で実スクリプトを流すので、どの OS でも実行する
+#   K47. --each（語ごとの検索。Issue `#2921`）: 渡した順に語ごとの節と `RECORD each … keyword=<語>` を返し SUMMARY は 1 行・
+#        語ごとの RECORD は単独で引いた回と同じ ID・重なるヒットは和集合で数える・空白だけの語は数えず空白入りの語は行末まで・
+#        --impl / --class / --all / 他モードとの併用と語なし・改行入りの語は理由を名指して rc=1・-- の後ろの語はオプションと同じ綴りでも語（K47h）・
+#        台帳側の obs= と gh の照会回数（K47i）・tsv は 6 列と RECORD を保つ・保留候補と
+#        未反映も語ごとに記録・/ace-curate の重複照合の手順が --each の 1 回の呼び出しを指す
 #   K28. --resolve-playbook の出力契約（unreadable の PATH、相対指定の REL、root 内外は実体で判定、
 #        symlink ファイルは実体が root 内のときだけ REL、キーワード拒否）
 #
@@ -91,6 +104,9 @@
 # 空振り検出: 起動 shell の常駐機能は reader の状態と独立に probe する。macOS Bash 3.2 の正常対照は10件成功（合成9case＋集合照合）。probe空/未知/失敗・常駐対応の偽宣言・W2/W11のone-shot起動数を1へ戻す・W6/W7の分岐逆転・W11の後続要求削除・case数0・途中return・入力空/不在・完了名だけの14変異は各rc1（2026-10-29実測）。W8〜W9の実Windows限定も維持。今回の常駐対応shellと実Windowsの再実測は未実施。W6/W7はIssue `#2711` でsuite knowledge-lookup-resident-aclへ移したので、この行は移す前の実測。
 # 空振り検出: W6 / W7 と常駐側の W16 を suite knowledge-lookup-resident-acl へ分けた後（Issue `#2711`）、windows-acl.sh は bash 版で部分 skip しない。1 回きりの起動の W16 は timeout(1) が無い機械では skip せず赤にする（W1 と同じ前提。timeout(1) の無い機械では未実測）。正常対照は /bin/bash 3.2 で 164 件成功（合成 10 case、W16 は起動 2 回）、Homebrew bash 5.3 を PATH の先頭に置いて 163 件成功（合成 9 case）。部分 skip は K32 と W8〜W9 の 2 行だけ（2026-11-08 macOS 実測）。
 # 空振り検出: 実 Windows 分岐（W8〜W9 / W15 / W17）の判定は windows-acl.sh で `uname` を読まず、能力層の ff_host_is_msys（scripts/lib/wsl-notice.sh。ADR-084 決定 3）へ 1 回だけ委ねる（Issue `#2711`）。隔離コピーで判定を msys 固定にすると macOS でも実機分岐へ入り suite が rc=127 で打ち切られ、wsl-notice.sh を消すと能力層を読めない旨を名指して赤（2026-11-08 macOS 実測。コピーの正常対照は配置に依存する K31 の 2 件を除き 162 件成功、実ツリーでは 164 件成功）。
+# 空振り検出: --impl / --class 型付き引数と作業クラス語候補の追加経路に対し、両軸分離分岐無効化・空白語除外削除・class=未指定 付与削除・--class 未指定警告削除・候補抽出の deprecated/archived 除外削除・位置引数併用拒否削除・両軸 unreflected 再出力無効化の 7 変異を mutation-harness.sh で実測し、全 7 件 detected（SURVIVED 0 / NOT-APPLIED 0、対照 180 件成功。2026-11-21 実測）。
+# 空振り検出: root-stop-guide.sh（G1〜G12。Issue `#2648`）は、fixture のリポジトリを作れない回を検査不成立の赤にし、合成 case の実行回数（11 回）が合わない・成功終端へ届かない回も赤にする。場所の名指しが無い拒否（G7）と検査を通る root（G8）を対照に置く。knowledge-lookup.sh の写しへ 1 件ずつ当てた 13 変異はすべて赤（2026-11-21 実測。WSL の Ubuntu / bash 5.2 で suite 全体を回した。写しは git の外なので変異なしでも K31・K46 が赤になり、下はそれを除いた差分）: 案内の呼び出しを消す・停止文を stdout へ出す（どちらも G1〜G6・G9〜G12）、場所の名指しが無い拒否でも足す（G7）、置き場の検査を外す（G5）、同じ名前の別物を避けない（G4）、パスを引用しない・単一引用符のエスケープを落とす（どちらも G1〜G4・G10〜G12）、前の worktree を見ない（G3・G10・G11）、stop-block-unavailable の 3 行を外す（G9）、commit を読まない（G1〜G5・G10〜G12）、--root 無しで cwd を使わない（G10）、add の -f を外す（G1・G4・G12）、下位ディレクトリを名指さない（G11）。G10〜G12 を足す前の 9 変異は Windows 11 の Git Bash でも同じ集合が赤（引用符のエスケープだけは、fixture 名に引用符を持てる WSL で測った）。
+# 空振り検出: K47〜K47i（--each。Issue `#2921`）は、単独で引いた回の RECORD が空の回・台帳側にヒットが無い回・gh の stub が 1 回も呼ばれない回を「一致」と数えず赤にし、断るケースは stderr の理由文まで見る（別の理由の rc=1 を通さない）。knowledge-lookup.sh の写しへ 1 件ずつ当てた 9 変異はすべて赤（2026-11-21 実測。WSL の Ubuntu / bash 5.2 で suite 全体。写しは git の外なので変異なしでも K31・K46・K47f が赤になり、下はそれを除いた差分）: RECORD から keyword= を落とす（K47・K47b・K47c・K47e・K47h・K47i）、語ごとではなく全語を 1 つの照合へ束ねる（K47・K47b・K47e・K47h・K47i）、SUMMARY から each_keywords を落とす（K47・K47c・K47h）、--all との併用を通す・改行 / 復帰 / タブの語を通す・--impl / --class との併用の停止を外す（いずれも K47d）、空白だけの語を数える（K47c・K47d）、--each の分岐を無効にして従来の 1 回の検索へ落とす（K47・K47b・K47c・K47e・K47h・K47i）、SUMMARY の件数を和集合ではなく最後の語のものにする（K47・K47b・K47i）。未反映の経路（K47f）は写しでは成立しないので、変異ではなく本体の suite の緑で確かめた。
 #
 # 変異検出（2026-09-19 実測。変異は 1 件ずつ当て、前後で対照を取る）:
 #           emit_obs の archived 除外を外すと 2 件赤（K2 と K11 の行数）。emit_obs の Status 抽出を
@@ -1138,6 +1154,486 @@ k36_expect_refused '最終行が切れた'
 rm -f "${K36_LIB}"
 k36_expect_refused 'lib が無い'
 
+# ── K37〜K46: --impl / --class 型付き引数と作業クラス語候補 ───────────────────
+ROOT_TYPED="${TMP}/typed-args"
+mkdir -p "${ROOT_TYPED}/docs/08-knowledge/playbook"
+cat >"${ROOT_TYPED}/docs/08-knowledge/PLAYBOOK.md" <<'EOF'
+# PLAYBOOK
+
+## エントリ一覧
+
+| ID | 概要 | カテゴリ | 場所 |
+| --- | --- | --- | --- |
+| ACE-200-1 | サブプロセス起動のキャッシュを実装する | coding | [coding.md#ace-200-1](./playbook/coding.md#ace-200-1) |
+| ACE-200-2 | テンプレートの置き換えでは全ファイルを確認する | coding | [coding.md#ace-200-2](./playbook/coding.md#ace-200-2) |
+| ACE-200-3 | 決定の反映を別担当へ回すときは境界を書く | coding | [coding.md#ace-200-3](./playbook/coding.md#ace-200-3) |
+| ACE-200-4 | 廃用専用の特殊候補文字列を混ぜない | coding | [coding.md#ace-200-4](./playbook/coding.md#ace-200-4) |
+EOF
+cat >"${ROOT_TYPED}/docs/08-knowledge/playbook/coding.md" <<'EOF'
+# PLAYBOOK — coding
+
+## エントリ一覧
+
+<a id="ace-200-1"></a>
+
+### ACE-200-1: サブプロセス起動のキャッシュを実装する
+
+| Category | coding | Origin | PR-200 |
+| Date | 2026-10-01 |
+| Helpful | 1 | Harmful | 0 |
+| Status | active |
+
+terminology 整理時のサブプロセス最適化。
+
+---
+
+<a id="ace-200-2"></a>
+
+### ACE-200-2: テンプレートの置き換えでは全ファイルを確認する
+
+| Category | coding | Origin | PR-200 |
+| Date | 2026-10-02 |
+| Helpful | 2 | Harmful | 0 |
+| Status | active |
+
+用語集の一括更新とは別に作業クラスが「置き換え」に該当する。
+
+---
+
+<a id="ace-200-3"></a>
+
+### ACE-200-3: 決定の反映を別担当へ回すときは境界を書く
+
+| Category | coding | Origin | PR-200 |
+| Date | 2026-10-03 |
+| Helpful | 1 | Harmful | 0 |
+| Status | active |
+
+表記の統一と一緒に決着先を残す。
+
+---
+
+<a id="ace-200-4"></a>
+
+### ACE-200-4: 廃用専用の特殊候補文字列を混ぜない
+
+| Category | coding | Origin | PR-200 |
+| Date | 2026-10-04 |
+| Helpful | 0 | Harmful | 1 |
+| Status | deprecated |
+
+deprecated 専用の文言。
+
+---
+EOF
+make_ledger "${ROOT_TYPED}"
+
+run_lookup_split() {
+  local root="$1"; shift
+  set +e
+  "${LOOKUP[@]}" --root "${root}" "$@" >"${TMP}/split.out" 2>"${TMP}/split.err"
+  RC=$?
+  set -e
+  SPLIT_STDOUT="$(cat "${TMP}/split.out")"
+  SPLIT_STDERR="$(cat "${TMP}/split.err")"
+}
+
+# K37: --impl のみ -> stderr 警告 + RECORD に class=未指定 + SUMMARY 拡張 + 候補見出し
+run_lookup_split "${ROOT_TYPED}" --offline --impl terminology
+if [[ "${RC}" -eq 0 ]] \
+   && grep -qF -- '作業クラス語（--class）が未指定' "${TMP}/split.err" \
+   && grep -qF -- 'RECORD ace=ACE-200-1' "${TMP}/split.out" \
+   && grep -qF -- 'class=未指定' "${TMP}/split.out" \
+   && grep -qF -- 'impl_keywords=1 class_keywords=0' "${TMP}/split.out" \
+   && grep -qF -- '== 作業クラス語の候補（Playbook タイトル由来） ==' "${TMP}/split.out"; then
+  ok "K37: --impl のみで呼ぶと警告・class=未指定・SUMMARY・作業クラス語候補が出る"
+else
+  bad "K37: --impl のみの出力が期待と違う rc=${RC} err=[${SPLIT_STDERR}] out=[${SPLIT_STDOUT}]"
+fi
+
+# K38: --class のみ -> stderr 警告 + RECORD に impl=未指定 + SUMMARY 拡張
+run_lookup_split "${ROOT_TYPED}" --offline --class 置き換え
+if [[ "${RC}" -eq 0 ]] \
+   && grep -qF -- '実装語（--impl）が未指定' "${TMP}/split.err" \
+   && grep -qF -- 'RECORD ace=ACE-200-2' "${TMP}/split.out" \
+   && grep -qF -- 'impl=未指定' "${TMP}/split.out" \
+   && ! grep -qF -- 'class=未指定' "${TMP}/split.out" \
+   && grep -qF -- 'impl_keywords=0 class_keywords=1' "${TMP}/split.out"; then
+  ok "K38: --class のみで呼ぶと警告・impl=未指定・SUMMARY が出る"
+else
+  bad "K38: --class のみの出力が期待と違う rc=${RC} err=[${SPLIT_STDERR}] out=[${SPLIT_STDOUT}]"
+fi
+
+# K39: --impl と --class の両方指定 -> 欠落警告なし・系統別分離出力・RECORD impl / RECORD class
+run_lookup_split "${ROOT_TYPED}" --offline --impl terminology --class 置き換え
+if [[ "${RC}" -eq 0 ]] \
+   && ! grep -qF -- '未指定' "${TMP}/split.err" \
+   && ! grep -qF -- '警告:' "${TMP}/split.err" \
+   && ! grep -qF -- '未指定' "${TMP}/split.out" \
+   && grep -qF -- '=== 系統: 実装語（--impl） ===' "${TMP}/split.out" \
+   && grep -qF -- '=== 系統: 作業クラス語（--class） ===' "${TMP}/split.out" \
+   && grep -qF -- 'RECORD impl ace=ACE-200-1 obs=0 件' "${TMP}/split.out" \
+   && grep -qF -- 'RECORD class ace=ACE-200-2 obs=0 件' "${TMP}/split.out" \
+   && grep -qF -- 'impl_keywords=1 class_keywords=1 impl_ace=1 impl_obs=0 class_ace=1 class_obs=0' "${TMP}/split.out"; then
+  ok "K39: --impl と --class の両方を渡すと欠落警告なしで系統別に RECORD impl / RECORD class が出る"
+else
+  bad "K39: 両軸指定の出力が期待と違う rc=${RC} err=[${SPLIT_STDERR}] out=[${SPLIT_STDOUT}]"
+fi
+run_lookup_split "${ROOT_TYPED}" --offline --impl nonexistent_word --class 置き換え
+if [[ "${RC}" -eq 0 ]] \
+   && grep -qF -- 'RECORD impl ace=0 件 obs=0 件' "${TMP}/split.out" \
+   && grep -qF -- 'RECORD class ace=ACE-200-2 obs=0 件' "${TMP}/split.out" \
+   && grep -qF -- 'SUMMARY ace=1 obs=0 ' "${TMP}/split.out" \
+   && grep -qF -- 'impl_ace=0 impl_obs=0 class_ace=1 class_obs=0' "${TMP}/split.out"; then
+  ok "K39b: 両軸指定で片方が 0 件でも RECORD impl / RECORD class を独立に記録できる"
+else
+  bad "K39b: 片側 0 件の両軸指定が期待と違う rc=${RC} out=[${SPLIT_STDOUT}]"
+fi
+run_lookup_split "${ROOT_TYPED}" --offline --impl coding --class 置き換え
+if [[ "${RC}" -eq 0 ]] \
+   && grep -qF -- 'SUMMARY ace=4 obs=0 ' "${TMP}/split.out" \
+   && grep -qF -- 'impl_ace=4 impl_obs=0 class_ace=1 class_obs=0' "${TMP}/split.out"; then
+  ok "K39c: 両軸重複ヒット時は SUMMARY ace に和集合件数（4）を出しつつ系統別件数を保持する"
+else
+  bad "K39c: 両軸重複ヒット集計が期待と違う rc=${RC} out=[${SPLIT_STDOUT}]"
+fi
+
+# K40: 候補はすべて active Playbook タイトルの部分文字列で、deprecated や入力済み語を含まない
+run_lookup_split "${ROOT_TYPED}" --offline --impl テンプレートの置き換え
+cand_line="$(awk '/^== 作業クラス語の候補（Playbook タイトル由来） ==$/{getline; gsub(/^[[:space:]]+/, ""); print; exit}' "${TMP}/split.out")"
+if [[ -n "${cand_line}" ]] \
+   && ! grep -qF -- '特殊候補' <<<"${cand_line}" \
+   && ! grep -qF -- '廃用専用' <<<"${cand_line}"; then
+  k40_ok=1
+  active_titles=$'サブプロセス起動のキャッシュを実装する\nテンプレートの置き換えでは全ファイルを確認する\n決定の反映を別担当へ回すときは境界を書く'
+  old_ifs="$IFS"
+  IFS='/'
+  for c in $cand_line; do
+    c_trim="$(sed 's/^[[:space:]]*//; s/[[:space:]]*$//' <<<"$c")"
+    [ -n "$c_trim" ] || continue
+    if [ "$c_trim" = "テンプレートの置き換え" ]; then
+      k40_ok=0; bad "K40: 既入力キーワード ${c_trim} が候補から除かれていない"
+    fi
+    if ! grep -qF -- "$c_trim" <<<"$active_titles"; then
+      k40_ok=0; bad "K40: 候補 [${c_trim}] が active な Playbook タイトルの部分文字列でない"
+    fi
+  done
+  IFS="$old_ifs"
+  if [ "$k40_ok" -eq 1 ]; then
+    ok "K40: 作業クラス語候補は active タイトル由来のみで deprecated・既入力語を含まない"
+  fi
+else
+  bad "K40: 候補行の検証に失敗 cand=[${cand_line}]"
+fi
+
+# K41: --format tsv でも RECORD と未指定印/系統別出力が保たれ、見出しや候補見出しが TSV に混入しない
+run_lookup_split "${ROOT_TYPED}" --offline --format tsv --impl terminology
+if [[ "${RC}" -eq 0 ]] \
+   && grep -qF -- '作業クラス語（--class）が未指定' "${TMP}/split.err" \
+   && grep -qF -- 'class=未指定' "${TMP}/split.out" \
+   && ! grep -qF -- '== 作業クラス語の候補' "${TMP}/split.out"; then
+  ok "K41: --format tsv（単軸）では class=未指定 を保ちつつ候補見出しを混入しない"
+else
+  bad "K41: tsv 出力が期待と違う rc=${RC} out=[${SPLIT_STDOUT}]"
+fi
+run_lookup_split "${ROOT_TYPED}" --offline --format tsv --impl terminology --class 置き換え
+if [[ "${RC}" -eq 0 ]] \
+   && grep -qF -- 'RECORD impl ace=ACE-200-1 obs=0 件' "${TMP}/split.out" \
+   && grep -qF -- 'RECORD class ace=ACE-200-2 obs=0 件' "${TMP}/split.out" \
+   && ! grep -qF -- '=== 系統:' "${TMP}/split.out" \
+   && ! grep -qF -- '== 作業クラス語の候補' "${TMP}/split.out"; then
+  ok "K41b: --format tsv（両軸）では 6 列 TSV + RECORD impl / RECORD class を保ち見出しを混入しない"
+else
+  bad "K41b: 両軸 tsv 出力が期待と違う rc=${RC} out=[${SPLIT_STDOUT}]"
+fi
+
+# K42: エラー系（値なし・位置引数混在・モード併用）はすべて rc=1 で止まる
+k42_err_ok=1
+for bad_args in "--impl" "--class" "--impl --class x" "--impl a -- b" "--impl a --promoted-open"; do
+  set -f
+  # shellcheck disable=SC2086
+  run_lookup_split "${ROOT_TYPED}" --offline $bad_args
+  set +f
+  if [[ "${RC}" -ne 1 ]]; then
+    k42_err_ok=0
+    bad "K42: 不正引数 [${bad_args}] が rc=${RC}（期待 1）"
+  fi
+done
+if [ "$k42_err_ok" -eq 1 ]; then
+  ok "K42: 不正引数（値なし・位置引数混在・モード併用）はすべて rc=1 で止まる"
+fi
+
+# K43: 従来の位置引数形式では型付き拡張出力を一切出さない
+run_lookup_split "${ROOT_TYPED}" --offline terminology
+if [[ "${RC}" -eq 0 ]] \
+   && ! grep -qF -- '警告:' "${TMP}/split.err" \
+   && ! grep -qF -- '未指定' "${TMP}/split.err" \
+   && ! grep -qF -- '未指定' "${TMP}/split.out" \
+   && ! grep -qF -- 'impl_keywords=' "${TMP}/split.out" \
+   && ! grep -qF -- '== 作業クラス語の候補' "${TMP}/split.out"; then
+  ok "K43: 従来の位置引数は完全後方互換で余計な出力を足さない"
+else
+  bad "K43: 従来位置引数に副作用がある err=[${SPLIT_STDERR}] out=[${SPLIT_STDOUT}]"
+fi
+
+# K44: 空文字引数・--impl 複数回指定・--all 併用境界
+run_lookup_split "${ROOT_TYPED}" --offline --impl terminology --class ""
+if [[ "${RC}" -eq 0 ]] \
+   && grep -qF -- '作業クラス語（--class）が未指定' "${TMP}/split.err" \
+   && grep -qF -- 'class=未指定' "${TMP}/split.out" \
+   && grep -qF -- 'impl_keywords=1 class_keywords=0' "${TMP}/split.out"; then
+  ok "K44: --class に空文字を渡しても指定済みと数えず警告・class=未指定・class_keywords=0 になる"
+else
+  bad "K44: --class 空文字の扱いが期待と違う rc=${RC} err=[${SPLIT_STDERR}] out=[${SPLIT_STDOUT}]"
+fi
+run_lookup_split "${ROOT_TYPED}" --offline --impl ""
+if [[ "${RC}" -eq 1 ]]; then
+  ok "K44b: --impl に空文字だけを渡した場合はキーワード無しとして rc=1 になる"
+else
+  bad "K44b: --impl 空文字が rc=1 でない（rc=${RC}）"
+fi
+run_lookup_split "${ROOT_TYPED}" --offline --impl terminology --class 置き換え --impl 境界
+if [[ "${RC}" -eq 0 ]] \
+   && grep -qF -- 'impl_keywords=2 class_keywords=1' "${TMP}/split.out" \
+   && grep -qF -- 'RECORD impl ace=ACE-200-1,ACE-200-3 obs=0 件' "${TMP}/split.out"; then
+  ok "K44c: --impl を複数回分けて渡すと全語が実装語側へ蓄積する"
+else
+  bad "K44c: 複数 --impl の蓄積が期待と違う rc=${RC} out=[${SPLIT_STDOUT}]"
+fi
+run_lookup_split "${ROOT_TYPED}" --offline --all --impl terminology nonexistent_word
+if [[ "${RC}" -eq 0 ]] && grep -qF -- 'RECORD ace=0 件 obs=0 件' "${TMP}/split.out"; then
+  ok "K44d: --all と型付き引数を併用すると AND で絞られる"
+else
+  bad "K44d: --all 併用が期待と違う rc=${RC} out=[${SPLIT_STDOUT}]"
+fi
+
+# K45: 両軸指定時の PENDING_CANDIDATES.md 系統別集計と SUMMARY 和集合
+ROOT_TYPED_PENDING="${TMP}/typed-pending"
+mkdir -p "${ROOT_TYPED_PENDING}/docs/08-knowledge"
+cp -R "${ROOT_TYPED}/docs/08-knowledge/." "${ROOT_TYPED_PENDING}/docs/08-knowledge/"
+cat >"${ROOT_TYPED_PENDING}/docs/08-knowledge/PENDING_CANDIDATES.md" <<'EOF'
+<!-- ff-ace-pending:v1 -->
+# ACE 保留候補
+
+## エントリ一覧
+
+### PENDING-PR-201-1: impl 専用の保留候補
+| Category | coding |
+| Origin | PR 201 |
+| Status | pending |
+
+> alpha_pending_only の保留本文。
+
+---
+
+### PENDING-PR-201-2: 共有クラス語の保留候補
+| Category | coding |
+| Origin | PR 201 |
+| Status | pending |
+
+> alpha_pending_only と beta_pending_class の両方に該当する保留本文。
+
+---
+EOF
+run_lookup_split "${ROOT_TYPED_PENDING}" --offline --impl alpha_pending_only --class beta_pending_class
+if [[ "${RC}" -eq 0 ]] \
+   && grep -qF -- 'RECORD impl ace=0 件 obs=0 件 pending=PENDING-PR-201-1,PENDING-PR-201-2' "${TMP}/split.out" \
+   && grep -qF -- 'RECORD class ace=0 件 obs=0 件 pending=PENDING-PR-201-2' "${TMP}/split.out" \
+   && grep -qF -- 'pending=2 pending_state=ok' "${TMP}/split.out"; then
+  ok "K45: 両軸指定で pending を系統別に記録しつつ SUMMARY pending に和集合件数（2）を出す"
+else
+  bad "K45: 両軸 pending 集計が期待と違う rc=${RC} err=[${SPLIT_STDERR}] out=[${SPLIT_STDOUT}]"
+fi
+
+# K46: 両軸指定時の batch モード unreflected 2 回目パス再出力（RECORD impl=0 件 / RECORD class=ヒット）
+# shellcheck source=../lib/git-fixture.sh
+. "${PLUGIN_ROOT}/tests/lib/git-fixture.sh"
+K46_WORLD="${TMP}/k46-batch"
+mkdir -p "${K46_WORLD}"
+git init -q --bare "${K46_WORLD}/origin.git"
+ff_git_fixture_init "${K46_WORLD}/repo" "K46 Runner" "k46@example.com" >/dev/null
+(
+  cd "${K46_WORLD}/repo" || exit 1
+  git switch -q -c develop
+  mkdir -p docs/08-knowledge/playbook
+  printf '# PLAYBOOK\n\n## エントリ一覧\n' >docs/08-knowledge/PLAYBOOK.md
+  printf '# coding\n\n## エントリ一覧\n' >docs/08-knowledge/playbook/coding.md
+  printf '# 観測台帳\n\n## エントリ一覧\n' >docs/08-knowledge/OBSERVATIONS.md
+  printf 'mode=batch\n' >docs/08-knowledge/knowledge-delivery.conf
+  git add -A
+  git commit -qm "chore: k46 seed"
+  git remote add origin "${K46_WORLD}/origin.git"
+  git push -q origin develop
+  git switch -q -c knowledge/staging
+  cat >>docs/08-knowledge/playbook/coding.md <<'ACEEOF'
+
+<a id="ace-202-1"></a>
+
+### ACE-202-1: 未反映のクラス専用エントリ
+
+| Category | coding | Origin | PR-202 |
+| Date | 2026-10-05 |
+| Helpful | 0 | Harmful | 0 |
+| Status | active |
+
+unreflect_class_needle のみを含む未反映知見。
+
+---
+ACEEOF
+  cat >docs/08-knowledge/PLAYBOOK.md <<'PBEOF'
+# PLAYBOOK
+
+## エントリ一覧
+
+| ID | 概要 | カテゴリ | 場所 |
+| --- | --- | --- | --- |
+| ACE-202-1 | 未反映のクラス専用エントリ | coding | [coding.md#ace-202-1](./playbook/coding.md#ace-202-1) |
+PBEOF
+  git add -A
+  git commit -qm "knowledge: unreflected ACE-202-1"
+  git push -q origin knowledge/staging
+  git switch -q develop
+  git fetch -q origin
+)
+git -C "${K46_WORLD}/origin.git" symbolic-ref HEAD refs/heads/develop
+git -C "${K46_WORLD}/repo" remote set-head origin develop >/dev/null
+run_lookup_split "${K46_WORLD}/repo" --offline --impl unreflect_impl_miss --class unreflect_class_needle
+if [[ "${RC}" -eq 0 ]] \
+   && grep -qF -- 'RECORD impl ace=0 件 obs=0 件 unreflected=0 件' "${TMP}/split.out" \
+   && grep -qF -- 'RECORD class ace=0 件 obs=0 件 unreflected=ACE-202-1' "${TMP}/split.out" \
+   && grep -qF -- 'unreflected=1 unreflected_commits=1 unreflected_state=unverified' "${TMP}/split.out"; then
+  ok "K46: 両軸指定時の 2 回目パスでも unreflected を再出力・系統別記録する"
+else
+  bad "K46: 両軸 batch unreflected が期待と違う rc=${RC} err=[${SPLIT_STDERR}] out=[${SPLIT_STDOUT}]"
+fi
+
+# ── K47: --each（語ごとの検索。1 回の起動で語の数だけ RECORD を返す。Issue `#2921`） ──────────
+run_lookup_split "${ROOT_TYPED}" --offline --each terminology 置き換え nonexistent_word
+k47_records="$(grep -- '^RECORD ' "${TMP}/split.out" || true)"
+if [[ "${RC}" -eq 0 && "${SPLIT_STDERR}" != *'警告:'* && "${SPLIT_STDERR}" != *'未指定'* \
+   && "${k47_records}" == $'RECORD each ace=ACE-200-1 obs=0 件 keyword=terminology\nRECORD each ace=ACE-200-2 obs=0 件 keyword=置き換え\nRECORD each ace=0 件 obs=0 件 keyword=nonexistent_word' \
+   && "$(grep -- '^=== 語: ' "${TMP}/split.out")" == $'=== 語: terminology ===\n=== 語: 置き換え ===\n=== 語: nonexistent_word ===' \
+   && "$(grep -c -- '^SUMMARY ' "${TMP}/split.out")" -eq 1 ]] \
+   && grep -qF -- 'SUMMARY ace=2 obs=0 keywords=3 match=any ' "${TMP}/split.out" \
+   && [[ "$(tail -n 1 "${TMP}/split.out")" == *' each_keywords=3' ]] \
+   && ! grep -qF -- 'impl_keywords=' "${TMP}/split.out"; then
+  ok "K47: --each は渡した順に語ごとの節と RECORD each … keyword=<語> を出し、SUMMARY は 1 行で重複なしの件数と each_keywords を持つ"
+else
+  bad "K47: --each の語ごとの出力が期待と違う rc=${RC} err=[${SPLIT_STDERR}] out=[${SPLIT_STDOUT}]"
+fi
+# 語ごとの RECORD は、その語だけを単独で引いた回の RECORD と同じ ID を返す（束ねた照合へ落ちていない）
+k47_same=1
+for k47_kw in terminology 置き換え coding nonexistent_word; do
+  run_lookup_split "${ROOT_TYPED}" --offline "${k47_kw}"
+  k47_single="$(grep -- '^RECORD ' "${TMP}/split.out" || true)"
+  run_lookup_split "${ROOT_TYPED}" --offline --each coding "${k47_kw}"
+  k47_each="$(grep -- "^RECORD each .* keyword=${k47_kw}\$" "${TMP}/split.out" | tail -n 1 || true)"
+  [[ -n "${k47_single}" && "RECORD each ${k47_single#RECORD } keyword=${k47_kw}" == "${k47_each}" ]] || k47_same=0
+done
+run_lookup_split "${ROOT_TYPED}" --offline --each coding 置き換え
+if [[ "${k47_same}" -eq 1 && "${RC}" -eq 0 ]] && grep -qF -- 'SUMMARY ace=4 obs=0 keywords=2 ' "${TMP}/split.out"; then
+  ok "K47b: 語ごとの RECORD は単独で引いた回と同じ ID を返し、語をまたいで重なるヒットは SUMMARY で 1 回だけ数える（和集合 4）"
+else
+  bad "K47b: 語ごとの結果が単独検索と食い違う、または和集合の件数が違う same=${k47_same} rc=${RC} out=[${SPLIT_STDOUT}]"
+fi
+run_lookup_split "${ROOT_TYPED}" --offline --each "   " "no such phrase" ""
+if [[ "${RC}" -eq 0 && "$(grep -c -- '^RECORD ' "${TMP}/split.out")" -eq 1 ]] \
+   && grep -qxF -- 'RECORD each ace=0 件 obs=0 件 keyword=no such phrase' "${TMP}/split.out" \
+   && [[ "$(tail -n 1 "${TMP}/split.out")" == *' keywords=1 '*' each_keywords=1' ]]; then
+  ok "K47c: 空白だけの語は数えず、空白を含む語は keyword= から行末までにそのまま載る"
+else
+  bad "K47c: 空白だけの語・空白を含む語の扱いが期待と違う rc=${RC} out=[${SPLIT_STDOUT}]"
+fi
+# 断る理由ごとに stderr の文面まで見る（別の理由の rc=1 と取り違えない）
+k47_reject=""
+k47_refuse() { # <ラベル> <stderr に要る文> <引数...>
+  local label="$1" needle="$2"; shift 2
+  run_lookup_split "${ROOT_TYPED}" --offline "$@"
+  [[ "${RC}" -eq 1 && -z "${SPLIT_STDOUT}" && "${SPLIT_STDERR}" == *"${needle}"* ]] || k47_reject="${k47_reject} ${label}(rc=${RC})"
+}
+k47_refuse impl '--each は --impl / --class と併用できません' --each --impl 境界
+k47_refuse class '--each は --impl / --class と併用できません' --each --class 置き換え
+k47_refuse all '--each は --all と併用できません' --all --each terminology 境界
+k47_refuse promoted-open '--promoted-open は --each と併用できません' --each --promoted-open
+k47_refuse none 'キーワードが 1 つも指定されていません' --each
+k47_refuse blank 'キーワードが 1 つも指定されていません' --each "  " ""
+k47_refuse newline '--each の語に改行・復帰・タブは使えません' --each terminology $'境界\nRECORD each ace=ACE-999-9'
+k47_refuse tab '--each の語に改行・復帰・タブは使えません' --each $'a\tb'
+k47_refuse cr '--each の語に改行・復帰・タブは使えません' --each $'terminology\r'
+if [[ -z "${k47_reject}" ]]; then
+  ok "K47d: --each は --impl / --class / --all / 他のモードとの併用・語なし・空白だけ・改行 / タブ / 復帰入りの語を、理由を名指して rc=1 で断り、stdout へ何も出さない"
+else
+  bad "K47d: --each の併用・不正な語を、名指した理由で断らない:${k47_reject}"
+fi
+# 語は -- の後ろへ置く: オプションと同じ綴り・- 始まりの語も語として引く（オプションとして読まない）
+run_lookup_split "${ROOT_TYPED}" --offline --each -- --offline -x terminology --all
+if [[ "${RC}" -eq 0 ]] \
+   && [[ "$(grep -- '^RECORD ' "${TMP}/split.out")" == $'RECORD each ace=0 件 obs=0 件 keyword=--offline\nRECORD each ace=0 件 obs=0 件 keyword=-x\nRECORD each ace=ACE-200-1 obs=0 件 keyword=terminology\nRECORD each ace=0 件 obs=0 件 keyword=--all' ]] \
+   && [[ "$(tail -n 1 "${TMP}/split.out")" == *' each_keywords=4' ]]; then
+  ok "K47h: -- の後ろの語は、オプションと同じ綴り・- 始まりでも語として 1 語ずつ引く"
+else
+  bad "K47h: -- の後ろの語をオプションとして読んだ rc=${RC} err=[${SPLIT_STDERR}] out=[${SPLIT_STDOUT}]"
+fi
+# 台帳側: 語ごとの obs= は単独で引いた回と同じで、Issue state の照会（gh）は語の数だけ増えない
+k47_obs_same=1
+for k47_kw in hydration allowlist; do
+  run_lookup_split "${ROOT1}" --offline "${k47_kw}"
+  k47_single="$(grep -- '^RECORD ' "${TMP}/split.out" || true)"
+  run_lookup_split "${ROOT1}" --offline --each -- hydration allowlist
+  k47_each="$(grep -- "^RECORD each .* keyword=${k47_kw}\$" "${TMP}/split.out" || true)"
+  [[ "${k47_single}" == *'obs=OBS-'* && "RECORD each ${k47_single#RECORD } keyword=${k47_kw}" == "${k47_each}" ]] || k47_obs_same=0
+done
+k47_obs_summary="$(tail -n 1 "${TMP}/split.out")"
+: >"${GH_REPO_LOG}"
+set +e
+GH_REPO_LOG="${GH_REPO_LOG}" PATH="${STUB_BIN3}:${PATH}" "${LOOKUP[@]}" --root "${ROOT12}" references >/dev/null 2>&1; k47_rc1=$?
+set -e
+k47_gh_single="$(awk 'END { print NR }' "${GH_REPO_LOG}")"
+: >"${GH_REPO_LOG}"
+set +e
+GH_REPO_LOG="${GH_REPO_LOG}" PATH="${STUB_BIN3}:${PATH}" "${LOOKUP[@]}" --root "${ROOT12}" --each -- references references references >"${TMP}/split.out" 2>/dev/null; k47_rc3=$?
+set -e
+k47_gh_each="$(awk 'END { print NR }' "${GH_REPO_LOG}")"
+if [[ "${k47_obs_same}" -eq 1 && "${k47_obs_summary}" == 'SUMMARY ace=2 obs=5 keywords=2 '* \
+   && "${k47_rc1}" -eq 0 && "${k47_rc3}" -eq 0 && "${k47_gh_single}" -ge 1 && "${k47_gh_each}" -eq "${k47_gh_single}" \
+   && "$(grep -c -- '^RECORD each .*(open)\|^RECORD each ' "${TMP}/split.out")" -eq 3 ]]; then
+  ok "K47i: 台帳にヒットがある語も語ごとの obs= が単独検索と一致し、和集合で数え、gh の照会は 3 語でも単独の回と同じ ${k47_gh_single} 回"
+else
+  bad "K47i: 台帳側の語ごとの記録・和集合・gh の照会回数が期待と違う same=${k47_obs_same} summary=[${k47_obs_summary}] gh=${k47_gh_single}/${k47_gh_each} rc=${k47_rc1}/${k47_rc3}"
+fi
+run_lookup_split "${ROOT_TYPED}" --offline --format tsv --each terminology 置き換え
+k47_tsv_bad="$(awk -F '\t' '/^(ace|obs)\t/ { if (NF != 6) c++ } END { print c + 0 }' "${TMP}/split.out")"
+if [[ "${RC}" -eq 0 && "${k47_tsv_bad}" -eq 0 && "$(grep -c -- '^ace	' "${TMP}/split.out")" -eq 2 ]] \
+   && [[ "$(grep -- '^RECORD ' "${TMP}/split.out")" == $'RECORD each ace=ACE-200-1 obs=0 件 keyword=terminology\nRECORD each ace=ACE-200-2 obs=0 件 keyword=置き換え' ]] \
+   && ! grep -qF -- '=== 語:' "${TMP}/split.out"; then
+  ok "K47e: --format tsv の --each は 6 列の行を語の順に並べ、語ごとの RECORD を保ち、見出しを混ぜない"
+else
+  bad "K47e: tsv の --each が期待と違う rc=${RC} out=[${SPLIT_STDOUT}]"
+fi
+run_lookup_split "${ROOT_TYPED_PENDING}" --offline --each alpha_pending_only beta_pending_class
+k47_pending="$(grep -- '^RECORD ' "${TMP}/split.out" || true)"
+run_lookup_split "${K46_WORLD}/repo" --offline --each unreflect_impl_miss unreflect_class_needle
+if [[ "${k47_pending}" == $'RECORD each ace=0 件 obs=0 件 pending=PENDING-PR-201-1,PENDING-PR-201-2 keyword=alpha_pending_only\nRECORD each ace=0 件 obs=0 件 pending=PENDING-PR-201-2 keyword=beta_pending_class' \
+   && "${RC}" -eq 0 && "$(grep -c -- '^RECORD ' "${TMP}/split.out")" -eq 2 \
+   && "$(sed -n '/^RECORD /p' "${TMP}/split.out" | sed -n 1p)" == 'RECORD each ace=0 件 obs=0 件 unreflected=0 件'*' keyword=unreflect_impl_miss' \
+   && "$(sed -n '/^RECORD /p' "${TMP}/split.out" | sed -n 2p)" == 'RECORD each ace=0 件 obs=0 件 unreflected=ACE-202-1'*' keyword=unreflect_class_needle' ]] \
+   && grep -qF -- 'unreflected=1 unreflected_commits=1 unreflected_state=unverified each_keywords=2' "${TMP}/split.out"; then
+  ok "K47f: 保留候補と未反映（まとめるモード）も語ごとに記録し、2 語目以降のパスでも未反映を出し直す"
+else
+  bad "K47f: 保留候補・未反映の語ごとの記録が期待と違う rc=${RC} pending=[${k47_pending}] out=[${SPLIT_STDOUT}]"
+fi
+# 使う側の手順: 重複照合は語ごとにループで呼ばず --each の 1 回へまとめる（AC 2）
+k47_curate="${PLUGIN_ROOT}/skills/ace-curate/references/curate.md"
+k47_skill="${PLUGIN_ROOT}/skills/knowledge-lookup/SKILL.md"
+if [[ -r "${k47_curate}" && -r "${k47_skill}" ]] \
+   && grep -qF -- '候補語の検索は語ごとにループで呼ばず、`--each` の 1 回の呼び出しへまとめる' "${k47_curate}" \
+   && grep -qF -- 'scripts/knowledge-lookup.sh" --each -- ' "${k47_curate}" \
+   && grep -qF -- '`RECORD each ace=… obs=… keyword=<語>`' "${k47_skill}"; then
+  ok "K47g: /ace-curate の重複照合の手順が --each の 1 回の呼び出しを指し、/knowledge-lookup の正本が語ごとの RECORD の形を書いている"
+else
+  bad "K47g: curate.md の重複照合の手順、または knowledge-lookup の SKILL.md に --each の記載が無い（読めない回も赤）"
+fi
+
 echo ""
 # Default metadata cannot grant an external read. Synthetic inputs only.
 . "$SCRIPT_DIR/privacy.sh"
@@ -1148,6 +1644,13 @@ win_runs=0
 . "$SCRIPT_DIR/windows-acl.sh"
 if [[ "$win_checks_finished" -ne 1 || "$win_runs" -lt 9 ]]; then
   bad 'Windows ACL: cases が空・欠落、または成功終端へ到達していない'
+fi
+
+echo ""
+guide_checks_finished=0
+. "$SCRIPT_DIR/root-stop-guide.sh"
+if [[ "$guide_checks_finished" -ne 1 ]]; then
+  bad '停止時の案内（G1〜G12）: cases が空・欠落、または成功終端へ到達していない'
 fi
 
 if [[ "${FAIL}" -eq 0 ]]; then

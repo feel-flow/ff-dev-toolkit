@@ -209,6 +209,7 @@ hooks/guard-literal-write.sh
 hooks/guard-review-in-flight.sh
 hooks/guard-wsl-shell.sh
 hooks/run-bash-hooks.sh
+scripts/knowledge-lookup.sh
 tests/lib/release-skip-profile.sh
 tests/run-all.sh'
 actual=""

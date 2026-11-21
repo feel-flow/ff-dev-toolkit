@@ -516,6 +516,8 @@ guard-gate-in-flight/verify.sh
 guard-review-in-flight/lane-private-cases.sh
 guard-review-in-flight/verify.sh
 knowledge-delivery/verify.sh
+knowledge-lookup/root-stop-guide.sh
+knowledge-lookup/verify.sh
 l4-declarations/fixtures/lib.sh
 markdownlint-selftest/verify.sh
 mbcs-guard-failclosed/verify.sh
@@ -569,7 +571,9 @@ sync-sha-contract/footer-reuse-runtime.sh
 sync-sha-contract/release-runtime.sh
 sync-sha-contract/reuse-runtime.sh
 sync-sha-contract/src-sha-runtime.sh
-update-check/verify.sh"
+update-check/verify.sh
+warn-missing-ff-effort/verify.sh
+workflow-doctor/verify.sh"
   actual_users="$(printf '%s\n' "$users" | sed "s#^$TESTS_DIR/##")"
   expected_count="$(printf '%s\n' "$expected_users" | grep -c .)"
   roster_rc=0

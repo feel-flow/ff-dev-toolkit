@@ -105,7 +105,7 @@ fetch が失敗した回は、停止メッセージの末尾へ git が出した
 1. `git status --porcelain` が空であること、`finish.sh knowledge-commit status` でadd保留が無いことを確認する。未pushの成果は元のブランチへ保持し、先に解決する。保留のあるブランチを切り替えない。
 2. `git symbolic-ref --quiet --short refs/remotes/origin/HEAD` から `origin/<default-branch>` を確定する。未設定なら `git remote set-head origin --auto` を実施して再確認し、解決失敗は停止する。PRのbaseをdefaultと決めつけない。
 3. `git fetch origin "+refs/heads/<default-branch>:refs/remotes/origin/<default-branch>"` が成功してから、`git switch --detach origin/<default-branch>`。現在のHEADと取得したrefが同じことを実測する。`reset --hard`を使わず、他worktreeのdefaultは動かさない。
-4. PR番号を明示して抽出・共有値の鮮度検査・編集・検証を行い、同じdetached HEADで `finish.sh knowledge-commit add` → `commit` → `push` を使う。pushは実装どおり `HEAD:<default-branch>` を送る。素の `git push origin <default-branch>` はローカルbranch refを送るため代用しない。送信SHA・到達・CIを本書の「直 push の実測ガード」で確認する。
+4. PR番号を明示して抽出・共有値の鮮度検査・編集・検証を行い、同じdetached HEADで `finish.sh knowledge-commit add --pr <PR番号>` → `commit` → `push` を使う。`--pr` は `ace-from-pr-N` の次に見る。その PR の closing Issue、本文の `Ref` / `Refs`、タイトルの番号の順で件名の Issue を決め、ブランチ自身の `#N` は番号が返らなかったときだけ使う。省略した default branch と detached HEAD では、updatedAt が新しいマージ済み PR から mergedAt が最大の 1 件を同じ順で補う。pushは実装どおり `HEAD:<default-branch>` を送る。素の `git push origin <default-branch>` はローカルbranch refを送るため代用しない。送信SHA・到達・CIを本書の「直 push の実測ガード」で確認する。
 
 追記前にremoteが先行したら、detachedでは `git pull --ff-only origin <default-branch>` とremote/branchを明示して取り込み、採番・版確定からやり直す。knowledgeのadd保留がある場合は同じHEADで先にcommitするか、既存の保留復帰手順を使い、保留を持ったままswitchしない。push後のnon-fast-forwardは後段の再試行規則に従う。
 
@@ -115,9 +115,15 @@ fetch が失敗した回は、停止メッセージの末尾へ git が出した
 
 `knowledge-lookup.sh --resolve-playbook --with-index-mode` の `ACE_INDEX_MODE` を Phase 2 と 4-b で共用する。出力はデータとして読む。終了コードが非 0、モード行が欠落・重複・未知、または `ACE_PLAYBOOK_REL` が空なら変更前に停止する。判定後に base や対象配置を取り直した場合は、同じ入口で再解決する。
 
+**候補語の検索は語ごとにループで呼ばず、`--each` の 1 回の呼び出しへまとめる**（既存本文を語で引く回は、どちらの索引方式でも同じ）。`knowledge-lookup.sh` は起動のたびに読み取り境界の検査と store の読み取りを払うので、候補や語の数だけ直列に呼ぶと Windows の Git Bash では合計が数分になり、呼び出しの上限時間で打ち切られる。語を全部 `--` の後ろへ並べて 1 回で引き、語ごとの `RECORD each ace=… obs=… keyword=<語>` を候補へ対応付ける（`--` を挟むので、`-` で始まる語やオプションと同じ綴りの語もそのまま語になる）。語が多い回は 1 回の呼び出しも長くなるので、タイムアウトを明示して待つ（Git Bash の実測は 8 語で 52 秒）:
+
+```bash
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/knowledge-lookup.sh" --each -- <語 1> <語 2> <語 3>...
+```
+
 - **`inline`（未宣言の既定）**: 本体の索引で他カテゴリの似たタイトルを探し、本文で重複を判定する。新規知見の本文はカテゴリに追記し、下の列順で索引行を追加する。
 - **`omit`**: 解決済み PLAYBOOK.md の先頭 frontmatter のトップレベルに `ace_index_mode: omit` を 1 行で宣言する。引用符や行内コメントを含まない形を使う。別の値、重複、閉じていない宣言はエラーになる。
-  - **照合**: `/knowledge-lookup` で候補の用語を複数引き、live 本文の見出し・主張をカテゴリ横断で確認する。候補に近い既存本文まで読み、重複や矛盾を判定する。ACE 欄が読み取り失敗なら変更前に解消する。残っている索引の掲載範囲で判断しない。
+  - **照合**: `/knowledge-lookup` で候補の用語を複数引き（上の `--each` の 1 回で）、live 本文の見出し・主張をカテゴリ横断で確認する。候補に近い既存本文まで読み、重複や矛盾を判定する。ACE 欄が読み取り失敗なら変更前に解消する。残っている索引の掲載範囲で判断しない。
   - **追記**: 知見本文をカテゴリに追加し、索引行の追加・生成・移動・削除は行わない。既存の索引は設定を切り替えた回も保持する。既存索引の一括撤去は対象と差分を示した別作業にする。
   - **検証**: 版・件数・Changelog と本文の検査を通す。知見が空なら frontmatter の `ace_entry_count: 0` と live 本文の状態を揃える。件数ゲートの「索引 0 行を検査」は本文ゲートの結果と区別する。残した索引があればその行の既存検査も有効。
 
@@ -168,7 +174,10 @@ MCP: 取得値: MCP の repo nameWithOwner と対象 branch の classic protecti
 
 **既定（推奨）— デフォルトブランチ直マージ**: 保護されていない default branch にのみ適用。`<default-branch>` に直接 commit + push する。
 
-**コミットメッセージ規約**: コミット前に対象リポジトリの規約を確認する。確認対象は (1) commitlint の `header-max-length` — 件名を上限内に収め、カテゴリが複数でも件名には列挙せず、commit body に記録する。要約だけで上限を超える場合は要約を短くするかコミットを分割する。複数の知見を 1 件へ畳む件名が 100 字を超えるときだけ、先頭の ID と残り件数（ほか N 件）に短縮し、全 ID は body に残す。100 字以内の件名は ID を並べたままにする — に加え、(2) **type の許容リスト**。参照先: `commitlint.config.*` / `.commitlintrc*` / `package.json` の `commitlint` キー / husky・simple-git-hooks の `commit-msg` hook。`knowledge` が許容 type に含まれない場合は、プロジェクト規約の type（例 `chore`）へ件名の prefix だけを置き換える（件名の要約・body の `Categories:` 記録はそのまま維持する。例: `chore: ACE-<PR番号>-<連番> <要約>`）。書き込み口は件名を組み立てた直後、stage・保留記録・commit より前にリポジトリの prepare-commit-msg → commit-msg hook（core.hooksPath を反映した `git rev-parse --git-path hooks/<名>`。husky も同じ経路）へ `git commit -m` と同じ順で件名をドライランで通す。元の件名が通れば件名・出力は従来どおり。拒否された既定 `knowledge` は `chore` → `docs` の候補も同じ hook で検証し、Issue が必要ならブランチの `ace-from-pr-N` → PR の closing Issue 先頭 → 同じ PR の本文の `Ref` / `Refs #N`（出現順の最初の同一リポジトリ参照。`owner/repo#N` は数えない）→ PR タイトルの最初の `#N`（`#` の直前が英数字か `_` の形は数えない）、次にブランチ自身の `#N` を解決して `<type>: #<issue> <ID> <要約>` を検証する（`--claim` は version claim 用で PR origin は持たず、ACE-ID・要約の数字も解決元にしない）。選んだ Issue/type は保留へ保存して合流先の commit が引き継ぐ。明示された非 `knowledge` type は置換しない。解決元が無い・どの候補も拒否される場合だけ hook の出力（要求形式）を示して rc 4（`KNOWLEDGE_COMMIT=hook-rejected`）で止まる。`add` の拒否は保留記録を作らない（`--claim` 経由では文書と claim の stage は残る）ので `discard` は要らない — 解決に失敗した場合だけ、表示された規約を確認して `add --type` で再実行するか、書いたパスへ固定した `git commit -m "<規約どおりの件名>" -- <書いたパス>` で手でコミットする（pathspec 無しの `git commit` にしない）。既定ブランチ上のこの手コミットは件名が `knowledge:` / `release:` で始まらないので、既定ブランチ上の commit ガード（`hooks/guard-default-branch-commit.sh`）が止める。その区間の先頭へ `FF_DEFAULT_BRANCH_COMMIT_ACK=1` を付けて通す（例: `FF_DEFAULT_BRANCH_COMMIT_ACK=1 git commit -m "chore: <要約>" -- <書いたパス>`）。
+**コミットメッセージ規約**: コミット前に対象リポジトリの規約を確認する。確認対象は (1) commitlint の `header-max-length` — 件名を上限内に収め、カテゴリが複数でも件名には列挙せず、commit body に記録する。要約だけで上限を超える場合は要約を短くするかコミットを分割する。複数の知見を 1 件へ畳む件名が 100 字を超えるときだけ、先頭の ID と残り件数（ほか N 件）に短縮し、全 ID は body に残す。100 字以内の件名は ID を並べたままにする — に加え、(2) **type の許容リスト**。参照先: `commitlint.config.*` / `.commitlintrc*` / `package.json` の `commitlint` キー / husky・simple-git-hooks の `commit-msg` hook。`knowledge` が許容 type に含まれない場合は、プロジェクト規約の type（例 `chore`）へ件名の prefix だけを置き換える（件名の要約・body の `Categories:` 記録はそのまま維持する。例: `chore: ACE-<PR番号>-<連番> <要約>`）。書き込み口は件名を組み立てた直後、stage・保留記録・commit より前にリポジトリの prepare-commit-msg → commit-msg hook（core.hooksPath を反映した `git rev-parse --git-path hooks/<名>`。husky も同じ経路）へ `git commit -m` と同じ順で件名をドライランで通す。元の件名が通れば件名・出力は従来どおり。拒否された既定 `knowledge` は `chore` → `docs` の候補も同じ hook で検証する（type だけの制約なら Issue を足さない）。Issue が必要なら、明示の `--issue` を優先する。`--pr` との併用は不可。どちらも資料・PR の確定した出典を渡す。Issue 直接指定が無ければ、出典は次の順で 1 件だけを採る。ブランチ名が `ace-from-pr-N` ならその PR だけを見る（解決できなければ別の PR へ進まず、次はブランチ自身の `#N`）。そうでなく `--pr` で PR 番号が明示されていればその PR（`ace-from-pr-N` より後。ブランチ自身の `#N` より前）。どちらも無く、ブランチが default branch または detached HEAD で `--github-input` が無いときだけ、`gh pr list --base <default> --state merged --limit 30 --search sort:updated-desc --json number,mergedAt` の結果から mergedAt が最大の PR。その後にブランチ自身の `#N`。PR からの番号は closing Issue 先頭 → 同じ PR の本文の `Ref` / `Refs #N`（出現順の最初の同一リポジトリ参照。`owner/repo#N` は数えない）→ PR タイトルの最初の `#N`（`#` の直前が英数字か `_` の形は数えない）。候補の形は type を内側にして、裸の `<type>: #<issue> <残り>`、末尾の `(#<issue>)`、末尾の `(Refs #<issue>)` の順で同じ hook に通す。裸の形を受理するリポジトリは括弧付きへ進まない。明示された非 `knowledge` type は置換しない。複数の知見で選んだ形が 100 字を超えるときだけ、その形のまま先頭の ID と残り件数へ短縮する。1 件の件名は短縮しない。`--claim` は version claim 用で PR origin は持たず、ACE-ID・要約の数字も解決元にしない。選んだ Issue/type は保留へ保存して合流先の commit が引き継ぐ（commit は保存した type だけで、保存した Issue の同じ形の順を hook に掛け直す）。解決元が無い・どの候補も拒否される場合だけ hook の出力（要求形式）を示して rc 4（`KNOWLEDGE_COMMIT=hook-rejected`）で止まる。`add` の拒否は保留記録を作らない（`--claim` 経由では文書と claim の stage は残る）ので `discard` は要らない — 解決に失敗した場合だけ、表示された規約を確認して `add --type` で再実行するか、書いたパスへ固定した `git commit -m "<規約どおりの件名>" -- <書いたパス>` で手でコミットする（pathspec 無しの `git commit` にしない）。既定ブランチ上のこの手コミットは件名が `knowledge:` / `release:` で始まらないので、既定ブランチ上の commit ガード（`hooks/guard-default-branch-commit.sh`）が止める。その区間の先頭へ `FF_DEFAULT_BRANCH_COMMIT_ACK=1` を付けて通す（例: `FF_DEFAULT_BRANCH_COMMIT_ACK=1 git commit -m "chore: <要約>" -- <書いたパス>`）。
+
+<!--9ca186d95c5a898c-->
+MCP: 取得値: MCP で明示した PR の number / title / body。形式: pr view と同じ raw JSON を knowledge.subject-issue の scope {repository, pr} と phase subject に保存する。渡し先: knowledge-commit add の --pr と --github-input。file モードはこの gh pr list を呼ばない。--pr も ace-from-pr-N も無い default / detached は index に raw があっても番号を補わない。資料だけが出典なら確定済みの Issue を --issue で渡す。不足時: Issue が取れなければ空のままにし、hook が Issue を要求するときだけ rc 4 で停止する。
 
 **文字列パッチと commit の突き合わせ（必須）**: PLAYBOOK・文書への追記を script で当てる場合は [Markdown 文字列パッチ規律](../../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従い、`add` の前に `git status --short` で意図したファイルのみが変わっていることを述語で突き合わせる。書き込み口は `add` 時の blob hash を記録し、その後に同じファイルへ入った別の編集を commit へ吸い込まない。
 
@@ -203,17 +212,18 @@ MCP: 取得値: MCP でpush した SHA の run status / conclusion / workflowNam
 ```bash
 git checkout -b "$ACE_BRANCH"
 commit_type="knowledge"
+if [[ "$ACE_MODE" == sources ]]; then origin=(--issue "${ISSUE_NUMBER:?}"); else origin=(--pr "${PR_NUMBER:?}"); fi
 # 記録パス（PLAYBOOK・選択した Changelog・playbook/ 配下の変更と追加・保留候補）と claim の有無は --ace-playbook が決める
 # 既定配置の例。独自配置なら解決済みの ACE_PLAYBOOK_REL を --ace-playbook へ渡す。
-FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit add --ace-playbook docs/08-knowledge/PLAYBOOK.md --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" --category "<category[, category...]>" --type "${commit_type}" || exit 1
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit add --ace-playbook docs/08-knowledge/PLAYBOOK.md --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" ${origin[@]+"${origin[@]}"} --category "<category[, category...]>" --type "${commit_type}" || exit 1
 # この新規専用 PR 経路は /retrospective へ合流させず、ここで即 commit する
-FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit commit --type "${commit_type}" || exit 1
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit commit --type "${commit_type}" ${origin[@]+"${origin[@]}"} || exit 1
 # push -u → upstream の照合 → gh pr create。default 開始時だけ local default を origin へ戻す
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit pr --branch "$ACE_BRANCH" --title "${commit_type}: ${ACE_ID} ${ACE_SUMMARY}" --body "${ACE_ORIGIN} から知見抽出" || exit 1
 # レビュー後 squash merge → /merge-cleanup
 ```
 
-<!--fd52fd5c43658a2c-->
+<!--7aebd30a1aeba368-->
 MCP: 取得値: MCP でPLAN と一致する作成後 PR の head / base / title / body / SHA を取得。形式: knowledge fixture の fresh raw JSON を同じ index に保存。渡し先: knowledge-commit pr --github-input /absolute/index.json へ渡す。PLAN の原文を既存 create_pull_request で実 write 後に再実行する。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
 
 > `knowledge:` 付き PLAYBOOK 単独コミットの `<default-branch>` 直 push は意図的フローであり、通常のコード変更に対する「統合ブランチへの直 push 禁止」ルールとは別物として扱う。ただし default branch が保護されているリポジトリではこの経路に到達できない — その場合は保護判定に従い「PR 経由」（必須）を使う。

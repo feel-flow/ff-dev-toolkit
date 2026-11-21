@@ -433,8 +433,11 @@ print_failure_advice() {
   # 以下は観点を絞るか CLI を変える別プラン。明示/既定いずれの出力先も再利用すると、
   # 完了済みの他観点が退避され、report/cache や未回収の委譲世代を上書きしてしまう。
   # .review-results/ の ignore 境界を保ち、別コマンド同士でも成果物を退避し合わない。
-  local recovery_base host_self retry_self substitute_self
-  recovery_base="${OUTPUT_DIR%/}/.recovery-$(date '+%Y%m%d-%H%M%S')-$$"
+  # 今の出力先が既定ルート直下の復旧ディレクトリなら、次の案内は同じ親の直下へ並べる。
+  # 既定ルートの外では、名前が復旧形でもその出力先の中に並べる。
+  local recovery_base recovery_anchor host_self retry_self substitute_self
+  recovery_anchor="$(ff_review_output_recovery_anchor "${OUTPUT_DIR%/}")"
+  recovery_base="${recovery_anchor}/.recovery-$(date '+%Y%m%d-%H%M%S')-$$"
   # 自動取得の本文は argv に載せない。長い AC は引数上限を超え、再実行が明示 description になって取得の意味も消える。
   if [[ "$DESCRIPTION_EXPLICIT" == true && -n "$DESCRIPTION" ]]; then
     self="${self} --description $(shell_quote "$DESCRIPTION")"

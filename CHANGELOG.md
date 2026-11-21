@@ -20,6 +20,39 @@
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-11-22
+
+### 追加
+
+- 終了コードガードで、`tail` を挟む単純なコマンド連鎖の書き換え候補を出せるようにした。再検査を通過した候補は、左側のコマンドと `tail` の両方が成功した場合に後続を実行する。
+- 全件ゲート（`run-all.sh` と単体 `run-all/verify.sh`）に `FF_RUN_ALL_WAIT=1`（上限は `FF_RUN_ALL_WAIT_MAX_SECONDS`、既定 3600 秒）の自動待機モードを追加し、先行する全件ゲート・`public-layout` 検査・リリース（`develop` 追従 push まで）の終了後に自動開始するようにしました（待機同士は相互待ちしない）
+- PR 作成直後の baseline ゲートを PR HEAD の別 detach worktree で回して元の作業ツリーでレビュー修正・commit を進められる手順を `git-workflow` ステップ6 と `multi-review` に追加しました
+- Issue ブランチの作成・付け替え（`git switch -c` / `git checkout -b` / `git branch -m` / `git worktree add -b`）時に発火する `PostToolUse` hook（`hooks/warn-missing-ff-effort.sh`）へ `/knowledge-lookup`（`--impl` / `--class`）の着手前案内を追加し、同一セッションで `scripts/knowledge-commit.sh` が記録した確定 ACE 知見 ID を合わせて通知するようにしました
+- `scripts/knowledge-lookup.sh` に実装語と作業クラス語を分けて受ける `--impl` / `--class` 引数を追加し、両系統指定時は系統ごとの結果と `RECORD impl` / `RECORD class` を分けて出力し、片軸のみ（未指定・空白のみ）のときは標準エラーへの警告と `RECORD` の `impl=未指定` / `class=未指定` 表示を出し、Playbook が読めた回の型付き形式 text 出力（`RECORD` 直前・標準出力）へ Playbook タイトル由来の作業クラス語候補を提示するようにしました（従来の位置引数形式は後方互換を保ちます）
+- `knowledge-lookup.sh` に `--each` を追加しました。渡した語を 1 語ずつ別々に引き、1 回の起動で語の数だけ結果の節と `RECORD each ace=… obs=… keyword=語` の行を渡した順に返します。末尾の `SUMMARY` は語をまたいだ重複なしの件数と `each_keywords` を持ちます。従来の位置引数・`--impl` / `--class` の呼び出しと出力は変わりません
+- `/ace-curate` の重複照合の手順を、候補語ごとのループ呼び出しから `--each` の 1 回の呼び出しへ改めました。Windows の Git Bash では起動のたびに読み取り境界の検査と store の読み取りに時間がかかり、語の数だけ直列に呼ぶと数分かかって打ち切られていました（実測: 8 語でループ 253 秒に対し `--each` は 52 秒。語ごとの結果は単独で引いた回と一致）
+- `/workflow-doctor` に検査 13（作業ツリーの行末）を追加しました。リポジトリ直下の `.gitattributes` に行末を LF に固定する規則（`eol=lf`）があるかと、`git ls-files --eol` で作業ツリーが CRLF（`w/crlf`）のまま残っている追跡ファイルの件数を read-only で示し、LF に固定する手順（文字列パッチ規律の「まず作業ツリーを LF に固定する」）を案内します
+- `eol=crlf` / `-text` を指定したファイルは意図した指定として数えません。CRLF を選んだ導入先は FAIL になりません（重大度は WARN / INFO）。git を読めない回は OK ではなく SKIP として報告します
+- `finish.sh precheck`: PR 本文のコード span・コードブロック・HTML コメントおよび散文・引用ブロック中の closing keyword 参照を `CLOSES_TEXT_ONLY=` / `CLOSES_TEXT_ONLY_KIND=` として分離し、`CLOSES=` や受け入れ条件の照合対象（`AC_UNCHECKED=`）へ混ぜないよう修正し、散文・引用ブロック内の意図しない参照のみ停止して書き換えを案内する形へ変更。
+- `multi-review.sh`: クロスモデルレビューの自動投入コンテキストを拡張し、Issue の AC / DoD に加えて背景・目的・やること・スコープ外・前提/制約の節（`ff-effort` コメントブロックと空節は除外、サイズ上限時は AC / DoD 優先）と、予約区切り文字検査・サイズ上限付きの untrusted PR タイトル/本文を封入し、自己申告を証拠扱いしない・diff 由来の欠陥や回帰を抑制しない・意図せぬスコープ外懸念の報告を継続する 3 ガードを観点契約へ明記。
+- レビュー運用文書（`self-review.md`・`multi-cli-review-orchestration.md`）: ネイティブサブエージェントによる主担当セルフレビュー後の修正確認で、同じサブエージェントへ read-only の継続メッセージを送り、元の指摘の解消確認と修正由来の退行確認を既存の 2 巡上限内で依頼する手順を追加。
+
+### 修正
+
+- Windows で、リポジトリのフォルダー（またはその祖先）に本人・管理者・SYSTEM 以外の主体の書き込み権限が付いていると、`/knowledge-lookup`・`/ace-curate`・`/retrospective` の入口が `read-unverifiable` で止まるだけで次の操作が分からない不具合を修正しました。止めたときは、同じ検査を通る置き場（`~/.config/ff-dev-toolkit/wt/`）へ同じ commit の worktree を作る `git worktree add --detach` のコマンドを、停止文の共通形（止めた層 / 止めた規則 / 次の一手）で標準エラーの末尾に出します。その worktree を cwd にすれば、検索も知見の書き込みも同じ手順で続けられます
+- 読み取り境界は緩めていません。止めた場所からは読まず、主体を許す設定値も足していません。案内する置き場も同じ検査を通ったときだけ名指しし、通らないときは置き場の条件だけを案内します。前に作った worktree が残っている 2 回目は、その worktree を同じ commit へ合わせるコマンドを出します
+- `knowledge-commit add` は、commit-msg hook が裸の Issue 参照を拒否して末尾の括弧付き参照を要求するとき、同じ hook のドライランで `chore` / `docs` と末尾の括弧付き参照を順に試し、通る件名を選ぶ。ブランチ名に出典が無い default branch と detached HEAD では、明示した PR 番号か、そのブランチへ直近にマージされた PR から番号を解決する。従来の `knowledge` 件名と裸の参照を受理するリポジトリの件名は変わらない。
+- `finish.sh precheck` が生成するマージと head ブランチの lease 付き削除の連鎖を、終了コードガードが正しく判定できるようにした。
+- `scripts/multi-agent.sh` / `scripts/lib/multi-agent-boundary.sh`: `--output-dir`（および設定ファイルの `output_dir`）に既定出力ディレクトリ（`.review-results` / `.explore-results` / `.implement-results`）配下のサブパスを指定した場合、後続の `--archive-only` や `--fresh` が未知エントリとして停止する原因になるため、CLI 起動前・`--dry-run` 前に `exit 2` で拒否するよう修正（オーケストレータ自身が失敗時案内で生成する初期化済み既定ルート直下の `.recovery-*` 復旧出力を除く）。`.review-results` 自身・兄弟ディレクトリ・リポジトリ外の出力先は従来どおり利用可能。あわせて `skills/multi-review/SKILL.md` と `docs-template/05-operations/deployment/multi-cli-review-orchestration.md` に `--output-dir` を `.review-results/` の外に置く運用を明記し、先行レビューの案内も既定ディレクトリ配下ではなく repository 外の出力先へ改めた。大小を区別しないファイルシステムでは既定ディレクトリが未作成でも、空のディレクトリでも、綴りの違うサブパスを拒否し、別名で初期化した既定ルートの所有マーカーは同じディレクトリとして復旧コマンドを通す。正規の復旧出力が残っていても親の退避は停止せずそのディレクトリは動かさない。復旧名の通常ファイルや未初期化ディレクトリは未知エントリのまま停止する。復旧の再案内が親の直下へ上がるのは既定ルート直下の復旧ディレクトリだけで、それ以外の復旧名ではその中に並べる。所有マーカーの照合は同じディレクトリの別綴りも受け、大小比較は C ロケールに固定し、ハードリンクの別名だけでは大小を畳まない。親参照を含む出力先の `--dry-run` は解決エラーを成功に畳まない
+- literal-write ガードが、Python・Node.js・Perl・Ruby に渡す引用なし heredoc で意図しないコマンド置換を実行前に検出するようにした。区切り語の引用と、環境変数またはファイルで値を渡す方法を案内する。
+- マージ後の cleanup が別セッションのマージ済み worktree を削除候補に含める不具合を修正。既定では指定 PR の head と一致する worktree だけを候補とし、別の worktree を保全した理由や、削除が失敗したときに検出した登録・ファイルの消失を報告する。
+
+### ドキュメント
+
+- 文字列パッチの規律（`markdown-patch-discipline.md`）に「改行をまたぐ一致」の節を追加しました。作業ツリーを `.gitattributes` で LF に固定する手順、改行をバイトで判定する方法、CRLF の対象でもアンカーと置換値の改行を対象に合わせて当てるパッチ例（混在・0 件・複数一致は書き込み前に止める）を載せています
+- 同じ規律の「リテラル書き込みの既定経路」に、ファイルへリダイレクトする heredoc とファイル編集機能の入力で保存値が変わる形を追記し、パッチ例に書き込み後の読み戻しを加えました
+- レビュー 3 巡目以降を `FF_REVIEW_ROUND_ACK=1` で通す前に「AC・スコープ照合 / 入力境界の現実性 / パッチ連鎖の打ち切り」の 3 問を上位視点で点検する原則を `docs-template/05-operations/deployment/multi-cli-review-orchestration.md`・`docs-template/05-operations/deployment/review-response-policy.md`・`skills/multi-review/SKILL.md` へ明文化し、`tests/lib/review-round-counter.sh` の 3 巡目停止メッセージにも通過前点検と記録付き棄却の案内を追加しました
+
 ## [1.11.0] - 2026-11-20
 
 ### 変更

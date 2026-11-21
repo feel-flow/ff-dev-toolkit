@@ -58,6 +58,15 @@ ff_knowledge_canonical_file() { # <literal file>
   printf '%s\n' "$file"
 }
 
+# The spelling a native git takes as an argument. Git Bash leaves an argument that
+# holds a quote unconverted, so a POSIX spelling can reach git.exe as it is (Issue `#2648`).
+ff_knowledge_native_path() { # <absolute path> -> one line
+  case "$ff_knowledge_os" in
+    MSYS*|MINGW*|CYGWIN*) cygpath -am "$1" 2>/dev/null || return 2 ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
 ff_knowledge_meta() { # dev:ino:bytes:mtime:ctime:mode:uid:nlink (all numeric)
   local value
   value="$(LC_ALL=C stat -c '%d:%i:%s:%Y:%Z:%a:%u:%h' -- "$1" 2>/dev/null)" \

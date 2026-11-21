@@ -134,6 +134,36 @@ fixture
   root,g=repo(n,'ace-from-pr-7-#9');hook=root/'.git/hooks/commit-msg';hook.write_text('#!/bin/bash\ngrep -qE \'#[0-9]+\' \"$1\"\n');hook.chmod(0o755);doc=root/'docs/08-knowledge/OBSERVATIONS.md';doc.parent.mkdir(parents=True);doc.write_text('observation\n')
   run('knowledge-commit.sh',['add','--github-input',index(entries),'--source','obs','--id','OBS-001','--summary','fixture','--',doc],cwd=root)
   pending=(root/'.git/ff-knowledge-pending').read_text();check(('I\t'+str(expected)+'\n') in pending,n+' optional closing reference/fallback')
+ # Explicit --pr on a branch with neither ace-from-pr nor a branch issue uses the same subject file.
+ paren_root,_paren_git=repo('subject-paren','chore/plain')
+ hook=paren_root/'.git/hooks/commit-msg'
+ hook.write_text('#!/bin/bash\ngrep -Eq \'^(chore|docs): .+ \\(#[0-9]+\\)$\' "$1"\n')
+ hook.chmod(0o755)
+ doc=paren_root/'docs/08-knowledge/OBSERVATIONS.md'
+ doc.parent.mkdir(parents=True)
+ doc.write_text('observation\n')
+ raw=put('subject-paren.json',{'closingIssuesReferences':[],'title':'docs: record','body':'Refs '+H+'6147'})
+ ix=index([entry('knowledge.subject-issue',{'pr':7},raw,'subject')])
+ out=run('knowledge-commit.sh',['add','--github-input',ix,'--pr','7','--source','obs','--id','OBS-001','--summary','fixture','--',doc],cwd=paren_root)
+ check(('chore: OBS-001 fixture ('+H+'6147)').encode() in out and ('I\t6147\n') in (paren_root/'.git/ff-knowledge-pending').read_text() and not leak.exists(),'explicit pr resolves Refs body into parenthesized subject without gh')
+ plain_root,_plain_git=repo('subject-paren-nolist','chore/plain')
+ hook=plain_root/'.git/hooks/commit-msg'
+ hook.write_text('#!/bin/bash\ngrep -Eq \'^(chore|docs): .+ \\(#[0-9]+\\)$\' "$1"\n')
+ hook.chmod(0o755)
+ doc=plain_root/'docs/08-knowledge/OBSERVATIONS.md'
+ doc.parent.mkdir(parents=True)
+ doc.write_text('observation\n')
+ run('knowledge-commit.sh',['add','--github-input',ix,'--source','obs','--id','OBS-001','--summary','fixture','--',doc],cwd=plain_root,expected=4)
+ check(not leak.exists(),'file mode does not list recently merged pull requests')
+ default_root,_default_git=repo('subject-paren-default')
+ hook=default_root/'.git/hooks/commit-msg'
+ hook.write_text('#!/bin/bash\ngrep -Eq \'^(chore|docs): .+ \\(#[0-9]+\\)$\' "$1"\n')
+ hook.chmod(0o755)
+ doc=default_root/'docs/08-knowledge/OBSERVATIONS.md'
+ doc.parent.mkdir(parents=True)
+ doc.write_text('observation\n')
+ run('knowledge-commit.sh',['add','--github-input',ix,'--source','obs','--id','OBS-001','--summary','fixture','--',doc],cwd=default_root,expected=4)
+ check(not leak.exists(),'file mode on the default branch does not list recently merged pull requests')
  # Fixture mapping does not certify an MCP call or its authenticated actor.
  for status in [404,403,400]:
   e=json.loads((f/f'mcp-parent-{status}.json').read_text())

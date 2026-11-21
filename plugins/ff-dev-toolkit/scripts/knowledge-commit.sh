@@ -5,8 +5,8 @@
 # 回は従来と同じ件名の単独コミットを作る。
 #
 # 使い方:
-#   knowledge-commit.sh add --source ace|obs --id <ID>（繰り返し可） --summary <要約> [--category <c>] [--type <commit type>] -- <path>...
-#   knowledge-commit.sh commit [--github-input INDEX_ABS] [--type <commit type>] [--force]
+#   knowledge-commit.sh add [--pr <PR番号> | --issue <Issue番号>] --source ace|obs --id <ID>（繰り返し可） --summary <要約> [--category <c>] [--type <commit type>] -- <path>...
+#   knowledge-commit.sh commit [--github-input INDEX_ABS] [--pr <PR番号> | --issue <Issue番号>] [--type <commit type>] [--force]
 #   knowledge-commit.sh status
 #   knowledge-commit.sh discard
 #   knowledge-commit.sh freshness
@@ -52,8 +52,12 @@
 # prepare-commit-msg → commit-msg hook（`git rev-parse --git-path hooks/<名>` が指す実行可能ファイル。
 # core.hooksPath を反映するので husky の `.husky/_` も同じ経路で見つかる）へ `git commit -m` と同じ順で
 # 件名ファイルを渡して exit code を見る。元の件名が通れば変更しない。拒否された既定 knowledge は
-# chore → docs も同じ hook で検証する。Issue が必要なら branch の ace-from-pr-N → PR の closing Issue →
-# 同じ PR の本文の Ref / Refs → title の最初の番号、次に branch 自身の #N を解決し、type ごとの `<type>: #<issue> <ID> <要約>` を検証する。
+# chore → docs も同じ hook で検証する（type だけの制約なら Issue を足さない）。Issue が必要なら
+# ace-from-pr-N の PR、そうでなければ --pr、どちらも無く default branch または detached HEAD で
+# --github-input が無いときだけ、updatedAt が新しいマージ済み PR から mergedAt が最大の 1 件、
+# その後に branch 自身の #N を解決する。
+# PR の番号は closing Issue → 本文の Ref / Refs → title の最初の番号。候補は type を内側に、
+# 裸の `<type>: #<issue> <残り>`、末尾の `(#<issue>)`、末尾の `(Refs #<issue>)` の順。
 # エラー文や commitlint 設定は独自解釈しない。解決した type/Issue は保留へ保存する。
 # 解決元が無い・どの候補も拒否された回は従来どおり hook の出力を示して exit 4。
 # `add` は stage も保留記録も作らない（finish.sh の `--claim` 経由では文書と claim の stage は残る）。
@@ -253,9 +257,9 @@ ff_assert_script_plugin_root "${BASH_SOURCE[0]}" || exit 2
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: knowledge-commit.sh add [--github-input INDEX_ABS] --source ace|obs --id <ID> --summary <summary> [--category <c>] [--type <commit type>] -- <path>...
+Usage: knowledge-commit.sh add [--github-input INDEX_ABS] [--pr <PR> | --issue <Issue>] --source ace|obs --id <ID> --summary <summary> [--category <c>] [--type <commit type>] -- <path>...
        knowledge-commit.sh status
-       knowledge-commit.sh commit [--github-input INDEX_ABS] [--type <commit type>] [--force]
+       knowledge-commit.sh commit [--github-input INDEX_ABS] [--pr <PR> | --issue <Issue>] [--type <commit type>] [--force]
        knowledge-commit.sh discard
        knowledge-commit.sh freshness
 USAGE
@@ -318,6 +322,11 @@ kd_lib="$self_dir/lib/knowledge-delivery-functions.sh"
 assert_bundled_shebang_lf "$kd_lib"
 # shellcheck source=lib/knowledge-delivery-functions.sh
 . "$kd_lib"
+sa_lib="$self_dir/lib/session-ace-functions.sh"
+[[ -f "$sa_lib" && ! -L "$sa_lib" ]] || die_env "セッション ACE 記録 lib が無いか symlink です: $sa_lib"
+assert_bundled_shebang_lf "$sa_lib"
+# shellcheck source=lib/session-ace-functions.sh
+. "$sa_lib"
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || die_env "git リポジトリの中で実行してください（cwd: ${PWD}）"
 # git が返した綴りのまま控える。渡されたパスがリポジトリ内かは、同じく git の出力どうしで比べる（add）
@@ -389,7 +398,7 @@ assert_batch_target_fresh() {
   esac
 }
 assert_default_branch_fresh() {
-  local default_ref default branch fetch_err behind st_rc=0
+  local default branch fetch_err behind st_rc=0
   ff_kd_state_read "$repo_root" || st_rc=$?
   case "$st_rc" in
     0) assert_batch_target_fresh; return 0 ;;
@@ -397,16 +406,9 @@ assert_default_branch_fresh() {
     *) die_env "書き込み先の記録（$(ff_kd_state_path "$repo_root")）を読めない — knowledge-commit.sh discard で記録を消し、元のブランチへ戻ってから target をやり直す" ;;
   esac
   git -C "$repo_root" remote get-url origin >/dev/null 2>&1 || return 0
-  # origin/HEAD の無い clone（git init + remote add 等）でも PR ブランチの add を止めないよう、remote の
-  # HEAD を問い合わせて default branch を補う。どちらでも解決できない回だけ名指しで止める
-  default_ref="$(git -C "$repo_root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" || default_ref=""
-  if [[ -n "$default_ref" ]]; then
-    default="${default_ref#origin/}"
-  else
-    default="$(git -C "$repo_root" ls-remote --symref origin HEAD 2>/dev/null | awk '$1 == "ref:" && $3 == "HEAD" { sub(/^refs\/heads\//, "", $2); print $2; exit }')"
-    [[ -n "$default" ]] \
-      || die_env "origin/HEAD を解決できず（remote の HEAD も問い合わせられない）、default branch が遅れていないか確かめられない — git remote set-head origin --auto を実行してから add し直す"
-  fi
+  default="$(default_branch_name)"
+  [[ -n "$default" ]] \
+    || die_env "origin/HEAD を解決できず（remote の HEAD も問い合わせられない）、default branch が遅れていないか確かめられない — git remote set-head origin --auto を実行してから add し直す"
   branch="$(current_branch)"
   [[ "$branch" == "$default" || "$branch" == "(detached)" ]] || { assert_not_batch_mode "$default"; return 0; }
   fetch_err="$(git -C "$repo_root" fetch -q origin "+refs/heads/${default}:refs/remotes/origin/${default}" 2>&1)" \
@@ -532,41 +534,129 @@ subject_issue_from_pr() {
   return 0
 }
 
-# 出典が branch に明記された PR の closing Issue → 同じ PR の Refs → title、次に branch 自身の #N を解決する。
+# origin/HEAD の短い名前。未設定では origin の HEAD を問い合わせ、解決できなければ空を返す。
+default_branch_name() {
+  local ref
+  if ref="$(git -C "$repo_root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" && [[ "$ref" == origin/* ]]; then
+    printf '%s\n' "${ref#origin/}"
+    return 0
+  fi
+  ref="$(git -C "$repo_root" ls-remote --symref origin HEAD 2>/dev/null)" || return 0
+  printf '%s\n' "$ref" \
+    | awk '$1 == "ref:" && $3 == "HEAD" && $2 ~ /^refs\/heads\// { sub(/^refs\/heads\//, "", $2); print $2; exit }'
+}
+
+# PR 番号 1 件から Issue を 1 件返す。github-input があれば knowledge.subject-issue、無ければ gh pr view。
+# 解決できなければ何も出さない。失敗でも 0 で戻る（呼び出し側が次の出典へ進む）。
+issue_from_pr_number() {
+  local pr="$1" issue="" gi_tmp="" gi_repository="" lib="$self_dir/lib/github-input.sh"
+  [[ "$pr" =~ ^[1-9][0-9]*$ ]] || return 0
+  if [[ -n "$github_input" ]]; then
+    if [[ -r "$lib" ]] && command -v jq >/dev/null 2>&1; then
+      # shellcheck source=lib/github-input.sh
+      . "$lib"
+      gi_tmp="$(mktemp -d)" || gi_tmp=""
+      if [[ -n "$gi_tmp" ]]; then
+        # The private helper reads Git's configured origin, preserving the host.
+        gi_repository="$( (cd "$repo_root" && _github_input_repository) 2>/dev/null)" || gi_repository=""
+        if [[ -n "$gi_repository" ]]; then
+          jq -n --arg repository "$gi_repository" --argjson pr "$pr" '{repository:$repository,pr:$pr}' >"$gi_tmp/scope"
+          printf '{}\n' >"$gi_tmp/position"
+          if github_file_read "$github_input" knowledge.subject-issue "$gi_tmp/scope" subject "$gi_tmp/position" >"$gi_tmp/raw" 2>/dev/null &&
+             { [[ -z "${GITHUB_INPUT_HTTP_STATUS:-}" || "$GITHUB_INPUT_HTTP_STATUS" == 200 ]]; }; then
+            issue="$(jq -r "$SUBJECT_ISSUE_FILTER" "$gi_tmp/raw" 2>/dev/null | subject_issue_from_pr)" || issue=""
+          fi
+        fi
+        rm -rf "$gi_tmp"
+      fi
+    fi
+  elif command -v gh >/dev/null 2>&1; then
+    issue="$( (cd "$repo_root" && gh pr view "$pr" --json closingIssuesReferences,title,body --jq "$SUBJECT_ISSUE_FILTER" 2>/dev/null) | subject_issue_from_pr)" || issue=""
+  fi
+  [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 0
+  printf '%s\n' "$issue"
+  return 0
+}
+
+# default branch または detached HEAD で、--github-input が無いときだけ PR 番号を 1 件返す。
+# gh pr list の既定は作成日時の降順なので、--search sort:updated-desc で updatedAt が新しい
+# マージ済み 30 件を取り、その中で mergedAt が最大の番号を採る。番号でなければ何も出さない。
+# PR を問い合わせないのは、github-input がある、gh が無い、jq が無い、default branch を解決できない、
+# default / detached 以外、のとき。
+subject_pr_from_head() {
+  local branch default raw="" pr=""
+  [[ -z "$github_input" ]] || return 0
+  command -v gh >/dev/null 2>&1 || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  default="$(default_branch_name)"
+  [[ -n "$default" ]] || return 0
+  branch="$(current_branch)"
+  [[ "$branch" == "(detached)" || "$branch" == "$default" ]] || return 0
+  raw="$(cd "$repo_root" && gh pr list --base "$default" --state merged --limit 30 --search "sort:updated-desc" --json number,mergedAt 2>/dev/null)" || raw=""
+  [[ -n "$raw" ]] || return 0
+  pr="$(jq -r 'if type == "array" then [ .[] | select((.number | type) == "number" and (.mergedAt | type) == "string" and .mergedAt != "") ] | max_by(.mergedAt) | .number // empty else empty end' <<<"$raw" 2>/dev/null)" || pr=""
+  pr="${pr//$'\r'/}"
+  pr="${pr%%$'\n'*}"
+  [[ "$pr" =~ ^[1-9][0-9]*$ ]] || return 0
+  printf '%s\n' "$pr"
+}
+
+# 出典は明示の --issue、そうでなければ ace-from-pr-N の PR（失敗しても別の PR へ進まない）、明示の --pr、
+# どちらも無く default / detached なら updatedAt が新しいマージ済みから mergedAt 最大の PR、
+# その後に branch 自身の #N。
 # version claim は blob/version の記録で PR origin を持たない。ACE-ID・summary の数字は使わない。
 resolve_subject_issue() {
   local branch pr="" issue=""
+  if [[ -n "$origin_issue" ]]; then
+    printf '%s\n' "$origin_issue"
+    return 0
+  fi
   branch="$(current_branch)"
   if [[ "$branch" =~ (^|/)ace-from-pr-([1-9][0-9]*)(-|$) ]]; then
-    pr="${BASH_REMATCH[2]}"
-    if [[ -n "$github_input" ]]; then
-      local gi_tmp gi_repository lib="$self_dir/lib/github-input.sh"
-      if [[ -r "$lib" ]] && command -v jq >/dev/null 2>&1; then
-        . "$lib"
-        gi_tmp="$(mktemp -d)" || gi_tmp=""
-        if [[ -n "$gi_tmp" ]]; then
-          # The private helper reads Git's configured origin, preserving the host.
-          gi_repository="$( (cd "$repo_root" && _github_input_repository) 2>/dev/null)" || gi_repository=""
-          if [[ -n "$gi_repository" ]]; then
-            jq -n --arg repository "$gi_repository" --argjson pr "$pr" '{repository:$repository,pr:$pr}' >"$gi_tmp/scope"
-            printf '{}\n' >"$gi_tmp/position"
-            if github_file_read "$github_input" knowledge.subject-issue "$gi_tmp/scope" subject "$gi_tmp/position" >"$gi_tmp/raw" 2>/dev/null &&
-               { [[ -z "$GITHUB_INPUT_HTTP_STATUS" || "$GITHUB_INPUT_HTTP_STATUS" == 200 ]]; }; then
-              issue="$(jq -r "$SUBJECT_ISSUE_FILTER" "$gi_tmp/raw" 2>/dev/null | subject_issue_from_pr)" || issue=""
-            fi
-          fi
-          rm -rf "$gi_tmp"
-        fi
-      fi
-    elif command -v gh >/dev/null 2>&1; then
-      issue="$( (cd "$repo_root" && gh pr view "$pr" --json closingIssuesReferences,title,body --jq "$SUBJECT_ISSUE_FILTER" 2>/dev/null) | subject_issue_from_pr)" || issue=""
-    fi
+    issue="$(issue_from_pr_number "${BASH_REMATCH[2]}")"
     [[ ! "$issue" =~ ^[1-9][0-9]*$ ]] || { printf '%s\n' "$issue"; return 0; }
+  elif [[ -n "$origin_pr" ]]; then
+    issue="$(issue_from_pr_number "$origin_pr")"
+    [[ ! "$issue" =~ ^[1-9][0-9]*$ ]] || { printf '%s\n' "$issue"; return 0; }
+  else
+    pr="$(subject_pr_from_head)"
+    if [[ -n "$pr" ]]; then
+      issue="$(issue_from_pr_number "$pr")"
+      [[ ! "$issue" =~ ^[1-9][0-9]*$ ]] || { printf '%s\n' "$issue"; return 0; }
+    fi
   fi
   if [[ "$branch" =~ \#([1-9][0-9]*)([^0-9]|$) ]]; then
     printf '%s\n' "${BASH_REMATCH[1]}"
   fi
   return 0
+}
+
+# 件名の `: ` より後ろ。compose が前置した `#<issue> ` は 1 回だけ外し、括弧付き候補で二重にしない。
+subject_body_rest() { # <subject> <issue>
+  local rest="${1#*: }" issue="$2"
+  [[ "$rest" == "#${issue} "* ]] || { printf '%s' "$rest"; return 0; }
+  printf '%s' "${rest#"#${issue} "}"
+}
+
+# 同じ残り文に対する 3 形。裸が先、次に末尾の括弧、その次に Refs の括弧。
+issue_form_subject() { # <form> <type> <issue> <rest>
+  local form="$1" t="$2" issue="$3" rest="$4"
+  case "$form" in
+    paren) printf '%s' "${t}: ${rest} (#${issue})" ;;
+    refs) printf '%s' "${t}: ${rest} (Refs #${issue})" ;;
+    *) printf '%s' "${t}: #${issue} ${rest}" ;;
+  esac
+}
+
+# 括弧付きの複数件名を、括弧を残したまま 100 字以内へ畳む。1 件は短縮しない。
+short_form_subject() { # <form> <type> <issue>
+  local form="$1" t="$2" issue="$3" rest_n
+  rest_n=$((msg_count - 1))
+  case "$form" in
+    paren) printf '%s' "${t}: ${msg_first_id} ほか ${rest_n} 件 (#${issue})" ;;
+    refs) printf '%s' "${t}: ${msg_first_id} ほか ${rest_n} 件 (Refs #${issue})" ;;
+    *) short_multi_subject "$t" "$issue" ;;
+  esac
 }
 
 # hook そのものを許容判定として使う。自由形式のエラーメッセージや JS 設定を解釈しない。
@@ -601,7 +691,7 @@ try_subject_hook() {
 # 引数: <件名> <本文> <止まった後の案内> [記録済み Issue]。
 # 通過した候補の raw 件名を msg_subject へ返す（prepare の書換えを commit に二重適用しない）。
 commit_msg_dry_run() {
-  local subject="$1" body="$2" hint="$3" issue="${4:-}" t candidate
+  local subject="$1" body="$2" hint="$3" issue="${4:-}" t candidate rest form len
   local original_subject original_hook original_out original_rc
   local types=()
   subject_type="${subject%%:*}" subject_issue="$issue"
@@ -624,17 +714,29 @@ commit_msg_dry_run() {
     done
     if [[ "$hook_prepare_failed" -eq 0 && -z "$issue" ]]; then
       issue="$(resolve_subject_issue)"
-      if [[ -n "$issue" ]]; then
+    fi
+    # 形は外側、type は内側。裸の #N が通るリポジトリは括弧付きへ進まない。
+    # 括弧付きは fit_multi_subject に掛けない（短縮形が括弧を落とす）。
+    if [[ "$hook_prepare_failed" -eq 0 && -n "$issue" ]]; then
+      rest="$(subject_body_rest "$subject" "$issue")"
+      for form in bare paren refs; do
         for t in "${types[@]}"; do
-          candidate="${t}: #${issue} ${subject#*: }"
-          candidate="$(fit_multi_subject "$candidate" "$t" "$issue")"
+          candidate="$(issue_form_subject "$form" "$t" "$issue" "$rest")"
+          if [[ "$form" == bare ]]; then
+            candidate="$(fit_multi_subject "$candidate" "$t" "$issue")"
+          elif [[ "${msg_count:-0}" -gt 1 && -n "${msg_first_id:-}" ]]; then
+            len="$(subject_byte_len "$candidate")"
+            if [[ "$len" -gt "$KC_SUBJECT_MAX" ]]; then
+              candidate="$(short_form_subject "$form" "$t" "$issue")"
+            fi
+          fi
           if try_subject_hook "$candidate" "$body"; then
             msg_subject="$candidate" subject_type="$t" subject_issue="$issue"
             return 0
           fi
-          [[ "$hook_prepare_failed" -eq 0 ]] || break
+          [[ "$hook_prepare_failed" -eq 0 ]] || break 2
         done
-      fi
+      done
     fi
   fi
   # 全候補が拒否された回は従来の件名・hook 出力・rc4 を維持する。
@@ -653,6 +755,8 @@ commit_msg_dry_run() {
 }
 
 github_input=""
+origin_pr=""
+origin_issue=""
 
 cmd="${1:-}"
 [[ -n "$cmd" ]] || usage
@@ -670,6 +774,8 @@ case "$cmd" in
         --summary) [[ $# -ge 2 ]] || usage; summary="$2"; shift 2 ;;
         --category) [[ $# -ge 2 ]] || usage; category="${category:+$category, }$2"; shift 2 ;;
         --type) [[ $# -ge 2 ]] || usage; add_type="$2"; shift 2 ;;
+        --pr) [[ $# -ge 2 ]] || usage; [[ "$2" =~ ^[1-9][0-9]*$ ]] || die_env "--pr は 1 以上の PR 番号です: $2"; origin_pr="$2"; shift 2 ;;
+        --issue) [[ $# -ge 2 ]] || usage; [[ "$2" =~ ^[1-9][0-9]*$ ]] || die_env "--issue は 1 以上の Issue 番号です: $2"; origin_issue="$2"; shift 2 ;;
         --) shift; while [[ $# -gt 0 ]]; do paths+=("$1"); shift; done ;;
         *) echo "✗ 不明な引数: $1" >&2; usage ;;
       esac
@@ -684,6 +790,7 @@ case "$cmd" in
     for v in ${ids[@]+"${ids[@]}"}; do [[ "$v" == "${id%%-*}"-?* ]] || die_env "--id の接頭辞が揃っていません: $v"; done
     [[ -n "$summary" ]] || die_env "--summary が空です"
     [[ -z "$add_type" || "$add_type" =~ ^[a-z][a-z-]*$ ]] || die_env "--type は英小文字の commit type です: $add_type"
+    [[ -z "$origin_pr" || -z "$origin_issue" ]] || die_env "--pr と --issue は併用できません"
     # default branch の鮮度（直 push の前提）を stage より前に確かめる
     assert_default_branch_fresh
     # 既存の保留が古ければ（中断した別セッションの残り）今回の追記を足さない
@@ -795,6 +902,8 @@ case "$cmd" in
     [[ -n "$prospective_type" || ! -s "$pending" ]] || prospective_type="$(awk -F '\t' '$1=="T" { t = $2 } END { print t }' "$pending")"
     prospective_issue=""
     [[ ! -s "$pending" ]] || prospective_issue="$(awk -F '\t' '$1=="I" { print $2; exit }' "$pending")"
+    [[ -z "$origin_issue" || -z "$prospective_issue" || "$origin_issue" == "$prospective_issue" ]] \
+      || die_stop "--issue が保留中の Issue #${prospective_issue} と一致しません"
     compose_message "$prospective" "${prospective_type:-knowledge}" "$prospective_issue"
     commit_msg_dry_run "$msg_subject" "$msg_body" \
       "件名の Issue/type を解決できないか、候補を hook が拒否しました。保留記録は作っていません（discard は不要。finish.sh の --claim 経由では文書と claim の stage は残る）。規約を確認し add --type <type> で再実行するか、書いたパスへ固定した git commit -m <規約どおりの件名> -- <書いたパス> で手でコミットしてください" "$prospective_issue"
@@ -890,11 +999,14 @@ case "$cmd" in
       case "$1" in
         --github-input) [[ $# -ge 2 ]] || usage; [[ -n "$2" ]] || die_env "--github-input requires a non-empty index path"; github_input="$2"; shift 2 ;;
         --type) [[ $# -ge 2 ]] || usage; type="$2"; shift 2 ;;
+        --pr) [[ $# -ge 2 ]] || usage; [[ "$2" =~ ^[1-9][0-9]*$ ]] || die_env "--pr は 1 以上の PR 番号です: $2"; origin_pr="$2"; shift 2 ;;
+        --issue) [[ $# -ge 2 ]] || usage; [[ "$2" =~ ^[1-9][0-9]*$ ]] || die_env "--issue は 1 以上の Issue 番号です: $2"; origin_issue="$2"; shift 2 ;;
         --force) force=1; shift ;;
         *) echo "✗ 不明な引数: $1" >&2; usage ;;
       esac
     done
     [[ -z "$type" || "$type" =~ ^[a-z][a-z-]*$ ]] || die_env "--type は英小文字の commit type です: $type"
+    [[ -z "$origin_pr" || -z "$origin_issue" ]] || die_env "--pr と --issue は併用できません"
     if [[ ! -s "$pending" ]]; then
       echo "KNOWLEDGE_COMMIT=none"
       echo "KNOWLEDGE_ENTRIES=0"
@@ -939,6 +1051,8 @@ case "$cmd" in
       type="${type:-knowledge}"
     fi
     issue="$(awk -F '\t' '$1=="I" { print $2; exit }' "$pending")"
+    [[ -z "$origin_issue" || -z "$issue" || "$origin_issue" == "$issue" ]] \
+      || die_stop "--issue が保留中の Issue #${issue} と一致しません"
     compose_message "$entries" "$type" "$issue"
     subject="$msg_subject" body="$msg_body"
     commit_msg_dry_run "$subject" "$body" \
@@ -990,6 +1104,7 @@ case "$cmd" in
         "フックの設定を直すか、記録外のパスを退避してから（例: git stash push --include-untracked -- <記録外のパス>。未追跡のファイルも退避できる）commit を再実行してください。フックが記録したパスを書き換えていたら、add からやり直してください"
     fi
     rm -f "$pending" || die_stop "commit は完了しましたが保留記録を消せません（二重コミットを防ぐため手で消してください）: $pending"
+    ff_session_ace_record_commit "$repo_root" "$sha" "$entries" || true
     # hook（prepare-commit-msg 等）が書き換えた後の、実際に commit された件名を出す
     committed_subject="$(git -C "$repo_root" log -1 --format=%s "$sha" 2>/dev/null)" || committed_subject=""
     echo "KNOWLEDGE_COMMIT=$sha"

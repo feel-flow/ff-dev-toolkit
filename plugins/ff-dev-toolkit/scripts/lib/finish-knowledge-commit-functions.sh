@@ -504,12 +504,23 @@ cmd_knowledge_commit() {
   local sub="${1:-}"
   [[ -n "$sub" ]] || usage
   shift
-  local args=() file_args=()
+  local args=() file_args=() source_option=""
   # Preserve valued options and the -- path boundary while removing only our flag.
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --) args+=("$@"); break ;;
       --github-input) [[ $# -ge 2 && -n "$2" ]] || usage; github_input="$2"; shift 2 ;;
+      --pr|--issue)
+        case "$sub" in
+          add|commit)
+            [[ $# -ge 2 ]] || usage
+            [[ "$2" =~ ^[1-9][0-9]*$ ]] || die_env "$1 は 1 以上の番号です: $2" "確定した番号を指定して再実行する"
+            [[ -z "$source_option" || "$source_option" == "$1" ]] \
+              || die_env "--pr と --issue は併用できません" "出典に対応する引数を一つ指定する"
+            source_option="$1"
+            args+=("$1" "$2"); shift 2 ;;
+          *) args+=("$1"); shift ;;
+        esac ;;
       --source|--id|--summary|--category|--type|--claim|--ace-playbook|--branch|--title|--body)
         [[ $# -ge 2 ]] || usage; args+=("$1" "$2"); shift 2 ;;
       *) args+=("$1"); shift ;;

@@ -1,6 +1,6 @@
 ---
 name: merge-cleanup
-description: "PR マージ後のクリーンアップを一括実行（base ブランチ復帰 / fetch --prune / リモートブランチ削除 / [gone] ブランチ削除 / 関連 worktree 削除 / worktree トランスクリプトのアーカイブ回収 / リモート取り残しのガード付き自動削除。未コミット変更ガードはパス除外を指定できる）"
+description: "PR マージ後のクリーンアップを一括実行（base ブランチ復帰 / fetch --prune / リモートブランチ削除 / [gone] ブランチ削除 / 対象 PR の head を保持する worktree の削除 / worktree トランスクリプトのアーカイブ回収 / リモート取り残しのガード付き自動削除。未コミット変更ガードはパス除外を指定できる）"
 allowed-tools: ["Bash"]
 ---
 
@@ -71,7 +71,7 @@ MCP: 取得値: MCP で同じ PR の state / head / base / fork / OID と merged
 
 ## スクリプトの処理と環境変数
 
-[処理一覧と環境変数](references/steps.md)を読む。MERGED・same-repo・head OID・open PR 再利用・保護枝・worktree の生存と clean を照合し、削除は exact ref の lease 付き。取得不能は削除保全、意図した SKIP と失敗を分ける。
+[処理一覧と環境変数](references/steps.md)を読む。MERGED・same-repo・head OID・open PR 再利用・保護枝・worktree の生存と clean を照合し、リモート削除は exact ref の lease 付き。既定の worktree 削除対象は、指定 PR の head ブランチと OID が一致する worktree に限る。別の `[gone]` worktree はパスと保全理由をサマリーに出す。
 
 ## 呼び出し元が base でも PR head でもないブランチにいる場合 — switch なし掃除モード
 

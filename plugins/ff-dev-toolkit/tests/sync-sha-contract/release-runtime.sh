@@ -887,6 +887,52 @@ else
   bad "印の回収が別の取得者の印を消した（ケース rc=${cas_rc}）"
 fi
 
+# release マーカーの lstart 書き出し・状態照合とゲート側 ff_gate_scan_release_in_flight の書式互換（PID 再利用の検出）
+(
+  . "$SSOT/scripts/lib/release-in-flight-functions.sh"
+  . "$SCRIPT_DIR/../lib/gate-in-flight.sh"
+  M3="$TMP/lstart-marker"
+  ff_release_marker_acquire "$M3" tok-live 0.99.0 || exit 11
+  grep -q '^lstart=.' "$M3/info" || exit 12
+  [[ "$(ff_release_marker_state "$M3")" == live ]] || exit 13
+  sed -e 's/^lstart=.*/lstart=Thu Jan  1 00:00:00 1970/' "$M3/info" > "$M3/info.tamper"
+  [[ "$(ff_release_marker_state "$M3" "$(cat "$M3/info.tamper")")" == stale ]] || exit 14
+  grep -v '^lstart=' "$M3/info" > "$M3/info.legacy"
+  [[ "$(ff_release_marker_state "$M3" "$(cat "$M3/info.legacy")")" == live ]] || exit 15
+  rm -rf "$M3"
+
+  sleep 20 &
+  rel_sl=$!
+  GREPO="$TMP/release-gate-e2e"
+  ff_git_fixture_init "$GREPO" "e2e" "e2e@example.invalid"
+  : > "$GREPO/f.txt"
+  git -C "$GREPO" add f.txt
+  git -C "$GREPO" commit -qm "init"
+  ggd="$(git -C "$GREPO" rev-parse --git-common-dir)"
+  case "$ggd" in /*) : ;; *) ggd="$GREPO/$ggd" ;; esac
+  mkdir -p "$ggd/ff-release-in-flight"
+  ls_val="$(LC_ALL=C TZ=UTC0 ps -o lstart= -p "$rel_sl" 2>/dev/null || true)"
+  printf 'token=e2e\npid=%s\nhost=%s\nstarted=%s\nversion=0.99.0\nlstart=%s\n' \
+    "$rel_sl" "$(hostname 2>/dev/null || echo unknown)" "$(date +%s)" "$ls_val" > "$ggd/ff-release-in-flight/info"
+  ff_gate_scan_release_in_flight "$GREPO" 1
+  rc_scan=$?
+  live1="$GATE_RELEASE_LIVE"
+  printf 'token=e2e\npid=%s\nhost=%s\nstarted=%s\nversion=0.99.0\nlstart=Thu Jan  1 00:00:00 1970\n' \
+    "$rel_sl" "$(hostname 2>/dev/null || echo unknown)" "$(date +%s)" > "$ggd/ff-release-in-flight/info"
+  ff_gate_scan_release_in_flight "$GREPO" 1
+  live2="$GATE_RELEASE_LIVE"
+  kill "$rel_sl" 2>/dev/null || true
+  wait "$rel_sl" 2>/dev/null || true
+  rm -rf "$GREPO"
+  [[ "$rc_scan" -eq 0 && "$live1" == "release:${rel_sl}:scripts/release-dev-toolkit.sh (v0.99.0)" && -z "$live2" ]] || exit 16
+  exit 0
+) && lstart_rc=0 || lstart_rc=$?
+if [[ "$lstart_rc" -eq 0 ]]; then
+  ok "release マーカーの lstart 書き出し・再利用検出とゲート側の相互運用が通る"
+else
+  bad "release マーカーの lstart 相互運用に失敗（rc=${lstart_rc}）"
+fi
+
 echo "-- release: 書きかけで止まった段からの再開 --"
 printf '%s\n' '- 修正と文書' >"$SSOT/changelog.d/105.fixed.mix.md"
 printf '%s\n' '- 文書' >"$SSOT/changelog.d/106.docs.mix.md"

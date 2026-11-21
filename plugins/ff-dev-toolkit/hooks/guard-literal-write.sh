@@ -26,6 +26,7 @@
 #      export せずに代入している（値が子プロセスへ渡らず空 / undefined）
 #   D: インタプリタ（python / node / perl / ruby）へ引用付き heredoc で渡すプログラムの二重バックスラッシュ
 #      + 英数字（Bash ツールが `\\` を `\` に解釈し、実際の改行・NUL が書き込まれる。Issue `#2450` / OBS-324）
+#   H: 同じインタプリタへ引用なし heredoc で渡すプログラムのバッククォートやドル括弧（Issue `#2890` / OBS-585）
 #   P: pwsh / powershell の -Command の本文の、二重引用符の文字列の中のバッククォート + エスケープ文字
 #      （`` `b `` がバックスペースになる。Issue `#2496` / 導入先 OBS-037）
 #   Q: ヒアドキュメントの本文の外（コマンド行の引数）の二重バックスラッシュのうち、Bash ツールが `\\` を `\` に
@@ -38,7 +39,8 @@
 #   - Bash 以外のツール / 空のコマンド / JSON でない入力（jq の rc=5）
 #   - `jq` 不在（コマンド本文を取り出せず、候補かどうかも決められない）
 #   - 生の入力が候補でない（`perl` の綴りと `$` の組も、`node` の綴りと `process.env` の組も、
-#     Claude Code 上の二重バックスラッシュも、pwsh / powershell の綴りとバッククォートの組も無い）。
+#     heredoc とバッククォート・ドル括弧の組も、Claude Code 上の二重バックスラッシュも、
+#     pwsh / powershell の綴りとバッククォートの組も無い）。H の引用・受け側の判定は共有ヘルパに委ねる。
 #     二重バックスラッシュ（述語 D・Q）は Claude Code の環境（CLAUDECODE=1・grok root 無し）でだけ候補に数える —
 #     ほかのホストでは D・Q を落とすので、判定不能の deny の面を広げない
 #
@@ -99,7 +101,8 @@ if ff_l4_skipped 'literal-write'; then exit 0; fi
 # 候補: perl の綴りと `$` の両方がある（述語 A・B の perl 側）、または node の綴りと
 # `process.env` の両方がある（述語 B の node 側。`$` を含まずに成立する）
 # 述語 D（インタプリタへ渡す heredoc）と述語 Q（コマンド行）は二重バックスラッシュ、述語 P は pwsh / powershell の
-# 綴りとバッククォート。二重バックスラッシュは、生の入力（JSON）では 1 本の `\` が `\\` で現れるので `\\\\`（4 本）で
+# 綴りとバッククォート。述語 H は heredoc とコマンド置換の記号の組み合わせ。
+# 二重バックスラッシュは、生の入力（JSON）では 1 本の `\` が `\\` で現れるので `\\\\`（4 本）で
 # 探す — 2 本で探すと、Windows の cwd・transcript_path のパスを持つすべての呼び出しが候補になる。D・Q は Claude Code
 # 固有なので、Claude Code の環境（CLAUDECODE=1・grok root 無し）でだけ数える（入力の model による絞り込みは後段）。
 bs_host=0
@@ -110,6 +113,9 @@ is_candidate() { # <text> <二重バックスラッシュの綴り（生の入�
   esac
   case "$1" in
     *node*) case "$1" in *process.env*) return 0 ;; esac ;;
+  esac
+  case "$1" in
+    *'<<'*) case "$1" in *'`'* | *'$'*'('*) return 0 ;; esac ;;
   esac
   if [ "$bs_host" = 1 ]; then
     case "$1" in
@@ -167,7 +173,7 @@ $block"
 
 deny_unavailable() { # <理由>
   deny "⚠️ ff-dev-toolkit guard（literal-write: シェルの値が別言語のプログラムへ届かない形）: **判定不能**のため停止しました（${1}）。
-このコマンドは perl と \`\$\`、node と process.env、二重バックスラッシュ、または pwsh / powershell とバッククォートを含む候補ですが、判定ヘルパ（${HELPER_DIR_SHOWN}/literal-write-scan.sh）で走査を完了できませんでした。判定できないまま通すと、ファイル本文が無音で変わる形を素通しします。
+判定ヘルパ（${HELPER_DIR_SHOWN}/literal-write-scan.sh）で候補コマンドの走査を完了できませんでした。判定できないまま通すと、意図しない展開で実行内容やファイル本文が変わる形を素通しします。
 対処:
   1) ff-dev-toolkit を更新・再インストールしてヘルパを復旧する
   2) ファイル本文は Write / Edit ツールで直接書く（シェルを経由しない）
@@ -179,7 +185,9 @@ deny_unavailable() { # <理由>
 }
 
 jq_rc=0
-cmd="$(printf '%s' "$input" | jq -r 'if (type == "object") and (.tool_name == "Bash") then ((.tool_input // {}) | if type == "object" then (.command // "") else "" end) else "" end | if type == "string" then . else "" end' 2>/dev/null)" || jq_rc=$?
+# 空の区切り語で閉じる heredoc があるので、コマンド末尾の改行を保持する。
+cmd="$(printf '%s' "$input" | jq -j 'if (type == "object") and (.tool_name == "Bash") then ((.tool_input // {}) | if type == "object" then (.command // "") else "" end) else "" end | (if type == "string" then . else "" end) + "."' 2>/dev/null)" || jq_rc=$?
+cmd="${cmd%.}"
 cmd="${cmd//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
 if [ "$jq_rc" -ne 0 ]; then
   # rc=5 は入力が JSON でない（対象外として素通し）。それ以外はフィルタ自体の失敗。
@@ -256,6 +264,7 @@ hit_n=0
 has_a=0
 has_b=0
 has_d=0
+has_h=0
 has_p=0
 has_q=0
 while IFS= read -r hit_line; do
@@ -269,6 +278,7 @@ while IFS= read -r hit_line; do
     A) has_a=1 ;;
     B) has_b=1 ;;
     D) has_d=1 ;;
+    H) has_h=1 ;;
     P) has_p=1 ;;
     Q) has_q=1 ;;
   esac
@@ -280,6 +290,14 @@ while IFS= read -r hit_line; do
   ${name}（${lang} が環境から読む）→ この呼び出しで export せずに代入しているので子プロセスへ渡らず、空 / undefined になります" ;;
     D) listed="${listed}
   ${name}（${lang} へ引用付き heredoc で渡すプログラム）→ Bash ツールが \\\\ を \\ に解釈するので、プログラムには 1 本のバックスラッシュの escape が届き、文字列リテラルの中で実際の改行・NUL などに変わります" ;;
+    H)
+      case "$name" in
+        backtick) marker='バッククォート' ;;
+        dollar-paren) marker='$(' ;;
+        *) marker='コマンド置換の記号' ;;
+      esac
+      listed="${listed}
+  ${marker}（${lang} へ渡す引用なし heredoc の本文）→ シェルがインタプリタへ渡す前に展開します" ;;
     P) listed="${listed}
   ${name}（PowerShell の -Command に渡す本文の二重引用符の文字列）→ PowerShell のエスケープとして解釈され（\`b はバックスペース・\`n は改行・\`0 は NUL など）、照合する文字列や書き込む本文が変わります" ;;
     Q)
@@ -299,12 +317,15 @@ EOF
   （ほか $((hit_n - 5)) 件）"
 
 summary=""
+[ "$has_h" -eq 0 ] || summary="引用なし heredoc の本文に、シェルがインタプリタへ渡す前に展開する記号があります。"
 [ "$has_a" -eq 0 ] && [ "$has_b" -eq 0 ] || summary="${summary}この Bash 呼び出しは、シェルの変数を別言語（perl / node）のプログラムの中で読もうとしていますが、値がそのプログラムへ届きません。エラーにならずに**ファイル本文が無音で変わります**（空文字の挿入・\`\"\$REPO\"\` → \`\"\"\`。導入先の観測台帳 OBS-130 の再発機序）。"
 [ "$has_d" -eq 0 ] || summary="${summary}この Bash 呼び出しは、インタプリタ（python / node / perl / ruby）へ引用付き heredoc で渡すプログラムに二重バックスラッシュの escape（\\\\n / \\\\0 など）を含みます。Claude Code の Bash ツールはコマンド文字列の \\\\ を bash へ渡す前に \\ へ解釈するので、区切り語を引用した heredoc でも防げず、プログラムが書き込む本文に**実際の改行・NUL が無音で入ります**（観測台帳 OBS-324 の再発機序）。"
 [ "$has_q" -eq 0 ] || summary="${summary}この Bash 呼び出しは、コマンド行の引数（ヒアドキュメントの本文の外）に二重バックスラッシュを含みます。Claude Code の Bash ツールはコマンド文字列の \\\\ を bash へ渡す前に \\ へ解釈するので、単一引用符の中・引用の外などでは、grep のパターン・printf の書式・case の照合・パスの**値が書いたものから無音で変わります**（観測台帳 OBS-324 の再発機序）。"
 [ "$has_p" -eq 0 ] || summary="${summary}この Bash 呼び出しは、pwsh / powershell の -Command に渡す本文の二重引用符の文字列の中に、バッククォート + PowerShell のエスケープ文字を含みます。PowerShell は二重引用符の中のバッククォートをエスケープとして読むので、Markdown のインラインコード（\`b2821ed\` など）を含む置換文字列は**照合する文字列も書き込む本文も無音で変わります**（導入先の観測台帳 OBS-037 の再発機序）。"
 
 advice=""
+[ "$has_h" -eq 0 ] || advice="${advice}
+  - heredoc の区切り語を引用する（例: <<'PY'）。本文に差し込む値は環境変数またはファイルでインタプリタへ渡す。"
 [ "$has_a" -eq 0 ] && [ "$has_b" -eq 0 ] || advice="${advice}
   - 新規ファイルや追記は、引用付き heredoc で置く: cat > <file> <<'EOF' … EOF（区切り語を引用すると本文は何も展開されない。ただし Claude Code では本文の \\\\ も \\ に縮むので、バックスラッシュを含む本文は Write ツールで書く）"
 [ "$has_a" -eq 0 ] || advice="${advice}

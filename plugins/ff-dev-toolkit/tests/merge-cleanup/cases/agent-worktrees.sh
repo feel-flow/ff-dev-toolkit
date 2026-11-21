@@ -37,7 +37,10 @@ setup_agent_worktree 'feature/#59-agent-toctou' "$OID_AGENT59" "$TMP/wt-59" 'cla
 echo scratch > "$TMP/wt-53/notes.txt"
 
 set +e
-PATH="$MOCK:$PATH" bash "$TARGET" 12 > "$TMP/run-914.log" 2>&1
+PATH="$MOCK:$PATH" bash "$TARGET" \
+  --worktree-branch 'feature/#52-agent-lock' --worktree-branch 'feature/#53-agent-unknown' \
+  --worktree-branch 'feature/#54-agent-nomatch' --worktree-branch 'feature/#55-agent-foreign-lock' \
+  --worktree-branch 'feature/#56-agent-nolock' --worktree-branch 'feature/#59-agent-toctou' 12 > "$TMP/run-914.log" 2>&1
 EXIT_914=$?
 set -e
 

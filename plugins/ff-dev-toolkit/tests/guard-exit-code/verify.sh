@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: tail の後続付き書き換えの呼び出しを除くと候補採用、再検査未完了を拒否する分岐を除くと子の非 0 による停止を測る検査が赤（各 rewrite.sh rc=1）。対照は58件成功（macOS / Bash 3.2）。
 # Runtime contract for the exit-code misread guard hook (observation ledger OBS-003, Count 7).
 #
 # 配布物 hooks/guard-exit-code.sh を stdin JSON で直接駆動し、受け入れ条件の各分岐を

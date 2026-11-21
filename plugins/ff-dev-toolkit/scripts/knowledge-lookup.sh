@@ -15,9 +15,31 @@
 #
 # モード:
 #   キーワード検索      knowledge-lookup.sh [オプション] <キーワード>...
+#                       knowledge-lookup.sh [オプション] --impl <実装語>... --class <作業クラス語>...
 #                       両 store のエントリ本文（見出し・メタ行・本文・観測メモ）に、いずれかの
 #                       キーワードが大文字小文字を無視して含まれるエントリを返す（OR）。
 #                       `--all` で全キーワードを含むエントリだけに絞る（AND）。
+#                       型付き形式（`--impl` / `--class`）の特徴:
+#                       - `--impl` と `--class` の両方を渡すと、系統ごとに結果を分けて出力し、各系統の
+#                         節の最後に `RECORD impl ...` と `RECORD class ...` を出し、全体の末尾に
+#                         `SUMMARY` を 1 行出す（`--format text` 時は `=== 系統: 実装語（--impl） ===` /
+#                         `=== 系統: 作業クラス語（--class） ===` で区切る）。
+#                       - 片軸だけが指定された場合（もう一方が未指定または空文字・空白のみ）は stderr へ
+#                         警告を出し、1 回の `RECORD ace=... obs=...` 末尾へ `impl=未指定` / `class=未指定` を添える。
+#                       - 型付き形式かつ `--format text` で Playbook が読めた回は、class 側（または単軸の
+#                         唯一の節）の `RECORD` 直前に Playbook タイトル由来の「作業クラス語の候補」節を出力する（抽出が 0 件なら出さない）。
+#                       - `--impl` / `--class` は `-` 始まりの引数をオプション境界とみなして値収集を終えるため、
+#                         ハイフン始まりの語を検索したいときは従来どおり位置引数形式（`-- <語>`）を使う。
+#   語ごとの検索        knowledge-lookup.sh [オプション] --each -- <キーワード>...
+#                       渡した語を 1 語ずつ別々に引き、1 回の起動で語の数だけ結果の節と
+#                       `RECORD each ace=... obs=... keyword=<語>` を渡した順に出す（語は行の最後の欄。最初の
+#                       ` keyword=` から行末までが語で、空白を含む語もそのまま載る）。tsv では、その語の行が
+#                       先に並び、その語の `RECORD each` が節の終わりになる（0 件の語は RECORD だけ）。全体の末尾の
+#                       `SUMMARY` は語をまたいだ重複なしの件数と `each_keywords=<語数>` を持つ。起動の固定費
+#                       （境界の検査・store の読み取り）を語の数だけ払わないための入口で、多数の候補語を既存知見と
+#                       照合する `/ace-curate` の重複照合が使う（Issue `#2921`）。語は `--` の後ろへ置く（`-` で
+#                       始まる語やオプションと同じ綴りの語を、オプションとして読ませない）。空白だけの語は数えず、
+#                       改行・復帰・タブを含む語は受けない。`--impl` / `--class`・`--all` とは併用できない。
 #   promoted 突き合わせ knowledge-lookup.sh --promoted-open [オプション]
 #                       台帳の `Status | promoted` エントリのうち、リンク先 Issue が open のものを
 #                       列挙する（`/retrospective` 観察チェックリスト第 0 項の入力）。state を
@@ -48,11 +70,14 @@
 #   --all               キーワードを AND で照合する（既定は OR）
 #   --include-archived  ACE の playbook/archive/（と _archive/）配下と、台帳の `archived` エントリも返す
 #   --offline           gh を使わない（promoted の Issue state は全件 `未確認` になる）
+#   --impl <語>...      実装語（触るファイル・機能・コマンド等）を 1 語以上指定する（位置引数と併用不可）
+#   --class <語>...     作業クラス語（何をする作業かを表す名詞）を 1 語以上指定する（位置引数と併用不可）
 #   --format text|tsv   出力形式（既定 text。tsv は 1 行 1 エントリの機械可読）
 #
 # 出力（text）: store ごとに状態のグループで並べる。見出しは `== <store> ==`、グループは
-#   `-- <状態ラベル> --`、エントリは `<ID>  <title>` に続けてメタ 1 行。末尾に記録用の 1 行
-#   `RECORD ace=<ID,... | 0 件 | Playbook なし | 読み取り失敗（理由）> obs=<同>` と
+#   `-- <状態ラベル> --`、エントリは `<ID>  <title>` に続けてメタ 1 行。各節の終わりに記録用の
+#   `RECORD ace=<ID,... | 0 件 | Playbook なし | 読み取り失敗（理由）> obs=<同>`（型付き両系統時は
+#   `RECORD impl ...` と `RECORD class ...` を系統ごとに 1 行ずつ）、全体の末尾に
 #   `SUMMARY ace=<n> obs=<n> ...` を出す。RECORD 行は git-workflow「着手前の Playbook 参照」の
 #   記録の契約（ヒット ID / 0 件 / 不在 / 読み取り失敗 の 4 種）にそのまま転記できる。
 # 出力（tsv）: `store<TAB>id<TAB>status<TAB>meta<TAB>title<TAB>location`（6 列。promoted の Issue state は
@@ -66,6 +91,10 @@
 #   mitigated=対策済み（所在は Issue 列） / archived=休眠、または統合元（Issue 列が統合先を指す）。
 # 状態ラベル（ACE）: active / deprecated / archived（archive 配下。--include-archived 時のみ）。
 #
+# 読み取り境界が root（かその祖先）を、場所を名指して止めた回の標準エラーは、停止文の共通形 3 行
+# （止めた層: 環境 / 止めた規則: knowledge-read-boundary / 次の一手: 同じ検査を通る置き場へ worktree を作る
+# コマンド。置き場が検査を通らない・git リポジトリでない・commit が無い回は置き場の条件だけ）で終わる
+# （Issue `#2648`。root_stop_guide）。
 # 終了コード: 0 = 検索を実施した（0 件ヒットを含む）/ 1 = 引数エラー / 2 = 検索不成立
 #   （両 store とも不在、または在るのに読めない・エントリ見出しを 1 件も認識できない）。
 #   片方の store だけ不在の回は 0 で終わり、RECORD 行に `Playbook なし` / `台帳なし` を出す —
@@ -248,6 +277,11 @@ usage() {
 使い方:
   knowledge-lookup.sh [--root DIR] [--playbook PATH] [--ledger PATH] [--all]
                       [--include-archived] [--offline] [--github-input INDEX_ABS] [--format text|tsv] <キーワード>...
+  knowledge-lookup.sh [--root DIR] [--playbook PATH] [--ledger PATH] [--all]
+                      [--include-archived] [--offline] [--github-input INDEX_ABS] [--format text|tsv]
+                      [--impl <実装語>...] [--class <作業クラス語>...]
+  knowledge-lookup.sh [--root DIR] [--playbook PATH] [--ledger PATH]
+                      [--include-archived] [--offline] [--github-input INDEX_ABS] [--format text|tsv] --each -- <キーワード>...
   knowledge-lookup.sh --promoted-open [--root DIR] [--ledger PATH] [--offline] [--format text|tsv]
   knowledge-lookup.sh --resolve-playbook [--with-index-mode] [--root DIR] [--playbook PATH]
   knowledge-lookup.sh --ledger-dump [--root DIR] [--ledger PATH]
@@ -264,6 +298,12 @@ GITHUB_INPUT=""
 FORMAT="text"
 MODE="search"
 WITH_INDEX_MODE=0
+USE_TYPED_ARGS=0
+EACH=0
+EACH_KEYWORD=""
+IMPL_KEYWORDS=()
+CLASS_KEYWORDS=()
+POSITIONAL_KEYWORDS=()
 KEYWORDS=()
 
 while [ $# -gt 0 ]; do
@@ -272,18 +312,63 @@ while [ $# -gt 0 ]; do
     --playbook) [ $# -ge 2 ] || { usage; exit 1; }; PLAYBOOK="$2"; shift 2 ;;
     --ledger) [ $# -ge 2 ] || { usage; exit 1; }; LEDGER="$2"; shift 2 ;;
     --all) MATCH_ALL=1; shift ;;
+    --each) EACH=1; shift ;;
     --include-archived) INCLUDE_ARCHIVED=1; shift ;;
     --offline) OFFLINE=1; shift ;;
     --github-input) [ $# -ge 2 ] || { usage; exit 1; }; [ -n "$2" ] || { echo "--github-input requires a non-empty index path" >&2; exit 2; }; GITHUB_INPUT="$2"; shift 2 ;;
     --format) [ $# -ge 2 ] || { usage; exit 1; }; FORMAT="$2"; shift 2 ;;
+    --impl)
+      USE_TYPED_ARGS=1
+      shift
+      _impl_count=0
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --|-*) break ;;
+          *)
+            if [ -n "${1//[[:space:]]/}" ]; then
+              IMPL_KEYWORDS+=("$1")
+            fi
+            _impl_count=$((_impl_count + 1))
+            shift
+            ;;
+        esac
+      done
+      if [ "$_impl_count" -eq 0 ]; then
+        printf '%s\n' '--impl には 1 つ以上のキーワードが必要です' >&2
+        usage
+        exit 1
+      fi
+      ;;
+    --class)
+      USE_TYPED_ARGS=1
+      shift
+      _class_count=0
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --|-*) break ;;
+          *)
+            if [ -n "${1//[[:space:]]/}" ]; then
+              CLASS_KEYWORDS+=("$1")
+            fi
+            _class_count=$((_class_count + 1))
+            shift
+            ;;
+        esac
+      done
+      if [ "$_class_count" -eq 0 ]; then
+        printf '%s\n' '--class には 1 つ以上のキーワードが必要です' >&2
+        usage
+        exit 1
+      fi
+      ;;
     --promoted-open) MODE="promoted-open"; shift ;;
     --resolve-playbook) MODE="resolve-playbook"; shift ;;
     --ledger-dump) MODE="ledger-dump"; shift ;;
     --with-index-mode) WITH_INDEX_MODE=1; shift ;;
     -h|--help) usage; exit 1 ;;
-    --) shift; while [ $# -gt 0 ]; do KEYWORDS+=("$1"); shift; done ;;
+    --) shift; while [ $# -gt 0 ]; do POSITIONAL_KEYWORDS+=("$1"); shift; done ;;
     -*) printf '未知のオプション: %s\n' "$1" >&2; usage; exit 1 ;;
-    *) KEYWORDS+=("$1"); shift ;;
+    *) POSITIONAL_KEYWORDS+=("$1"); shift ;;
   esac
 done
 
@@ -291,6 +376,44 @@ case "${FORMAT}" in text|tsv) ;; *) printf -- '--format は text か tsv: %s\n' 
 if [ "$WITH_INDEX_MODE" -eq 1 ] && [ "$MODE" != resolve-playbook ]; then
   printf '%s\n' '--with-index-mode には --resolve-playbook が必要です' >&2
   exit 1
+fi
+if [ "$USE_TYPED_ARGS" -eq 1 ]; then
+  if [ "${#POSITIONAL_KEYWORDS[@]}" -gt 0 ]; then
+    printf '%s\n' '--impl / --class と位置引数のキーワードは併用できません' >&2
+    exit 1
+  fi
+  if [ "${MODE}" != "search" ]; then
+    printf -- '--%s は --impl / --class と併用できません\n' "${MODE}" >&2
+    exit 1
+  fi
+  KEYWORDS=(${IMPL_KEYWORDS[@]+"${IMPL_KEYWORDS[@]}"} ${CLASS_KEYWORDS[@]+"${CLASS_KEYWORDS[@]}"})
+else
+  KEYWORDS=(${POSITIONAL_KEYWORDS[@]+"${POSITIONAL_KEYWORDS[@]}"})
+fi
+if [ "$EACH" -eq 1 ]; then
+  # 語ごとの検索（Issue `#2921`）: 1 語 = 1 節。系統別・AND とは組み合わせない（どちらも複数語を 1 つの照合へ束ねる指定）。
+  if [ "$USE_TYPED_ARGS" -eq 1 ]; then
+    printf '%s\n' '--each は --impl / --class と併用できません（語ごとに引く語は位置引数で渡す）' >&2
+    exit 1
+  fi
+  if [ "${MODE}" != "search" ]; then
+    printf -- '--%s は --each と併用できません\n' "${MODE}" >&2
+    exit 1
+  fi
+  if [ "$MATCH_ALL" -eq 1 ]; then
+    printf '%s\n' '--each は --all と併用できません（1 語ずつ引くので、全語を含む絞り込みは成り立たない）' >&2
+    exit 1
+  fi
+  KEYWORDS=()
+  for _kw in ${POSITIONAL_KEYWORDS[@]+"${POSITIONAL_KEYWORDS[@]}"}; do
+    [ -n "${_kw//[[:space:]]/}" ] || continue
+    # RECORD 行の最後の欄へそのまま載せるので、行と列を壊す改行・復帰・タブを含む語は受けない
+    # （文字クラスはロケールで範囲が変わるので、3 文字を名指す）。
+    case "$_kw" in
+      *$'\n'* | *$'\r'* | *$'\t'*) printf '%s\n' '--each の語に改行・復帰・タブは使えません' >&2; exit 1 ;;
+    esac
+    KEYWORDS+=("$_kw")
+  done
 fi
 if [ "${MODE}" = "search" ] && [ "${#KEYWORDS[@]}" -eq 0 ]; then
   printf '%s\n' "キーワードが 1 つも指定されていません（--promoted-open / --ledger-dump 以外はキーワードが必須）" >&2
@@ -312,10 +435,83 @@ if ! TMP="$(ff_knowledge_job_directory knowledge-lookup)" || [ ! -d "${TMP}" ]; 
   exit 2
 fi
 trap 'rm -rf "${TMP}"' EXIT
-if [ -z "$ROOT" ]; then ROOT="$(ff_knowledge_project_context)" || exit 2
-else ROOT="$(ff_knowledge_canonical_dir "$ROOT")" || exit 2
+# ── 読み取る対象（root とその祖先）の検査と、止めたときの次の一手（Issue `#2648`） ────────
+# 境界が場所を名指して止めた回（Windows の ACL の判定）は、境界の出力をそのまま通したうえで、
+# 同じ検査を通る場所へ worktree を作る手順を停止文の共通形（scripts/lib/stop-block.sh）で足す。
+# 境界は緩めない: 止めた場所からは読まず、案内する置き場も同じ検査を通ったときだけ名指す。
+# 場所の名指しが無い拒否（解決できない root・POSIX の判定など）には何も足さない。
+ROOT_GIVEN="$ROOT"
+shell_word() { # <text> -> POSIX シェルの 1 語（単一引用符で囲む）
+  local text="$1" out="" quote="'"
+  while [ "${text#*"$quote"}" != "$text" ]; do
+    out="${out}${text%%"$quote"*}'\\''"; text="${text#*"$quote"}"
+  done
+  printf "'%s'" "${out}${text}"
+}
+root_stop_guide() { # <root の検査の stderr を写したファイル>
+  local refusal="$1" line place="" start top="" head="" base="" safe="" probe name target="" count=1 next lib block sub="" place_word="その worktree"
+  while IFS= read -r line; do
+    case "$line" in
+      'knowledge-read: 止めた場所: '*' — '*) place="${line#knowledge-read: 止めた場所: }"; place="${place% — *}" ;;
+    esac
+  done <"$refusal"
+  [ -n "$place" ] || return 0
+  next="本人・管理者・SYSTEM だけが変更できるフォルダーへ対象のリポジトリの worktree（または写し）を置き、そこを cwd（--root）にして同じ操作をやり直す"
+  # git へ渡す綴りは境界の ff_knowledge_native_path に任せる（引用符を含む POSIX 綴りは Git Bash が変換しない）。
+  start="$(ff_knowledge_canonical_dir "${ROOT_GIVEN:-.}" 2>/dev/null)" && start="$(ff_knowledge_native_path "$start")" || start=""
+  [ -z "$start" ] || top="$(git -C "$start" rev-parse --show-toplevel 2>/dev/null)" || top=""
+  [ -z "$top" ] || head="$(git -C "$start" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null)" || head=""
+  # --root がリポジトリの下位ディレクトリなら、worktree の中の同じ下位ディレクトリを指す（cwd から解いた回の root は最上位）。
+  [ -z "$head" ] || [ -z "$ROOT_GIVEN" ] || sub="$(git -C "$start" rev-parse --show-prefix 2>/dev/null)" || sub=""
+  [ -z "${sub%/}" ] || place_word="その worktree の下の $(shell_word "${sub%/}")"
+  [ -z "${HOME:-}${FF_DEV_TOOLKIT_STATE_DIR:-}" ] || base="${FF_DEV_TOOLKIT_STATE_DIR:-${HOME:-}/.config/ff-dev-toolkit}"
+  case "$base" in /* | [A-Za-z]:[/\\]*) ;; *) base="" ;; esac
+  [ -z "$head" ] || [ -z "$base" ] || safe="$(ff_knowledge_lexical_path "${base}/wt" 2>/dev/null)" || safe=""
+  if [ -n "$safe" ]; then
+    # まだ無い置き場は、いちばん近い実在の祖先で確かめる（ここでは作らない。read-only 契約）。
+    probe="$safe"
+    while [ ! -d "$probe" ] && [ "$probe" != / ]; do probe="${probe%/*}"; [ -n "$probe" ] || probe=/; done
+    if probe="$(ff_knowledge_canonical_dir "$probe")" && ff_knowledge_storage "$probe" dir \
+      && probe="$(ff_knowledge_native_path "$safe")"; then
+      safe="$probe"; name="${top##*/}"; target="${safe}/${name}"
+      # 同じ名前の別物（この commit を持たない場所）は使わず、番号を付けた隣を選ぶ。フォルダーだけ消されて登録が
+      # 残った前の worktree は、下の add -f が上書きする（-f が無いと git は missing but already registered で断る）。
+      while [ -e "$target" ] || [ -L "$target" ]; do
+        if [ -d "$target" ] && [ ! -L "$target" ] && git -C "$target" cat-file -e "${head}^{commit}" 2>/dev/null; then break; fi
+        count=$((count + 1)); target="${safe}/${name}-${count}"
+        [ "$count" -le 9 ] || { target=""; break; }
+      done
+    else
+      printf 'knowledge-read: 既定の置き場 %s も同じ検査を通りません（上の行が理由）\n' "$safe" >&2
+    fi
+  fi
+  if [ -n "$target" ] && [ -d "$target" ]; then
+    next="git -C $(shell_word "$target") switch --detach ${head} を実行し（前に作った worktree を同じ commit へ合わせる）、${place_word} を cwd（--root）にして同じ操作をやり直す（/ace-curate・/retrospective の書き込みも同じ worktree で続ける）"
+  elif [ -n "$target" ]; then
+    next="git -C $(shell_word "$start") worktree add -f --detach $(shell_word "$target") ${head} を実行し、${place_word} を cwd（--root）にして同じ操作をやり直す（コミット済みの内容だけが写る。/ace-curate・/retrospective の書き込みも同じ worktree で続ける。不要になったら git worktree remove）"
+  fi
+  lib="${BASH_SOURCE[0]%/*}/lib/stop-block.sh"
+  # shellcheck source=lib/stop-block.sh
+  block="$([ -f "$lib" ] && [ -r "$lib" ] && . "$lib" 2>/dev/null && declare -F ff_stop_block >/dev/null 2>&1 \
+    && ff_stop_block 環境 knowledge-read-boundary scripts/lib/knowledge-read-boundary.sh \
+      "読み取る対象の祖先 ${place} が読み取り境界の検査を通らないため、知見を読んでいません（境界は緩めません）" "$next")" || :
+  if [ -z "$block" ]; then
+    block="止めた層: 環境
+止めた規則: stop-block-unavailable（scripts/lib/stop-block.sh）— 停止文の共通形を読み込めません（元の規則: knowledge-read-boundary）
+次の一手: ff-dev-toolkit を更新・再インストールして scripts/lib/stop-block.sh を復旧する"
+  fi
+  printf '%s\n' "$block" >&2
+}
+root_rc=0
+if [ -z "$ROOT" ]; then ROOT="$(ff_knowledge_project_context 2>"${TMP}/root-refusal")" || root_rc=$?
+else ROOT="$(ff_knowledge_canonical_dir "$ROOT" 2>"${TMP}/root-refusal")" || root_rc=$?
 fi
-ff_knowledge_storage "$ROOT" dir || exit 2
+if [ "$root_rc" -eq 0 ]; then ff_knowledge_storage "$ROOT" dir 2>>"${TMP}/root-refusal" || root_rc=$?; fi
+[ ! -s "${TMP}/root-refusal" ] || cat "${TMP}/root-refusal" >&2
+if [ "$root_rc" -ne 0 ]; then
+  root_stop_guide "${TMP}/root-refusal"
+  exit 2
+fi
 : >"${TMP}/read-cache"
 # A snapshot is reused only for the same spelling, authority and mode, and only while
 # the file still resolves to the same place with the same metadata. A miss is
@@ -1016,7 +1212,7 @@ if [ "${MODE}" = "promoted-open" ]; then
   exit 0
 fi
 
-# ── 採用前の保留候補（resolve/promoted-open経路には混ぜない） ───────────────
+# ── 採用前の保留候補・未反映判定・検索実行パス（resolve/promoted-open/ledger-dump には混ぜない） ───
 PENDING_FILE=""; PENDING_PRESENT=0; pending_n=0
 if [ "${ACE_STATE}" = "ok" ] || [ "${ACE_STATE}" = "empty" ]; then
   PENDING_FILE="${ACE_INDEX%/*}/PENDING_CANDIDATES.md"
@@ -1032,21 +1228,9 @@ if [ "${ACE_STATE}" = "ok" ] || [ "${ACE_STATE}" = "empty" ]; then
     ff_ace_pending_validate "$pending_snapshot" || exit 2
     PENDING_PRESENT=1
     extract_entries PENDING "$PENDING_FILE" >"${TMP}/pending-entries" || exit 2
-    filter_entries <"${TMP}/pending-entries" >"${TMP}/pending-hit"
-    entries_meta "${TMP}/pending-hit" Category Origin >"${TMP}/pending-meta"
-    : >"${TMP}/pending-ids"
-    while IFS=$'\037' read -r id title src anchor cat origin end <&3; do
-      case "$src" in "${ROOT}"/*) rel="${src#"${ROOT}"/}" ;; *) rel="$src" ;; esac
-      # rowsの内部形式はstatusが末尾。print_groupが公開TSVの第3列へ移す。
-      printf 'pending\t%s\tCategory=%s Origin=%s\t%s\t%s#%s\tpending\n' \
-        "$id" "$cat" "$origin" "$title" "$rel" "$anchor" >>"${TMP}/rows"
-      printf '%s\n' "$id" >>"${TMP}/pending-ids"
-    done 3<"${TMP}/pending-meta"
-    pending_n="$(awk 'END { print NR }' "${TMP}/pending-ids")"
   fi
 fi
 
-# ── base へ未反映の知見（まとめるモードだけ。ADR-083。本体は lib） ─────────────
 unreflected_lib="${BASH_SOURCE[0]%/*}/lib/knowledge-lookup-unreflected.sh"
 if [ ! -f "$unreflected_lib" ] || [ ! -r "$unreflected_lib" ] || [ -L "$unreflected_lib" ]; then
   printf '未反映の判定 lib を読めません: %s\n' "$unreflected_lib" >&2
@@ -1054,75 +1238,303 @@ if [ ! -f "$unreflected_lib" ] || [ ! -r "$unreflected_lib" ] || [ -L "$unreflec
 fi
 # shellcheck source=lib/knowledge-lookup-unreflected.sh
 . "$unreflected_lib"
-unreflected_collect
 
-# ── キーワード検索の出力 ──────────────────────────────────────────────────────
-# live が空（empty）でも archive は引く — 全エントリを archive へ移した Playbook で
-# `--include-archived` が 0 件になるのを避ける（codex-cli のレビュー指摘）。
-if [ "${ACE_STATE}" = "ok" ] || [ "${ACE_STATE}" = "empty" ]; then
-  filter_entries <"${ACE_ENTRIES}" >"${TMP}/ace-hit"
-  emit_ace "${TMP}/ace-hit" ""
-  if [ -s "${ACE_ARCHIVE_ENTRIES}" ]; then
-    filter_entries <"${ACE_ARCHIVE_ENTRIES}" >"${TMP}/ace-arch-hit"
-    emit_ace "${TMP}/ace-arch-hit" "archived"
+# active な Playbook タイトルから作業クラス語候補を最大 8 件抽出して stdout（text 時）へ出す。
+# LC_ALL=C 下で扱うため長さ閾値（全体 8..42B / 左右各 4B 以上 / 補完 4..36B）はバイト基準。
+# 第 1 層で `<左>の<右>` 句を頻度順→初出順で採り、8 件に満たない分を第 2 層（非ストップワード短句）で補う。
+emit_class_candidates() {
+  local existing_kws="" _kw="" class_candidates=""
+  [ "$USE_TYPED_ARGS" -eq 1 ] && [ "${FORMAT}" = "text" ] && [ "${ACE_STATE}" = "ok" ] && [ -s "${ACE_ENTRIES}" ] || return 0
+  for _kw in ${KEYWORDS[@]+"${KEYWORDS[@]}"}; do
+    existing_kws="${existing_kws:+${existing_kws}$'\037'}${_kw}"
+  done
+  if ! class_candidates="$(KL_CAND_EXISTING_KWS="$existing_kws" LC_ALL=C awk -F '\037' '
+    BEGIN {
+      len_no = length("の")
+      if (ENVIRON["KL_CAND_EXISTING_KWS"] != "") {
+        kn = split(ENVIRON["KL_CAND_EXISTING_KWS"], karr, "\037")
+        for (ki = 1; ki <= kn; ki++) {
+          k = tolower(karr[ki])
+          if (k != "") passed[k] = 1
+        }
+      }
+    }
+    {
+      if ($4 ~ /\|[[:space:]]*Status[[:space:]]*\|[[:space:]]*(deprecated|archived)[[:space:]]*\|/) next
+      t = $2
+      gsub(/[[:cntrl:]]/, " ", t)
+      if (t == "") next
+      gsub(/`|、|。|（|）|「|」|『|』|—|–|→|⇒|：|／|・|　|[()\[\],;:|\/]/, "\n", t)
+      n = split(t, segs, "\n")
+      for (i = 1; i <= n; i++) {
+        s = segs[i]
+        gsub(/(ときは|場合は|には|では|とは|から|まで|より|ため|ほど|など|だけ|ごと|つつ|ずに|せず|しない|して|した|する|され|させ|ある|ない|なる|へ|を|が|は|に|で|と)/, "\n", s)
+        m = split(s, parts, "\n")
+        for (j = 1; j <= m; j++) {
+          p = parts[j]
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", p)
+          while (substr(p, 1, len_no) == "の") p = substr(p, 1 + len_no)
+          while (length(p) >= len_no && substr(p, length(p) - len_no + 1) == "の") p = substr(p, 1, length(p) - len_no)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", p)
+          if (p == "" || tolower(p) in passed) continue
+          pos = index(p, "の")
+          if (pos > 1 && length(p) >= 8 && length(p) <= 42) {
+            left = substr(p, 1, pos - 1)
+            right = substr(p, pos + len_no)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", left)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", right)
+            if (length(left) >= 4 && length(right) >= 4 && index(right, "の") == 0 \
+                && left !~ /^(こ|そ|あ|ど|この|その|あの|どの|別|同|他|全|各|次|前|後|元|今|自|ここ|そこ|これ|それ|あれ|どれ|どちら|すべて|両方|片方|複数|既存|新規|実際|対象|該当|同じ|別の|他の|前の|次の)$/ \
+                && right !~ /^(まま|ほう|方|もの|こと|うち|あいだ|中|上|下|前|後|先|側|分|ぶん|場|行|値|数|点|件|回|度|とき|場合|ため|よう|だけ|ほど|まで|から|より|ほうへ|まま通る|ほうを|一部|全部|全体|中身|末尾|先頭|直前|直後|外側|内側|片側|両方)$/) {
+              t1_freq[p]++
+              if (!(p in t1_first)) t1_first[p] = ++t1_ord
+              continue
+            }
+          }
+          if (length(p) >= 4 && length(p) <= 36 \
+              && p !~ /^[[:space:]]*$/ \
+              && p !~ /^(こ|そ|あ|ど|この|その|あの|どの|別|同|他|全|各|次|前|後|元|今|自|ここ|そこ|これ|それ|あれ|どれ|どちら|すべて|両方|片方|複数|既存|新規|実際|対象|該当|同じ|別の|他の|前の|次の|まま|ほう|方|もの|こと|ため|場合|とき)$/) {
+            t2_freq[p]++
+            if (!(p in t2_first)) t2_first[p] = ++t2_ord
+          }
+        }
+      }
+    }
+    END {
+      out = ""
+      count = 0
+      for (k = 1; k <= 8; k++) {
+        best = ""; best_f = 0; best_o = 0
+        for (p in t1_freq) {
+          if (used[p]) continue
+          if (t1_freq[p] > best_f || (t1_freq[p] == best_f && t1_first[p] < best_o)) {
+            best = p; best_f = t1_freq[p]; best_o = t1_first[p]
+          }
+        }
+        if (best == "") break
+        used[best] = 1
+        out = (out == "" ? best : out " / " best)
+        count++
+      }
+      while (count < 8) {
+        best = ""; best_f = 0; best_o = 0
+        for (p in t2_freq) {
+          if (used[p]) continue
+          if (t2_freq[p] > best_f || (t2_freq[p] == best_f && t2_first[p] < best_o)) {
+            best = p; best_f = t2_freq[p]; best_o = t2_first[p]
+          }
+        }
+        if (best == "") break
+        used[best] = 1
+        out = (out == "" ? best : out " / " best)
+        count++
+      }
+      if (out != "") printf "%s", out
+    }
+  ' "${ACE_ENTRIES}" 2>/dev/null)"; then
+    printf '%s\n' '警告: 作業クラス語の候補を抽出できませんでした' >&2
+    class_candidates=""
   fi
-fi
-if [ "${OBS_STATE}" = "ok" ]; then
-  filter_entries <"${OBS_ENTRIES}" >"${TMP}/obs-hit"
-  emit_obs "${TMP}/obs-hit"
-fi
+  if [ -n "$class_candidates" ]; then
+    printf '\n== 作業クラス語の候補（Playbook タイトル由来） ==\n  %s\n' "$class_candidates"
+  fi
+}
 
-ace_n="$(awk 'END { print NR }' "${TMP}/ace-ids")"
-obs_n="$(awk 'END { print NR }' "${TMP}/obs-ids")"
-kw_desc="$(paste -sd, "${KW_FILE}")"
+LAST_PASS_ACE_N=0
+LAST_PASS_OBS_N=0
+UNREFLECTED_COLLECTED=0
+UNREFLECTED_PREFIX=""
+: >"${TMP}/ace-ids-union"; : >"${TMP}/obs-ids-union"
+: >"${TMP}/pending-ids-union"; : >"${TMP}/unreflected-ids-union"
 
-if [ "${FORMAT}" = "text" ]; then
-  printf '== ACE Playbook（%s） ==\n' "$( [ -n "${ACE_INDEX}" ] && printf '%s' "${ACE_INDEX#"${ROOT}"/}" || printf '%s' "${ACE_STATE}" )"
-  case "${ACE_STATE}" in
-    ok) if [ "${ace_n}" -eq 0 ]; then printf '（0 件: %s）\n' "${kw_desc}"; fi ;;
-    empty) if [ "${ace_n}" -eq 0 ]; then printf '%s\n' "（0 件: Playbook はあるが live エントリが無い）"; fi ;;
-    absent) printf '%s\n' "（Playbook なし — ACE 未導入。/ace-setup で配置できる）" ;;
-    *) printf '（読み取り失敗: %s）\n' "$(record_word "${ACE_STATE}" /dev/null "")" ;;
-  esac
-  print_group ace active "$(ace_status_label active)"
-  print_group ace deprecated "$(ace_status_label deprecated)"
-  print_group ace archived "$(ace_status_label archived)"
-  print_group ace unknown "$(ace_status_label unknown)"
-  printf '\n== 観測台帳（%s） ==\n' "$( [ -n "${OBS_FILE}" ] && printf '%s' "${OBS_FILE#"${ROOT}"/}" || printf '%s' "${OBS_STATE}" )"
-  case "${OBS_STATE}" in
-    ok) if [ "${obs_n}" -eq 0 ]; then printf '（0 件: %s）\n' "${kw_desc}"; fi ;;
-    empty) printf '%s\n' "（0 件: 台帳はあるがエントリが無い）" ;;
-    absent) printf '%s\n' "（台帳なし — /retrospective が初回実行時にテンプレートから作成する）" ;;
-    *) printf '（読み取り失敗: %s）\n' "$(record_word "${OBS_STATE}" /dev/null "")" ;;
-  esac
-  print_group obs active "$(obs_status_label active)"
-  print_group obs promoted "$(obs_status_label promoted)"
-  print_group obs mitigated "$(obs_status_label mitigated)"
-  print_group obs archived "$(obs_status_label archived)"
-  print_group obs unknown "$(obs_status_label unknown)"
+# 1 系統ぶん（または全体）の検索を実行し、指定形式で出力と RECORD 行を出す。
+run_search_pass() {
+  local axis_tag="$1" axis_heading="$2" pass_kw_file="$3" show_candidates="$4"
+  local id title src anchor cat origin end rel ace_n obs_n kw_desc
+
+  KW_FILE="$pass_kw_file"
+  : >"${TMP}/rows"; : >"${TMP}/ace-ids"; : >"${TMP}/obs-ids"; : >"${TMP}/pending-ids"; : >"${TMP}/unreflected-ids"
+  pending_n=0
+
   if [ "$PENDING_PRESENT" -eq 1 ]; then
-    printf '\n== ACE 保留候補（%s） ==\n' "${PENDING_FILE#"${ROOT}"/}"
-    if [ "$pending_n" -eq 0 ]; then printf '（0 件: %s）\n' "${kw_desc}"; fi
-    print_group pending pending '保留（pending。採用前の候補、有効なACEではない）'
+    filter_entries <"${TMP}/pending-entries" >"${TMP}/pending-hit"
+    entries_meta "${TMP}/pending-hit" Category Origin >"${TMP}/pending-meta"
+    while IFS=$'\037' read -r id title src anchor cat origin end <&3; do
+      case "$src" in "${ROOT}"/*) rel="${src#"${ROOT}"/}" ;; *) rel="$src" ;; esac
+      # rows の内部形式は status が末尾。print_group が公開 TSV の第 3 列へ移す。
+      printf 'pending\t%s\tCategory=%s Origin=%s\t%s\t%s#%s\tpending\n' \
+        "$id" "$cat" "$origin" "$title" "$rel" "$anchor" >>"${TMP}/rows"
+      printf '%s\n' "$id" >>"${TMP}/pending-ids"
+    done 3<"${TMP}/pending-meta"
+    pending_n="$(awk 'END { print NR }' "${TMP}/pending-ids")"
+    cat "${TMP}/pending-ids" >>"${TMP}/pending-ids-union"
   fi
-  unreflected_print_text
+
+  if [ "$UNREFLECTED_COLLECTED" -eq 0 ]; then
+    unreflected_collect
+    UNREFLECTED_COLLECTED=1
+    if [ "$UNREFLECTED_STATE" != off ]; then
+      UNREFLECTED_PREFIX="$(git -C "${ROOT}" rev-parse --show-prefix 2>/dev/null)" || UNREFLECTED_PREFIX=""
+    fi
+  elif [ "$UNREFLECTED_STATE" != off ] && [ "$UNREFLECTED_STATE" != error ] && [ -s "${TMP}/unreflected-ace.refs" ]; then
+    unreflected_emit ace "${TMP}/unreflected-root.ace" "${TMP}/unreflected-ace.refs" "${TMP}/unreflected-root" "$UNREFLECTED_PREFIX" Category Helpful
+    unreflected_emit obs "${TMP}/unreflected-root.obs" "${TMP}/unreflected-obs.refs" "${TMP}/unreflected-root" "$UNREFLECTED_PREFIX" Kind Count Last
+  fi
+  [ ! -s "${TMP}/unreflected-ids" ] || cat "${TMP}/unreflected-ids" >>"${TMP}/unreflected-ids-union"
+
+  # live が空（empty）でも archive は引く — 全エントリを archive へ移した Playbook で
+  # `--include-archived` が 0 件になるのを避ける（codex-cli のレビュー指摘）。
+  if [ "${ACE_STATE}" = "ok" ] || [ "${ACE_STATE}" = "empty" ]; then
+    filter_entries <"${ACE_ENTRIES}" >"${TMP}/ace-hit"
+    emit_ace "${TMP}/ace-hit" ""
+    if [ -s "${ACE_ARCHIVE_ENTRIES}" ]; then
+      filter_entries <"${ACE_ARCHIVE_ENTRIES}" >"${TMP}/ace-arch-hit"
+      emit_ace "${TMP}/ace-arch-hit" "archived"
+    fi
+  fi
+  if [ "${OBS_STATE}" = "ok" ]; then
+    filter_entries <"${OBS_ENTRIES}" >"${TMP}/obs-hit"
+    emit_obs "${TMP}/obs-hit"
+  fi
+
+  cat "${TMP}/ace-ids" >>"${TMP}/ace-ids-union"
+  cat "${TMP}/obs-ids" >>"${TMP}/obs-ids-union"
+  ace_n="$(awk 'END { print NR }' "${TMP}/ace-ids")"
+  obs_n="$(awk 'END { print NR }' "${TMP}/obs-ids")"
+  LAST_PASS_ACE_N="$ace_n"
+  LAST_PASS_OBS_N="$obs_n"
+  kw_desc="$(paste -sd, "${KW_FILE}")"
+
+  if [ "${FORMAT}" = "text" ]; then
+    if [ -n "$axis_heading" ]; then
+      printf '%s\n' "$axis_heading"
+    fi
+    printf '== ACE Playbook（%s） ==\n' "$( [ -n "${ACE_INDEX}" ] && printf '%s' "${ACE_INDEX#"${ROOT}"/}" || printf '%s' "${ACE_STATE}" )"
+    case "${ACE_STATE}" in
+      ok) if [ "${ace_n}" -eq 0 ]; then printf '（0 件: %s）\n' "${kw_desc}"; fi ;;
+      empty) if [ "${ace_n}" -eq 0 ]; then printf '%s\n' "（0 件: Playbook はあるが live エントリが無い）"; fi ;;
+      absent) printf '%s\n' "（Playbook なし — ACE 未導入。/ace-setup で配置できる）" ;;
+      *) printf '（読み取り失敗: %s）\n' "$(record_word "${ACE_STATE}" /dev/null "")" ;;
+    esac
+    print_group ace active "$(ace_status_label active)"
+    print_group ace deprecated "$(ace_status_label deprecated)"
+    print_group ace archived "$(ace_status_label archived)"
+    print_group ace unknown "$(ace_status_label unknown)"
+    printf '\n== 観測台帳（%s） ==\n' "$( [ -n "${OBS_FILE}" ] && printf '%s' "${OBS_FILE#"${ROOT}"/}" || printf '%s' "${OBS_STATE}" )"
+    case "${OBS_STATE}" in
+      ok) if [ "${obs_n}" -eq 0 ]; then printf '（0 件: %s）\n' "${kw_desc}"; fi ;;
+      empty) printf '%s\n' "（0 件: 台帳はあるがエントリが無い）" ;;
+      absent) printf '%s\n' "（台帳なし — /retrospective が初回実行時にテンプレートから作成する）" ;;
+      *) printf '（読み取り失敗: %s）\n' "$(record_word "${OBS_STATE}" /dev/null "")" ;;
+    esac
+    print_group obs active "$(obs_status_label active)"
+    print_group obs promoted "$(obs_status_label promoted)"
+    print_group obs mitigated "$(obs_status_label mitigated)"
+    print_group obs archived "$(obs_status_label archived)"
+    print_group obs unknown "$(obs_status_label unknown)"
+    if [ "$PENDING_PRESENT" -eq 1 ]; then
+      printf '\n== ACE 保留候補（%s） ==\n' "${PENDING_FILE#"${ROOT}"/}"
+      if [ "$pending_n" -eq 0 ]; then printf '（0 件: %s）\n' "${kw_desc}"; fi
+      print_group pending pending '保留（pending。採用前の候補、有効なACEではない）'
+    fi
+    unreflected_print_text
+    if [ "$show_candidates" -eq 1 ]; then
+      emit_class_candidates
+    fi
+    printf '\n'
+  else
+    print_group ace active x; print_group ace deprecated x; print_group ace archived x; print_group ace unknown x
+    print_group obs active x; print_group obs promoted x; print_group obs mitigated x; print_group obs archived x; print_group obs unknown x
+    if [ "$PENDING_PRESENT" -eq 1 ]; then print_group pending pending x; fi
+    if [ "$UNREFLECTED_STATE" != off ]; then print_group ace unreflected x; print_group obs unreflected x; fi
+  fi
+
+  if [ -n "$axis_tag" ]; then
+    printf 'RECORD %s ace=%s obs=%s' "$axis_tag" "$(record_word "${ACE_STATE}" "${TMP}/ace-ids" "Playbook なし")" "$(record_word "${OBS_STATE}" "${TMP}/obs-ids" "台帳なし")"
+  else
+    printf 'RECORD ace=%s obs=%s' "$(record_word "${ACE_STATE}" "${TMP}/ace-ids" "Playbook なし")" "$(record_word "${OBS_STATE}" "${TMP}/obs-ids" "台帳なし")"
+  fi
+  if [ "$PENDING_PRESENT" -eq 1 ]; then printf ' pending=%s' "$(record_word ok "${TMP}/pending-ids" '')"; fi
+  if [ "$UNREFLECTED_STATE" != off ]; then printf ' unreflected=%s' "$(unreflected_record_word)"; fi
+  if [ -z "$axis_tag" ] && [ "$USE_TYPED_ARGS" -eq 1 ]; then
+    if [ "${#IMPL_KEYWORDS[@]}" -eq 0 ]; then printf ' impl=未指定'; fi
+    if [ "${#CLASS_KEYWORDS[@]}" -eq 0 ]; then printf ' class=未指定'; fi
+  fi
+  # 語は行の最後の欄に置く（空白を含む語でも、keyword= から行末までが語）。
+  if [ "$axis_tag" = each ]; then printf ' keyword=%s' "$EACH_KEYWORD"; fi
   printf '\n'
-else
-  print_group ace active x; print_group ace deprecated x; print_group ace archived x; print_group ace unknown x
-  print_group obs active x; print_group obs promoted x; print_group obs mitigated x; print_group obs archived x; print_group obs unknown x
-  if [ "$PENDING_PRESENT" -eq 1 ]; then print_group pending pending x; fi
-  if [ "$UNREFLECTED_STATE" != off ]; then print_group ace unreflected x; print_group obs unreflected x; fi
+}
+
+if [ "$USE_TYPED_ARGS" -eq 1 ]; then
+  if [ "${#CLASS_KEYWORDS[@]}" -eq 0 ]; then
+    printf '%s\n' '警告: 作業クラス語（--class）が未指定です。対象の名前だけで検索すると作業の種類に関する既存知見を見落としやすいため、--class <作業クラス語>... を併記して再検索してください。' >&2
+  fi
+  if [ "${#IMPL_KEYWORDS[@]}" -eq 0 ]; then
+    printf '%s\n' '警告: 実装語（--impl）が未指定です。--impl <実装語>... を併記すると変更対象の固有知見も併せて確認できます。' >&2
+  fi
 fi
 
-printf 'RECORD ace=%s obs=%s' "$(record_word "${ACE_STATE}" "${TMP}/ace-ids" "Playbook なし")" "$(record_word "${OBS_STATE}" "${TMP}/obs-ids" "台帳なし")"
-if [ "$PENDING_PRESENT" -eq 1 ]; then printf ' pending=%s' "$(record_word ok "${TMP}/pending-ids" '')"; fi
-if [ "$UNREFLECTED_STATE" != off ]; then printf ' unreflected=%s' "$(unreflected_record_word)"; fi
-printf '\n'
-printf 'SUMMARY ace=%s obs=%s keywords=%s match=%s include_archived=%s offline=%s ace_state=%s obs_state=%s' \
-  "${ace_n}" "${obs_n}" "${#KEYWORDS[@]}" "$( [ "${MATCH_ALL}" -eq 1 ] && printf all || printf any )" "${INCLUDE_ARCHIVED}" "${OFFLINE}" "${ACE_STATE}" "${OBS_STATE}"
-if [ "$PENDING_PRESENT" -eq 1 ]; then printf ' pending=%s pending_state=ok' "$pending_n"; fi
-if [ "$UNREFLECTED_STATE" != off ]; then
-  printf ' unreflected=%s unreflected_commits=%s unreflected_state=%s' "$(awk 'END { print NR }' "${TMP}/unreflected-ids")" "$UNREFLECTED_COMMITS" "$UNREFLECTED_STATE"
+if [ "$USE_TYPED_ARGS" -eq 1 ] && [ "${#IMPL_KEYWORDS[@]}" -gt 0 ] && [ "${#CLASS_KEYWORDS[@]}" -gt 0 ]; then
+  : >"${TMP}/kw-impl"
+  for _kw in "${IMPL_KEYWORDS[@]}"; do printf '%s\n' "${_kw}" >>"${TMP}/kw-impl"; done
+  : >"${TMP}/kw-class"
+  for _kw in "${CLASS_KEYWORDS[@]}"; do printf '%s\n' "${_kw}" >>"${TMP}/kw-class"; done
+
+  run_search_pass "impl" "=== 系統: 実装語（--impl） ===" "${TMP}/kw-impl" 0
+  impl_ace_n="$LAST_PASS_ACE_N"
+  impl_obs_n="$LAST_PASS_OBS_N"
+
+  if [ "${FORMAT}" = "text" ]; then printf '\n'; fi
+  run_search_pass "class" "=== 系統: 作業クラス語（--class） ===" "${TMP}/kw-class" 1
+  class_ace_n="$LAST_PASS_ACE_N"
+  class_obs_n="$LAST_PASS_OBS_N"
+
+  ace_n="$(awk '!seen[$0]++ { c++ } END { print c + 0 }' "${TMP}/ace-ids-union")"
+  obs_n="$(awk '!seen[$0]++ { c++ } END { print c + 0 }' "${TMP}/obs-ids-union")"
+  pending_n="$(awk '!seen[$0]++ { c++ } END { print c + 0 }' "${TMP}/pending-ids-union")"
+  unreflected_union_n="$(awk '!seen[$0]++ { c++ } END { print c + 0 }' "${TMP}/unreflected-ids-union")"
+
+  printf 'SUMMARY ace=%s obs=%s keywords=%s match=%s include_archived=%s offline=%s ace_state=%s obs_state=%s' \
+    "${ace_n}" "${obs_n}" "${#KEYWORDS[@]}" "$( [ "${MATCH_ALL}" -eq 1 ] && printf all || printf any )" "${INCLUDE_ARCHIVED}" "${OFFLINE}" "${ACE_STATE}" "${OBS_STATE}"
+  if [ "$PENDING_PRESENT" -eq 1 ]; then printf ' pending=%s pending_state=ok' "$pending_n"; fi
+  if [ "$UNREFLECTED_STATE" != off ]; then
+    printf ' unreflected=%s unreflected_commits=%s unreflected_state=%s' "$unreflected_union_n" "$UNREFLECTED_COMMITS" "$UNREFLECTED_STATE"
+  fi
+  printf ' impl_keywords=%s class_keywords=%s impl_ace=%s impl_obs=%s class_ace=%s class_obs=%s\n' \
+    "${#IMPL_KEYWORDS[@]}" "${#CLASS_KEYWORDS[@]}" "$impl_ace_n" "$impl_obs_n" "$class_ace_n" "$class_obs_n"
+elif [ "$EACH" -eq 1 ]; then
+  # 語ごとの検索: store の読み取りは上で済んでいるので、語の数だけ回るのは照合と出力だけ。
+  each_i=0
+  for EACH_KEYWORD in "${KEYWORDS[@]}"; do
+    each_i=$((each_i + 1))
+    printf '%s\n' "$EACH_KEYWORD" >"${TMP}/kw-each"
+    if [ "${FORMAT}" = "text" ] && [ "$each_i" -gt 1 ]; then printf '\n'; fi
+    run_search_pass "each" "=== 語: ${EACH_KEYWORD} ===" "${TMP}/kw-each" 0
+  done
+  ace_n="$(awk '!seen[$0]++ { c++ } END { print c + 0 }' "${TMP}/ace-ids-union")"
+  obs_n="$(awk '!seen[$0]++ { c++ } END { print c + 0 }' "${TMP}/obs-ids-union")"
+  pending_n="$(awk '!seen[$0]++ { c++ } END { print c + 0 }' "${TMP}/pending-ids-union")"
+  unreflected_union_n="$(awk '!seen[$0]++ { c++ } END { print c + 0 }' "${TMP}/unreflected-ids-union")"
+  printf 'SUMMARY ace=%s obs=%s keywords=%s match=any include_archived=%s offline=%s ace_state=%s obs_state=%s' \
+    "${ace_n}" "${obs_n}" "${#KEYWORDS[@]}" "${INCLUDE_ARCHIVED}" "${OFFLINE}" "${ACE_STATE}" "${OBS_STATE}"
+  if [ "$PENDING_PRESENT" -eq 1 ]; then printf ' pending=%s pending_state=ok' "$pending_n"; fi
+  if [ "$UNREFLECTED_STATE" != off ]; then
+    printf ' unreflected=%s unreflected_commits=%s unreflected_state=%s' "$unreflected_union_n" "$UNREFLECTED_COMMITS" "$UNREFLECTED_STATE"
+  fi
+  printf ' each_keywords=%s\n' "${#KEYWORDS[@]}"
+else
+  run_search_pass "" "" "${KW_FILE}" "$USE_TYPED_ARGS"
+  ace_n="$LAST_PASS_ACE_N"
+  obs_n="$LAST_PASS_OBS_N"
+  printf 'SUMMARY ace=%s obs=%s keywords=%s match=%s include_archived=%s offline=%s ace_state=%s obs_state=%s' \
+    "${ace_n}" "${obs_n}" "${#KEYWORDS[@]}" "$( [ "${MATCH_ALL}" -eq 1 ] && printf all || printf any )" "${INCLUDE_ARCHIVED}" "${OFFLINE}" "${ACE_STATE}" "${OBS_STATE}"
+  if [ "$PENDING_PRESENT" -eq 1 ]; then printf ' pending=%s pending_state=ok' "$pending_n"; fi
+  if [ "$UNREFLECTED_STATE" != off ]; then
+    printf ' unreflected=%s unreflected_commits=%s unreflected_state=%s' "$(awk 'END { print NR }' "${TMP}/unreflected-ids")" "$UNREFLECTED_COMMITS" "$UNREFLECTED_STATE"
+  fi
+  if [ "$USE_TYPED_ARGS" -eq 1 ]; then
+    printf ' impl_keywords=%s class_keywords=%s' "${#IMPL_KEYWORDS[@]}" "${#CLASS_KEYWORDS[@]}"
+  fi
+  printf '\n'
 fi
-printf '\n'
 exit 0

@@ -590,6 +590,7 @@ mc_inspect() {
     (.errors // [] | length)==0 and (.data.node | .id==$id and .url==$url and (.number|type)=="number" and (.title|type)=="string" and (.body|type)=="string" and (.headRefOid|test("^[0-9a-fA-F]{40}$")) and (.isMergeQueueEnabled|type)=="boolean" and (.mergeStateStatus|type)=="string" and (.repository.nameWithOwner|test("^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")) and (.repository.url|type)=="string" and (.closingIssuesReferences.nodes|length)==.closingIssuesReferences.totalCount and (.commits.nodes|length)==.commits.totalCount)
   ' >/dev/null 2>&1 || { mc_note 'PR応答が不完全なため検査を省略しました。'; return; }
   local queue state number repo repo_url head pr_body api_closes keywords checker
+  local REFS_RAW CLOSES_RAW CLOSES_PROSE_RAW CLOSES_QUOTED_RAW CLOSES_UNION CLOSES_TEXT_ONLY_PROSE CLOSES_TEXT_ONLY_QUOTED CLOSES_TEXT_ONLY REFS_ONLY
   queue="$(printf '%s' "$response" | jq -r '.data.node.isMergeQueueEnabled')"
   if [ "$queue" = true ] && [ "$admin" -ne 1 ]; then mc_note 'merge queueではmessage指定が無視されるため検査を省略しました。'; return; fi
   state="$(printf '%s' "$response" | jq -r '.data.node.mergeStateStatus')"

@@ -1,26 +1,31 @@
 #!/usr/bin/env bash
 #
-# ブランチ名の Issue に ff-effort ブロックが無いときの注意（PostToolUse / Bash）。
+# Issue ブランチの作成・付け替え時の着手確認と案内（PostToolUse / Bash）。
 # 止めない。該当しないときは stdout も stderr も空で exit 0。
 #
-# 対象は、ブランチ名から Issue 番号を読める（読み方の正本は scripts/lib/branch-issue.sh）か、
-# `#` だけが欠けた `<type>/<n>-<slug>` の形で、
-# 次のどれかでその名前を作る・付け替える呼び出し:
-#   git switch -c|-C|--create|--force-create <branch>
-#   git checkout -b|-B <branch>
-#   git branch -m|-M|--move [<old>] <new>
-#   git worktree add -b|-B <branch> <path>
-# `git -C <path>` があるセグメントは、その作業先の Issue を見る。無いときは hook の cwd。
+# 対象コマンド:
+#   1) ブランチ名の Issue 番号・`#` 欠落の検出:
+#      git switch -c|-C|--create|--force-create <branch>
+#      git checkout -b|-B <branch>
+#      git branch -m|-M|--move [<old>] <new>
+#      git worktree add -b|-B <branch> <path>
+#      `git -C <path>` があるセグメントはその作業先、無いときは hook の cwd を対象にする。
+#      同じ Issue 番号でも作業先が違うときはそれぞれ見る。注意には作業先を書く。
+#   2) 同一セッション ACE 知見の束縛（無音・出力なし）:
+#      `scripts/knowledge-commit.sh commit` または `scripts/finish.sh knowledge-commit commit`
+#      完了時に、`tool_response` の `KNOWLEDGE_COMMIT=<sha>` 一致を検証して
+#      `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/` 配下へ束縛記録を追記する。
+#
 # 引用の外の && || ; | と改行だけをコマンドの区切りにする。閉じない引用はそこで切らない。
-# 同じ Issue 番号でも作業先が違うときはそれぞれ見る。注意には作業先を書く。
-# 本文に `<!-- ff-effort:begin -->` が無い Issue だけ、hookSpecificOutput.additionalContext
-# でエージェントへ返す。ブロックがある、番号が無い、gh が無い、取得できないときは無音。
-# `#` だけが欠けた名前は、実測が Issue に紐づかないことを gh の有無に関わらず同じ経路で返す
-# （記録系の hook は読めない名前を無音で落とすので、ここが唯一の知らせる経路になる）。
+# - ff-effort の注意: 本文に `<!-- ff-effort:begin -->` が無い Issue だけ追加文脈へ返す（ブロックがある、gh 不在、取得不能時は ff-effort 注意を出さない）。
+# - 知見検索とセッション ACE 案内: ブランチ名から Issue 番号（scripts/lib/branch-issue.sh）を読めたときは、
+#   ff-effort ブロックの有無や gh の有無に関わらず、対象リポジトリごとに 1 回 `/knowledge-lookup` 案内と
+#   同一セッションで記録した確定 ACE 知見 ID（ある場合のみ）を `hookSpecificOutput.additionalContext` へ返す。
+# - `#` だけが欠けた形（`<type>/<n>-<slug>`）は、実測が Issue に紐づかないことを gh の有無に関わらず返す。
 # 記録専用の record-effort-wallclock.sh には出力を足さない（あちらは無出力のまま）。
 #
-# fail-soft: 解析できない形、jq 不在、heredoc 除去の失敗は無音。警告文を出す段で jq が
-# 失敗したときだけ、引用符を含まない文面を静的 JSON で出す。新しい環境変数は置かない。
+# fail-soft: 解析できない形、jq 不在または出力失敗、heredoc 除去の失敗、状態ファイルの検証・読み書き失敗は
+# 本流を止めない（jq 失敗時も無音で exit 0）。新しい環境変数は置かない。
 # bash 3.2（stock macOS）互換。連想配列は使わない。
 
 input=""
@@ -32,7 +37,7 @@ fi
 asdd_hook_enabled hooks || exit 0
 
 case "$input" in
-  *switch* | *checkout* | *branch* | *worktree*) : ;;
+  *switch* | *checkout* | *branch* | *worktree* | *knowledge-commit*) : ;;
   *) exit 0 ;;
 esac
 
@@ -49,9 +54,12 @@ cmd="$(printf '%s' "$input" | jq -r 'if .tool_name == "Bash" then (.tool_input.c
 cmd="${cmd//$'\r'/}"
 [ -n "$cmd" ] || exit 0
 case "$cmd" in
-  *switch* | *checkout* | *branch* | *worktree*) : ;;
+  *switch* | *checkout* | *branch* | *worktree* | *knowledge-commit*) : ;;
   *) exit 0 ;;
 esac
+
+session_id="$(printf '%s' "$input" | jq -r '(.session_id | strings) // ""' 2>/dev/null)" || session_id=""
+session_id="${session_id//$'\r'/}"
 
 CWD="$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)" || CWD=""
 CWD="${CWD//$'\r'/}"
@@ -69,6 +77,15 @@ strip_quotes() {
 # ブランチ名 → Issue 番号の規則は共有 lib が持つ（hook ごとに複製しない）。
 # shellcheck source=../scripts/lib/branch-issue.sh
 . "${BASH_SOURCE[0]%/*}/../scripts/lib/branch-issue.sh" 2>/dev/null || exit 0
+
+SESSION_ACE_LIB="${BASH_SOURCE[0]%/*}/../scripts/lib/session-ace-functions.sh"
+SESSION_ACE_AVAILABLE=0
+if [ -f "$SESSION_ACE_LIB" ] && [ ! -L "$SESSION_ACE_LIB" ]; then
+  # shellcheck source=../scripts/lib/session-ace-functions.sh
+  if . "$SESSION_ACE_LIB" 2>/dev/null; then
+    SESSION_ACE_AVAILABLE=1
+  fi
+fi
 
 # 相対の git -C は直前の作業先へ足す。最初の相対は hook の cwd から始める。
 repo_join() {
@@ -212,6 +229,147 @@ scan_segment() {
   return 0
 }
 
+kc_commit_seen=0
+kc_toks=()
+
+# 引用符とバックスラッシュを保持したまま単一セグメントを位置トークン列（kc_toks）へ分解する。
+tokenize_shell_segment() {
+  local s="$1" i=0 len=0 q="" cur="" in_tok=0 ch="" next=""
+  kc_toks=()
+  len=${#s}
+  while [ "$i" -lt "$len" ]; do
+    ch="${s:$i:1}"
+    if [ "$ch" = '\' ] && [ "$q" != "'" ]; then
+      i=$((i + 1))
+      if [ "$i" -lt "$len" ]; then
+        next="${s:$i:1}"
+        cur="${cur}${next}"
+        i=$((i + 1))
+      fi
+      in_tok=1
+      continue
+    fi
+    if [ -n "$q" ]; then
+      if [ "$ch" = "$q" ]; then
+        q=""
+      else
+        cur="${cur}${ch}"
+      fi
+      in_tok=1
+      i=$((i + 1))
+      continue
+    fi
+    case "$ch" in
+      "'"|'"')
+        q="$ch"
+        in_tok=1
+        ;;
+      ' '|$'\t')
+        if [ "$in_tok" -eq 1 ]; then
+          kc_toks+=("$cur")
+          cur=""
+          in_tok=0
+        fi
+        ;;
+      *)
+        cur="${cur}${ch}"
+        in_tok=1
+        ;;
+    esac
+    i=$((i + 1))
+  done
+  if [ "$in_tok" -eq 1 ]; then
+    kc_toks+=("$cur")
+  fi
+}
+
+# トークン化済みセグメントが knowledge-commit commit / finish.sh knowledge-commit commit を呼ぶか厳密判定する。
+# 引数の値（--summary "add commit" 等）や非 commit サブコマンド（add/status/discard）や --help は誤検出しない。
+scan_knowledge_commit_segment() {
+  local tok="" base="" skip_wrappers=1 expect_env_var=0 kind=""
+  local pos_count=0 expect_opt_val=0 dashdash=0 is_kc_commit=0 help_seen=0
+
+  for tok in "$@"; do
+    if [ "$skip_wrappers" -eq 1 ]; then
+      if [ "$expect_env_var" -eq 1 ]; then
+        expect_env_var=0
+        continue
+      fi
+      case "$tok" in
+        *=*) continue ;;
+        env|-i|--ignore-environment|command|bash|sh|zsh|--) continue ;;
+        -u) expect_env_var=1; continue ;;
+        --*) continue ;;
+        -*)
+          case "$tok" in
+            *c*) return 0 ;;
+          esac
+          continue
+          ;;
+      esac
+      skip_wrappers=0
+      base="${tok##*/}"
+      case "$base" in
+        knowledge-commit.sh) kind="kc" ;;
+        finish.sh) kind="finish" ;;
+        *) return 0 ;;
+      esac
+      continue
+    fi
+
+    if [ "$expect_opt_val" -eq 1 ]; then
+      expect_opt_val=0
+      continue
+    fi
+
+    if [ "$dashdash" -eq 0 ]; then
+      case "$tok" in
+        -h|--help|--version)
+          help_seen=1
+          continue
+          ;;
+        --)
+          dashdash=1
+          continue
+          ;;
+        --github-input|--pr|--issue|--type|--source|--id|--summary|--category)
+          expect_opt_val=1
+          continue
+          ;;
+        -*)
+          continue
+          ;;
+      esac
+    fi
+
+    pos_count=$((pos_count + 1))
+    if [ "$kind" = "kc" ]; then
+      if [ "$pos_count" -eq 1 ]; then
+        if [ "$tok" = "commit" ]; then
+          is_kc_commit=1
+        else
+          return 0
+        fi
+      fi
+    elif [ "$kind" = "finish" ]; then
+      if [ "$pos_count" -eq 1 ]; then
+        [ "$tok" = "knowledge-commit" ] || return 0
+      elif [ "$pos_count" -eq 2 ]; then
+        if [ "$tok" = "commit" ]; then
+          is_kc_commit=1
+        else
+          return 0
+        fi
+      fi
+    fi
+  done
+
+  if [ "$help_seen" -eq 0 ] && [ "$is_kc_commit" -eq 1 ]; then
+    kc_commit_seen=1
+  fi
+  return 0
+}
+
 # 区切りは引用の外だけ。閉じない引用は、残りの文字を同じコマンドに残す。
 split_outside_quotes() {
   local s="$1" i=0 len q="" out="" ch two
@@ -285,9 +443,16 @@ while IFS= read -r seg; do
   toks=($seg)
   set +f
   [ "${#toks[@]}" -gt 0 ] && scan_segment "${toks[@]}"
+  tokenize_shell_segment "$seg"
+  [ "${#kc_toks[@]}" -gt 0 ] && scan_knowledge_commit_segment "${kc_toks[@]}"
 done <<EOF
 $segments
 EOF
+
+if [ "$kc_commit_seen" -eq 1 ] && [ "$SESSION_ACE_AVAILABLE" -eq 1 ]; then
+  tool_resp="$(printf '%s' "$input" | jq -r '((.tool_response | if type == "string" then . elif type == "object" then ((.stdout | strings) // (.output | strings) // (.content | strings) // null) else null end) // (.tool_output | strings) // "")' 2>/dev/null)" || tool_resp=""
+  ff_session_ace_bind_hook_commit "$session_id" "$tool_resp" 2>/dev/null || true
+fi
 
 [ -n "$branch_list" ] || exit 0
 
@@ -350,8 +515,39 @@ done <<EOF
 $missing_list
 EOF
 
+seen_lookup_repos=$'\n'
+while IFS= read -r record; do
+  [ -n "$record" ] || continue
+  repo="${record%%$'\t'*}"
+  repo="${repo:-$CWD}"
+  branch_name="${record#*$'\t'}"
+  [ -n "$branch_name" ] || continue
+  issue="$(ff_branch_issue "$branch_name")"
+  [ -n "$issue" ] || continue
+  case "$seen_lookup_repos" in
+    *$'\n'"${repo}"$'\n'*) continue ;;
+  esac
+  seen_lookup_repos="${seen_lookup_repos}${repo}"$'\n'
+  lookup_line="Issue 着手前に /knowledge-lookup で知見を検索してください（--impl <実装語> --class <作業クラス語> の二系統で指定）。"
+  if [ "$SESSION_ACE_AVAILABLE" -eq 1 ]; then
+    session_ace_ids="$(ff_session_ace_lookup_for_repo "$session_id" "$repo" 2>/dev/null)" || session_ace_ids=""
+    if [ -n "$session_ace_ids" ]; then
+      if [ -n "$session_id" ]; then
+        lookup_line="${lookup_line} 同じセッションで記録した ACE: ${session_ace_ids}"
+      else
+        lookup_line="${lookup_line} 直近（12 時間以内）の未束縛 ACE（セッション未特定）: ${session_ace_ids}"
+      fi
+    fi
+  fi
+  if [ -z "$note" ]; then
+    note="$lookup_line"
+  else
+    note="${note} ${lookup_line}"
+  fi
+done <<EOF
+$branch_list
+EOF
+
 [ -n "$note" ] || exit 0
-if ! jq -n --arg note "$note" '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$note}}'; then
-  printf '%s\n' "{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"${note}\"}}"
-fi
+jq -n --arg note "$note" '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$note}}' 2>/dev/null || exit 0
 exit 0

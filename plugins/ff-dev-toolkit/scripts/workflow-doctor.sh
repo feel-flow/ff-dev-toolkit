@@ -13,7 +13,7 @@
 # 「Codex レビューを常に必須」と書き、そのリポジトリに無い `npm run code-review:codex` を指示していた（Issue `#2089`）。
 # 入口文書の旧文言は「契約表」（scan_contract の 1 行 = 1 契約）で検査し、契約を足すときは行を足す。
 #
-# 検査（12 項目。7 は INFO のみ。番号は SKILL.md の表と同じ）:
+# 検査（13 項目。7 は INFO のみ。番号は SKILL.md の表と同じ）:
 #   1. 判定順の矛盾   — 入口文書（CLAUDE.md / AGENTS.md / .cursor/ / copilot-instructions / グローバル CLAUDE.md）
 #                       に「発見 = 起票」の旧文言が無いこと（契約表の 1 行目）
 #   2. 節の必須語     — CLAUDE.md の「## スコープ外」で始まる節に YAGNI と bundle が在ること（節が無ければ WARN）
@@ -29,8 +29,12 @@
 #  10. 入口のパリティ — CLAUDE.md と AGENTS.md の両方があるとき、契約の必須語（YAGNI / bundle）の有無が揃うこと
 #  11. Draft の実態   — 自分が author の open な Draft PR が残っていないこと（`knowledge:` の ACE PR は除く）
 #  12. 長時間ゲートの表示 — Terminal 能力 available 時だけ、入口の background 固定規定を WARN（行単位）
+#  13. 作業ツリーの行末 — 直下の .gitattributes に LF 固定の規則（eol=lf）が在るかと、`git ls-files --eol` で
+#                       作業ツリーが w/crlf の追跡ファイルの件数（eol=crlf / -text を指定したものは数えない）。
+#                       CRLF を意図した導入先を FAIL にしない（WARN / INFO）。git を読めない回は SKIP
 #
 # 4〜6 と 11 は gh を使う。`--offline` で飛ばす（結果は SKIP として数え、緑にはしない）。
+# 13 は git の index と属性を読むだけで gh を使わないので、`--offline` でも回す。
 #
 # 最後に「提案」を出す: 検査中に実測したこのリポジトリの事実（package.json の scripts・同梱スクリプトの在処・
 # PATH 上の CLI・Draft PR の番号など）から、`SUGGEST\t<番号>\t<提案>\t根拠: <実測>` 行を出す。根拠となる実測が
@@ -821,6 +825,90 @@ else
       "長時間ゲートの background 固定候補" \
       "当該セッションの能力を確認し、長時間ゲートの進捗表示へ合わせる（正本: docs-template/05-operations/deployment/git-workflow.md）。能力ありなら Terminal、なし／未確認なら従来経路。対象処理の rc を確認し、表示だけを成功証拠にしない" \
       '長時間|ゲート|run-all|suite|push|long.running|long gate' "$terminal_strip" WARN
+  fi
+fi
+
+# ---- 13. 作業ツリーの行末（git の index と属性を読むだけ。gh は使わない） -----------
+# 導入先の作業ツリーが CRLF のままだと、LF 前提の置換が 0 件一致で空振りする。プラグイン側の .gitattributes は
+# 導入先へ届かないので、導入先のリポジトリで測る。判定は 1 ファイルずつ git の attr 欄で行う — w/crlf のうち
+# eol=crlf / -text を指定したものは「意図した CRLF」として数えず、eol=lf は「checkout し直しが要る」、
+# eol の指定なしは「規則が当たっていない」に分ける。CRLF を選んだ導入先を FAIL にしない（WARN / INFO）。
+# 手順は正本の文書を指すだけで複製しない。git を読めない回（不在・作業ツリーでない・rc≠0・解釈できた行 0 件）は
+# OK ではなく SKIP。`--show-cdup` が空 = --root が作業ツリーのルート（Git Bash では --show-toplevel の C:/… と
+# pwd の /c/… が文字列で一致しないので、パスの比較では判定しない）。
+EOL_DOC='docs-template/05-operations/deployment/markdown-patch-discipline.md「まず作業ツリーを LF に固定する」'
+eol_cdup="$(git -C "$ROOT" rev-parse --show-cdup 2>/dev/null)"; eol_rc=$?
+if [ "$eol_rc" -ne 0 ]; then
+  emit SKIP 13 "git の作業ツリーとして読めないため未検査（git rev-parse rc=${eol_rc}）— 行末の状態を断定しない"
+elif [ -n "$eol_cdup" ]; then
+  emit SKIP 13 "--root が git の作業ツリーのルートではないため未検査（上位のリポジトリを測らない）"
+else
+  eol_out="$(git -C "$ROOT" ls-files --eol 2>/dev/null)"; eol_rc=$?
+  # 直下の .gitattributes の規則（コメント行を除き、パターンの後ろの属性に eol=lf が在る行）。この文書自体が
+  # CRLF で checkout されていることがあるので、行末の CR を落としてから読む
+  eol_rule=0; eol_rule_rc=0
+  if [ -e "$ROOT/.gitattributes" ] && { [ ! -f "$ROOT/.gitattributes" ] || [ ! -r "$ROOT/.gitattributes" ]; }; then
+    eol_rule_rc=1   # 在るのに読めない（ディレクトリ・権限なし）を「規則なし」に畳まない
+  elif [ -f "$ROOT/.gitattributes" ]; then
+    eol_rule="$(tr -d '\r' < "$ROOT/.gitattributes" 2>/dev/null | awk '
+      /^[[:space:]]*#/ { next }
+      { for (i = 2; i <= NF; i++) if ($i == "eol=lf") { c++; break } }
+      END { print c + 0 }')" || eol_rule_rc=1
+    case "$eol_rule" in ''|*[!0-9]*) eol_rule_rc=1 ;; esac
+  fi
+  # 1 行 = `i/<eol> w/<eol> attr/<属性> <TAB><path>`。TAB より前だけを読む（path は git が必要に応じて引用する）
+  eol_stat="$(printf '%s\n' "$eol_out" | awk -F'\t' '
+    { sub(/\r$/, "") }
+    $0 == "" { next }
+    {
+      info = $1
+      if (info !~ /^i\/[^ ]* +w\/[^ ]* +attr\//) { bad++; next }
+      path = substr($0, length($1) + 2)
+      if (path in seen) next   # 未解決の競合は同じ path が stage ごとに並ぶ。1 件として数える
+      seen[path] = 1
+      parsed++
+      if (info !~ / w\/crlf /) next
+      attr = info; sub(/^.*attr\//, "", attr)
+      if (attr ~ /(^| )eol=crlf( |$)/ || attr ~ /(^| )-text( |$)/) { intended++; next }
+      if (attr ~ /(^| )eol=lf( |$)/) { fixed++; if (info ~ /^i\/crlf /) stale++; if (fixed <= 3) fs = fs (fs == "" ? "" : ", ") path; next }
+      norule++; if (norule <= 3) ns = ns (ns == "" ? "" : ", ") path
+    }
+    END {
+      # 空の欄は「-」で埋める（TAB は IFS の空白扱いで、連続する空欄が詰まって例の欄がずれる）
+      printf "%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\n", parsed, bad, fixed, norule, intended, stale, (fs == "" ? "-" : fs), (ns == "" ? "-" : ns)
+    }')"
+  IFS="$(printf '\t')" read -r eol_parsed eol_bad eol_fixed eol_norule eol_intended eol_stale eol_fixed_ex eol_norule_ex <<EOF
+$eol_stat
+EOF
+  case "${eol_parsed:-}${eol_bad:-x}${eol_fixed:-x}${eol_norule:-x}${eol_intended:-x}${eol_stale:-x}" in ''|*[!0-9]*) eol_parsed="" ;; esac
+  if [ "$eol_rc" -ne 0 ]; then
+    emit SKIP 13 "git ls-files --eol が失敗したため未検査（rc=${eol_rc}）— w/crlf の有無を断定しない"
+  elif [ "$eol_rule_rc" -ne 0 ]; then
+    emit SKIP 13 "直下の .gitattributes を読めないため未検査 — 規則の有無を断定しない"
+  elif [ -z "$eol_parsed" ] || [ "$eol_bad" -gt 0 ] || [ "$eol_parsed" -eq 0 ]; then
+    emit SKIP 13 "git ls-files --eol の出力を解釈できない、または追跡ファイルが 0 件のため未検査（解釈 ${eol_parsed:-0} 行 / 不明 ${eol_bad:-0} 行）"
+  else
+    if [ "$eol_rule" -gt 0 ]; then eol_rule_note="直下の .gitattributes に LF 固定の規則（eol=lf）あり"; else eol_rule_note="直下の .gitattributes に LF 固定の規則（eol=lf）なし"; fi
+    if [ "$eol_fixed" -gt 0 ]; then
+      # index 側も CRLF（i/crlf）のファイルは、取り出し直しても CRLF のまま戻る。先に index を LF へそろえる手順が要る
+      eol_stale_note=""
+      [ "$eol_stale" -gt 0 ] && eol_stale_note="うち ${eol_stale} 件は index も CRLF（i/crlf）で、取り出し直す前に renormalize が要る。"
+      emit WARN 13 "LF 固定の規則（eol=lf）が当たっているのに作業ツリーが w/crlf の追跡ファイルが ${eol_fixed} 件（checkout し直しが要る。${eol_stale_note}例: ${eol_fixed_ex}）。取り出し直す手順: ${EOL_DOC}"
+    fi
+    if [ "$eol_norule" -gt 0 ]; then
+      emit WARN 13 "行末を LF に固定する規則が当たっていない w/crlf の追跡ファイルが ${eol_norule} 件（${eol_rule_note}。例: ${eol_norule_ex}）。LF に固定する手順: ${EOL_DOC}（CRLF を意図したファイルは eol=crlf を指定すれば数えない）"
+    fi
+    if [ "$eol_fixed" -eq 0 ] && [ "$eol_norule" -eq 0 ]; then
+      if [ "$eol_rule" -gt 0 ]; then
+        emit OK 13 "${eol_rule_note} / 規則に反して w/crlf の追跡ファイルは 0 件（追跡 ${eol_parsed} 件）"
+      else
+        emit INFO 13 "${eol_rule_note}。w/crlf の追跡ファイルは 0 件だが、core.autocrlf=true の環境で checkout すると CRLF になる（固定する手順: ${EOL_DOC}）"
+      fi
+    else
+      eol_autocrlf="$(git -C "$ROOT" config --get core.autocrlf 2>/dev/null)" || eol_autocrlf=""
+      suggest 13 "作業ツリーの行末を LF に固定し、w/crlf のまま残った未変更のファイルを取り出し直す（手順は複製しない。正本: ${EOL_DOC}）" "git ls-files --eol（${ROOT}）: eol=lf の属性で w/crlf ${eol_fixed} 件 / eol の指定なしで w/crlf ${eol_norule} 件 / ${eol_rule_note} / core.autocrlf=${eol_autocrlf:-未設定}"
+    fi
+    [ "$eol_intended" -gt 0 ] && emit INFO 13 "eol=crlf / -text を指定した w/crlf ${eol_intended} 件は意図した指定として数えない"
   fi
 fi
 

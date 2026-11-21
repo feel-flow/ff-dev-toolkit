@@ -38,6 +38,7 @@
 # 空振り検出: Git管理領域の物理同一性対照7/0、判定バイパスは大文字.GIT経由の通常/fresh/archive-onlyを含む2/5。初期化中のpeer marker+lane受理は1/0、受理分岐を戻すと0/1（2026-10-28隔離fixture実測）。
 # 空振り検出: umask002/producerの隔離対照10/0。private anchorで祖先検査を打切る変異9/1、旧diff pipeline8/2、status/quarantine mkdirの077撤去7/3、archive/state mkdirの077撤去8/2。旧strict祖先判定と空のcase関数も各rc1（2026-10-28実測）。
 # 空振り検出: Issue `#2514` のlegacy-root対照15/0（suite 155/0）。設定の出所判定を外すと既定パスを名指すproject設定、復元時・退避後のclaim解除を外すと復元と既定root回復の各1件が赤（2026-10-30）。BSD statを%Lpへ戻すとsticky stat/実/tmpの2件が赤、暗黙既定の退避呼出を外すと既定root回復とmarker付きroot拒否の2件が赤、組み込み既定との一致判定を外すとproject設定output_dir、名前の許可表を外すと許可外の名前、lock名の判定・失敗時の復元・追跡ファイルの判定を外すと各対照がそれぞれ1件赤（各rc1、2026-10-30 macOS実測）。
+# 空振り検出: Issue `#2869` のnested-default対照31/0（suite 199/0）。ff_review_output_check_nested_default先頭return 0変異は180/19（rc=1）、multi-agent.sh main()起動前呼び出し2箇所除去変異は183/16（rc=1）、default_dir/*の/除去変異は既定.review-results誤拒否でrc=1途中停止、ff_review_output_is_recovery_child先頭return 1変異は198/1（rc=1、2026-11-19 macOS実測）。先行レビュー案内へ .review-results/precheck を戻す変異は文書契約1件が赤（Linux 2026-11-20、suite 194/1 rc=1。対照は 195/0）。復旧スキップ除去・アンカー即return・解決失敗の return 0 復元を同時に入れた変異は新規3件が赤（Linux 2026-11-20、suite 195/3 rc=1。対照は 198/0）。名前だけで復旧除外へ戻す変異は所有マーカー無しのディレクトリと通常ファイルの2件が赤（Linux 2026-11-20、suite 203/2 rc=1。対照は 205/0）。上位 symlink 走査除去変異は親ディレクトリ symlink の 2 件が赤（217/2 rc=1）、-L default_dir 分岐除去変異は symlink 既定ルートの大文字サブパス 1 件が赤（218/1 rc=1、macOS 2026-11-20 実測。対照は 219/0）。
 
 set -euo pipefail
 
@@ -1208,6 +1209,15 @@ PASSING_PLACE_CASES="$SCRIPT_DIR/passing-place-cases.sh"
 PASSING_PLACE_BEFORE=$((PASS + FAIL))
 run_passing_place_cases
 [[ $((PASS + FAIL - PASSING_PLACE_BEFORE)) -ge 3 ]] || { bad 'passing-place assertion collection empty'; exit 1; }
+
+NESTED_DEFAULT_CASES="$SCRIPT_DIR/nested-default-cases.sh"
+[[ ! -L "$NESTED_DEFAULT_CASES" && -s "$NESTED_DEFAULT_CASES" && -r "$NESTED_DEFAULT_CASES" ]] || { bad 'nested-default cases missing/unreadable/empty'; exit 1; }
+# shellcheck source=nested-default-cases.sh
+. "$NESTED_DEFAULT_CASES"
+[[ "$(type -t run_nested_default_cases)" == function ]] || { bad 'nested-default function missing'; exit 1; }
+NESTED_DEFAULT_BEFORE=$((PASS + FAIL))
+run_nested_default_cases
+[[ $((PASS + FAIL - NESTED_DEFAULT_BEFORE)) -ge 20 ]] || { bad 'nested-default assertion collection empty'; exit 1; }
 
 echo "== 結果 =="
 echo "PASS: $PASS"

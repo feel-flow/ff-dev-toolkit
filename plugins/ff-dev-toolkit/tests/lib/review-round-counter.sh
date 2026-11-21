@@ -453,6 +453,7 @@ ${rounds_list}  今回の起動: HEAD ${short}
 ${dropped:+  数えていない記録: ${dropped}
 }${residual:+  残件: ${residual}
 }残件はこれ以上の巡で拾わず、/out-of-scope-issue の bundle 統合へ流してください（判定順は YAGNI → 同 PR でインライン修正 → 既存の open bundle へ追記 → bundle 単位で新規起票）。未解消の Critical / Warning がある間はマージしません（解消は修正か記録付き棄却。${limit} 巡目の fix の確認は親の直読と対象 suite の再実行で行い、結果を PR 本文へ残す）。
+通す前に元 Issue の AC 充足・実運用入力の到達性・同系統パッチ連鎖を点検し、根拠を欠く指摘は記録付き棄却、スコープ外と確認した指摘は別 Issue 化、修正義務が残る連鎖は上位手段・設計見直しへ切り替えて収束させてください。
 方針転換などでこの 1 巡だけ通す必要がある場合（通した巡も記録されるので、次の巡でまた止まります）:
   - Bash: 起動コマンドの先頭へ環境代入を付ける → FF_REVIEW_ROUND_ACK=1 bash …/multi-review.sh …
   - Agent / Task: prompt の行頭に FF_REVIEW_ROUND_ACK=1 だけの 1 行を置く（並列に起動する場合は各起動に付ける）

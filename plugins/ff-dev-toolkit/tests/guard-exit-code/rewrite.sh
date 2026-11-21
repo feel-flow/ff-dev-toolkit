@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 公開 `#138` / Issue `#2182`: 提案・実行・集約の境界を固定する。
 # 空振り検出: helper不在/空出力は陽性で赤、競合/再検査失敗/別field変更はdeny。
+# 空振り検出: tail の後続付き書き換えを外すと、実ガードの採用と左右の終了コードを測るケースが赤になる。
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd -P)"
 target="$root/hooks/guard-exit-code.sh"
@@ -79,12 +80,15 @@ check jq -e '.hookSpecificOutput.permissionDecision=="deny" and (.hookSpecificOu
 cat > "$tmp/recheck-fail.sh" <<'SH'
 #!/usr/bin/env bash
 input="$(cat)"
-case "$(jq -r '.tool_input.command' <<< "$input")" in bash*) exit 2 ;; esac
+case "$(jq -r '.tool_input.command' <<< "$input")" in bash*) exit "$test_recheck_child_rc" ;; esac
 SH
-rc=0
-run bash "$batch" "$target" "$tmp/recheck-fail.sh" > "$tmp/recheck-fail.out" 2> "$tmp/recheck-fail.err" || rc=$?
-check test "$rc" -eq 2
-check grep -q '再検査が失敗' "$tmp/recheck-fail.err"
+for child_rc in 2 7; do
+  rc=0
+  test_recheck_child_rc="$child_rc" run bash "$batch" "$target" "$tmp/recheck-fail.sh" > "$tmp/recheck-fail.out" 2> "$tmp/recheck-fail.err" || rc=$?
+  check test "$rc" -eq 2
+  check test ! -s "$tmp/recheck-fail.out"
+  check grep -q '再検査が失敗' "$tmp/recheck-fail.err"
+done
 jq -nc --arg c 'printf same' '{hookSpecificOutput:{hookEventName:"PreToolUse",updatedInput:{command:$c,timeout:123,description:"fixture"}}}' > "$tmp/verdict.json"
 out="$(run bash "$batch" "$tmp/verdict.sh")"
 check jq -e '.hookSpecificOutput.permissionDecision=="deny" and .hookSpecificOutput.updatedInput==null and (.hookSpecificOutput.permissionDecisionReason|contains("さらに書き換え"))' <<< "$out"
@@ -94,6 +98,55 @@ out="$(printf '%s' "$next" | env CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" bash "$t
 command="$(jq -r '.hookSpecificOutput.updatedInput.command' <<< "$out")"
 printf 'feed\n' | bash -c "$command" > "$tmp/stdin.log"
 check test "$(cat "$tmp/stdin.log")" = "$(printf 'feed\nrc=0')"
+# 生成したコマンドは集約再検査を通してから、安全な fixture コマンドだけを実行する。
+next="$(jq --arg c "$tmp/fail 2>&1 | tail -1 && printf reached" '.tool_input.command=$c' <<< "$json")"
+out="$(printf '%s' "$next" | env CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" bash "$batch" "$target")"
+check jq -e '.hookSpecificOutput.updatedInput.command != null and .hookSpecificOutput.permissionDecision == null and (.hookSpecificOutput.additionalContext|contains("採用しました"))' <<< "$out"
+command="$(jq -r '.hookSpecificOutput.updatedInput.command' <<< "$out")"
+rc=0
+bash -c "$command" > "$tmp/chain.log" || rc=$?
+check test "$rc" -eq 7
+check test "$(cat "$tmp/chain.log")" = stderr
+next="$(jq --arg c 'printf left | tail -n 1 && printf right' '.tool_input.command=$c' <<< "$json")"
+out="$(printf '%s' "$next" | env CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" bash "$batch" "$target")"
+check jq -e '.hookSpecificOutput.updatedInput.command != null and .hookSpecificOutput.permissionDecision == null' <<< "$out"
+command="$(jq -r '.hookSpecificOutput.updatedInput.command' <<< "$out")"
+check test "${command##* && }" = 'printf right'
+check test "$(bash -c "$command")" = leftright
+next="$(jq --arg c 'printf left | tail -1 && false' '.tool_input.command=$c' <<< "$json")"
+out="$(printf '%s' "$next" | env CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" bash "$batch" "$target")"
+command="$(jq -r '.hookSpecificOutput.updatedInput.command' <<< "$out")"
+rc=0
+bash -c "$command" > "$tmp/chain.log" || rc=$?
+check test "$rc" -eq 1
+check test "$(cat "$tmp/chain.log")" = left
+# 通常のパイプ同様、子が出力を閉じるまで待ち、明示の結合がない stderr は分けて返す。
+cat > "$tmp/delayed" <<'SH'
+#!/usr/bin/env bash
+printf 'first\n'
+printf 'diagnostic\n' >&2
+{ sleep 0.3; printf 'last\n'; } &
+SH
+chmod +x "$tmp/delayed"
+next="$(jq --arg c "$tmp/delayed | tail -1 && printf reached" '.tool_input.command=$c' <<< "$json")"
+out="$(printf '%s' "$next" | env CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" bash "$batch" "$target")"
+check jq -e '.hookSpecificOutput.updatedInput.command != null' <<< "$out"
+command="$(jq -r '.hookSpecificOutput.updatedInput.command' <<< "$out")"
+bash -c "$command" > "$tmp/chain.log" 2> "$tmp/chain.err"
+check test "$(cat "$tmp/chain.log")" = "$(printf 'last\nreached')"
+check test "$(cat "$tmp/chain.err")" = diagnostic
+mkdir "$tmp/failing-tail"
+printf '#!/usr/bin/env bash\nexit 9\n' > "$tmp/failing-tail/tail"
+chmod +x "$tmp/failing-tail/tail"
+rc=0
+PATH="$tmp/failing-tail:$PATH" bash -c "$command" > "$tmp/chain.log" 2> "$tmp/chain.err" || rc=$?
+check test "$rc" -eq 9
+check test ! -s "$tmp/chain.log"
+for cmd in 'printf left | tail -1 && printf next && true' $'cat <<DATA | tail -1 && printf reached\ninput\nDATA'; do
+  next="$(jq --arg c "$cmd" '.tool_input.command=$c' <<< "$json")"
+  out="$(printf '%s' "$next" | env CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" bash "$batch" "$target")"
+  check jq -e '.hookSpecificOutput.permissionDecision == "deny" and .hookSpecificOutput.updatedInput == null' <<< "$out"
+done
 # head / $? のもう一方の一意形と成功時rc。
 next="$(jq --arg c 'printf ok | head -1; echo rc=$?' '.tool_input.command=$c' <<< "$json")"
 out="$(printf '%s' "$next" | env CLAUDECODE=1 CLAUDE_PROJECT_DIR="$tmp" bash "$target")"

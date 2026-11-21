@@ -2,7 +2,7 @@
 # workflow-doctor（導入先の入口規範とスキルの判定順の矛盾検査）の回帰テスト。
 #
 # 2 層で固定する（assess-impact の形に倣う）:
-#   (A) 生成器規則のドリフト — SKILL.md の検査表に 12 項目が在り、--fix を持たない契約が書かれていること
+#   (A) 生成器規則のドリフト — SKILL.md の検査表に 13 項目が在り、--fix を持たない契約が書かれていること
 #   (B) fixture — 「issue化必須」を含む CLAUDE.md で FAIL 1 が該当行を名指しし rc=1、直した fixture で rc=0。
 #       節の欠落は WARN、必須語の欠落は FAIL、Stop hook の旧 reminder は FAIL、grep 失敗は FAIL。
 #       --offline で gh を使わない（ネットワークに出ない）。
@@ -14,6 +14,7 @@
 # 空振り検出（Issue `#2111`）: 検査 9 の除外は 1 つずつ効きを固定する — 8b は 1 行が新しい除外 1 つだけに当たり、除外を 1 つ外した変異（exempt の在れば / 有れば、strip の `@` 必須）はそれぞれ対応する行だけが FAIL 9 になって 8b が赤（実測）。逆に除外を広げた変異（素の「のみ」/ `@` 単体を exempt へ / `@` 注記を strip ではなく exempt へ）は 8c が赤（実測）。
 # 空振り検出（Issue `#2101`）: strip のリダイレクト注記（`</dev/null` が必須）を外した変異は 8d の 1 本目が FAIL 9 になって赤、先頭文字の制限を外して英字始まりの code span まで消す変異（「`codex` 必須」を消す）は 8c と 8d の 2 本目が赤、助詞の `(が|は|を)?` を素の `が?` へ戻す変異は 8d の 1 本目の助詞の無い行と「は必須」の行が LC_ALL=C で strip されず赤、span の空白禁止を外す変異（`[^`[:space:]]*` を `[^`]*` へ）は 8d の 2 本目 3 行目（「`< /dev/null codex exec review` 必須」）が赤、半角スペースだけの禁止へ狭める変異（`[^` ]*`）は 8d のタブ区切りの行が赤（実測）。
 # 空振り検出: 重複レビューの禁止文（「を追加の必須レビューとして重ねない」）は strip で句だけを消す — strip から句を外す変異は 8e の 1 本目が FAIL 9 になって赤、句の代わりに「重ねない」を exempt へ足す変異は 8e の 2 本目（「Codex レビューは必須（他の CLI は重ねない）」と禁止文と同じ行の常時必須）が OK 9 に倒れて赤（2026-11-03 実測）。
+# 空振り検出（検査 13。2026-11-21 WSL 実測。1 変異ずつ注入し、赤転しなかった変異は無し）: w/crlf の判定を外すと 13a・13c など 7 件が赤、eol=crlf / -text の除外を外すと 13b・13d の 3 件が赤、eol=lf の分類を外すと 13c の 3 件が赤、.gitattributes の CR を落とさないと 13c の 1 件が赤。SKIP の分岐（rev-parse の失敗・下位ディレクトリ・ls-files の失敗・追跡 0 件・解釈できない行の混在・読めない .gitattributes）は 1 つ外すごとに 13e の対応する 1 件が赤。fixture が狙った状態（w/ 欄と attr 欄）でなければ doctor の前に赤にし、git の stub は素通しの対照で WARN 13 を要求する。
 #
 # 変異検出（2026-10-02）: 追加語族の除去で 2d / 4c が赤。見出しを旧名限定へ戻すと 3b が赤、次のスコープ外節を連結すると 3c が赤。
 #
@@ -27,6 +28,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="$PLUGIN_ROOT/scripts/workflow-doctor.sh"
 SKILL="$PLUGIN_ROOT/skills/workflow-doctor/SKILL.md"
+EOL_DOC_FILE="$PLUGIN_ROOT/docs-template/05-operations/deployment/markdown-patch-discipline.md"
+# fixture の git リポジトリは隔離初期化を通す（GIT_DIR が export された環境で外側の index へ add しない）
+# shellcheck source=../lib/git-fixture.sh
+. "$PLUGIN_ROOT/tests/lib/git-fixture.sh"
 
 PASS=0; FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
@@ -54,7 +59,7 @@ cleanup() {
 trap cleanup EXIT
 
 # ---- (A) SKILL.md の生成器規則 ---------------------------------------------------
-for needle in "| 1 | 判定順の矛盾" "| 2 | 節の必須語" "| 3 | hook の文言" "| 4 | 起票の受け皿" "| 5 | ラベルの実在" "| 6 | 親無し Issue" "| 7 | 環境変数" "| 8 | Draft PR" "| 9 | レビュー担当" "| 10 | 入口のパリティ" "| 11 | Draft の実態" "| 12 | 長時間ゲートの表示"; do
+for needle in "| 1 | 判定順の矛盾" "| 2 | 節の必須語" "| 3 | hook の文言" "| 4 | 起票の受け皿" "| 5 | ラベルの実在" "| 6 | 親無し Issue" "| 7 | 環境変数" "| 8 | Draft PR" "| 9 | レビュー担当" "| 10 | 入口のパリティ" "| 11 | Draft の実態" "| 12 | 長時間ゲートの表示" "| 13 | 作業ツリーの行末"; do
   if grep -qF "$needle" "$SKILL"; then ok "SKILL.md の検査表に「${needle#| }」がある"; else bad "SKILL.md の検査表に「${needle#| }」が無い"; fi
 done
 # shellcheck disable=SC2016  # バッククォートを含む固定文字列（展開しないのが正）
@@ -233,11 +238,12 @@ else
   part_skip "jq 不在のため追加語族の hook 検査は未検証"
 fi
 
-# 5. --offline の 4〜6・11 は SKIP として数える（緑にしない）。jq 不在の環境では検査 3 も SKIP になるので期待値を 1 足す
+# 5. --offline の 4〜6・11 は SKIP として数える（緑にしない）。fixture は git の作業ツリーではないので検査 13 も SKIP になる。
+#    jq 不在の環境では検査 3 も SKIP になるので期待値を 1 足す
 d="$(make_root offline "$GOOD_CLAUDE")"
 out="$(run_doctor "$d")"
-if command -v jq >/dev/null 2>&1; then want_skip=4; else want_skip=5; fi
-if grep -q "^SUMMARY fail=0 warn=0 skip=${want_skip}\$" <<<"$out"; then ok "--offline で 4〜6・11 が SKIP ${want_skip} 件として数えられる"; else bad "--offline の SKIP 計上が違う: $(printf '%s' "$out" | tail -1)"; fi
+if command -v jq >/dev/null 2>&1; then want_skip=5; else want_skip=6; fi
+if grep -q "^SUMMARY fail=0 warn=0 skip=${want_skip}\$" <<<"$out"; then ok "--offline で 4〜6・11 と git 外の 13 が SKIP ${want_skip} 件として数えられる"; else bad "--offline の SKIP 計上が違う: $(printf '%s' "$out" | tail -1)"; fi
 
 # 5b. settings.json が壊れている（末尾カンマ）→ FAIL 3（jq の失敗を「設定は無い」に畳まない）
 if command -v jq >/dev/null 2>&1; then
@@ -588,6 +594,165 @@ for value in invalid ''; do
 done
 out="$(run_doctor "$d" --terminal-capability)"; rc=$?
 if [ "$rc" -eq 2 ] && grep -q '値が要ります' <<<"$out"; then ok "値なし capability は rc2"; else bad "値なし capability が rc${rc}"; fi
+
+# 13. 検査 13（作業ツリーの行末）: git の index と属性を読むだけ（--offline でも回る）。fixture は commit しない
+#     （`git ls-files --eol` は index を読む。identity に依存しない）。ホストの global 設定で別の状態を測らないよう、
+#     doctor を走らせる前に `ls-files --eol` の実値（w/ 欄と attr 欄）を assert する。
+eol_root() { # $1 name → 隔離初期化した空の git fixture（core.autocrlf=false をローカルへ固定）
+  local dir
+  dir="$(make_root "$1" "$GOOD_CLAUDE" "$GOOD_CLAUDE")" || return 1
+  ff_git_fixture_init "$dir" >/dev/null || return 1
+  git -C "$dir" config --local core.autocrlf false || return 1
+  git -C "$dir" config --local core.safecrlf false || return 1   # global が true だと CRLF の add が rc=128 で止まる
+  echo "$dir"
+}
+eol_state() { # $1 dir, $2 path → `i/<eol> w/<eol> attr/<属性>`（空白を 1 つへ畳み、末尾の空白を落とす）
+  git -C "$1" ls-files --eol -- "$2" | awk -F'\t' '{ gsub(/ +/, " ", $1); sub(/ $/, "", $1); print $1 }'
+}
+eol_want() { # $1 dir, $2 path, $3 期待する実値 — fixture が狙った状態になっていることを先に固定する
+  local got; got="$(eol_state "$1" "$2")"
+  if [ "$got" = "$3" ]; then ok "fixture の実値: $2 = $3"; else bad "fixture が狙った状態でない: $2 = ${got:-<空>}（期待 $3）"; fi
+}
+eol_sum() { # $1 dir → 作業ツリーと .git（index を含む）の全ファイルの cksum
+  find "$1" -type f | LC_ALL=C sort | while IFS= read -r f; do cksum "$f"; done
+}
+EOL_REF='markdown-patch-discipline.md「まず作業ツリーを LF に固定する」'
+
+# 13a. 規則なし + w/crlf あり（index も CRLF の形と、core.autocrlf=true の checkout と同じ i/lf w/crlf の形）
+#      → WARN 13 が件数と手順への参照を出す。rc は 0 のまま（CRLF を選んだ導入先を FAIL にしない）
+if d="$(eol_root eol-norule)"; then
+  printf 'a\r\nb\r\n' > "$d/a.txt"; printf 'lf\n' > "$d/keep.txt"
+  printf 'c\n' > "$d/c.md"; git -C "$d" add a.txt keep.txt c.md; printf 'c\r\n' > "$d/c.md"
+  eol_want "$d" a.txt 'i/crlf w/crlf attr/'
+  eol_want "$d" c.md 'i/lf w/crlf attr/'
+  before="$(eol_sum "$d")"
+  out="$(run_doctor "$d")"; rc=$?
+  after="$(eol_sum "$d")"
+  w13="$(grep -E $'^WARN\t13\t' <<<"$out")"
+  if [ "$rc" -eq 0 ] && [ "$(grep -c . <<<"$w13")" -eq 1 ] && grep -qF '当たっていない w/crlf の追跡ファイルが 2 件' <<<"$w13" && grep -qF '規則（eol=lf）なし' <<<"$w13" && grep -qF "$EOL_REF" <<<"$w13"; then
+    ok "規則なし + w/crlf 2 件 → WARN 13（件数と手順への参照）/ rc=0"
+  else bad "規則なし + w/crlf を検知できない（rc=${rc}）: $(grep -E $'\t13\t' <<<"$out" | tr '\n' ' ')"; fi
+  if ! grep -q $'^FAIL\t13\t' <<<"$out" && ! grep -q 'checkout し直し' <<<"$w13"; then ok "規則なしの w/crlf を FAIL にも「checkout し直し」にもしない"; else bad "規則なしの w/crlf の分類が違う: $(tr '\n' ' ' <<<"$w13")"; fi
+  if grep -qE $'^SUGGEST\t13\t.*\t根拠: git ls-files --eol.*eol=lf の属性で w/crlf 0 件 / eol の指定なしで w/crlf 2 件' <<<"$out" && grep -qF "$EOL_REF" <<<"$(grep -E $'^SUGGEST\t13\t' <<<"$out")"; then ok "SUGGEST 13 が件数を根拠に、手順の正本を指す"; else bad "SUGGEST 13 が出ない / 根拠が無い: $(grep '^SUGGEST' <<<"$out" | tr '\n' ' ')"; fi
+  if [ -n "$before" ] && [ "$before" = "$after" ]; then ok "WARN 13 の回も作業ツリーと .git を書き換えない（cksum 一致）"; else bad "診断がファイルを書き換えた（規則なしの fixture）"; fi
+else
+  bad "検査 13 の fixture（規則なし）を初期化できない"
+fi
+
+# 13b. LF 固定済み + w/crlf 0 件 → OK 13（WARN・提案なし）。eol=crlf / -text を指定した CRLF は意図した指定として
+#      数えず INFO にする（CRLF を意図した指定を WARN にしない）
+if d="$(eol_root eol-fixed)"; then
+  printf '%s\n' '* text=auto eol=lf' '*.bat eol=crlf' '*.dat -text' > "$d/.gitattributes"
+  printf 'a\nb\n' > "$d/a.txt"; printf 'x\r\n' > "$d/run.bat"; printf 'y\r\n' > "$d/raw.dat"
+  git -C "$d" add .gitattributes a.txt run.bat raw.dat
+  eol_want "$d" a.txt 'i/lf w/lf attr/text=auto eol=lf'
+  eol_want "$d" run.bat 'i/lf w/crlf attr/text=auto eol=crlf'
+  eol_want "$d" raw.dat 'i/crlf w/crlf attr/-text'
+  out="$(run_doctor "$d")"; rc=$?
+  if [ "$rc" -eq 0 ] && grep -q $'^OK\t13\t.*規則（eol=lf）あり.*w/crlf の追跡ファイルは 0 件' <<<"$out" && ! grep -qE $'^(WARN|FAIL|SKIP)\t13\t' <<<"$out" && ! grep -q $'^SUGGEST\t13\t' <<<"$out"; then
+    ok "LF 固定済み + w/crlf 0 件 → OK 13（WARN・提案なし）"
+  else bad "LF 固定済みの導入先が OK にならない（rc=${rc}）: $(grep -E $'\t13\t' <<<"$out" | tr '\n' ' ')"; fi
+  if grep -q $'^INFO\t13\teol=crlf / -text を指定した w/crlf 2 件は意図した指定として数えない' <<<"$out"; then ok "eol=crlf / -text の CRLF は意図した指定として数えない（INFO 13）"; else bad "意図した CRLF の扱いが違う: $(grep -E $'\t13\t' <<<"$out" | tr '\n' ' ')"; fi
+else
+  bad "検査 13 の fixture（LF 固定済み）を初期化できない"
+fi
+
+# 13c. 規則はあるが w/crlf が残る（.gitattributes 自身も CRLF で checkout された形）→ WARN 13 が
+#      「checkout し直しが要る」を件数つきで示す。規則の検出が行末の CR で外れると「規則なし」と誤報する
+if d="$(eol_root eol-stale)"; then
+  printf '* text=auto eol=lf\r\n' > "$d/.gitattributes"
+  printf 'a\r\n' > "$d/a.txt"; printf 'b\r\n' > "$d/b.txt"; printf 'lf\n' > "$d/keep.txt"
+  git -C "$d" add .gitattributes a.txt b.txt keep.txt
+  eol_want "$d" a.txt 'i/lf w/crlf attr/text=auto eol=lf'
+  eol_want "$d" .gitattributes 'i/lf w/crlf attr/text=auto eol=lf'
+  before="$(eol_sum "$d")"
+  out="$(run_doctor "$d")"; rc=$?
+  after="$(eol_sum "$d")"
+  w13="$(grep -E $'^WARN\t13\t' <<<"$out")"
+  if [ "$rc" -eq 0 ] && [ "$(grep -c . <<<"$w13")" -eq 1 ] && grep -qF 'w/crlf の追跡ファイルが 3 件（checkout し直しが要る' <<<"$w13" && grep -qF "$EOL_REF" <<<"$w13"; then
+    ok "規則あり + w/crlf 3 件 → WARN 13（checkout し直しが要る・件数つき）/ rc=0"
+  else bad "規則ありで残った w/crlf を検知できない（rc=${rc}）: $(grep -E $'\t13\t' <<<"$out" | tr '\n' ' ')"; fi
+  if ! grep -q '当たっていない' <<<"$w13" && grep -qF '規則（eol=lf）あり' <<<"$(grep -E $'^SUGGEST\t13\t' <<<"$out")"; then ok "CRLF の .gitattributes でも規則ありと読む（「規則なし」と誤報しない）"; else bad "CRLF の .gitattributes の規則を読めていない: $(grep -E $'\t13\t' <<<"$out" | tr '\n' ' ')"; fi
+  if [ -n "$before" ] && [ "$before" = "$after" ]; then ok "checkout し直しの所見でも取り出し直さない（cksum 一致）"; else bad "診断がファイルを書き換えた（規則ありの fixture）"; fi
+  if ! grep -q 'renormalize' <<<"$w13"; then ok "index が LF の w/crlf には renormalize を言わない"; else bad "index が LF なのに renormalize を言う: $(tr '\n' ' ' <<<"$w13")"; fi
+  # 13c2. CRLF のまま add 済みのファイルへ後から規則を足した形（i/crlf w/crlf）。取り出し直しても CRLF で戻るので、
+  #       先に renormalize が要ることを件数つきで示す
+  #       （規則が効いた add は index を LF にするので、変換なしの blob を index へ直接載せて作る。作業ツリーの
+  #       .gitattributes を退避しても、git は index 側の .gitattributes を読んで変換する — 実測）
+  printf 'old\r\n' > "$d/old.txt"
+  old_blob="$(git -C "$d" hash-object -w --no-filters -- "$d/old.txt")" && git -C "$d" update-index --add --cacheinfo "100644,${old_blob},old.txt"
+  eol_want "$d" old.txt 'i/crlf w/crlf attr/text=auto eol=lf'
+  out="$(run_doctor "$d")"; rc=$?
+  if [ "$rc" -eq 0 ] && grep -q $'^WARN\t13\t.*が 4 件（checkout し直しが要る。うち 1 件は index も CRLF（i/crlf）で、取り出し直す前に renormalize が要る' <<<"$out"; then ok "index も CRLF の w/crlf → 取り出し直す前に renormalize が要ることを件数つきで示す"; else bad "index も CRLF の w/crlf を区別しない（rc=${rc}）: $(grep -E $'\t13\t' <<<"$out" | tr '\n' ' ')"; fi
+  # 13c3. 未解決の競合（同じ path が stage 1〜3 に並ぶ）は 1 件として数える
+  printf 'dup\r\n' > "$d/dup.txt"
+  printf '100644 %s 1\tdup.txt\n100644 %s 2\tdup.txt\n100644 %s 3\tdup.txt\n' "$old_blob" "$old_blob" "$old_blob" | git -C "$d" update-index --index-info
+  if [ "$(git -C "$d" ls-files --eol -- dup.txt | grep -c .)" -eq 3 ]; then ok "fixture の実値: dup.txt は stage ごとに 3 行"; else bad "fixture が狙った状態でない: dup.txt の行数が 3 でない"; fi
+  out="$(run_doctor "$d")"; rc=$?
+  if [ "$rc" -eq 0 ] && grep -q $'^WARN\t13\t.*が 5 件（checkout し直しが要る。うち 2 件は index も CRLF' <<<"$out"; then ok "未解決の競合の path は 1 件として数える（5 件。7 件にしない）"; else bad "競合の path を重ねて数えている（rc=${rc}）: $(grep -E $'\t13\t' <<<"$out" | cut -c1-160 | tr '\n' ' ')"; fi
+else
+  bad "検査 13 の fixture（規則あり + w/crlf）を初期化できない"
+fi
+
+# 13d. CRLF を意図して選んだ導入先（全体を eol=crlf）→ WARN にも FAIL にもしない。LF 固定の規則は無いので OK でもなく INFO
+if d="$(eol_root eol-intended)"; then
+  printf '%s\n' '* text=auto eol=crlf' > "$d/.gitattributes"
+  printf 'a\r\n' > "$d/a.txt"
+  git -C "$d" add .gitattributes a.txt
+  eol_want "$d" a.txt 'i/lf w/crlf attr/text=auto eol=crlf'
+  out="$(run_doctor "$d")"; rc=$?
+  if [ "$rc" -eq 0 ] && ! grep -qE $'^(WARN|FAIL|OK|SKIP)\t13\t' <<<"$out" && grep -q $'^INFO\t13\t.*規則（eol=lf）なし' <<<"$out" && grep -q $'^INFO\t13\t.*意図した指定として数えない' <<<"$out"; then
+    ok "CRLF を意図した導入先（eol=crlf）→ INFO 13 のみ（WARN・FAIL にしない）"
+  else bad "CRLF を意図した導入先の扱いが違う（rc=${rc}）: $(grep -E $'\t13\t' <<<"$out" | tr '\n' ' ')"; fi
+else
+  bad "検査 13 の fixture（意図した CRLF）を初期化できない"
+fi
+
+# 13e. git を読めない回は OK ではなく SKIP 13: git の作業ツリーでない --root / 作業ツリーの下位ディレクトリ /
+#      追跡ファイル 0 件 / git 不在（rc=127）/ `ls-files --eol` の失敗 / 解釈できない出力 / 読めない .gitattributes
+eol_skip() { # $1 label, $2 所見に含まれる語（ERE）, $3 doctor の出力
+  if grep -qE $'^SKIP\t13\t.*'"$2" <<<"$3" && ! grep -qE $'^(OK|WARN|INFO)\t13\t' <<<"$3" && ! grep -q $'^SUGGEST\t13\t' <<<"$3"; then
+    ok "$1 → SKIP 13（OK にしない）"
+  else bad "$1 が SKIP 13 にならない: $(grep -E $'\t13\t' <<<"$3" | tr '\n' ' ')"; fi
+}
+d="$(make_root eol-nogit "$GOOD_CLAUDE")"
+# 理由まで固定する（rev-parse の失敗を読み飛ばしても ls-files の失敗で SKIP にはなるが、所見の理由が変わる）。
+# 一時領域が別リポジトリの作業ツリーの下にある環境では「ルートではない」の SKIP になる
+eol_skip "git の作業ツリーでない --root" '(作業ツリーとして読めない|ルートではない)' "$(run_doctor "$d")"
+if d="$(eol_root eol-skip)"; then
+  eol_skip "追跡ファイル 0 件" '追跡ファイルが 0 件' "$(run_doctor "$d")"
+  printf '* text=auto eol=lf\n' > "$d/.gitattributes"; printf 'a\r\n' > "$d/a.txt"; git -C "$d" add .gitattributes a.txt
+  mkdir -p "$d/sub/.claude"; printf '%s\n' "$GOOD_CLAUDE" > "$d/sub/CLAUDE.md"
+  eol_skip "作業ツリーの下位ディレクトリを --root に渡す" 'ルートではない' "$(run_doctor "$d/sub")"
+  REAL_GIT_BIN="$(command -v git)"
+  mkdir -p "$TEST_TMP/eol-bin"
+  cat > "$TEST_TMP/eol-bin/git" <<EOF
+#!/usr/bin/env bash
+case "\${DOCTOR_TEST_GIT_MODE:-}" in
+  absent) exit 127 ;;
+  lsfail) case " \$* " in *" ls-files --eol "*) exit 128 ;; esac ;;
+  garbled) case " \$* " in *" ls-files --eol "*) echo 'unexpected output'; exit 0 ;; esac ;;
+  mixed) case " \$* " in *" ls-files --eol "*) "$REAL_GIT_BIN" "\$@"; rc=\$?; echo 'unexpected output'; exit "\$rc" ;; esac ;;
+esac
+exec "$REAL_GIT_BIN" "\$@"
+EOF
+  chmod +x "$TEST_TMP/eol-bin/git"
+  eol_skip "git 不在（rc=127）" 'rc=127' "$(DOCTOR_TEST_GIT_MODE=absent PATH="$TEST_TMP/eol-bin:$PATH" run_doctor "$d")"
+  eol_skip "git ls-files --eol の失敗" 'ls-files --eol が失敗.*rc=128' "$(DOCTOR_TEST_GIT_MODE=lsfail PATH="$TEST_TMP/eol-bin:$PATH" run_doctor "$d")"
+  eol_skip "解釈できない出力" '解釈できない' "$(DOCTOR_TEST_GIT_MODE=garbled PATH="$TEST_TMP/eol-bin:$PATH" run_doctor "$d")"
+  # 読める行に解釈できない行が混ざる回も、読めた分だけで件数を断定しない
+  eol_skip "解釈できない行が混ざる出力" '不明 1 行' "$(DOCTOR_TEST_GIT_MODE=mixed PATH="$TEST_TMP/eol-bin:$PATH" run_doctor "$d")"
+  # stub を通しても、素通しの回は同じ fixture で WARN 13 が出る（stub 自体が検査を潰していない対照）
+  out="$(DOCTOR_TEST_GIT_MODE=pass PATH="$TEST_TMP/eol-bin:$PATH" run_doctor "$d")"
+  if grep -q $'^WARN\t13\t.*1 件（checkout し直しが要る' <<<"$out"; then ok "stub 素通しの対照 → WARN 13（SKIP は注入した失敗だけで起きる）"; else bad "stub 素通しで WARN 13 が出ない: $(grep -E $'\t13\t' <<<"$out" | tr '\n' ' ')"; fi
+  rm -f "$d/.gitattributes"; mkdir "$d/.gitattributes"
+  eol_skip "読めない .gitattributes（ディレクトリ）" '[.]gitattributes を読めない' "$(run_doctor "$d")"
+else
+  bad "検査 13 の fixture（SKIP 用）を初期化できない"
+fi
+
+# 13f. doctor が指す見出しが手順の正本に実在する（見出しが改名されても参照だけが残る形を赤にする）
+if grep -qxF '### まず作業ツリーを LF に固定する' "$EOL_DOC_FILE" && grep -qF "$EOL_REF" "$TARGET"; then ok "検査 13 が指す見出しが手順の正本に実在する"; else bad "検査 13 が指す見出し「まず作業ツリーを LF に固定する」が正本に無い / スクリプトが指していない"; fi
 
 echo ""
 echo "workflow-doctor: ${PASS} 件成功 / ${FAIL} 件失敗"

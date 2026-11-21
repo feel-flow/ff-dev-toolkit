@@ -48,6 +48,19 @@ done
 [[ ${#request[@]} -eq 0 ]] || answer 0
 EOF
 chmod +x "$win_bin/uname" "$win_bin/cygpath" "$win_root/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+win_real_stat="$(command -v stat)" || exit 1
+if ! "$win_real_stat" -c '%i' "$win_bin" >/dev/null 2>&1; then
+  # BSD hosts lack stat -c, which ff_knowledge_meta_chain selects under the mocked Windows OS string.
+  cat >"$win_bin/stat" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == -c && "${2:-}" == '%d:%i:%s:%Y:%Z:%a:%u:%h' ]]; then
+  shift 2
+  exec "${WIN_REAL_STAT:-/usr/bin/stat}" -f '%d:%i:%z:%m:%c:%Lp:%u:%l' "$@"
+fi
+exec "${WIN_REAL_STAT:-/usr/bin/stat}" "$@"
+EOF
+  chmod +x "$win_bin/stat"
+fi
 win_project="$(cd -P "$win_root/project" && pwd -P)"
 win_tmp="$(cd -P "$win_root/tmp" && pwd -P)"
 win_state="$(cd -P "$win_root/state" && pwd -P)"
@@ -79,7 +92,7 @@ win_run() { # <snippet> [dangerous paths...]: stub Windows without SystemRoot in
   win_rc=0; win_began="$SECONDS"
   env -u SystemRoot -u SYSTEMROOT -u windir -u WINDIR -u PSModulePath -u PSMODULEPATH PATH="$win_bin:$PATH" \
     ${win_env[@]+"${win_env[@]}"} \
-    WIN_FAKE_WINDOWS="$win_root/Windows" WIN_FAKE_STARTS="$win_root/starts" WIN_FAKE_REQUESTS="$win_root/requests" \
+    WIN_FAKE_WINDOWS="$win_root/Windows" WIN_REAL_STAT="$win_real_stat" WIN_FAKE_STARTS="$win_root/starts" WIN_FAKE_REQUESTS="$win_root/requests" \
     WIN_FAKE_MODULES="$win_root/modules" \
     WIN_FAKE_DANGER="$win_root/danger" WIN_FAKE_ERROR="$win_root/error" WIN_FAKE_SLOW="$win_slow" \
     TMPDIR="$win_tmp" FF_DEV_TOOLKIT_STATE_DIR="$win_state" WIN_PROJECT="$win_project" \

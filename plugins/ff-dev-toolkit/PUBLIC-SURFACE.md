@@ -246,6 +246,8 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 #### 全件ゲート
 
 - `FF_RUN_ALL_FULL`
+- `FF_RUN_ALL_WAIT`（`1` で先行する全件ゲート・`public-layout`・リリースの終了を自動待機してから開始。`0` / `1` / 空以外は suite 未実行のまま `rc=2` の fail-closed で停止）
+- `FF_RUN_ALL_WAIT_MAX_SECONDS`（`FF_RUN_ALL_WAIT=1` の待機上限秒数。`1`〜`86400`、既定 `3600`。`FF_RUN_ALL_WAIT` 未指定時でも非空なら検証し、範囲外・非数値は suite 未実行のまま `rc=2` で停止）
 
 ### 4-2. 内部
 
@@ -381,6 +383,8 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_RUN_ALL_PROBE_LOG`
 - `FF_RUN_ALL_PROBE_RENDEZVOUS`
 - `FF_RUN_ALL_VERIFY_STOP_AFTER_GUARD`（tests/run-all/verify.sh が並走判定の直後で走査を始めず終わる検査用注入口。`1` のときだけ）
+- `FF_RUN_ALL_WAIT_DIR`（全件ゲート自動待機モードの待機・開始排他マーカー領域の上書き先）
+- `FF_RUN_ALL_WAIT_POLL_INTERVAL`（全件ゲート自動待機モードのポーリング間隔秒数の検査用上書き。既定 `5`）
 - `FF_DEFER_STARTUP_LOAD_WARN`（起動負荷警告を並走早期停止後まで遅らせる内部フラグ）
 - `FF_STARTUP_CORES`（以下はrunnerの起動時観測を保持する内部変数）
 - `FF_STARTUP_LOAD`

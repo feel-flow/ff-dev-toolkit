@@ -137,7 +137,7 @@ printenv RETROSPECTIVE_MODE
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-shebang-cr.sh" || exit $?
 ```
 
-台帳へ追記し、`knowledge:` prefix の単独コミットを共通の書き込み口で作る（承認不要。記録内容は振り返り結果で必ず報告する）— `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit add --source obs --id <OBS-ID> --summary <要約> -- docs/08-knowledge/OBSERVATIONS.md` の後に `commit`。書き込み口は `git commit -- docs/08-knowledge/OBSERVATIONS.md` の形で記録したパスへ固定する。同じセッションで `/ace-curate` が `add` だけで止めた保留があれば、同じ `commit` が両方を 1 コミット（`knowledge: ACE-… / OBS-…`）に畳む。送信は [ledger.md の分岐](references/ledger.md#保留の合流と送信経路)に従い、default / detached は `push`、既存知見ブランチは実測名で `pr` を使う。観測を記録しない回も同じ規則で保留を回収する。
+台帳へ追記し、`knowledge:` prefix の単独コミットを共通の書き込み口で作る（承認不要。記録内容は振り返り結果で必ず報告する）— `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit add --source obs --id <OBS-ID> --summary <要約> -- docs/08-knowledge/OBSERVATIONS.md` の後に `commit`。書き込み口は `git commit -- docs/08-knowledge/OBSERVATIONS.md` の形で記録したパスへ固定する。同じセッションで `/ace-curate` が `add` だけで止めた保留があれば、同じ `commit` が両方を 1 コミット（`knowledge: ACE-… / OBS-…`）に畳む。出典と送信は [ledger.md の分岐](references/ledger.md#保留の合流と送信経路)に従う。default / detached は `push`、知見ブランチは実測名の `pr`。観測を記録しない回も同じ規則で保留を回収する。
 
 - push が non-fast-forward で拒否されたら復帰手順へ戻り **記録手順 0 から記録内容を作り直す**（採番し直しだけで再試行しない。検出点は上の照合で、push は最終境界）
 - **ローカルに未 push のコミットがある回は、それらも同じ push で統合ブランチへ送られる**。意図しないローカルコミットが無いことを先に確かめる

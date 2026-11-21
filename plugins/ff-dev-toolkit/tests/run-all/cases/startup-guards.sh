@@ -923,7 +923,8 @@ _c54_runner="$_c54_fx/repo/tests/run-all.sh"
 _c54_run() {
   local graph="$1"; shift
   if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_ALLOW_SKIP -u FF_RUN_ALL_CHANGED -u FF_RUN_ALL_ALLOW_DIRTY \
-    FF_RUN_ALL_JOBS=1 FF_GATE_RECORD_FILE="$_c54_rec" \
+    -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_POLL_INTERVAL \
+    FF_RUN_ALL_JOBS=1 FF_GATE_RECORD_FILE="$_c54_rec" FF_RUN_ALL_WAIT_DIR="$_c54_fx/wait" \
     C54_GRAPH="$graph" C54_SLEEPER_PID=4194303 C54_REAL_PS="$_c54_real_ps" \
     PATH="$_c54_fx/bin:$PATH" \
     bash "$_c54_runner" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
@@ -1021,7 +1022,8 @@ chmod +x "$_c54_fx/repo/tests/sleep-probe.sh"
 _c54_started="$_c54_fx/repo/tests/sleep-probe.started"
 rm -f "$_c54_fx/term.log" "$_c54_started"
 env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_ALLOW_SKIP -u FF_RUN_ALL_CHANGED \
-  FF_RUN_ALL_ALLOW_DIRTY=1 FF_RUN_ALL_JOBS=1 FF_GATE_RECORD_FILE="$_c54_rec" \
+  -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_POLL_INTERVAL \
+  FF_RUN_ALL_ALLOW_DIRTY=1 FF_RUN_ALL_JOBS=1 FF_GATE_RECORD_FILE="$_c54_rec" FF_RUN_ALL_WAIT_DIR="$_c54_fx/wait" \
   C54_GRAPH="clean" C54_REAL_PS="$_c54_real_ps" PATH="$_c54_fx/bin:$PATH" \
   bash "$_c54_runner" "$_c54_fx/repo/tests/sleep-probe.sh" > "$_c54_fx/term.log" 2>&1 &
 _c54_term_pid=$!
@@ -1061,7 +1063,8 @@ SLPAR
 chmod +x "$_c54_fx/repo/tests/sleep-par.sh"
 rm -f "$_c54_fx/par-child.pid" "$_c54_fx/par.log"
 env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_ALLOW_SKIP -u FF_RUN_ALL_CHANGED \
-  FF_RUN_ALL_ALLOW_DIRTY=1 FF_RUN_ALL_JOBS=2 FF_GATE_RECORD_FILE="$_c54_rec" \
+  -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_POLL_INTERVAL \
+  FF_RUN_ALL_ALLOW_DIRTY=1 FF_RUN_ALL_JOBS=2 FF_GATE_RECORD_FILE="$_c54_rec" FF_RUN_ALL_WAIT_DIR="$_c54_fx/wait" \
   C54_GRAPH="clean" C54_REAL_PS="$_c54_real_ps" PATH="$_c54_fx/bin:$PATH" \
   bash "$_c54_runner" "$_c54_fx/repo/tests/sleep-par.sh" "$_c54_fx/repo/tests/other-probe/verify.sh" > "$_c54_fx/par.log" 2>&1 &
 _c54_par_pid=$!
@@ -1111,6 +1114,760 @@ expect_rc 0 "54-M: 早期停止を無効化した変異は並走下でも rc=0 �
 expect_has 'FIXTURE-C54-RUN-ALL-EXECUTED' "54-M: 変異では suite が実際に走る"
 
 rm -rf "$_c54_fx"
+fi
+
+echo
+echo "== case 55: FF_RUN_ALL_WAIT=1 の自動待機・リリース待機・相互待ち回避・上限停止 =="
+
+if ! command -v git >/dev/null 2>&1; then
+  bad "case 55: git が無いため待機機能検証を実行できない"
+else
+_c55_fx="$RUN_WORK/ff-run-all-wait"
+rm -rf "$_c55_fx"
+mkdir -p "$_c55_fx/repo/tests/run-all" "$_c55_fx/repo/tests/ok-probe" "$_c55_fx/repo/tests/lib" \
+  "$_c55_fx/repo/scripts" "$_c55_fx/bin" "$_c55_fx/wait" \
+  "$_c55_fx/vtree/tests/run-all" "$_c55_fx/vtree/tests/lib"
+_c55_rec="$_c55_fx/gate-record"
+_c55_wdir="$_c55_fx/wait"
+_c55_fake_ps="$_c55_fx/fake-ps.txt"
+: > "$_c55_fake_ps"
+_c55_events="$_c55_fx/events.log"
+_c55_bg_pids=""
+
+_c55_kill_bg() {
+  local p=""
+  for p in $_c55_bg_pids; do
+    kill "$p" 2>/dev/null || true
+    wait "$p" 2>/dev/null || true
+  done
+  _c55_bg_pids=""
+}
+
+cat > "$_c55_fx/repo/tests/run-all/verify.sh" <<'PROBE'
+#!/usr/bin/env bash
+echo "FIXTURE-C55-RUN-ALL"
+exit 0
+PROBE
+
+cat > "$_c55_fx/repo/tests/ok-probe/verify.sh" <<'PROBE'
+#!/usr/bin/env bash
+if false; then
+  echo "○ skip: material"
+  exit 0
+fi
+if [ -n "${C55_EVENT_LOG:-}" ]; then
+  printf 'OK_RAN\n' >> "$C55_EVENT_LOG"
+fi
+echo "FIXTURE-C55-OK"
+exit 0
+PROBE
+
+cat > "$_c55_fx/repo/tests/slow-probe.sh" <<'PROBE'
+#!/usr/bin/env bash
+tag="${C55_PAR_TAG:-x}"
+if [ -e "${C55_INSIDE_LOCK:?}" ]; then
+  printf 'OVERLAP:%s\n' "$tag" >> "${C55_OVERLAP_LOG:?}"
+fi
+: > "${C55_INSIDE_LOCK:?}"
+printf 'ENTER:%s:%s\n' "$tag" "$$" >> "${C55_OVERLAP_LOG:?}"
+sleep 0.5
+rm -f "${C55_INSIDE_LOCK:?}"
+printf 'LEAVE:%s:%s\n' "$tag" "$$" >> "${C55_OVERLAP_LOG:?}"
+exit 0
+PROBE
+
+chmod +x "$_c55_fx/repo/tests/run-all/verify.sh" "$_c55_fx/repo/tests/ok-probe/verify.sh" "$_c55_fx/repo/tests/slow-probe.sh"
+
+awk '
+  /^  SCRIPTS=\($/ {
+    print
+    print "    \"$SCRIPT_DIR/run-all/verify.sh\""
+    print "    \"$SCRIPT_DIR/ok-probe/verify.sh\""
+    in_scripts = 1
+    next
+  }
+  in_scripts && /^  \)$/ { in_scripts = 0; print; next }
+  in_scripts { next }
+  /^REQUIRED_SUITES=\($/ {
+    print
+    print "  ok-probe"
+    in_required = 1
+    next
+  }
+  in_required && /^\)$/ { in_required = 0; print; next }
+  in_required { next }
+  /^MISS_PROBE_BASELINE=\($/ {
+    print
+    print "  run-all"
+    print "  ok-probe"
+    in_baseline = 1
+    next
+  }
+  in_baseline && /^\)$/ { in_baseline = 0; print; next }
+  in_baseline { next }
+  { print }
+' "$RUNNER" > "$_c55_fx/repo/tests/run-all.sh"
+
+cp "$TESTS_DIR/lib/gate-in-flight.sh" "$_c55_fx/repo/tests/lib/gate-in-flight.sh"
+if [ -f "$TESTS_DIR/lib/utf8-locale.sh" ]; then
+  cp "$TESTS_DIR/lib/utf8-locale.sh" "$_c55_fx/repo/tests/lib/utf8-locale.sh"
+fi
+cp "$TESTS_DIR/../scripts/record-gate-head.sh" "$_c55_fx/repo/scripts/record-gate-head.sh"
+
+_dg_git -C "$_c55_fx/repo" init -q . >/dev/null 2>&1 || true
+_dg_git -C "$_c55_fx/repo" add -A >/dev/null 2>&1 || true
+_dg_git -C "$_c55_fx/repo" commit -qm "c55-init" >/dev/null 2>&1 || true
+_c55_gdir="$(_dg_git -C "$_c55_fx/repo" rev-parse --absolute-git-dir)"
+_c55_mdir="${_c55_gdir}/ff-dev-toolkit/run-all-in-flight"
+mkdir -p "$_c55_mdir"
+
+{
+  printf '#!/usr/bin/env bash\n'
+  printf '# fixture run-all.sh for verify wait test\n'
+  printf '# %s / %s\n' "$KEPT_SELFTEST_HEAD" "$KEPT_SELFTEST_TAIL"
+  printf '# %s\n' "$STALE_MARKER_LITERAL"
+  awk '
+    /^# >>> ff-startup-other-gates$/ { g = 1 }
+    g { print }
+    /^# <<< ff-startup-other-gates$/ { exit }
+  ' "$RUNNER"
+} > "$_c55_fx/vtree/tests/run-all.sh"
+printf '# %s\n' "$STALE_MARKER_LITERAL" > "$_c55_fx/vtree/tests/lib/stale-base.sh"
+cp "$TESTS_DIR/lib/gate-in-flight.sh" "$_c55_fx/vtree/tests/lib/gate-in-flight.sh"
+cp "$SCRIPT_DIR/verify.sh" "$_c55_fx/vtree/tests/run-all/verify.sh"
+_dg_git -C "$_c55_fx/vtree" init -q . >/dev/null 2>&1 || true
+_dg_git -C "$_c55_fx/vtree" add -A >/dev/null 2>&1 || true
+_dg_git -C "$_c55_fx/vtree" commit -qm "c55-vtree" >/dev/null 2>&1 || true
+
+_c55_real_ps="$(command -v ps)"
+cat > "$_c55_fx/bin/ps" <<'STUB'
+#!/usr/bin/env bash
+real_ps="${C55_REAL_PS:?}"
+fake_ps="${C55_FAKE_PS_FILE:-}"
+if [ "${1:-}" = "-o" ]; then
+  exec "$real_ps" "$@"
+fi
+if [ "${1:-}" = "-ww" ] && [ "${2:-}" = "-eo" ]; then
+  case "${C55_GRAPH:-clean}" in
+    fail) exit 1 ;;
+  esac
+  pid="$PPID"
+  i=0
+  if [ -n "${C55_FAKE_ROOT_PID:-}" ]; then
+    while [ "$i" -lt 4 ] && [ -n "$pid" ] && [ "$pid" != 0 ] && [ "$pid" != 1 ]; do
+      ppid="$("$real_ps" -o ppid= -p "$pid" 2>/dev/null | tr -d "[:space:]")" || exit 1
+      if [ "$i" -eq 3 ] || [ -z "$ppid" ] || [ "$ppid" = 0 ] || [ "$ppid" = 1 ]; then
+        printf "%s %s bash verify.sh\n" "$pid" "${C55_FAKE_ROOT_PID}"
+        break
+      fi
+      printf "%s %s bash verify.sh\n" "$pid" "$ppid"
+      pid="$ppid"
+      i=$((i + 1))
+    done
+    printf "%s 1 %s\n" "${C55_FAKE_ROOT_PID}" "${C55_FAKE_ROOT_CMD:?}"
+  else
+    while [ "$i" -lt 10 ] && [ -n "$pid" ] && [ "$pid" != 0 ] && [ "$pid" != 1 ]; do
+      ppid="$("$real_ps" -o ppid= -p "$pid" 2>/dev/null | tr -d "[:space:]")" || exit 1
+      printf "%s %s bash verify.sh\n" "$pid" "${ppid:-1}"
+      pid="$ppid"
+      i=$((i + 1))
+    done
+  fi
+  if [ "${C55_SHOW_SIBLING_RUNNERS:-0}" = "1" ] && [ -n "${C55_RUNNER_MATCH:-}" ]; then
+    "$real_ps" -ww -eo pid=,ppid=,args= 2>/dev/null | awk -v me="$PPID" -v pat="$C55_RUNNER_MATCH" '
+      NF >= 3 {
+        p = $1; pp[p] = $2; raw[p] = $0; sub(/^[[:space:]]+/, "", raw[p])
+      }
+      END {
+        for (p in raw) {
+          if (p == me) continue
+          if (index(raw[p], pat) > 0 || (pp[p] in raw && index(raw[pp[p]], pat) > 0)) {
+            print raw[p]
+          }
+        }
+      }
+    ' || true
+  fi
+  if [ -n "$fake_ps" ] && [ -f "$fake_ps" ]; then
+    while IFS='|' read -r fp fpp fa || [ -n "${fp:-}" ]; do
+      [ -n "${fp:-}" ] || continue
+      printf "%s %s %s\n" "$fp" "${fpp:-1}" "$fa"
+    done < "$fake_ps"
+  fi
+  exit 0
+fi
+if [ "${1:-}" = "-ww" ] && [ "${2:-}" = "-o" ] && [ "${3:-}" = "args=" ] && [ "${4:-}" = "-p" ]; then
+  target="${5:-}"
+  if [ -n "${C55_FAKE_ROOT_PID:-}" ] && [ "$target" = "${C55_FAKE_ROOT_PID}" ]; then
+    printf "%s\n" "${C55_FAKE_ROOT_CMD:?}"
+    exit 0
+  fi
+  if [ -n "$fake_ps" ] && [ -f "$fake_ps" ]; then
+    while IFS='|' read -r fp _fpp fa || [ -n "${fp:-}" ]; do
+      if [ "$fp" = "$target" ]; then
+        printf "%s\n" "$fa"
+        exit 0
+      fi
+    done < "$fake_ps"
+  fi
+  exec "$real_ps" "$@"
+fi
+exec "$real_ps" "$@"
+STUB
+chmod +x "$_c55_fx/bin/ps"
+
+_c55_runner="$_c55_fx/repo/tests/run-all.sh"
+_c55_run() {
+  if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_ALLOW_SKIP -u FF_RUN_ALL_CHANGED -u FF_RUN_ALL_ALLOW_DIRTY \
+    -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS \
+    FF_RUN_ALL_ALLOW_DIRTY=1 FF_RUN_ALL_JOBS=1 FF_GATE_RECORD_FILE="$_c55_rec" \
+    FF_RUN_ALL_WAIT_DIR="$_c55_wdir" FF_RUN_ALL_WAIT_POLL_INTERVAL=0.1 \
+    C55_FAKE_PS_FILE="$_c55_fake_ps" C55_REAL_PS="$_c55_real_ps" \
+    PATH="$_c55_fx/bin:$PATH" \
+    "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+}
+
+# 55-A: 別の全件ゲート終了後に自動で開始する
+: > "$_c55_events"
+: > "$_c55_fake_ps"
+rm -f "$_c55_rec"
+sleep 15 &
+_c55_sl=$!
+_c55_bg_pids="$_c55_sl"
+_c55_lstart="$(ff_gate_ps_lstart "$_c55_sl")"
+printf '%s\n' "$_c55_lstart" > "$_c55_mdir/${_c55_sl}"
+printf 'label=tests/run-all.sh\ntree=%s\n' "$_c55_fx/repo" > "$_c55_mdir/${_c55_sl}.meta"
+(
+  sleep 0.6
+  rm -f "$_c55_mdir/${_c55_sl}" "$_c55_mdir/${_c55_sl}.meta"
+  kill "$_c55_sl" 2>/dev/null || true
+  printf 'BLOCKER_CLEARED\n' >> "$_c55_events"
+) &
+_c55_bg_pids="$_c55_bg_pids $!"
+_c55_run env FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=10 C55_EVENT_LOG="$_c55_events" \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh"
+_c55_kill_bg
+expect_rc 0 "55-A: 先行ゲート終了後に自動開始して rc=0"
+expect_has '完了を待っています' "55-A: 待機メッセージを出力"
+expect_has '先行処理の終了を確認しました' "55-A: 再開メッセージを出力"
+expect_has 'FIXTURE-C55-OK' "55-A: 待機後に suite を実行"
+if [ "$(tr '\n' ',' < "$_c55_events")" = "BLOCKER_CLEARED,OK_RAN," ]; then
+  ok "55-A: 先行ゲート解除の後から suite が始まった"
+else
+  bad "55-A: 実行順が不正（$(cat "$_c55_events")）"
+fi
+if [ -z "$(find "$_c55_wdir/waiting" "$_c55_wdir/active" -mindepth 1 2>/dev/null)" ]; then
+  ok "55-A: 完了後に waiting / active マーカーを片付ける"
+else
+  bad "55-A: 完了後にマーカーが残存している"
+fi
+
+# 55-B: public-layout/verify.sh 終了後に自動開始する
+: > "$_c55_events"
+printf '4194301|1|bash /x/public-layout/verify.sh\n' > "$_c55_fake_ps"
+(
+  sleep 0.6
+  : > "$_c55_fake_ps"
+  printf 'PUBLIC_LAYOUT_CLEARED\n' >> "$_c55_events"
+) &
+_c55_bg_pids="$!"
+_c55_run env FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=10 C55_EVENT_LOG="$_c55_events" \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh"
+_c55_kill_bg
+: > "$_c55_fake_ps"
+expect_rc 0 "55-B: public-layout 終了後に自動開始して rc=0"
+expect_has '4194301:/x/public-layout/verify\.sh' "55-B: 待機対象に public-layout を名指し"
+expect_has 'FIXTURE-C55-OK' "55-B: public-layout 解除後に suite を実行"
+
+# 55-B2: 同一 run-all.sh 祖先の兄弟 public-layout/verify.sh は誤検知しない（負の対照）
+printf '4194301|4194399|bash /x/public-layout/verify.sh\n' > "$_c55_fake_ps"
+_c55_run env C55_FAKE_ROOT_PID=4194399 C55_FAKE_ROOT_CMD="bash /shared/run-all.sh" \
+  FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=2 \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh"
+: > "$_c55_fake_ps"
+expect_rc 0 "55-B2: 同じ run-all.sh 祖先下の兄弟 public-layout では待たず rc=0"
+expect_lacks '完了を待っています' "55-B2: 兄弟 public-layout で待たない"
+
+# 55-C: リリース中マーカーおよび別 clone リリースプロセス終了後に自動開始する
+: > "$_c55_events"
+rm -rf "$_c55_gdir/ff-release-in-flight"
+sleep 15 &
+_c55_rel_sl=$!
+_c55_bg_pids="$_c55_rel_sl"
+mkdir -p "$_c55_gdir/ff-release-in-flight"
+{
+  printf 'token=c55tok\npid=%s\nhost=%s\nstarted=%s\nversion=1.2.3\n' \
+    "$_c55_rel_sl" "$(hostname 2>/dev/null || echo unknown)" "$(date +%s)"
+  printf 'lstart=%s\n' "$(ff_gate_ps_lstart "$_c55_rel_sl")"
+} > "$_c55_gdir/ff-release-in-flight/info"
+(
+  sleep 0.6
+  rm -rf "$_c55_gdir/ff-release-in-flight"
+  kill "$_c55_rel_sl" 2>/dev/null || true
+  printf 'RELEASE_CLEARED\n' >> "$_c55_events"
+) &
+_c55_bg_pids="$_c55_bg_pids $!"
+_c55_run env FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=10 C55_EVENT_LOG="$_c55_events" \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh"
+_c55_kill_bg
+rm -rf "$_c55_gdir/ff-release-in-flight"
+expect_rc 0 "55-C: リリース終了後に自動開始して rc=0"
+expect_has "release:${_c55_rel_sl}:scripts/release-dev-toolkit\\.sh" "55-C: 待機対象に release を名指し"
+if [ "$(tr '\n' ',' < "$_c55_events")" = "RELEASE_CLEARED,OK_RAN," ]; then
+  ok "55-C: リリース解除の後から suite が始まった"
+else
+  bad "55-C: リリース待機の順序が不正（$(cat "$_c55_events")）"
+fi
+
+# 55-C2: 別 clone の release-dev-toolkit.sh プロセスも追従 push 中を含め待機対象にする
+: > "$_c55_events"
+printf '4194305|1|bash /other-clone/scripts/release-dev-toolkit.sh\n' > "$_c55_fake_ps"
+(
+  sleep 0.6
+  : > "$_c55_fake_ps"
+  printf 'CROSS_REL_CLEARED\n' >> "$_c55_events"
+) &
+_c55_bg_pids="$!"
+_c55_run env FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=10 C55_EVENT_LOG="$_c55_events" \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh"
+_c55_kill_bg
+: > "$_c55_fake_ps"
+expect_rc 0 "55-C2: 別 clone の release-dev-toolkit.sh 終了後に自動開始して rc=0"
+expect_has 'release:4194305:/other-clone/scripts/release-dev-toolkit\.sh' "55-C2: 別 clone の release プロセスを名指し"
+if [ "$(tr '\n' ',' < "$_c55_events")" = "CROSS_REL_CLEARED,OK_RAN," ]; then
+  ok "55-C2: 別 clone の release 解除後に suite が始まった"
+else
+  bad "55-C2: 別 clone release 待機の順序が不正（$(cat "$_c55_events")）"
+fi
+
+# 55-C3: 祖先の release-dev-toolkit.sh プロセスでは自己待機しない（負の対照）
+_c55_run env C55_FAKE_ROOT_PID=4194398 C55_FAKE_ROOT_CMD="bash /anc/scripts/release-dev-toolkit.sh" \
+  FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=2 \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh"
+expect_rc 0 "55-C3: 祖先の release プロセスでは待たず rc=0"
+expect_lacks '完了を待っています' "55-C3: 祖先 release プロセスで待たない"
+
+# 55-D: 自系譜（祖先）のリリースマーカーでは自己待機しない
+rm -rf "$_c55_gdir/ff-release-in-flight"
+mkdir -p "$_c55_gdir/ff-release-in-flight"
+{
+  printf 'token=self\npid=%s\nhost=%s\nstarted=%s\nversion=1.2.3\n' \
+    "$$" "$(hostname 2>/dev/null || echo unknown)" "$(date +%s)"
+  printf 'lstart=%s\n' "$(ff_gate_ps_lstart "$$")"
+} > "$_c55_gdir/ff-release-in-flight/info"
+_c55_run env FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=2 \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh"
+rm -rf "$_c55_gdir/ff-release-in-flight"
+expect_rc 0 "55-D: 祖先の release マーカーでは自己待機せず rc=0"
+expect_lacks '完了を待っています' "55-D: 祖先リリースで待たない"
+expect_has 'FIXTURE-C55-OK' "55-D: 即座に suite を実行"
+
+# 55-E: 待機上限超過時は相手を名指しして rc=2（suite・記録は走らない）
+rm -f "$_c55_rec"
+sleep 15 &
+_c55_sl=$!
+_c55_bg_pids="$_c55_sl"
+printf '%s\n' "$(ff_gate_ps_lstart "$_c55_sl")" > "$_c55_mdir/${_c55_sl}"
+printf 'label=tests/run-all.sh\ntree=%s\n' "$_c55_fx/repo" > "$_c55_mdir/${_c55_sl}.meta"
+_c55_run env FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=1 \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh"
+rm -f "$_c55_mdir/${_c55_sl}" "$_c55_mdir/${_c55_sl}.meta"
+_c55_kill_bg
+expect_rc 2 "55-E: 上限超過時は rc=2 で停止"
+expect_has '待機上限（1 秒）に達したため停止しました' "55-E: 上限超過メッセージを出力"
+expect_has "${_c55_sl}:tests/run-all\\.sh" "55-E: 待っていた相手を名指しする"
+expect_lacks 'FIXTURE-C55-OK' "55-E: 上限超過時に suite を実行しない"
+[ ! -e "$_c55_rec" ] && ok "55-E: 上限超過回は gate-record を作成しない" || bad "55-E: gate-record が作られた"
+if [ -z "$(find "$_c55_wdir/waiting" "$_c55_wdir/active" -mindepth 1 2>/dev/null)" ]; then
+  ok "55-E: 上限超過時に waiting / active マーカーを残さない"
+else
+  bad "55-E: 上限超過後にマーカーが残存"
+fi
+
+# 55-E2: 待機期限経過後に空きになってもゲートを開始しない（期限判定を枠取得より先に行う）
+printf '4194306|1|bash /x/run-all.sh\n' > "$_c55_fake_ps"
+(
+  sleep 0.4
+  : > "$_c55_fake_ps"
+) &
+_c55_bg_pids="$!"
+_c55_run env FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=1 FF_RUN_ALL_WAIT_POLL_INTERVAL=5 \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh"
+_c55_kill_bg
+: > "$_c55_fake_ps"
+expect_rc 2 "55-E2: 期限到達後にブロッカーが消えても開始せず rc=2 で停止"
+expect_lacks 'FIXTURE-C55-OK' "55-E2: 期限到達後の空きでは suite を実行しない"
+
+# 55-F: 同時に 2 本の FF_RUN_ALL_WAIT=1 を起動しても ps 経由の相手・子孫を相互除外して直列完走する
+_c55_ov="$_c55_fx/overlap.log"
+_c55_lockf="$_c55_fx/inside.lock"
+rm -f "$_c55_ov" "$_c55_lockf"
+env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_ALLOW_SKIP -u FF_RUN_ALL_CHANGED -u FF_RUN_ALL_ALLOW_DIRTY \
+  FF_RUN_ALL_ALLOW_DIRTY=1 FF_RUN_ALL_JOBS=1 FF_GATE_RECORD_FILE="$_c55_rec" \
+  FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=15 FF_RUN_ALL_WAIT_DIR="$_c55_wdir" FF_RUN_ALL_WAIT_POLL_INTERVAL=0.1 \
+  C55_PAR_TAG="P1" C55_INSIDE_LOCK="$_c55_lockf" C55_OVERLAP_LOG="$_c55_ov" \
+  C55_SHOW_SIBLING_RUNNERS=1 C55_RUNNER_MATCH="$_c55_runner" \
+  C55_FAKE_PS_FILE="$_c55_fake_ps" C55_REAL_PS="$_c55_real_ps" PATH="$_c55_fx/bin:$PATH" \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/slow-probe.sh" > "$_c55_fx/p1.log" 2>&1 &
+_c55_p1=$!
+env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_ALLOW_SKIP -u FF_RUN_ALL_CHANGED -u FF_RUN_ALL_ALLOW_DIRTY \
+  FF_RUN_ALL_ALLOW_DIRTY=1 FF_RUN_ALL_JOBS=1 FF_GATE_RECORD_FILE="$_c55_rec" \
+  FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=15 FF_RUN_ALL_WAIT_DIR="$_c55_wdir" FF_RUN_ALL_WAIT_POLL_INTERVAL=0.1 \
+  C55_PAR_TAG="P2" C55_INSIDE_LOCK="$_c55_lockf" C55_OVERLAP_LOG="$_c55_ov" \
+  C55_SHOW_SIBLING_RUNNERS=1 C55_RUNNER_MATCH="$_c55_runner" \
+  C55_FAKE_PS_FILE="$_c55_fake_ps" C55_REAL_PS="$_c55_real_ps" PATH="$_c55_fx/bin:$PATH" \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/slow-probe.sh" > "$_c55_fx/p2.log" 2>&1 &
+_c55_p2=$!
+if wait "$_c55_p1" 2>/dev/null; then _c55_rc1=0; else _c55_rc1=$?; fi
+if wait "$_c55_p2" 2>/dev/null; then _c55_rc2=0; else _c55_rc2=$?; fi
+if [ "$_c55_rc1" -eq 0 ] && [ "$_c55_rc2" -eq 0 ]; then
+  ok "55-F: 同時起動した 2 本の FF_RUN_ALL_WAIT=1 が相互待ちせず両方 rc=0 で完走"
+else
+  bad "55-F: 同時待機のいずれかが失敗（rc1=${_c55_rc1} rc2=${_c55_rc2}）"
+fi
+if grep -qF '完了を待っています' "$_c55_fx/p1.log" "$_c55_fx/p2.log" 2>/dev/null; then
+  ok "55-F: 後続が実際に待機して順番待ちした"
+else
+  bad "55-F: 後続に待機ログが出ていない"
+fi
+if [ -f "$_c55_ov" ] && [ "$(grep -c '^ENTER:' "$_c55_ov" || true)" -eq 2 ] \
+    && [ "$(grep -c '^LEAVE:' "$_c55_ov" || true)" -eq 2 ] \
+    && [ "$(grep -c '^OVERLAP:' "$_c55_ov" || true)" -eq 0 ]; then
+  ok "55-F: 2 本の実行区間が重ならず直列に並んだ"
+else
+  bad "55-F: 実行区間に重なりまたは欠落がある（$(cat "$_c55_ov" 2>/dev/null || true)）"
+fi
+
+# 55-G: 待機中（waiting）プロセスとその子孫サブシェルは非待機の並走停止・負荷警告に含めない
+_c55_wchild_f="$_c55_fx/wchild.pid"
+rm -f "$_c55_wchild_f"
+bash -c 'sleep 20 & echo "$!" > "'"$_c55_wchild_f"'"; wait' &
+_c55_wsl=$!
+_c55_bg_pids="$_c55_wsl"
+_c55_ww=0
+while [ "$_c55_ww" -lt 30 ] && [ ! -s "$_c55_wchild_f" ]; do
+  sleep 0.05
+  _c55_ww=$((_c55_ww + 1))
+done
+_c55_wchild="$(cat "$_c55_wchild_f" 2>/dev/null || true)"
+[ -n "$_c55_wchild" ] && _c55_bg_pids="$_c55_bg_pids $_c55_wchild"
+mkdir -p "$_c55_wdir/waiting"
+printf '%s\n' "$(ff_gate_ps_lstart "$_c55_wsl")" > "$_c55_wdir/waiting/${_c55_wsl}"
+printf '%s|%s|bash /x/run-all.sh\n' "$_c55_wchild" "$_c55_wsl" > "$_c55_fake_ps"
+_c55_run bash "$_c55_runner"
+expect_rc 0 "55-G: waiting 祖先のサブシェル子プロセスも並走停止に数えず rc=0"
+expect_has 'FIXTURE-C55-RUN-ALL' "55-G: run-all/verify.sh が実行される"
+expect_has 'FIXTURE-C55-OK' "55-G: ok-probe が実行される"
+expect_lacks '他ゲート .*run-all\.sh' "55-G: 起動時の負荷警告に待機側を混ぜない"
+
+# 55-G2: waiting マーカーのない非待機兄弟プロセスは除外しない（負の対照）
+sleep 20 &
+_c55_nw=$!
+_c55_bg_pids="$_c55_bg_pids $_c55_nw"
+printf '%s|1|bash /x/run-all.sh\n' "$_c55_nw" > "$_c55_fake_ps"
+_c55_run bash "$_c55_runner"
+expect_rc 2 "55-G2: waiting マーカーのないプロセスは除外せず rc=2 で止まる"
+
+# 55-H: 不正設定・symlink 待機領域は fail-closed rc=2
+_c55_run env FF_RUN_ALL_WAIT=true \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh"
+expect_rc 2 "55-H: FF_RUN_ALL_WAIT=true（明示スイート）は rc=2（fail-closed）"
+expect_lacks 'FIXTURE-C55-OK' "55-H: 不正 FF_RUN_ALL_WAIT=true で suite を実行しない"
+_c55_run env FF_RUN_ALL_WAIT=yes \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh"
+expect_rc 2 "55-H: FF_RUN_ALL_WAIT=yes は rc=2（fail-closed）"
+_c55_run env FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=0 \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh"
+expect_rc 2 "55-H: FF_RUN_ALL_WAIT_MAX_SECONDS=0 は rc=2（fail-closed）"
+_c55_run env FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=abc \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh"
+expect_rc 2 "55-H: FF_RUN_ALL_WAIT_MAX_SECONDS=abc は rc=2（fail-closed）"
+_c55_run env FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=86401 \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh"
+expect_rc 2 "55-H: FF_RUN_ALL_WAIT_MAX_SECONDS=86401 は rc=2（fail-closed）"
+ln -s "$_c55_wdir" "$_c55_fx/wait-link"
+_c55_run env FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=3 FF_RUN_ALL_WAIT_DIR="$_c55_fx/wait-link" \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh"
+rm -f "$_c55_fx/wait-link"
+expect_rc 2 "55-H: symlink の FF_RUN_ALL_WAIT_DIR は rc=2（fail-closed）"
+expect_lacks 'FIXTURE-C55-OK' "55-H: 不正待機領域で suite を実行しない"
+
+# 55-K: 死んだ PID の残骸 start.lock は自動回収し、生存中 start.lock は過剰回収しない
+rm -rf "$_c55_wdir/waiting" "$_c55_wdir/active" "$_c55_wdir/start.lock"
+: > "$_c55_fake_ps"
+_c55_kill_bg
+sleep 0 &
+_c55_dead=$!
+wait "$_c55_dead" 2>/dev/null || true
+mkdir -p "$_c55_wdir/start.lock"
+printf 'token=deadtok\npid=%s\nlstart=Thu Jan  1 00:00:00 1970\nstarted=1\n' "$_c55_dead" > "$_c55_wdir/start.lock/info"
+_c55_run env FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=5 \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh"
+expect_rc 0 "55-K: 死んだ PID の start.lock を回収して rc=0"
+[ ! -e "$_c55_wdir/start.lock" ] && [ ! -e "$_c55_wdir/start-reclaim.lock" ] && ok "55-K: 回収後の start.lock と start-reclaim.lock が解放されている" || bad "55-K: ロックが残存している"
+
+mkdir -p "$_c55_wdir/start.lock" "$_c55_wdir/start-reclaim.lock"
+printf 'token=deadtok\npid=%s\nlstart=Thu Jan  1 00:00:00 1970\nstarted=1\n' "$_c55_dead" > "$_c55_wdir/start.lock/info"
+printf 'token=deadrel\npid=%s\nlstart=Thu Jan  1 00:00:00 1970\nstarted=1\n' "$_c55_dead" > "$_c55_wdir/start-reclaim.lock/info"
+_c55_run env FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=5 \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh"
+expect_rc 0 "55-K: 死んだ PID の start-reclaim.lock 残骸も回収して rc=0"
+[ ! -e "$_c55_wdir/start.lock" ] && [ ! -e "$_c55_wdir/start-reclaim.lock" ] && ok "55-K: start-reclaim.lock 回収後に残存ロックがない" || bad "55-K: start-reclaim.lock が残存している"
+
+sleep 15 &
+_c55_alive_lk=$!
+_c55_bg_pids="$_c55_alive_lk"
+mkdir -p "$_c55_wdir/start.lock"
+printf 'token=livetok\npid=%s\nlstart=%s\nstarted=1\n' \
+  "$_c55_alive_lk" "$(ff_gate_ps_lstart "$_c55_alive_lk")" > "$_c55_wdir/start.lock/info"
+_c55_run env FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=1 \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh"
+_c55_kill_bg
+rm -rf "$_c55_wdir/start.lock"
+expect_rc 2 "55-K: 生存中 PID の start.lock は 60 秒経過扱いでも過剰回収せず rc=2"
+expect_has 'start-lock:' "55-K: start-lock 待機中の理由を名指し"
+
+# 55-L: 待機明け（GATE_DID_WAIT=1）の clean 再確認と新 HEAD の記録更新（ALLOW_DIRTY なし）
+: > "$_c55_fake_ps"
+printf '4194307|1|bash /x/run-all.sh\n' > "$_c55_fake_ps"
+(
+  sleep 0.3
+  printf '# dirty during wait\n' >> "$_c55_fx/repo/tests/ok-probe/verify.sh"
+  sleep 0.5
+  : > "$_c55_fake_ps"
+) &
+_c55_bg_pids="$!"
+RUN_OUT=""
+if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_ALLOW_SKIP -u FF_RUN_ALL_CHANGED -u FF_RUN_ALL_ALLOW_DIRTY \
+  FF_RUN_ALL_JOBS=1 FF_GATE_RECORD_FILE="$_c55_rec" FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=10 \
+  FF_RUN_ALL_WAIT_DIR="$_c55_wdir" FF_RUN_ALL_WAIT_POLL_INTERVAL=0.1 \
+  C55_FAKE_PS_FILE="$_c55_fake_ps" C55_REAL_PS="$_c55_real_ps" PATH="$_c55_fx/bin:$PATH" \
+  bash "$_c55_runner" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+_c55_kill_bg
+: > "$_c55_fake_ps"
+_dg_git -C "$_c55_fx/repo" checkout -- tests/ok-probe/verify.sh >/dev/null 2>&1 || true
+expect_rc 1 "55-L: 待機中に作業ツリーが汚れると終了せず rc=1 で止まる"
+expect_has '待機中に作業ツリーが変更された' "55-L: 待機中の作業ツリー変更を検出して診断する"
+expect_lacks 'FIXTURE-C55-OK' "55-L: 汚れた場合は suite を実行しない"
+
+rm -f "$_c55_rec"
+printf '4194307|1|bash /x/run-all.sh\n' > "$_c55_fake_ps"
+_c55_newhead_f="$_c55_fx/newhead.txt"
+rm -f "$_c55_newhead_f"
+(
+  sleep 0.3
+  printf 'added\n' > "$_c55_fx/repo/wait-head-advance.txt"
+  git -C "$_c55_fx/repo" add wait-head-advance.txt
+  _dg_git -C "$_c55_fx/repo" commit -qm "advance head during wait"
+  git -C "$_c55_fx/repo" rev-parse HEAD > "$_c55_newhead_f"
+  sleep 0.4
+  : > "$_c55_fake_ps"
+) &
+_c55_bg_pids="$!"
+if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_ALLOW_SKIP -u FF_RUN_ALL_CHANGED -u FF_RUN_ALL_ALLOW_DIRTY \
+  FF_RUN_ALL_JOBS=1 FF_GATE_RECORD_FILE="$_c55_rec" FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=10 \
+  FF_RUN_ALL_WAIT_DIR="$_c55_wdir" FF_RUN_ALL_WAIT_POLL_INTERVAL=0.1 \
+  C55_FAKE_PS_FILE="$_c55_fake_ps" C55_REAL_PS="$_c55_real_ps" PATH="$_c55_fx/bin:$PATH" \
+  bash "$_c55_runner" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+_c55_kill_bg
+: > "$_c55_fake_ps"
+expect_rc 0 "55-L: 待機中にコミットが進んだクリーンな再開で rc=0"
+if [ -s "$_c55_newhead_f" ] && [ -s "$_c55_rec" ] && grep -qF "COMMIT=$(cat "$_c55_newhead_f")" "$_c55_rec"; then
+  ok "55-L: gate-record に待機明けの最新 HEAD を記録した"
+else
+  bad "55-L: gate-record が待機前 HEAD のまま、または記録なし（$(cat "$_c55_rec" 2>/dev/null || true) / new=$(cat "$_c55_newhead_f" 2>/dev/null || true)）"
+fi
+
+# 55-N: 非待機モードでも public-layout / release 並走を検出して rc=2 で止まる
+printf '4194301|1|bash /x/public-layout/verify.sh\n' > "$_c55_fake_ps"
+_c55_run bash "$_c55_runner"
+: > "$_c55_fake_ps"
+expect_rc 2 "55-N: 非待機モードで別ツリー public-layout 検出時は rc=2"
+expect_has '4194301:/x/public-layout/verify\.sh' "55-N: 非待機で public-layout を名指し"
+
+sleep 15 &
+_c55_rel_nw=$!
+_c55_bg_pids="$_c55_rel_nw"
+mkdir -p "$_c55_gdir/ff-release-in-flight"
+{
+  printf 'token=nw\npid=%s\nhost=%s\nstarted=%s\nversion=1.2.3\n' \
+    "$_c55_rel_nw" "$(hostname 2>/dev/null || echo unknown)" "$(date +%s)"
+  printf 'lstart=%s\n' "$(ff_gate_ps_lstart "$_c55_rel_nw")"
+} > "$_c55_gdir/ff-release-in-flight/info"
+_c55_run bash "$_c55_runner"
+_c55_kill_bg
+rm -rf "$_c55_gdir/ff-release-in-flight"
+expect_rc 2 "55-N: 非待機モードで生存中リリース検出時は rc=2"
+expect_has 'release:' "55-N: 非待機で release を名指し"
+expect_has '--take-over' "55-N: 非待機の release 停止文に復帰手段を含む"
+
+# 55-I: 単体 tests/run-all/verify.sh も FF_RUN_ALL_WAIT=1 で待機・上限停止する
+: > "$_c55_fake_ps"
+rm -f "$_c55_wdir/waiting/${_c55_wsl:-none}"
+_c55_kill_bg
+printf '4194302|1|bash /x/run-all.sh\n' > "$_c55_fake_ps"
+(
+  sleep 0.6
+  : > "$_c55_fake_ps"
+) &
+_c55_bg_pids="$!"
+_c55_run env FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=10 FF_RUN_ALL_VERIFY_STOP_AFTER_GUARD=1 \
+  bash "$_c55_fx/vtree/tests/run-all/verify.sh"
+_c55_kill_bg
+: > "$_c55_fake_ps"
+expect_rc 0 "55-I: 単体 run-all/verify.sh は FF_RUN_ALL_WAIT=1 で先行終了後にガード通過"
+expect_has '4194302:/x/run-all\.sh' "55-I: 単体 verify も待機対象を名指しする"
+expect_has 'GUARD_PASSED' "55-I: GUARD_PASSED に到達"
+
+printf '4194302|1|bash /x/run-all.sh\n' > "$_c55_fake_ps"
+_c55_run env FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=1 FF_RUN_ALL_VERIFY_STOP_AFTER_GUARD=1 \
+  bash "$_c55_fx/vtree/tests/run-all/verify.sh"
+: > "$_c55_fake_ps"
+expect_rc 2 "55-I: 単体 run-all/verify.sh も待機上限で rc=2 停止"
+expect_has '待機上限（1 秒）' "55-I: 単体 verify が待機上限を出力"
+expect_lacks 'GUARD_PASSED' "55-I: 上限超過時にガードを通過しない"
+
+# 55-J: 待機中の SIGTERM で waiting マーカーとロックを消して rc=143 で終わる
+printf '4194302|1|bash /x/run-all.sh\n' > "$_c55_fake_ps"
+rm -f "$_c55_fx/wait-term.log"
+env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_ALLOW_SKIP -u FF_RUN_ALL_CHANGED -u FF_RUN_ALL_ALLOW_DIRTY \
+  FF_RUN_ALL_ALLOW_DIRTY=1 FF_RUN_ALL_JOBS=1 FF_GATE_RECORD_FILE="$_c55_rec" \
+  FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=30 FF_RUN_ALL_WAIT_DIR="$_c55_wdir" FF_RUN_ALL_WAIT_POLL_INTERVAL=0.1 \
+  C55_FAKE_PS_FILE="$_c55_fake_ps" C55_REAL_PS="$_c55_real_ps" PATH="$_c55_fx/bin:$PATH" \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh" > "$_c55_fx/wait-term.log" 2>&1 &
+_c55_tpid=$!
+_c55_w=0
+while [ "$_c55_w" -lt 80 ]; do
+  if [ -e "$_c55_wdir/waiting/${_c55_tpid}" ] && grep -qF '完了を待っています' "$_c55_fx/wait-term.log" 2>/dev/null; then
+    break
+  fi
+  sleep 0.1
+  _c55_w=$((_c55_w + 1))
+done
+if [ -e "$_c55_wdir/waiting/${_c55_tpid}" ]; then
+  kill -TERM "$_c55_tpid" 2>/dev/null || true
+  if wait "$_c55_tpid" 2>/dev/null; then _c55_trc=0; else _c55_trc=$?; fi
+  if [ "$_c55_trc" -eq 143 ]; then
+    ok "55-J: 待機中の SIGTERM は rc=143 で終了する"
+  else
+    bad "55-J: 待機中 SIGTERM の rc が 143 でない（rc=${_c55_trc}）"
+  fi
+  if [ ! -e "$_c55_wdir/waiting/${_c55_tpid}" ] && [ ! -e "$_c55_wdir/start.lock" ]; then
+    ok "55-J: 待機中 SIGTERM 後に waiting マーカーと start.lock が残らない"
+  else
+    bad "55-J: 待機中 SIGTERM 後に状態ファイルが残存している"
+  fi
+else
+  kill "$_c55_tpid" 2>/dev/null || true
+  wait "$_c55_tpid" 2>/dev/null || true
+  bad "55-J: 待機マーカーの出現を確認できなかった"
+fi
+: > "$_c55_fake_ps"
+rm -f "$_c55_fx/wait-term.log"
+
+# 55-L2: 待機中に別コミットで未登録 suite が増えたら、最新 HEAD 再評価（exec）で検出して rc=1 停止
+_c55_l2_prev="$(git -C "$_c55_fx/repo" rev-parse HEAD)"
+rm -f "$_c55_rec"
+printf '4194307|1|bash /x/run-all.sh\n' > "$_c55_fake_ps"
+(
+  sleep 0.3
+  mkdir -p "$_c55_fx/repo/tests/unreg-after-wait"
+  printf '#!/usr/bin/env bash\necho "UNREG_SHOULD_NOT_RUN"\nexit 0\n' > "$_c55_fx/repo/tests/unreg-after-wait/verify.sh"
+  chmod +x "$_c55_fx/repo/tests/unreg-after-wait/verify.sh"
+  git -C "$_c55_fx/repo" add tests/unreg-after-wait/verify.sh
+  _dg_git -C "$_c55_fx/repo" commit -qm "add unregistered suite during wait"
+  sleep 0.4
+  : > "$_c55_fake_ps"
+) &
+_c55_bg_pids="$!"
+if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_ALLOW_SKIP -u FF_RUN_ALL_CHANGED -u FF_RUN_ALL_ALLOW_DIRTY \
+  FF_RUN_ALL_JOBS=1 FF_GATE_RECORD_FILE="$_c55_rec" FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=10 \
+  FF_RUN_ALL_WAIT_DIR="$_c55_wdir" FF_RUN_ALL_WAIT_POLL_INTERVAL=0.1 \
+  C55_FAKE_PS_FILE="$_c55_fake_ps" C55_REAL_PS="$_c55_real_ps" PATH="$_c55_fx/bin:$PATH" \
+  bash "$_c55_runner" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+_c55_kill_bg
+: > "$_c55_fake_ps"
+git -C "$_c55_fx/repo" reset -q --hard "$_c55_l2_prev" >/dev/null 2>&1 || true
+rm -rf "$_c55_fx/repo/tests/unreg-after-wait"
+expect_rc 1 "55-L2: 待機中に未登録 suite がコミットされたら新 HEAD 再評価で rc=1 停止"
+expect_lacks 'UNREG_SHOULD_NOT_RUN' "55-L2: 待機前の一覧のまま suite を実行しない"
+[ ! -e "$_c55_rec" ] && ok "55-L2: 新 HEAD 再評価の失敗時は gate-record を作らない" || bad "55-L2: 古い基準の gate-record が作られた"
+
+# 55-O: 未検証のラッパー親候補が真の実行中子 run-all.sh を祖先畳み込みで隠さない
+printf '4194310|1|bash /no/such/wrapper /x/other/tests/run-all.sh\n4194311|4194310|bash /x/other/tests/run-all.sh\n' > "$_c55_fake_ps"
+_c55_run bash "$_c55_runner"
+: > "$_c55_fake_ps"
+expect_rc 2 "55-O: 未検証ラッパー親が真の子 run-all.sh を隠さず rc=2"
+expect_has '4194311:/x/other/tests/run-all\.sh' "55-O: 真の子ゲートを名指し"
+
+# 55-P: 非待機モードの単体 run-all/verify.sh も active マーカーを置き、待機側が検知して終了まで待つ
+: > "$_c55_events"
+_c55_v_nonwait="$_c55_fx/vtree/tests/run-all/verify-nonwait.sh"
+_c55_v_ready="$_c55_fx/vnonwait.ready"
+rm -f "$_c55_v_nonwait" "$_c55_v_ready"
+awk '/^ff_verify_concurrency_guard$/ { exit } { print }' "$_c55_fx/vtree/tests/run-all/verify.sh" > "$_c55_v_nonwait"
+printf '%s\n' \
+  'trap ff_verify_wait_cleanup EXIT' \
+  'ff_verify_concurrency_guard' \
+  '[ -n "${C55_P_READY:-}" ] && : > "$C55_P_READY"' \
+  'sleep 0.8' \
+  'if [ -n "${C55_EVENT_LOG:-}" ]; then printf '\''NONWAIT_VERIFY_DONE\n'\'' >> "$C55_EVENT_LOG"; fi' \
+  'exit 0' >> "$_c55_v_nonwait"
+chmod +x "$_c55_v_nonwait"
+env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_ALLOW_SKIP -u FF_RUN_ALL_CHANGED -u FF_RUN_ALL_ALLOW_DIRTY \
+  -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS \
+  FF_RUN_ALL_WAIT_DIR="$_c55_wdir" C55_P_READY="$_c55_v_ready" C55_EVENT_LOG="$_c55_events" \
+  C55_FAKE_PS_FILE="$_c55_fake_ps" C55_REAL_PS="$_c55_real_ps" PATH="$_c55_fx/bin:$PATH" \
+  bash "$_c55_v_nonwait" > "$_c55_fx/vnonwait.log" 2>&1 &
+_c55_vnw=$!
+_c55_bg_pids="$_c55_vnw"
+_c55_pw=0
+while [ "$_c55_pw" -lt 80 ]; do
+  if [ -e "$_c55_wdir/active/${_c55_vnw}" ] && [ -e "$_c55_v_ready" ]; then
+    break
+  fi
+  sleep 0.05
+  _c55_pw=$((_c55_pw + 1))
+done
+if [ -e "$_c55_wdir/active/${_c55_vnw}" ]; then
+  ok "55-P: 非待機の単体 verify.sh が active マーカーを作成した"
+else
+  bad "55-P: 非待機の単体 verify.sh の active マーカーが見つからない"
+fi
+_c55_run env FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=10 C55_EVENT_LOG="$_c55_events" \
+  bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh"
+_c55_kill_bg
+rm -f "$_c55_v_nonwait" "$_c55_v_ready" "$_c55_fx/vnonwait.log"
+expect_rc 0 "55-P: 非待機の単体 verify.sh 終了後に自動開始して rc=0"
+expect_has 'tests/run-all/verify\.sh' "55-P: 待機対象に tests/run-all/verify.sh を名指し"
+if [ "$(tr '\n' ',' < "$_c55_events")" = "NONWAIT_VERIFY_DONE,OK_RAN," ]; then
+  ok "55-P: 非待機の単体 verify.sh 終了後から suite が始まった"
+else
+  bad "55-P: 実行順が不正（$(cat "$_c55_events")）"
+fi
+
+# 55-M: 待機除外判定を無効化した変異は 55-G 条件を rc=2 にする（55-G の検出力対照）
+sleep 20 &
+_c55_wsl=$!
+_c55_bg_pids="$_c55_wsl"
+mkdir -p "$_c55_wdir/waiting"
+printf '%s\n' "$(ff_gate_ps_lstart "$_c55_wsl")" > "$_c55_wdir/waiting/${_c55_wsl}"
+printf '%s|1|bash /x/run-all.sh\n' "$_c55_wsl" > "$_c55_fake_ps"
+awk '
+  /^ff_gate_pid_is_waiting\(\)/ { print; print "  return 1"; next }
+  { print }
+' "$_c55_fx/repo/tests/lib/gate-in-flight.sh" > "$_c55_fx/gate-in-flight.mut.sh"
+mv "$_c55_fx/gate-in-flight.mut.sh" "$_c55_fx/repo/tests/lib/gate-in-flight.sh"
+_dg_git -C "$_c55_fx/repo" add -A >/dev/null 2>&1 || true
+_dg_git -C "$_c55_fx/repo" commit -qm "c55-mut" >/dev/null 2>&1 || true
+_c55_run bash "$_c55_runner"
+_c55_kill_bg
+rm -f "$_c55_wdir/waiting/${_c55_wsl}"
+: > "$_c55_fake_ps"
+expect_rc 2 "55-M: 待機除外を無効化した変異では waiting PID を並走扱いして rc=2（55-G の対照）"
+expect_lacks 'FIXTURE-C55-RUN-ALL' "55-M: 変異では suite が走らない"
+
+rm -rf "$_c55_fx"
 fi
 
 # suite-cases-end: startup-guards.sh

@@ -321,7 +321,7 @@ GH
   if grep -qF 'develop|main|master|staging/*' "$PLUGIN_ROOT/scripts/merge-cleanup.sh" \
     && grep -qF 'develop|main|master|staging/*' "$PLUGIN_ROOT/scripts/lib/finish-delete-merged-head.sh" \
     && grep -qF "('release/*')" "$PLUGIN_ROOT/scripts/lib/merge-cleanup-pre.sh" \
-    && grep -qF "('release/*')" "$PLUGIN_ROOT/scripts/lib/finish-delete-merged-head.sh"; then
+    && grep -qF "ff_protect_extra_patterns[0]='release/*'" "$PLUGIN_ROOT/scripts/lib/finish-delete-merged-head.sh"; then
     ok "P9: ハードコード保護と既定の release/* が merge-cleanup と同じ文字列である"
   else
     bad "P9: 保護パターンの文字列が merge-cleanup とずれている"

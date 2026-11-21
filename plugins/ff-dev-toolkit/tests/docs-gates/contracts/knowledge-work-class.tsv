@@ -9,3 +9,6 @@ section	05-operations/deployment/git-workflow.md	#### 着手前の Playbook 参�
 section	05-operations/deployment/git-workflow.md	#### 着手前の Playbook 参照（ACE Reuse）	時点、系統（実装語／作業クラス語）、作業の1文、実際の検索語、OR/AND、結果を `implementation-notes.md` またはゲート進行表へ記録する。	検索の語と結果の対応を判断ログに残す
 section	05-operations/deployment/git-workflow.md	#### 着手前の Playbook 参照（ACE Reuse）	完了報告とコミット本文にも系統・検索語・ヒットの対応を残し、PR 本文への判断ログ転記と ACE ID 記録は本節の既存契約に従う。	完了報告とコミット本文へ検索の語と結果を渡す
 section	05-operations/deployment/git-workflow.md	#### 着手前の Playbook 参照（ACE Reuse）	効果は [retrospective の観察チェックリスト](../../../skills/retrospective/SKILL.md#観察チェックリスト)で、引き直した知見の適用と見落としを点検する。	効果確認をretrospectiveの点検へ接続する
+section	05-operations/deployment/git-workflow.md	#### 着手前の Playbook 参照（ACE Reuse）	knowledge-lookup.sh --impl <実装語>... --class <作業クラス語>...	二系統をスクリプト引数 --impl / --class で分離指定することを規定する
+section	05-operations/deployment/git-workflow.md	#### 着手前の Playbook 参照（ACE Reuse）	class=未指定	片軸欠落時に RECORD の未指定印を確認して補う規定を保持する
+section	05-operations/deployment/git-workflow.md	#### 工数の確認とブランチ作成	/knowledge-lookup	着手フックからの知識検索案内と同セッション ACE 通知への接続を保持する

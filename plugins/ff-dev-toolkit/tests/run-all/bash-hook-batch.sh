@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 集約入口の拒否・警告保存と実登録を検査する。
 # 空振り検出: 登録12本の通常はrc0、新guardだけを登録から外す/集約子の引数集合を0件にする各単独変異は登録集合assertでrc1（2026-10-22 macOS実測、構文rc0）。存在しない/空の子は無検査を診断する。
+# 空振り検出: 再検査未完了を拒否する分岐を除くと、再検査の子が exit 7 の回まで集約が成功扱いになり、guard-exit-code/rewrite.sh が rc=1（2026-11-20 macOS 実測）。
 # 変異検出: 拒否時の未実行注記を JSON の permissionDecisionReason から外す / 終了コード2の stderr 末尾から外す / 出力0件 / 解釈できる出力0件の経路で finish を通さず exit する、の4変異がそれぞれ赤（2026-10-02 実測）。
 # 変異検出: 時間切れの知らせを集約 JSON の systemMessage と additionalContext から外すと、打ち切りのケースが赤になる。stderr の診断行だけでは通さない（2026-10-27 Linux 実測）。
 # 変異検出: 終了コード2と打ち切りが重なる回で json_timeout を空にする分岐、および解釈できる出力0件経路の emit_timeout_only を外すとそれぞれ赤（2026-10-27 Linux 実測）。
@@ -53,6 +54,8 @@ with tempfile.TemporaryDirectory(prefix='ff-batch-test-') as temp:
     for key in list(env):
         if key.split('_')[:4] == ['FF', 'DEV', 'TOOLKIT', 'SKIP'] or key == 'FF_EXIT_CODE_ACK':
             env.pop(key)
+    for key in ('CLAUDECODE', 'CLAUDE_PROJECT_DIR', 'GROK_PLUGIN_ROOT', 'ff_bash_hooks_revalidated'):
+        env.pop(key, None)
     env['TMPDIR'] = str(temp)
     env['CLAUDE_PLUGIN_ROOT'] = root.as_posix()
 
@@ -282,6 +285,50 @@ with tempfile.TemporaryDirectory(prefix='ff-batch-test-') as temp:
     assert '競合する入力書き換え' in value['hookSpecificOutput']['permissionDecisionReason']
     assert value['systemMessage'] == notice
     assert value['hookSpecificOutput']['additionalContext'] == notice
+    # 書き換えの再検査が完了しない場合に、元の入力にも候補にも進まない。
+    payload = json.dumps({'hook_event_name': 'PreToolUse', 'tool_name': 'Bash',
+                          'tool_input': {'command': 'printf original'}})
+    rewrite = stub('rewrite-once', '[ "${ff_bash_hooks_revalidated:-0}" != 1 ] || exit 0\n'
+                   'printf "%s\\n" ' + shlex.quote(json.dumps({'hookSpecificOutput': {
+                       'hookEventName': 'PreToolUse', 'updatedInput': {'command': 'printf candidate'}}})))
+    result = run([rewrite, silent], payload)
+    assert result.returncode == 0 and not result.stderr, result
+    assert json.loads(result.stdout)['hookSpecificOutput']['updatedInput']['command'] == 'printf candidate'
+    for name, body, diagnostic in (
+        ('error', 'exit 7', '終了コード 7'),
+        ('invalid', 'printf "invalid\\n"', 'hook 出力を除外'),
+        ('timeout', 'exec sleep 60', '時間内に完了しませんでした'),
+    ):
+        passes_once = stub(name + '-on-recheck',
+                           '[ "${ff_bash_hooks_revalidated:-0}" = 1 ] || exit 0\n' + body)
+        result = run([rewrite, passes_once], payload, ostype='linux-gnu')
+        assert result.returncode == 2 and not result.stdout, result
+        assert diagnostic in result.stderr and '書き換え後の再検査が失敗' in result.stderr, result
+        assert result.stderr.splitlines()[-1] == note and result.stderr.count(note) == 1, result
+    result = run([rewrite, temp / 'absent'], payload)
+    assert result.returncode == 2 and not result.stdout, result
+    assert '読み込めません' in result.stderr and '書き換え後の再検査が失敗' in result.stderr, result
+    # 再検査結果を読む処理の失敗と、全ガードが無音で完了した場合を区別する。
+    actual_cat = shutil.which('cat')
+    assert actual_cat, 'fixture に必要な cat が無い'
+    unreadable = temp / 'unreadable-result'
+    unreadable.mkdir()
+    cat_fixture = unreadable / 'cat'
+    cat_fixture.write_text('#!/usr/bin/env bash\n'
+                           'case "${1##*/}" in rechecked.json) exit 1 ;; esac\n'
+                           'exec ' + shlex.quote(Path(actual_cat).as_posix()) + ' "$@"\n',
+                           newline='\n')
+    cat_fixture.chmod(0o700)
+    old_path = env['PATH']
+    env['PATH'] = str(unreadable) + os.pathsep + old_path
+    try:
+        result = run([rewrite, silent], payload)
+    finally:
+        env['PATH'] = old_path
+    assert result.returncode == 0, result
+    decision_output = json.loads(result.stdout)['hookSpecificOutput']
+    assert decision_output['permissionDecision'] == 'deny' and 'updatedInput' not in decision_output, result
+    assert '再検査結果を読み込めません' in decision_output['permissionDecisionReason'], result
     # Windows の Git Bash（MSYS / Cygwin）では子の枠が 25 秒（Issue `#2377`）。12 秒かかる子も打ち切らない
     late = stub('late', 'sleep 12\nprintf "%s" \'{"systemMessage":"遅い子"}\'')
     start = time.monotonic()
@@ -308,5 +355,13 @@ with tempfile.TemporaryDirectory(prefix='ff-batch-test-') as temp:
     result = run(args[2:], json.dumps(payload))
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)['hookSpecificOutput']['permissionDecision'] == 'deny'
+    # 実登録を再検査へ全部通しても、単純な候補は通常の権限判定まで届く。
+    env['CLAUDECODE'] = '1'
+    env['CLAUDE_PROJECT_DIR'] = temp.as_posix()
+    payload['tool_input']['command'] = 'printf left | tail -1 && printf right'
+    result = run(args[2:], json.dumps(payload))
+    assert result.returncode == 0, result.stderr
+    value = json.loads(result.stdout)['hookSpecificOutput']
+    assert value.get('updatedInput') and not value.get('permissionDecision'), value
 print('✅ bash-hook-batch: 登録・大入力・拒否優先・全警告・未実行注記・時間切れの JSON・子失敗・実ガード検証 passed')
 PY

@@ -1268,6 +1268,27 @@ else
   else
     bad "レビュー待ち時間の使い方に通る書き込み先 3 つの明記が見つかりません"
   fi
+  if grep -qF '別 worktree' "$MULTI_REVIEW_SKILL" && grep -qF 'FF_RUN_ALL_WAIT=1' "$MULTI_REVIEW_SKILL" \
+      && grep -qF '全レビュー終端後' "$MULTI_REVIEW_SKILL" \
+      && grep -qF 'baseline の赤と指摘は 1 fix commit へ束ね、HEAD が動いたら最終ゲートを省かない。' "$MULTI_REVIEW_SKILL"; then
+    ok "レビュー待ち時間の使い方が別 worktree での baseline（FF_RUN_ALL_WAIT=1）と 1 fix commit / 最終ゲート契約を指している"
+  else
+    bad "レビュー待ち時間の使い方に別 worktree baseline / FF_RUN_ALL_WAIT=1 / 最終ゲート契約が見つかりません"
+  fi
+  WAITING_WORK_REF="$(dirname "$MULTI_REVIEW_SKILL")/references/waiting-work.md"
+  if [ -s "$WAITING_WORK_REF" ] \
+      && grep -qF 'git worktree add --detach' "$WAITING_WORK_REF" \
+      && grep -qF 'FF_RUN_ALL_WAIT=1' "$WAITING_WORK_REF" \
+      && grep -qF 'rev-parse --absolute-git-dir' "$WAITING_WORK_REF" \
+      && grep -qF 'ff-dev-toolkit/gate-record' "$WAITING_WORK_REF" \
+      && ! grep -qF 'gate-head-record' "$WAITING_WORK_REF" \
+      && ! grep -qF 'gate-head-record' "$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md" \
+      && grep -qF 'git worktree remove' "$WAITING_WORK_REF" \
+      && grep -qF 'baseline の赤はレビュー指摘と合わせて 1 つの fix commit に束ね、HEAD が動いたら最終ゲートは省かない' "$WAITING_WORK_REF"; then
+    ok "multi-review/references/waiting-work.md が別 worktree baseline の手順・正しい gate-record・後始末・最終ゲート契約を持つ"
+  else
+    bad "multi-review/references/waiting-work.md に別 worktree baseline の必須手順が不足、または旧 gate-head-record 誤記が残存しています"
+  fi
 fi
 
 # --- 委譲プロンプトの事実確認義務（親側 / 子側の 2 規定）とその到達性 ---

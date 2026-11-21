@@ -2,7 +2,7 @@
 #
 # merge-cleanup.sh — PR マージ後のクリーンアップ一括実行
 #
-# 使い方: merge-cleanup.sh [--dry-run] <PR番号>
+# 使い方: merge-cleanup.sh [--dry-run] [--worktree-branch <ブランチ名>] <PR番号>
 #         merge-cleanup.sh --help
 #
 # オプション:
@@ -18,7 +18,8 @@
 #   3. base ブランチへ復帰 + fetch --prune + pull --ff-only
 #   3.5 ガード情報の取得（MERGED / open PR 一覧。失敗時は後続の破壊的処理を fail-closed で縮退）
 #   4. 対象 PR のリモートブランチ削除（same-repo かつ open PR 未使用、--force-with-lease で OID 一致時のみ）
-#   5. [gone] ローカルブランチ + 関連 worktree の削除
+#   5. [gone] ローカルブランチ + 対象 PR の head を保持する worktree の削除
+#      （他の worktree は --worktree-branch で個別指定された場合だけ候補にする）
 #      （dirty worktree は保護。-D は MERGED PR head と OID 一致、または worktree 未保持・
 #      同名 PR が一意かつ same-repo・PR head の祖先と確認できたブランチのみ）
 #   5.4 worktree 未使用・マージ証拠・origin 同名 ref 不在を満たす worktree-agent-* の削除
@@ -603,7 +604,7 @@ print_usage() {
   # 変数展開は使わない（--help は最も壊れにくい経路であるべき）。
   cat <<'USAGE'
 使い方:
-  merge-cleanup.sh [--dry-run] <PR番号>   マージ済み PR のクリーンアップを実行する
+  merge-cleanup.sh [--dry-run] [--worktree-branch <ブランチ名>] <PR番号>
   merge-cleanup.sh --help                 この使い方を表示する
 
 引数:
@@ -619,11 +620,13 @@ print_usage() {
               ブランチ → その worktree）は read-only の ls-remote で予測して
               一覧へ含める。ref は 1 つも書き換えない。
   --help, -h  この使い方を表示して終了する（PR 番号としては解釈しない）。
+  --worktree-branch <ブランチ名>  指定した [gone] ブランチの worktree も照合する。
+              ブランチ名は完全一致。繰り返し可。マージ済み OID・状態の照合は必要。
   --github-input FILE  絶対パスの取得索引を読む。必須state/head/base不足は名指しrc2。
 
 このスクリプトが削除するもの（--dry-run を付けない場合）:
   - 対象 PR のリモートブランチ（origin。--force-with-lease で OID 一致時のみ）
-  - [gone] ローカルブランチと、それを保持する worktree（clean のときだけ）
+  - [gone] ローカルブランチと、対象 PR の head または個別指定したブランチを保持する worktree
   - worktree 未使用・マージ証拠・origin 同名 ref 不在を満たす worktree-agent-*
   - 削除した worktree だけが使っていた Claude Code のトランスクリプト
     （既定は削除ではなく tar.gz へのアーカイブ）
@@ -638,6 +641,7 @@ USAGE
 # 必ず終了させる（引数を 1 つずつ見る形にしないと、先頭以外に置かれた --help が
 # 位置引数として素通りする）。
 DRY_RUN=0
+EXTRA_WORKTREE_BRANCHES=()
 PR_NUM=""
 github_input=""
 ARG_ERROR=""
@@ -649,6 +653,14 @@ while [ "$#" -gt 0 ]; do
       ;;
     --dry-run)
       DRY_RUN=1
+      ;;
+    --worktree-branch)
+      if [ "$#" -lt 2 ] || [[ "$2" == -* ]] || ! git check-ref-format "refs/heads/$2"; then
+        ARG_ERROR="--worktree-branch には実際のブランチ名を指定してください。"
+        break
+      fi
+      EXTRA_WORKTREE_BRANCHES+=("$2")
+      shift
       ;;
     --github-input)
       [ "$#" -ge 2 ] && [ -n "$2" ] || { echo 'github-input: index argument missing' >&2; exit 2; }
@@ -804,6 +816,63 @@ last_push_error_head() {
   printf '%s' "$line"
 }
 
+wt_confirm_head() { # <worktree> <branch> <oid>
+  local ref oid
+  if oid="$(git -C "$1" rev-parse --verify HEAD 2>/dev/null)" && [ "$oid" = "$3" ] \
+    && ref="$(git -C "$1" symbolic-ref --quiet HEAD 2>/dev/null)" && [ "$ref" = "refs/heads/$2" ]; then
+    return 0
+  fi
+  echo "削除直前に worktree のブランチまたは HEAD が変わったか、照合できません: $1"
+  return 1
+}
+
+wt_inventory() {
+  (CDPATH='' cd -P -- "$1" && find . -mindepth 1 -print0)
+}
+
+wt_sorted_inventory() {
+  local entry
+  # 行区切りの comm で安全に比較するため、改行を含むパスも 1 行に引用する。
+  while IFS= read -r -d '' entry; do printf '%q\n' "$entry"; done < "$1" | LC_ALL=C sort -u
+}
+
+worktree_remove_failure_state() { # <worktree> <削除前のパス一覧が取得済み: 0|1>
+  local wt="$1" inventory_ok="$2" registrations missing_count
+  local before="$WORK_TMP/wt-before-remove.z" after="$WORK_TMP/wt-after-remove.z"
+  if ! registrations="$(git worktree list --porcelain)"; then
+    echo "worktree の登録状態を再確認できませんでした: ${wt}"
+  elif ! grep -qxF "worktree ${wt}" <<<"$registrations"; then
+    echo "worktree の登録は既に解除されています: ${wt}"
+  else
+    echo "worktree の登録は残っています: ${wt}"
+  fi
+
+  if [ -d "$wt" ] && [ ! -L "$wt" ]; then
+    if ! wt_inventory "$wt" > "$after" 2>/dev/null; then
+      echo "削除後のパス一覧を取得できず、worktree 内の消失は確認できません: ${wt}"
+      return
+    fi
+  elif [ -x "${wt%/*}" ] && [ ! -e "$wt" ] && [ ! -L "$wt" ]; then
+    echo "worktree のディレクトリは既に消えています: ${wt}"
+    : > "$after"
+  else
+    echo "worktree のディレクトリの状態と中身を確認できません: ${wt}"
+    return
+  fi
+  if [ "$inventory_ok" != "1" ] || ! wt_sorted_inventory "$before" > "$before.sorted" \
+    || ! wt_sorted_inventory "$after" > "$after.sorted" \
+    || ! LC_ALL=C comm -23 "$before.sorted" "$after.sorted" > "$WORK_TMP/wt-missing.list"; then
+    echo "削除前後の一覧を照合できず、worktree 内の消失は確認できません: ${wt}"
+  elif [ -s "$WORK_TMP/wt-missing.list" ]; then
+    missing_count="$(wc -l < "$WORK_TMP/wt-missing.list")"
+    printf 'worktree 内のパスが %d 件消えています（%s の中の例: %s）\n' \
+      "$missing_count" "$wt" "$(sed -n '1p' "$WORK_TMP/wt-missing.list")"
+    if [ "$WT_UNLINK_IGNORED_LINKS" = "1" ]; then
+      echo '集計には、Windows の削除準備で外した ignored リンクも含まれます。'
+    fi
+  fi
+}
+
 dry_run_skip() {
   # dry-run で見送った操作を 1 行で示す。**ガードの判定はこの関数を通さない** —
   # 通すと dry-run だけ判定が変わり、「実行時と同じ判定」という契約が壊れる。
@@ -846,8 +915,8 @@ remote_delete_verdict() {
 }
 
 # dry-run の仮想 prune。実行時は Step 3 / Step 4 の `fetch --prune` と Step 4 の
-# リモート削除によって、**今は [gone] ではないローカルブランチが新たに [gone] になり、
-# その worktree ごと Step 5 で消える**。dry-run は prune も削除もしないので、素の
+# リモート削除によって、今は [gone] ではないブランチが新たに [gone] になり、
+# Step 5 の削除・保全判定に入る。dry-run は prune も削除もしないので、素の
 # `upstream:track` だけを見ると連鎖の予告が実際の削除より少なくなる — --dry-run の
 # 唯一の価値が「何が壊れるかを先に見せる」ことである以上、予告が実際より少ないのは
 # 最も危険な壊れ方で、受け入れ条件（削除対象が一覧で出力される）も満たせない。
@@ -1107,7 +1176,7 @@ fi
 
 echo ""
 if [ "$DRY_RUN" = "1" ]; then
-  echo "次のステップ: 上の一覧を確認し、問題なければ --dry-run を外して 'merge-cleanup.sh ${PR_NUM}' を実行する"
+  echo "次のステップ: 上の一覧を確認し、問題なければ同じ引数から --dry-run だけを外して実行する"
 else
   echo "次のステップ: /ace-curate $PR_NUM で知見をプレイブックへ反映"
 fi

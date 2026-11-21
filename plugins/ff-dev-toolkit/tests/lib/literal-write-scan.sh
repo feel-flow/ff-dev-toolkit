@@ -39,6 +39,9 @@
 #      前提の `\\` の解釈は Claude Code の Bash ツール固有なので、hook は Claude Code 以外のホスト
 #      （`CLAUDECODE` が 1 でない）では D の検出を落とす。`-c` / `-e` の引数で渡すプログラム・`bash <<'EOF'` の本文（`printf '\\134'` で値を組み立てる形）は
 #      対象外（誤検知を抑えるため Issue の射程どおりに絞る。既知の限界）
+#   H（heredoc-command-substitution）: Python / Node.js / Perl / Ruby に付いた引用なし heredoc の本文に
+#      シェルが解釈するバッククォートや `$(` がある形。本文の展開前に検査する。引用済みの区切り語と
+#      エスケープ済みの記号は対象外。インタプリタ以外に付いた heredoc には適用しない。
 #   P（powershell-backtick。Issue `#2496` / 導入先 OBS-037）: `pwsh` / `powershell` の `-Command`（`-c` と
 #      その短縮形。Windows PowerShell は位置引数も）に渡すプログラムで、**二重引用符の文字列**（`"…"` /
 #      ヒアストリング `@"…"@`）の中に `` ` `` + PowerShell のエスケープ文字（`0 a b e f n r t u v`）がある形。
@@ -76,6 +79,7 @@
 #       `A<TAB><NAME><TAB>perl`             述語 A の検出
 #       `B<TAB><NAME><TAB><perl|node>`      述語 B の検出
 #       `D<TAB><\\x の 3 文字><TAB><言語>`   述語 D の検出（言語は python / node / perl / ruby。言語ごとに 1 件）
+#       `H<TAB><backtick|dollar-paren><TAB><言語>` 述語 H の検出（言語・記号の組ごとに 1 件）
 #       `P<TAB><`x の 2 文字><TAB>powershell` 述語 P の検出（エスケープ文字ごとに 1 件）
 #       `Q<TAB><\\x の 3 文字><TAB><single|double|bare|ansi>` 述語 Q の検出（引用の種類ごとに 1 件。x が改行・タブなら
 #                                            `<LF>` / `<TAB>` と書く）。第 3 引数が 1（入れ子の走査）のときは出さない
@@ -89,7 +93,7 @@
 #     第 2 引数: 親で export されずに代入された名前（空白区切り）。入れ子の走査で使う
 #     第 3 引数: 1 なら入れ子の走査（述語 Q を出さない）。省略はトップレベル
 #   ff_literal_write_scan_all <コマンド文字列>
-#     入れ子（`S` 行）を最大 3 段まで再走査し、`A` / `B` / `D` / `P` / `Q` 行だけを返す。親で export されずに代入された
+#     入れ子（`S` 行）を最大 3 段まで再走査し、`A` / `B` / `D` / `H` / `P` / `Q` 行だけを返す。親で export されずに代入された
 #     名前は子の走査へ引き継ぐ（子の環境には無いので、子が `$ENV{NAME}` で読めば述語 B に当たる）。
 #     rc は ff_literal_write_scan と同じ契約で、入れ子のどこかが 0 以外なら最初の非 0 を返す。
 #     3 段を超える入れ子は rc 4、awk が 0 で終わったのに完了印（`E` 行）が無いときは rc 5
@@ -139,7 +143,7 @@ function q_ansi(e, f) {
 }
 # 閉じ括弧までを読み飛ばす（$( … ) / <( … )。引用・入れ子・中の heredoc を扱う）。戻り値は ")" の次の位置、0 は未終端
 # noheredoc=1 は算術式（$(( … )) / (( … ))）の中: << はシフト演算子で heredoc ではない
-function skip_paren(p, noheredoc,   depth, ch, j, hn, hd, hs, line, e, t, pv) {
+function skip_paren(p, noheredoc,   depth, ch, j, hn, hs, t, pv) {
   depth = 1; hn = 0
   while (p <= n) {
     ch = substr(src, p, 1)
@@ -158,29 +162,16 @@ function skip_paren(p, noheredoc,   depth, ch, j, hn, hd, hs, line, e, t, pv) {
     if (!noheredoc && ch == "<" && substr(src, p + 1, 1) == "<" && substr(src, p + 2, 1) != "<") {
       p += 2
       if (substr(src, p, 1) == "-") { p++; t = 1 } else t = 0
-      while (substr(src, p, 1) == " " || substr(src, p, 1) == "\t") p++
-      hd = ""
-      while (p <= n) {
-        ch = substr(src, p, 1)
-        if (ch == sq) { j = index(substr(src, p + 1), sq); if (!j) return 0; hd = hd substr(src, p + 1, j - 1); p += j + 1; continue }
-        if (ch == "\"") { j = index(substr(src, p + 1), "\""); if (!j) return 0; hd = hd substr(src, p + 1, j - 1); p += j + 1; continue }
-        if (ch == "\\") { hd = hd substr(src, p + 1, 1); p += 2; continue }
-        if (ch ~ /[ \t\n;&|<>()]/) break
-        hd = hd ch; p++
-      }
-      hn++; hdl[hn] = hd; hst[hn] = t
+      p = read_heredoc_word(p); if (!p) return 0
+      hn++; hdl[hn] = heredoc_word; hst[hn] = t; hql[hn] = heredoc_quoted
       continue
     }
     if (ch == "\n" && hn > 0) {
       p++
       for (hs = 1; hs <= hn; hs++) {
         while (1) {
-          if (p > n) return 0
-          e = index(substr(src, p), "\n")
-          line = (e ? substr(src, p, e - 1) : substr(src, p))
-          p = (e ? p + e : n + 1)
-          if (hst[hs]) sub(/^\t+/, "", line)
-          if (line == hdl[hs]) break
+          p = read_heredoc_line(p, hst[hs], hql[hs]); if (!p) return 0
+          if (heredoc_line == hdl[hs]) break
         }
       }
       hn = 0
@@ -254,23 +245,112 @@ function endword() {
   w = ""; inw = 0
 }
 function endcmd() { endword(); skipnext = 0; if (cwn[cur] > 0 || (cur in hbody)) { cur++; cwn[cur] = 0 } }
+# ANSI-C 引用で使う Bash 3.2 のバイトエスケープを、シェルを起動せずに戻す。
+function ansi_delimiter(body,   p, ch, esc, code, digit, width, radix, value, used, out) {
+  for (p = 1; p <= length(body); p++) {
+    ch = substr(body, p, 1)
+    if (ch != "\\") { out = out ch; continue }
+    esc = substr(body, ++p, 1)
+    code = index("abefnrtvE", esc)
+    if (esc != "" && code) {
+      out = out substr("\007\010\033\014\012\015\011\013\033", code, 1)
+      continue
+    }
+    if (esc == "\\" || esc == sq || esc == "\"" || esc == "?") { out = out esc; continue }
+    if (esc == "x" || esc ~ /^[0-7]$/) {
+      radix = (esc == "x" ? 16 : 8)
+      width = (radix == 16 ? 2 : 3)
+      if (radix == 8) p--
+      value = 0; used = 0
+      while (used < width && p < length(body)) {
+        digit = index("0123456789abcdef", tolower(substr(body, p + 1, 1))) - 1
+        if (digit < 0 || digit >= radix) break
+        value = value * radix + digit; used++; p++
+      }
+      if (used) {
+        if (value % 256 == 0) return out
+        out = out sprintf("%c", value % 256)
+        continue
+      }
+    }
+    out = out "\\" esc
+  }
+  return out
+}
+
+# << の次の語を引用除去し、終端位置と、引用の有無を返す。0 は語の欠落・未終端。
+function read_heredoc_word(p,   ch, nx, qend) {
+  heredoc_word = ""; heredoc_quoted = 0
+  while (substr(src, p, 1) ~ /[ \t]/) p++
+  while (p <= n) {
+    ch = substr(src, p, 1); nx = substr(src, p + 1, 1)
+    if (ch ~ /[ \t\n;&|<>()]/) break
+    if (ch == "\\" && nx == "\n") { p += 2; continue }
+    if (ch == "\\") {
+      if (nx == "") return 0
+      heredoc_word = heredoc_word nx; heredoc_quoted = 1; p += 2; continue
+    }
+    if (ch == "$" && nx == sq) {
+      qend = skip_ansi(p + 2); if (!qend) return 0
+      heredoc_word = heredoc_word ansi_delimiter(substr(src, p + 2, qend - p - 3))
+      heredoc_quoted = 1; p = qend; continue
+    }
+    if (ch == sq) {
+      qend = index(substr(src, p + 1), sq); if (!qend) return 0
+      heredoc_word = heredoc_word substr(src, p + 1, qend - 1)
+      heredoc_quoted = 1; p += qend + 1; continue
+    }
+    if (ch == "\"") {
+      heredoc_quoted = 1; p++
+      while (p <= n && substr(src, p, 1) != "\"") {
+        ch = substr(src, p, 1); nx = substr(src, p + 1, 1)
+        if (ch == "\\" && nx == "\n") { p += 2; continue }
+        if (ch == "\\" && index("\"\\$\140", nx) && nx != "") { ch = nx; p++ }
+        heredoc_word = heredoc_word ch; p++
+      }
+      if (p > n) return 0
+      p++; continue
+    }
+    heredoc_word = heredoc_word ch; p++
+  }
+  return (heredoc_word != "" || heredoc_quoted ? p : 0)
+}
+
+# 引用なしの本文では、エスケープされていない継続行を結合してから終端と比較する。
+function read_heredoc_line(p, strip, quoted,   e, line) {
+  heredoc_line = ""
+  while (p <= n) {
+    e = index(substr(src, p), "\n")
+    line = (e ? substr(src, p, e - 1) : substr(src, p))
+    p = (e ? p + e : n + 1)
+    if (!quoted && e && line ~ /(^|[^\\])(\\\\)*\\$/) {
+      heredoc_line = heredoc_line substr(line, 1, length(line) - 1)
+      continue
+    }
+    heredoc_line = heredoc_line line
+    if (strip) sub(/^\t+/, "", heredoc_line)
+    return p
+  }
+  return 0
+}
 # heredoc の本文を読み、登録したコマンドへ付ける。i は改行の次を指す
-function read_bodies(   k, e, line, cmp, body) {
+function read_bodies(   k, body, expansion) {
   for (k = 1; k <= npend; k++) {
     body = ""
     while (1) {
-      if (i > n) { rc = 4; return 0 }
-      e = index(substr(src, i), "\n")
-      line = (e ? substr(src, i, e - 1) : substr(src, i))
-      i = (e ? i + e : n + 1)
-      cmp = line
-      if (pstrip[k]) sub(/^\t+/, "", cmp)
-      if (cmp == pdelim[k]) break
-      body = body line "\n"
+      i = read_heredoc_line(i, pstrip[k], pquoted[k])
+      if (!i) { rc = 4; return 0 }
+      if (heredoc_line == pdelim[k]) break
+      body = body heredoc_line "\n"
     }
+    if (pstdin[k]) hstdin[pcmd[k]] = 1
     # 引用付きの本文は、述語 D 用にシェルが何も解釈しない原文のまま残す
     if (pquoted[k]) hraw[pcmd[k]] = hraw[pcmd[k]] body
-    if (!pquoted[k]) body = expand_body(body)
+    if (!pquoted[k]) {
+      expansion = heredoc_expansion(body)
+      if (pstdin[k] && expansion != "" && !(pcmd[k] in hsub)) hsub[pcmd[k]] = expansion
+      body = expand_body(body)
+    }
     hbody[pcmd[k]] = hbody[pcmd[k]] body
     if (pcmd[k] in hquoted) hquoted[pcmd[k]] = hquoted[pcmd[k]] && pquoted[k]
     else hquoted[pcmd[k]] = pquoted[k]
@@ -278,6 +358,29 @@ function read_bodies(   k, e, line, cmp, body) {
   npend = 0
   return 1
 }
+# 展開で本文の字面が失われる前に、シェルが解釈する特殊記号を記録する。
+function heredoc_expansion(body,   p, ch, nx, dollar) {
+  dollar = 0
+  for (p = 1; p <= length(body); p++) {
+    ch = substr(body, p, 1); nx = substr(body, p + 1, 1)
+    if (ch == "\\" && nx == "\n") { p++; continue }
+    if (ch == "\\" && (nx == "$" || nx == "`" || nx == "\\")) { p++; dollar = 0; continue }
+    if (ch == "`") return "backtick"
+    if (dollar && ch == "(") return "dollar-paren"
+    dollar = (ch == "$" && !dollar)
+  }
+  return ""
+}
+
+function rule_h(id, lang,   form) {
+  if (!(id in hsub)) return
+  form = hsub[id]
+  if (!((lang, form) in seen_h)) {
+    seen_h[lang, form] = 1
+    printf "H\t%s\t%s\n", form, lang
+  }
+}
+
 # 引用しない heredoc の本文: \$ \` \\ はリテラル、$NAME / ${…} / $(…) / バッククォートは展開（X）
 function expand_body(b,   out, p, ch, nx, m, j) {
   out = ""; p = 1; m = length(b)
@@ -294,9 +397,10 @@ function expand_body(b,   out, p, ch, nx, m, j) {
   }
   return out
 }
-function tokenize(   ch, nx, j, d, q, t, r, k) {
+function tokenize(   ch, nx, j, t, r, k, word_start, fd, io_word) {
   cur = 1; cwn[1] = 0; w = ""; inw = 0; skipnext = 0; npend = 0; i = 1
   while (i <= n) {
+    if (!inw) word_start = i
     ch = substr(src, i, 1); nx = substr(src, i + 1, 1)
     if (ch == sq) {
       j = index(substr(src, i + 1), sq); if (!j) { rc = 4; return }
@@ -357,24 +461,20 @@ function tokenize(   ch, nx, j, d, q, t, r, k) {
       w = w X; inw = 1; i = j; continue
     }
     if (ch == "<" || ch == ">" || (ch == "&" && nx == ">")) {
-      if (inw && w ~ /^[0-9]+$/) { w = ""; inw = 0 }
+      fd = 0
+      if (inw && w ~ /^[0-9]+$/) {
+        io_word = substr(src, word_start, i - word_start)
+        gsub(/\\\n/, "", io_word)
+        if (io_word == w) { fd = w + 0; w = ""; inw = 0 }
+      }
       endword()
       if (ch == "<" && nx == "<" && substr(src, i + 2, 1) == "<") { i += 3; skipnext = 1; continue }
       if (ch == "<" && nx == "<") {
         i += 2
         if (substr(src, i, 1) == "-") { t = 1; i++ } else t = 0
-        while (substr(src, i, 1) == " " || substr(src, i, 1) == "\t") i++
-        d = ""; q = 0
-        while (i <= n) {
-          ch = substr(src, i, 1)
-          if (ch == sq) { j = index(substr(src, i + 1), sq); if (!j) { rc = 4; return } d = d substr(src, i + 1, j - 1); q = 1; i += j + 1; continue }
-          if (ch == "\"") { j = index(substr(src, i + 1), "\""); if (!j) { rc = 4; return } d = d substr(src, i + 1, j - 1); q = 1; i += j + 1; continue }
-          if (ch == "\\") { d = d substr(src, i + 1, 1); q = 1; i += 2; continue }
-          if (ch ~ /[ \t\n;&|<>()]/) break
-          d = d ch; i++
-        }
-        if (d == "") { rc = 4; return }
-        npend++; pdelim[npend] = d; pquoted[npend] = q; pstrip[npend] = t; pcmd[npend] = cur
+        i = read_heredoc_word(i); if (!i) { rc = 4; return }
+        npend++; pdelim[npend] = heredoc_word; pquoted[npend] = heredoc_quoted
+        pstrip[npend] = t; pcmd[npend] = cur; pstdin[npend] = (fd == 0)
         continue
       }
       # その他のリダイレクト演算子（> >> >| < <> &> &>> >&N <&N >&-）。対象の語は引数にしない
@@ -459,14 +559,15 @@ function rule_d(body, lang,   s) {
   s = substr(body, RSTART, RLENGTH)
   if (!(lang in seen_d)) { seen_d[lang] = 1; printf "D\t%s\t%s\n", s, lang }
 }
-# 標準入力からプログラムを読むインタプリタ（スクリプト引数が無い / - / /dev/stdin）へ届く引用付き heredoc の原文に
-# 述語 D を当てる。自身の heredoc が無ければ、パイプの送り側が引数なしの cat の引用付き heredoc
-# （cat <<EOF の区切り語を引用した形 | python3 -）なら、その本文を読む
-function d_stdin(id, lang,   j) {
-  if (id in hraw) { rule_d(hraw[id], lang); return }
+# D は従来どおり引用付きの原文を読む。H は標準入力につながる heredoc から判定する。
+function stdin_heredoc_rules(id, lang,   j) {
+  if (id in hraw) rule_d(hraw[id], lang)
+  if (id in hstdin) rule_h(id, lang)
   if (!(id in pfrom)) return
   j = pfrom[id]
-  if (cwn[j] == 1 && base(cw[j, 1]) == "cat" && (j in hraw)) rule_d(hraw[j], lang)
+  if (cwn[j] != 1 || base(cw[j, 1]) != "cat") return
+  if (!(id in hraw) && (j in hraw)) rule_d(hraw[j], lang)
+  if (!(id in hstdin)) rule_h(j, lang)
 }
 # 述語 P: PowerShell のプログラムの二重引用符の文字列（"…" / @"…"@）の中の、バッククォート + エスケープ文字
 function ps_hit(ch) { if (!(ch in seen_p)) { seen_p[ch] = 1; printf "P\t`%s\tpowershell\n", ch } }
@@ -633,7 +734,7 @@ function process(id,   k, m, c, a, np, prog, inplace, stop, cl, ch, q, hasprog, 
       }
     }
     if (a <= m) script = cw[id, a]
-    if (np == 0 && (script == "" || script == "-" || script == "/dev/stdin")) d_stdin(id, "perl")
+    if (np == 0 && (script == "" || script == "-" || script == "/dev/stdin")) stdin_heredoc_rules(id, "perl")
     if (np == 0 && (script == "" || script == "-") && (id in hbody)) prog[++np] = hbody[id]
     for (q = 1; q <= np; q++) {
       if (inplace) rule_a(prog[q])
@@ -657,12 +758,12 @@ function process(id,   k, m, c, a, np, prog, inplace, stop, cl, ch, q, hasprog, 
       if (cl ~ /^(-r|--require|--import|--loader|--experimental-loader|-C|--conditions)$/) a++
     }
     if (a <= m) script = cw[id, a]
-    if (np == 0 && (script == "" || script == "-" || script == "/dev/stdin")) d_stdin(id, "node")
+    if (np == 0 && (script == "" || script == "-" || script == "/dev/stdin")) stdin_heredoc_rules(id, "node")
     if (np == 0 && (script == "" || script == "-") && (id in hbody)) prog[++np] = hbody[id]
     for (q = 1; q <= np; q++) rule_b(prog[q], "node")
     return
   }
-  # 述語 D の python / ruby（-c / -m / -e のプログラム・モジュールが無く、heredoc をプログラムとして読む形）
+  # 述語 D・H の python / ruby（-c / -m / -e などが無く、heredoc をプログラムとして読む形）
   lc = c; sub(/\.[Ee][Xx][Ee]$/, "", lc)
   if (lc ~ /^python[0-9.]*$/ || lc == "py" || lc == "ruby") {
     lang = (lc == "ruby") ? "ruby" : "python"
@@ -680,7 +781,7 @@ function process(id,   k, m, c, a, np, prog, inplace, stop, cl, ch, q, hasprog, 
       }
     }
     if (a <= m) script = cw[id, a]
-    if (script == "" || script == "-" || script == "/dev/stdin") d_stdin(id, lang)
+    if (script == "" || script == "-" || script == "/dev/stdin") stdin_heredoc_rules(id, lang)
     return
   }
   # 述語 P: pwsh / powershell の -Command（Windows PowerShell は位置引数も -Command）。-File / -EncodedCommand は読まない
@@ -770,11 +871,12 @@ ff_literal_write_scan_all() { # <cmd>
             hit="${hit#S	}"
             names="${hit%%	*}"
             hit="${hit#*	}"
-            hit="$(printf '%s' "$hit" | tr '\002' '\n')"
+            hit="$(printf '%s.' "$hit" | tr '\002' '\n')"
+            hit="${hit%.}"
             next="${next:+${next}${sep}}${names}${fsep}${hit}"
             ;;
           E"	done") done_seen=1 ;;
-          A"	"* | B"	"* | D"	"* | P"	"* | Q"	"*) out="${out:+${out}
+          A"	"* | B"	"* | D"	"* | H"	"* | P"	"* | Q"	"*) out="${out:+${out}
 }${hit}" ;;
         esac
       done <<EOF

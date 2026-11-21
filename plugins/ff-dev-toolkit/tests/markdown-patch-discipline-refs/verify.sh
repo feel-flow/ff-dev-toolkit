@@ -42,6 +42,7 @@
 # 空振り検出: 一時ファイルの置き場所の節を改名すると (1)・(8) の 4 件、正本の 2 行から cygpath の失敗の停止と W= の出力を外すと 2 件、asdd-work の参照からアンカーを外すと 1 件、refine-issue の手順を /tmp 直書きへ戻すと 1 件が赤（各 rc=1。正常は 48 件 pass。2026-10-25 WSL 実測）。
 # 空振り検出: 名簿空/実体不在/正本不在は (2)/(3)/(1) が赤。追加節の欠落/空、規定・参照欠落、照合無効化、値ファイル経路の欠落・改行正規化など17変異を各rc=1で検出し、無害対照1件はrc=0を実測。値ファイル不在・空/0件/複数アンカーは文書内の例を実行して対象不変で停止することを確認。
 # 空振り検出: 永続状態ディレクトリ `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/` のみを除外する `/tmp/` 検査は、create-issue/references/filing.md の単独 `/tmp/draft.md`・永続状態パス同行混在・multi-implement/SKILL.md の `/tmp/` 化の各変異で rc=1（1 fail / 48 pass）、無害追記で rc=0（49 pass）を mutation-harness.sh で実測（2026-11-15。SURVIVED 0）。
+# 空振り検出: 改行をまたぐ一致（bundle 2905）。文書内の例から混在の停止・単独 CR の混在判定・値の改行合わせ・改行の判定・値の正規化（CRLF と CR）・件数の assert・重なる一致の assert・書き込み後の読み戻しを外す 9 変異、例の境界・節・小節の改名、`.gitattributes` の規則・本文を正規化しない規定・行単位の照合の削除、git-workflow からの参照の削除、リテラル節の落とし穴 2 件と読み戻しの規定の削除の計 19 変異が各 rc=1（1 fail / 60 pass）、無害な追記は rc=0（61 pass）を mutation-harness.sh で実測（2026-11-21 Git Bash。SURVIVED 0 / NOT-APPLIED 0）。
 
 set -euo pipefail
 
@@ -67,6 +68,7 @@ REQUIRED_SECTIONS=(
   '## 3. パッチと後続コマンドを同じ実行にまとめない'
   '## リテラル書き込みの既定経路'
   '## 一時ファイルの置き場所'
+  '## 改行をまたぐ一致'
 )
 
 # 「一時ファイルの置き場所」節をアンカー付きで指す参照元（プラグインルート起点）。節の改名・削除で
@@ -206,6 +208,49 @@ if section_scope_contains "$SSOT" '## 5. 適用後は目視ではなく述語で
 else
   bad "scriptだけでなく最終ファイルも照合する規定がありません"
 fi
+# ガードの対象外で保存値が変わる 2 形（ファイルへ書く heredoc・ファイル編集機能の入力）と、
+# パッチ例の読み戻し。規定が別の節へ移ると、その節を読む経路から消える。
+for needle in 'ファイルへリダイレクトする heredoc' 'ファイル編集機能の入力'; do
+  if section_scope_contains "$SSOT" '## リテラル書き込みの既定経路' "$needle" >/dev/null; then
+    ok "リテラル節の本体に落とし穴あり: $needle"
+  else
+    bad "リテラル節の本体に落とし穴がありません: $needle"
+  fi
+done
+if section_scope_contains "$SSOT" '## 4. アンカーの実在を script 内でアサートする' '最終ファイルを読み戻し' >/dev/null; then
+  ok "パッチ例が書き込み後の読み戻しを規定する"
+else
+  bad "パッチ例に書き込み後の読み戻しの規定がありません"
+fi
+echo "== (7b) 改行をまたぐ一致 =="
+# 小節ごとに照合する（section_scope は下位見出しの小節を節へ含めない）。
+eol_checked=0
+while IFS='|' read -r eol_heading eol_needle; do
+  [[ -n "$eol_heading" ]] || continue
+  eol_checked=$((eol_checked + 1))
+  if section_scope_contains "$SSOT" "$eol_heading" "$eol_needle" >/dev/null; then
+    ok "改行の小節に規定あり: ${eol_heading} / ${eol_needle}"
+  else
+    bad "改行の小節に規定がありません: ${eol_heading} / ${eol_needle}"
+  fi
+done <<'EOL_NEEDLES'
+### まず作業ツリーを LF に固定する|* text=auto eol=lf
+### まず作業ツリーを LF に固定する|該当ファイルを削除して `git checkout -- .` で取り出し直す
+### 改行はバイトで判定する|git ls-files --eol
+### 対象の改行に合わせて当てる|ファイル本文は正規化しない
+### 対象の改行に合わせて当てる|混在する対象は、書き込み前に止める
+### 対象の改行に合わせて当てる|CR LF と LF の両方で分割した行に当てる
+EOL_NEEDLES
+if [[ "$eol_checked" -eq 6 ]]; then
+  ok "改行の小節の照合を 6 件実行した"
+else
+  bad "改行の小節の照合が 6 件ではありません（${eol_checked} 件）"
+fi
+if ff_docs_mask_spans "$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md" | grep -F '(./markdown-patch-discipline.md#改行をまたぐ一致)' >/dev/null; then
+  ok "git-workflowの実装入口が改行の節を参照"
+else
+  bad "git-workflowの実装入口から改行の節へ到達できません"
+fi
 echo "== (8) 一時ファイルの置き場所 =="
 # 正本の節が求め方の 2 行（TMPDIR 起点・cygpath -m の失敗で止める・変換後の値を出力）を持つ
 for needle in 'W="$(mktemp -d "${TMPDIR:-/tmp}/' 'W="$(cygpath -m "$W")" || exit 2' 'echo "W=$W"' 'mktemp を再実行したりしない'; do
@@ -273,7 +318,7 @@ if [[ ! -r "$BYTE_CASES" || ! -s "$BYTE_CASES" ]]; then
 elif ! command -v python3 >/dev/null 2>&1; then
   bad "保存バイトの実行検査に必要なpython3がありません"
 elif python3 -I -X utf8 "$BYTE_CASES" "$SSOT"; then
-  ok "文書内の照合例が正常値/誤変換/対象不在を区別する"
+  ok "文書内の照合例が正常値/誤変換/対象不在を区別し、パッチ例が LF/CRLF の対象を改行のまま置換する"
 else
   bad "文書内の照合例または保存バイトの検査が失敗"
 fi

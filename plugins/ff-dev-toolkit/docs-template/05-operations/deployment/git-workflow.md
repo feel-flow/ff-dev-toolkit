@@ -218,7 +218,7 @@ GitHub CLI の OAuth 認証では照会に `read:project` または `project`、
 
 #### 工数の確認とブランチ作成
 
-既存 Issue への着手時は、分岐前に本文の `<!-- ff-effort:begin -->` ブロックの有無を確認する。無ければ `/create-issue` の工数ブロック契約（SKILL.md 手順 3・6 と `references/estimation.md`）に従って見積もりを Issue 本文へ追記し、あれば作り直さず着手を続ける。bundle では本体と子を確認し、既存の予定値を上書きしない。ブランチ名に Issue 番号がある `git switch -c` / `git checkout -b` / `git branch -m` の後にも、hook（`hooks/warn-missing-ff-effort.sh`）が同じ確認を注意として返す（止めない）。
+既存 Issue への着手時は、分岐前に本文の `<!-- ff-effort:begin -->` ブロックの有無を確認する。無ければ `/create-issue` の工数ブロック契約（SKILL.md 手順 3・6 と `references/estimation.md`）に従って見積もりを Issue 本文へ追記し、あれば作り直さず着手を続ける。bundle では本体と子を確認し、既存の予定値を上書きしない。ブランチ名に Issue 番号がある `git switch -c` / `git checkout -b` / `git branch -m` / `git worktree add -b` の後にも、hook（`hooks/warn-missing-ff-effort.sh`）が同じ確認を注意として返すと同時に、`/knowledge-lookup`（`--impl` / `--class`）の案内と同一セッションで `knowledge-commit.sh` が記録した確定 ACE 知見 ID（記録がある場合）を追加文脈へ返す（止めない）。
 
 工数ブロックの単位は人時（`- effort_unit: h` を宣言し、値は `N.Nh`）。宣言の無い既存ブロックの人日（`N.Nd`）は書き換えない — 集計器が 1d = 8h で人時へ正規化する。ブランチ作成（`git checkout -b` / `git switch -c`）と `gh pr merge` は ff-dev-toolkit の hook（`hooks/record-effort-wallclock.sh`）がブランチ名の Issue 番号をキーに wall-clock の開始 / 終了として記録し、`/close-issue` が `effort_wallclock_actual` として書き戻す（記録先はリポジトリ外の `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/`。書けなくてもワークフローは止まらず、書き戻しが `(unmeasured)` になる）。ブランチ名から Issue 番号を読めないと開始が記録されない（読める形は上の[ブランチ命名規則](#ブランチ命名規則)）。
 hook に届くのは展開前のコマンド文字列なので、ブランチ名を変数で組む形（`git checkout -b "feature/#${ISSUE_NUM}-x"`）・`git worktree add -b`・`git branch -m` は記録されない（`/close-issue` の読み手はそのときブランチの reflog の最古エントリから開始を補い、引けなければ `(unmeasured)`）。下の例のようにブランチ名をリテラルで書く。残る 2 指標もブランチ名から辿る — レビュー巡回数はレビュー起動ごとの巡回カウンタ（`<git common dir>/ff-review-rounds/`。鍵はブランチ名で、読み手が Issue 番号からブランチを引く）から、ゲート分は `tests/run-all.sh` が終了時に `scripts/record-gate-minutes.sh` で残す所要秒（鍵は開始時のブランチ名の Issue 番号）からで、`/close-issue` が `effort_review_rounds:` / `effort_gate_minutes:` として書き戻す。統合ブランチ・番号の無いブランチで回したレビューとゲートはどの Issue にも数えない。
@@ -252,7 +252,7 @@ cloud セッションなど**別のセッションが作ったブランチ**を�
 
 **原則**: MASTER.md、PATTERNS.md、TESTING.mdの仕様に従いAIツールで実装
 
-escape を値として含む本文・生成 script を作成/再編集する前に、[リテラル書き込みの既定経路](./markdown-patch-discipline.md#リテラル書き込みの既定経路)を読む。
+escape を値として含む本文・生成 script を作成/再編集する前に、[リテラル書き込みの既定経路](./markdown-patch-discipline.md#リテラル書き込みの既定経路)を読む。行末や複数行を含む一致を script で当てる前に、[改行をまたぐ一致](./markdown-patch-discipline.md#改行をまたぐ一致)を読む。
 
 #### 調査は分岐後に行う
 
@@ -272,13 +272,13 @@ git diff --stat <前のブランチ> <base ブランチ> -- <対象ディレク�
 
 この節が手順の正本である。記録の契約: 検索結果は必ず記録し（ヒットした ACE ID / `0 件` / `Playbook なし` / `読み取り失敗（理由）` の 4 種。いずれも「検索を実施した」記録）、空欄のまま先へ進まない。Playbook 不在・読み取り失敗は該当を記録して標準手順を続行する（探索の失敗でタスクを止めない）。`/spec-driven` を使う場合は Step 1（tier 判定の直後）が本節の起動点となり、結果をゲート進行表のタスクサマリー「参照 ACE エントリ」欄へ記録する。スキル側は別手順を定義せず、本節を実行して結果を記録するだけとする。
 
-**実装語と作業クラス語は別々に検索し、系統ごとに結果を記録する。** 実装語は触るファイル・機能・コマンド・症状の語。作業クラス語は「この PR は何をする作業か」を1文で書き、その名詞から選ぶ（例: 「コマンド文字列を解釈するガードを作る」→ `コマンド文字列` / `ガード`、「gh 不在の fixture を作る」→ `gh` / `不在` / `fixture`）。既知の ID だけを引いた結果で二系統の検索を代替しない。
+**実装語と作業クラス語は別々に検索し、系統ごとに結果を記録する。** 実装語は触るファイル・機能・コマンド・症状の語。作業クラス語は「この PR は何をする作業か」を1文で書き、その名詞から選ぶ（例: 「コマンド文字列を解釈するガードを作る」→ `コマンド文字列` / `ガード`、「gh 不在の fixture を作る」→ `gh` / `不在` / `fixture`）。既知の ID だけを引いた結果で二系統の検索を代替しない。スクリプトには `knowledge-lookup.sh --impl <実装語>... --class <作業クラス語>...` の形式で両系統を分けて渡し、系統ごとの検索結果と `RECORD impl` / `RECORD class` を記録する。片軸が未指定のまま呼んだときは標準エラーの警告と `RECORD` 行の `class=未指定` / `impl=未指定`、ならびに Playbook が読めた回に text 形式の標準出力（`RECORD` 直前）へ出る Playbook タイトル由来の作業クラス語候補を確認して不足側の系統を補って引き直す。
 
 - **絞り込み**: 既定の OR でタイトルと本文の適用条件を確認する。多すぎるときは作業の1文から短い語の組へ分けて再検索する。実装語と作業クラス語を全語 AND にまとめて先例を落とさない。`--all` を使った回も実際の語と条件を記録し、ヒット件数だけで必要な知見を確認済みとしない。
 - **途中の引き直し**: 新しい作業クラスの変更を書き始める前に、その作業を1文で書き、作業クラス語で引き直す。fixture の新設、静的検査の追加、hook の新経路、想定外のゲートの赤を同じ PR で修正する前も対象とする。知見記録（knowledge-commit / claim / stage）へ移る前、同じセッションで別 Issue へ入る前も対象とする。着手前に本体の実装語で引いたことを、副作業の参照の代わりにしない。
 - **語と結果の対応**: 着手前・途中の各検索について、時点、系統（実装語／作業クラス語）、作業の1文、実際の検索語、OR/AND、結果を `implementation-notes.md` またはゲート進行表へ記録する。結果にはその呼び出しの `RECORD` 行（または不在・読み取り失敗の理由）を添え、参照した本文の適用／不適用理由も残す。完了報告とコミット本文にも系統・検索語・ヒットの対応を残し、PR 本文への判断ログ転記と ACE ID 記録は本節の既存契約に従う。
 
-効果は [retrospective の観察チェックリスト](../../../skills/retrospective/SKILL.md#観察チェックリスト)で、引き直した知見の適用と見落としを点検する。検索器の `RECORD` / TSV の形式は変更せず、語・時点は判断ログで結果と対応付ける。
+効果は [retrospective の観察チェックリスト](../../../skills/retrospective/SKILL.md#観察チェックリスト)で、引き直した知見の適用と見落としを点検する。位置引数の従来形式では検索器の `RECORD` / TSV / `SUMMARY` の形式を変更しない。`--impl` / `--class` を指定する型付き形式では `SUMMARY` に系統別語数（両軸指定時は系統別ヒット件数も）を添え、Playbook が読めた回に text 形式の標準出力（`RECORD` 直前）へ作業クラス語候補を出し、両軸指定時は `RECORD impl` / `RECORD class` へ分離、片軸未指定時のみ `RECORD` へ `impl=未指定` / `class=未指定` を添えて、語・時点は判断ログで結果と対応付ける。
 
 点検では、着手前の二系統の検索記録と、途中の作業クラス移行の有無・変更前の引き直し・検索語とヒット・適用／不適用理由・レビューで初めて見つかった既存知見を照合する。新しい作業クラスに入らなかった回は「移行なし」、記録が無い回は「未確認」とする。検索を実施しただけで効果ありとせず、役立った適用は Keep、引き当て漏れや未適用による手戻りは problem の既存基準で扱う。後から検索して、変更前に引いていたことにはしない。
 
@@ -636,7 +636,7 @@ else
 fi
 ```
 
-- `Refs`: PR 本文の 1 行目を `Refs #N（open を維持する理由）` にし、`Closes #N` は本文のどこにも書かない。`Refs` が複数なら 1 件ずつ行を分けて本文の先頭に並べる（`Refs #A #B` の 2 件目は `/close-issue` に読まれない）。理由の文に closing keyword と別の Issue 番号を並べない（`/close-issue` がその Issue を Closes 対象として読む）。PR の件名とブランチ上のコミット件名は `fix(#N):` の形にする
+- `Refs`: PR 本文の 1 行目を `Refs #N（open を維持する理由）` にし、`Closes #N` は独立行の宣言としても本文の散文としても書かない。`Refs` が複数なら 1 件ずつ行を分けて本文の先頭に並べる（`Refs #A #B` の 2 件目は `/close-issue` に読まれない）。理由の文に closing keyword と別の Issue 番号を並べない（散文中の参照として `/close-issue` の precheck でブロックされる。コード span 内の引用は `CLOSES=` に入らない）。PR の件名とブランチ上のコミット件名は `fix(#N):` の形にする
 - `Closes`: 印の無い Issue は従来どおりで、ステップ5 の例のまま `Closes #N` で作る。チェック済みの `- [x] post-merge:` は測り終えた項目なので数えない
 - bundle: 子に `Refs` が出たら、その子と bundle 自身を `Refs` にする。ほかの子は `Closes` のままでよい。bundle は `Refs` の子を閉じるときに閉じる
 - 印は起票時の見立てで、実測の代わりにならない。マージ前に測れる項目に印が付いていたら、測ってチェックしてから判定する（本ファイルの「外部サービスでの実確認は全件ゲートの前に行う」）。逆に、印の無い Issue でもマージ後の項目が残ると分かっているなら `Refs` で作り、Issue に印を足す
@@ -707,7 +707,17 @@ Claude Code / Codex / grok は [主担当ホストのネイティブセルフレ
 
 **親側の読み取り検査の例外**: [multi-review の「レビュー待ち時間の使い方」](../../../skills/multi-review/SKILL.md#レビュー待ち時間の使い方)が定める baseline ゲートだけは、その条件を満たす場合に凍結中も並走できる。レビュー担当側のビルド・テスト禁止は維持する。
 
-**PR 作成直後は、レビューの起動と、同じ head SHA に対する baseline ゲートの背景起動を同じターンで行う（既定）。** baseline の結果を待ってからレビューを起動すると、baseline 1 周分の待ちがレビューの前にそのまま直列に積まれる。並走させるのは既定（高速）モードのゲートだけで、`FF_RUN_ALL_FULL=1` の全件モードは並走させない（CPU を奪い合ってレビューレーンが上限時間に当たる。出典は本テンプレートのソースリポジトリの観測台帳 OBS-215）。両方が終端したら、baseline の赤とレビュー指摘を 1 つの fix commit に束ね、その後に下の「重い検証ゲート」を 1 回回す。fix commit や base の取り込みで HEAD が動いたら、baseline が緑でも最終ゲートは省かない — baseline は動く前のツリーの実測で、最終ゲートを代替しない。指摘 0 件で HEAD が baseline の時点から動いておらず、baseline が緑なら、その実行が下の「指摘 0 件でも終端後に 1 回」を兼ねる（同一スナップショットの重複実行はしない）。ここでの baseline はレビューと並走させるゲートを指し、下の段落の「実装直後のベースライン計測」（変更前後の比較）とは別である。走行中は親も作業ツリーを編集しない（「長時間の読み取りゲートにも凍結を適用する」）。
+**PR 作成直後は、レビューの起動と、同じ head SHA に対する baseline ゲートの背景起動を同じターンで行う（既定）。** baseline の結果を待ってからレビューを起動すると、baseline 1 周分の待ちがレビューの前にそのまま直列に積まれる。並走させるのは既定（高速）モードのゲートだけで、`FF_RUN_ALL_FULL=1` の全件モードは並走させない（CPU を奪い合ってレビューレーンが上限時間に当たる。出典は本テンプレートのソースリポジトリの観測台帳 OBS-215）。
+
+baseline の全件ゲートは、元の作業ツリーを離れて **PR HEAD へ detach した一時 worktree** で回すのを既定とする（`guard-gate-in-flight` は worktree 単位でロックするため、元の作業ツリーは baseline 完走を待たず、全レビュー終端後すぐ修正に着手でき、非 `.sh` 変更の `/pre-commit-check` と commit も即座に進められる。`.sh` を含む修正の `/pre-commit-check` 固定表 C は `tests/run-all/verify.sh` を呼ぶため、同じマシンで 1 本制限を守り `FF_RUN_ALL_WAIT=1 bash plugins/ff-dev-toolkit/tests/run-all/verify.sh` で baseline 終了後すぐ自動開始して commit へ進む）:
+
+1. **作成先**: ignore 済みまたはリポジトリ外（既定は `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/<Issue番号>/baseline-wt`）へ `git worktree add --detach <path> HEAD` で一時 worktree を作る
+2. **依存**: 当該プロジェクトに依存導入（このリポジトリでは `mcp/package.json` がある場合 `npm ci --prefix <path>/plugins/ff-dev-toolkit/mcp`）が要るため、起動前に一時 worktree 側で済ませる
+3. **起動**: 他セッションのゲート・`public-layout`・リリースと重なっても手作業で待たず、`FF_RUN_ALL_WAIT=1 bash <path>/plugins/ff-dev-toolkit/tests/run-all.sh`（上限は `FF_RUN_ALL_WAIT_MAX_SECONDS`、既定 3600 秒）で自動待機付き起動にする
+4. **合流と最終ゲート**: 両方が終端したら、baseline の赤とレビュー指摘を **1 つの fix commit に束ね**（非 `.sh` の指摘を先行 commit 済みのあとに baseline の赤が見つかった場合は、未 push ならその commit へまとめるか追加の fix commit で回収する）、その後に下の「重い検証ゲート」を 1 回回す。fix commit や base の取り込みで HEAD が動いたら、baseline が緑でも**最終ゲートは省かない** — baseline は動く前のツリーの実測で、最終ゲートを代替しない
+5. **指摘 0 件かつ HEAD 不変の再利用と後始末**: 指摘 0 件で HEAD が baseline の時点から動いておらず、baseline が緑なら、`BASELINE_GD="$(git -C <path> rev-parse --absolute-git-dir)"` の配下 `"$BASELINE_GD/ff-dev-toolkit/gate-record"` を退避または直接 `finish.sh precheck <PR> --gate-record <path>` へ渡してから、下の「指摘 0 件でも終端後に 1 回」を兼ねる（同一スナップショットの重複実行はしない）。後始末は、baseline 終了後に `git worktree remove <path>`（未追跡の依存ディレクトリが残る場合は `--force`）と一時ディレクトリの削除で行う
+
+ここでの baseline はレビューと並走させるゲートを指し、下の段落の「実装直後のベースライン計測」（変更前後の比較）とは別である。baseline を回している作業ツリー自身には走行中に入力編集や commit を混ぜない（「長時間の読み取りゲートにも凍結を適用する」）。レビューを同じ作業ツリーで回している間の制限と抜け道は、上の段落および [multi-review の「レビュー待ち時間の使い方」](../../../skills/multi-review/SKILL.md#レビュー待ち時間の使い方) に従う。
 
 **凍結中にやる準備作業はレビュー起動の前に列挙し、起動と同じターンで着手する**: 起動コマンドを出す前に、作業ツリーを触らない準備作業（PR 本文・完了報告の下書きを `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/` 配下の固有ディレクトリへ、`/close-issue` の材料として `gh issue view` で Issue 本文と AC を取得、参照文書の確認）を書き出し、起動と同じメッセージの並列 tool call で始める。起動してから次のターンで考え始めると、完了通知を待つだけの状況報告ターンが残る（導入先の観測台帳で 12 回の再発を実測）。列挙した作業が尽きたら、状況報告だけのターンを重ねずに Monitor を armed して停止し、完了通知で再開する（`sleep` や自作の待機ループは代わりにならない）。この手当ては空転の中身を減らすもので、待ちのターンを 0 にはしない。凍結中に許される作業の範囲と通る書き込み先は [multi-review の「レビュー待ち時間の使い方」](../../../skills/multi-review/SKILL.md#レビュー待ち時間の使い方) を正本とする。
 
@@ -777,7 +787,7 @@ Claude Code / Codex / grok は [主担当ホストのネイティブセルフレ
 
 それでも赤化した場合は、rebase 後に影響範囲で対処を決める。取り込んだ base の変更が自 PR の検査対象と無関係な docs / claim だけなら、staleness 系の影響 suite（`changelog-fragments` / `shared-version-convergence` 等）と claim の再実測で足りる。自 PR の検査対象に影響する変更（同じファイル・同じ suite の対象範囲）を取り込んだなら、全件再実行が要る。
 
-この段は「いつ長時間ゲートを始めるか」の前提条件であり、上の「重い検証ゲートは終端後に 1 回」という回数規定を変えるものではない。
+この段は「いつ長時間ゲートを始めるか」の前提条件であり、上の「重い検証ゲートは終端後に 1 回」という回数規定を変えるものではない。なお同じマシンで先行の全件ゲート・`public-layout/verify.sh`・リリース（`scripts/release-dev-toolkit.sh` によるゲート後の `develop` 追従 push まで）が動いているときは、`FF_RUN_ALL_WAIT=1`（上限は `FF_RUN_ALL_WAIT_MAX_SECONDS`、既定 3600 秒）で自動待機でき、待機中のプロセス同士は互いに並走へ数えない。
 
 #### 凍結解除後、レビュー結果へ着手する前に base を取り直す
 

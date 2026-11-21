@@ -261,6 +261,15 @@ if [ "${FF_RUN_ALL_NESTED:-0}" = "0" ] && [ -f "$SCRIPT_DIR/../scripts/lib/wsl-n
   fi
 fi
 
+if [[ $# -gt 0 ]]; then _ff_orig_args=("$@"); else _ff_orig_args=(); fi
+if [[ -n "${FF_RUN_ALL_CHANGED+x}" ]]; then
+  _ff_orig_changed_set=1
+  _ff_orig_changed="$FF_RUN_ALL_CHANGED"
+else
+  _ff_orig_changed_set=0
+  _ff_orig_changed=""
+fi
+
 # 入れ子で既定 suite 一覧を走らせると、自己テスト → 本ランナー → 自己テスト … と
 # 無限再帰する（merge-cleanup の一時 git リポジトリ生成まで巻き込んで暴走する）。
 # 明示引数付きの入れ子だけを許し、引数なしの入れ子は fail-closed で止める。
@@ -278,6 +287,51 @@ if [[ "${FF_RUN_ALL_NESTED:-0}" != "0" && $# -eq 0 ]]; then
   exit 1
 fi
 export FF_RUN_ALL_NESTED=1
+
+GATE_WAIT_MARKER_FILE=""
+GATE_ACTIVE_MARKER_FILE=""
+ff_wait_cleanup_state() {
+  if [[ -n "${GATE_WAIT_MARKER_FILE:-}" ]]; then
+    if declare -F ff_gate_wait_marker_remove >/dev/null 2>&1; then
+      ff_gate_wait_marker_remove "$GATE_WAIT_MARKER_FILE"
+    else
+      rm -f -- "$GATE_WAIT_MARKER_FILE" 2>/dev/null || true
+    fi
+    GATE_WAIT_MARKER_FILE=""
+  fi
+  if [[ -n "${GATE_ACTIVE_MARKER_FILE:-}" ]]; then
+    if declare -F ff_gate_active_marker_remove >/dev/null 2>&1; then
+      ff_gate_active_marker_remove "$GATE_ACTIVE_MARKER_FILE"
+    else
+      rm -f -- "$GATE_ACTIVE_MARKER_FILE" "${GATE_ACTIVE_MARKER_FILE}.meta" 2>/dev/null || true
+    fi
+    GATE_ACTIVE_MARKER_FILE=""
+  fi
+  if declare -F ff_gate_wait_lock_release >/dev/null 2>&1; then
+    ff_gate_wait_lock_release 2>/dev/null || true
+  fi
+  if [[ -z "${GATE_MARKER_FILE:-}" ]]; then
+    trap - INT TERM
+  fi
+}
+
+if [[ "${FF_RUN_ALL_DUMP_DECLARATIONS:-0}" != "1" && "${FF_RUN_ALL_CHECK_REGISTRATION:-0}" != "1" ]] \
+  && declare -F ff_gate_active_marker_adopt_self >/dev/null 2>&1; then
+  GATE_ACTIVE_MARKER_FILE="$(ff_gate_active_marker_adopt_self 2>/dev/null || true)"
+  if [[ -n "$GATE_ACTIVE_MARKER_FILE" ]]; then
+    trap 'if declare -F ff_gate_signal_cleanup >/dev/null 2>&1; then ff_gate_signal_cleanup INT "${GATE_MARKER_FILE:-}"; else ff_wait_cleanup_state; trap - INT; kill -s INT "$$" 2>/dev/null || exit 1; fi' INT
+    trap 'if declare -F ff_gate_signal_cleanup >/dev/null 2>&1; then ff_gate_signal_cleanup TERM "${GATE_MARKER_FILE:-}"; else ff_wait_cleanup_state; trap - TERM; kill -s TERM "$$" 2>/dev/null || exit 1; fi' TERM
+  fi
+fi
+
+if [[ -z "${GATE_ACTIVE_MARKER_FILE:-}" && "${FF_RUN_ALL_DUMP_DECLARATIONS:-0}" != "1" && "${FF_RUN_ALL_CHECK_REGISTRATION:-0}" != "1" && "$FF_ENTERED_NESTED" == "0" && "${FF_RUN_ALL_WAIT:-}" == "1" ]] \
+  && declare -F ff_gate_wait_marker_write >/dev/null 2>&1; then
+  GATE_WAIT_MARKER_FILE="$(ff_gate_wait_marker_write 2>/dev/null || true)"
+  if [[ -n "$GATE_WAIT_MARKER_FILE" ]]; then
+    trap 'if declare -F ff_gate_signal_cleanup >/dev/null 2>&1; then ff_gate_signal_cleanup INT "${GATE_MARKER_FILE:-}"; else ff_wait_cleanup_state; trap - INT; kill -s INT "$$" 2>/dev/null || exit 1; fi' INT
+    trap 'if declare -F ff_gate_signal_cleanup >/dev/null 2>&1; then ff_gate_signal_cleanup TERM "${GATE_MARKER_FILE:-}"; else ff_wait_cleanup_state; trap - TERM; kill -s TERM "$$" 2>/dev/null || exit 1; fi' TERM
+  fi
+fi
 
 # ゲート開始時の HEAD を控える。全件実行は長く、その間に commit があると終了時の HEAD は
 # 「一度も読んでいないツリー」になる。記録側へ渡して、動いていたら記録させない（Issue #880）。
@@ -447,15 +501,26 @@ ff_startup_other_gates() {
       }
       for(pid in gates) {
         path=paths[pid]
-        if(!ancestor(pid,self) && !ancestor(self,pid) && !samegate(pid,self))
-          printf "%s\t%s\t%s\n",pid,path,commands[pid]
+        if(!ancestor(pid,self) && !ancestor(self,pid) && !samegate(pid,self)) {
+          anc=""
+          for(g in gates) if(g != pid && ancestor(g, pid)) anc = (anc == "" ? g : anc "," g)
+          printf "%s\t%s\t%s\t%s\n",pid,anc,path,commands[pid]
+        }
       }
     }
   ')" || return 1
   [[ -n "$candidates" ]] || return 0
   printf '%s\n' "$candidates" | {
-    local unavailable=0
-    while IFS=$'\t' read -r pid script recorded; do
+    local unavailable=0 valid_rows="" valid_pids=" " anc="" _cand_line="" _r="" _tab=""
+    _tab="$(printf '\t')"
+    while IFS= read -r _cand_line; do
+      [[ -n "$_cand_line" ]] || continue
+      pid="${_cand_line%%"${_tab}"*}"
+      _r="${_cand_line#*"${_tab}"}"
+      anc="${_r%%"${_tab}"*}"
+      _r="${_r#*"${_tab}"}"
+      script="${_r%%"${_tab}"*}"
+      recorded="${_r#*"${_tab}"}"
       case "$script" in
         *' '*)
           case "$script" in
@@ -477,10 +542,40 @@ ff_startup_other_gates() {
         observed="${observed#"${observed%%[![:space:]]*}"}"
         # Re-read the PID so an exited/reused process cannot be a stale gate.
         [[ -n "$observed" && "$observed" == "$recorded" ]] || continue
-        printf '%s:%s\n' "$pid" "$script"
+        valid_pids="${valid_pids}${pid} "
+        valid_rows="${valid_rows:+${valid_rows}
+}${pid}${_tab}${anc}${_tab}${script}"
       elif kill -0 "$pid" 2>/dev/null; then
         unavailable=1
       fi
+    done
+    # パス実在と argv 一致を確認済みの候補同士だけで祖先畳み込みを行う（未検証の親候補で真の子候補を隠さない）
+    local _rrest="$valid_rows" _rline="" _rrest2="" _ap="" _anc_hit=0
+    while [[ -n "$_rrest" ]]; do
+      case "$_rrest" in
+        *$'\n'*) _rline="${_rrest%%$'\n'*}"; _rrest="${_rrest#*$'\n'}" ;;
+        *) _rline="$_rrest"; _rrest="" ;;
+      esac
+      [[ -n "$_rline" ]] || continue
+      pid="${_rline%%"${_tab}"*}"
+      _rrest2="${_rline#*"${_tab}"}"
+      anc="${_rrest2%%"${_tab}"*}"
+      script="${_rrest2#*"${_tab}"}"
+      _anc_hit=0
+      if [[ -n "$anc" ]]; then
+        local _arest="$anc"
+        while [[ -n "$_arest" ]]; do
+          case "$_arest" in
+            *,*) _ap="${_arest%%,*}"; _arest="${_arest#*,}" ;;
+            *) _ap="$_arest"; _arest="" ;;
+          esac
+          case "$valid_pids" in
+            *" ${_ap} "*) _anc_hit=1; break ;;
+          esac
+        done
+      fi
+      [[ "$_anc_hit" -eq 0 ]] || continue
+      printf '%s:%s\n' "$pid" "$script"
     done
     [[ "$unavailable" == 0 ]]
   }
@@ -2117,6 +2212,7 @@ if [[ -n "${FF_DEV_TOOLKIT_ROOT:-}" ]]; then
   echo "  resource 単体への root 固定を suite 全体へ継承しないでください。値は表示しません。" >&2
   printf '  解除して再実行: env -u FF_DEV_TOOLKIT_ROOT bash %q\n' "$SCRIPT_DIR/run-all.sh" >&2
   echo "  明示 suite 引数があれば、同じ引数を末尾へ追加してください。" >&2
+  ff_wait_cleanup_state
   exit 3
 fi
 # <<< root-handoff-preflight
@@ -2175,6 +2271,7 @@ if [[ "$USING_DEFAULT_SCRIPTS" == "1" && "$ALLOW_DIRTY" != "1" ]]; then
     [[ -z "$DIRTY_ERR" ]] || printf '%s\n' "$DIRTY_ERR" | sed 's/^/    /' >&2
     echo "  確認できない木での実行は、鮮度記録が何を実測したのかを言えません。clean と断定せずに停止します。" >&2
     echo "  意図した実行なら FF_RUN_ALL_ALLOW_DIRTY=1 を付けて再実行してください（記録は判定不能になります）。" >&2
+    ff_wait_cleanup_state
     exit 1
   fi
   if [[ -n "$DIRTY_OUT" ]]; then
@@ -2189,6 +2286,7 @@ if [[ "$USING_DEFAULT_SCRIPTS" == "1" && "$ALLOW_DIRTY" != "1" ]]; then
     echo "  汚れた木で測った結果はどのコミットに対する実測でもなく、鮮度記録は DIRTY=yes で書かれます（マージ直前の照合は「判定不能」）。" >&2
     echo "  変更をコミットしてから再実行してください。" >&2
     echo "  記録を捨ててよい試し実行なら FF_RUN_ALL_ALLOW_DIRTY=1 を付けて再実行できます。" >&2
+    ff_wait_cleanup_state
     exit 1
   fi
   STARTED_CLEAN=1
@@ -2196,7 +2294,7 @@ fi
 
 # 既定一覧で走らせるときだけ照合する（明示引数の実行は部分実行が正当な用途）。
 if [[ "$USING_DEFAULT_SCRIPTS" == "1" ]]; then
-  check_suite_registration || exit 1
+  check_suite_registration || { ff_wait_cleanup_state; exit 1; }
 fi
 
 # ── 起動ガード: 同梱 MCP の依存が無い回は「環境の未整備」として止める ──────────────
@@ -2261,6 +2359,7 @@ if [[ "$USING_DEFAULT_SCRIPTS" == "1" && "$ALLOW_MISSING_MCP_DEPS" != "1" \
   # 区別できる形にする」ことなので、機械が読む唯一の信号を同値にしたままでは、判定コストを
   # 人間から機械読者へ移すだけになる。3 = 前提が整っていないため実行しなかった。
   # （dirty tree ガードの 1 は既存互換のため据え置き。鮮度の分類とまとめて扱う）
+  ff_wait_cleanup_state
   exit 3
 fi
 
@@ -2694,6 +2793,7 @@ if [[ "$FAST_MODE" == "1" ]]; then
   # 除外で実行対象が 0 件になったら成功として扱わない（検査 0 件を緑にしない）
   if [[ ${#FAST_KEPT[@]} -eq 0 ]]; then
     echo "✗ 高速モードの除外で実行対象が 0 件になりました（selftest ${#FAST_EXCLUDED[@]} 件を除外）。検査 0 件を成功として記録しません" >&2
+    ff_wait_cleanup_state
     exit 1
   fi
   SCRIPTS=("${FAST_KEPT[@]}")
@@ -2718,49 +2818,165 @@ ff_scripts_include_run_all_verify() {
 }
 
 ff_startup_stop_if_concurrent() {
-  local combined="" line="" pid="" known_pids=" " unknown_markers=""
-  local has_other=0 has_unknown=0
+  local wait_rc=0 _post_dirty_rc=0 _post_dirty_out=""
+  local _rest="" line="" pid="" known_pids=" " combined="" has_other=0 has_unknown=0 unknown_markers=""
+
+  if declare -F ff_gate_parse_wait_config >/dev/null 2>&1; then
+    if ! ff_gate_parse_wait_config; then
+      ff_wait_cleanup_state
+      exit 2
+    fi
+    if [[ "${GATE_WAIT_ENABLED:-0}" -eq 1 ]]; then
+      if [[ -n "${GATE_ACTIVE_MARKER_FILE:-}" && -f "$GATE_ACTIVE_MARKER_FILE" ]]; then
+        return 0
+      fi
+      trap 'if declare -F ff_gate_signal_cleanup >/dev/null 2>&1; then ff_gate_signal_cleanup INT "${GATE_MARKER_FILE:-}"; else ff_wait_cleanup_state; trap - INT; kill -s INT "$$" 2>/dev/null || exit 1; fi' INT
+      trap 'if declare -F ff_gate_signal_cleanup >/dev/null 2>&1; then ff_gate_signal_cleanup TERM "${GATE_MARKER_FILE:-}"; else ff_wait_cleanup_state; trap - TERM; kill -s TERM "$$" 2>/dev/null || exit 1; fi' TERM
+      wait_rc=0
+      ff_gate_wait_for_slot "$SCRIPT_DIR" "tests/run-all.sh" ff_startup_other_gates || wait_rc=$?
+      if [[ "$wait_rc" -ne 0 ]]; then
+        if [[ -n "${GATE_WAIT_TIMEOUT_BLOCKERS:-}" ]]; then
+          echo "✗ 判定不能: 待機上限（${GATE_WAIT_MAX_SECONDS} 秒）に達したため停止しました（別の全件ゲート／公開検査／リリースが継続中）。待機対象:" >&2
+          printf '%s\n' "$GATE_WAIT_TIMEOUT_BLOCKERS" >&2
+          echo "  復帰: 上の実行が終わってから再実行するか、FF_RUN_ALL_WAIT_MAX_SECONDS で上限を調整してください" >&2
+        else
+          echo "✗ 判定不能: 待機制御または並走判定を継続できないため停止しました（実行集合に tests/run-all/verify.sh を含むか、待機起動が要求されました）" >&2
+          if [[ -n "${GATE_BLOCKER_UNKNOWN:-}" ]]; then
+            echo "  取得できた候補:" >&2
+            printf '%s\n' "$GATE_BLOCKER_UNKNOWN" >&2
+          fi
+          echo "  復帰: プロセス一覧とマーカー／待機領域が正常な状態で、このゲートを回し直してください" >&2
+        fi
+        ff_wait_cleanup_state
+        exit 2
+      fi
+      if [[ "${GATE_DID_WAIT:-0}" -eq 1 ]]; then
+        echo "▶ 先行処理の終了を確認しました（待機 ${GATE_WAIT_ELAPSED} 秒）。ゲートを開始します" >&2
+        if [[ "$STARTED_CLEAN" == "1" ]]; then
+          _post_dirty_rc=0
+          _post_dirty_out="$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null)" || _post_dirty_rc=$?
+          if [[ "$_post_dirty_rc" -ne 0 ]] || [[ -n "$_post_dirty_out" ]]; then
+            echo "✗ 待機中に作業ツリーが変更されたか状態を確認できません（suite は 1 つも実行していません）" >&2
+            [[ -z "$_post_dirty_out" ]] || printf '%s\n' "$_post_dirty_out" | sed -n '1,20p' | sed 's/^/    /' >&2
+            echo "  変更をコミットしてから再実行してください。" >&2
+            ff_wait_cleanup_state
+            exit 1
+          fi
+        fi
+        local _post_head="" _post_fp=""
+        _post_head="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
+        _post_fp="$(ff_self_fingerprint 2>/dev/null || true)"
+        if [[ -n "$_post_head" && "$_post_head" != "$FF_GATE_START_HEAD" ]] || [[ -n "$_post_fp" && "$_post_fp" != "$FF_SELF_FINGERPRINT_START" ]]; then
+          if [[ ! -r "$SELF_PATH" ]]; then
+            echo "✗ 待機中にランナーが更新されましたが最新版を読み込めません（suite は 1 つも実行していません）" >&2
+            ff_wait_cleanup_state
+            exit 1
+          fi
+          echo "ℹ️  待機中にリビジョンまたはランナーが更新されたため、最新 HEAD で再評価して開始します" >&2
+          if [[ "$FF_ENTERED_NESTED" == "0" ]]; then
+            unset FF_RUN_ALL_NESTED
+          fi
+          if [[ "$_ff_orig_changed_set" == "1" ]]; then
+            export FF_RUN_ALL_CHANGED="$_ff_orig_changed"
+          fi
+          exec bash "$SELF_PATH" ${_ff_orig_args[@]+"${_ff_orig_args[@]}"} || { ff_wait_cleanup_state; exit 1; }
+        fi
+        FF_GATE_START_HEAD="${_post_head:-$FF_GATE_START_HEAD}"
+        FF_GATE_START_EPOCH="$(date +%s 2>/dev/null || true)"
+        FF_GATE_START_BRANCH="$(git -C "$SCRIPT_DIR" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+        FF_DEFER_STARTUP_LOAD_WARN=1
+        ff_capture_startup_load
+        FF_DEFER_STARTUP_LOAD_WARN=0
+      fi
+      return 0
+    fi
+    if ! ff_scripts_include_run_all_verify; then
+      return 0
+    fi
+    ff_gate_collect_blockers "$SCRIPT_DIR" "${FF_STARTUP_OTHER_GATES_RAW:-}" "${FF_STARTUP_OTHER_GATES_RC:-0}"
+    if [[ "${GATE_HAS_BLOCKER:-0}" -eq 1 ]]; then
+      echo "✗ 判定不能: 別の全件ゲートが動いています（または公開検査・リリースが進行中です。実行集合に tests/run-all/verify.sh を含むため、suite を実行せず停止しました）。並走:" >&2
+      printf '%s\n' "$GATE_BLOCKERS" >&2
+      case "$GATE_BLOCKERS" in
+        *release:*)
+          echo "  復帰: 先行処理の終了後に再実行してください（自動で待ってから始めるには FF_RUN_ALL_WAIT=1 を指定。期限切れの担当を前の実行の停止確認後に引き継ぐ場合は scripts/release-dev-toolkit.sh --take-over、または実態確認後に ff-release-in-flight を確認。pgrep -f は自身のシェルにも一致するため、上の PID を kill -0 <PID> で確認してください）" >&2
+          ;;
+        *)
+          echo "  復帰: 並走中の tests/run-all.sh（または public-layout）が終わってから、このゲートを回し直してください（自動で待ってから始めるには FF_RUN_ALL_WAIT=1 を指定。pgrep -f は自身のシェルにも一致するため、上の PID を kill -0 <PID> で確認してください）" >&2
+          ;;
+      esac
+      ff_wait_cleanup_state
+      exit 2
+    fi
+    if [[ "${GATE_HAS_UNKNOWN:-0}" -eq 1 ]]; then
+      if [[ "${FF_STARTUP_OTHER_GATES_RC:-0}" -ne 0 ]]; then
+        echo "✗ 判定不能: プロセス一覧を取得できないため並走を判定できません（実行集合に tests/run-all/verify.sh を含むため、suite を実行せず停止しました）" >&2
+      else
+        echo "✗ 判定不能: ゲート状態マーカーを判定できないため並走を判定できません（実行集合に tests/run-all/verify.sh を含むため、suite を実行せず停止しました）" >&2
+      fi
+      if [[ -n "${GATE_BLOCKER_UNKNOWN:-}" ]]; then
+        echo "  取得できた候補:" >&2
+        printf '%s\n' "$GATE_BLOCKER_UNKNOWN" >&2
+      fi
+      echo "  復帰: プロセス一覧とマーカー領域が正常な状態で、このゲートを回し直してください" >&2
+      ff_wait_cleanup_state
+      exit 2
+    fi
+    return 0
+  fi
+
+  if [[ -n "${FF_RUN_ALL_WAIT:-}" && "${FF_RUN_ALL_WAIT}" != "0" ]]; then
+    echo "✗ 判定不能: 待機ライブラリ tests/lib/gate-in-flight.sh を読み込めないか FF_RUN_ALL_WAIT=\"${FF_RUN_ALL_WAIT}\" を検証できないため停止しました" >&2
+    ff_wait_cleanup_state
+    exit 2
+  fi
+  if ! ff_scripts_include_run_all_verify; then
+    return 0
+  fi
   if [[ "${FF_STARTUP_OTHER_GATES_RC:-0}" -ne 0 ]]; then
     has_unknown=1
   fi
-  if [[ -n "${FF_STARTUP_OTHER_GATES_RAW:-}" ]]; then
-    while IFS= read -r line; do
-      [[ -n "$line" ]] || continue
-      has_other=1
-      combined="${combined:+${combined}
+  _rest="${FF_STARTUP_OTHER_GATES_RAW:-}"
+  while [[ -n "$_rest" ]]; do
+    case "$_rest" in
+      *$'\n'*) line="${_rest%%$'\n'*}"; _rest="${_rest#*$'\n'}" ;;
+      *) line="$_rest"; _rest="" ;;
+    esac
+    [[ -n "$line" ]] || continue
+    has_other=1
+    combined="${combined:+${combined}
 }${line}"
-      pid="${line%%:*}"
-      known_pids="${known_pids}${pid} "
-    done <<EOF
-$FF_STARTUP_OTHER_GATES_RAW
-EOF
-  fi
+    pid="${line%%:*}"
+    known_pids="${known_pids}${pid} "
+  done
   if declare -F ff_gate_scan_repo_worktree_markers >/dev/null 2>&1 && [[ "${FF_STARTUP_OTHER_GATES_RC:-0}" -eq 0 ]]; then
     ff_gate_scan_repo_worktree_markers "$SCRIPT_DIR" 1
     if [[ -n "${GATE_UNKNOWN_LINES:-}" || "${GATE_DIR_UNSAFE:-0}" -eq 1 ]]; then
       has_unknown=1
       unknown_markers="$GATE_UNKNOWN_LINES"
     fi
-    if [[ -n "${GATE_LIVE_LINES:-}" ]]; then
-      while IFS= read -r line; do
-        [[ -n "$line" ]] || continue
-        pid="${line%%:*}"
-        case "$known_pids" in
-          *" ${pid} "*) continue ;;
-        esac
-        has_other=1
-        combined="${combined:+${combined}
+    _rest="${GATE_LIVE_LINES:-}"
+    while [[ -n "$_rest" ]]; do
+      case "$_rest" in
+        *$'\n'*) line="${_rest%%$'\n'*}"; _rest="${_rest#*$'\n'}" ;;
+        *) line="$_rest"; _rest="" ;;
+      esac
+      [[ -n "$line" ]] || continue
+      pid="${line%%:*}"
+      case "$known_pids" in
+        *" ${pid} "*) continue ;;
+      esac
+      has_other=1
+      combined="${combined:+${combined}
 }${line}"
-        known_pids="${known_pids}${pid} "
-      done <<EOF
-$GATE_LIVE_LINES
-EOF
-    fi
+      known_pids="${known_pids}${pid} "
+    done
   fi
   if [[ "$has_other" -eq 1 ]]; then
     echo "✗ 判定不能: 別の全件ゲートが動いています（実行集合に tests/run-all/verify.sh を含むため、suite を実行せず停止しました）。並走:" >&2
     printf '%s\n' "$combined" >&2
     echo "  復帰: 並走中の tests/run-all.sh が終わってから、このゲートを回し直してください（pgrep -f は自身のシェルにも一致するため、上の PID を kill -0 <PID> で確認してください）" >&2
+    ff_wait_cleanup_state
     exit 2
   fi
   if [[ "$has_unknown" -eq 1 ]]; then
@@ -2774,12 +2990,53 @@ EOF
       printf '%s\n' "$unknown_markers" >&2
     fi
     echo "  復帰: プロセス一覧とマーカー領域が正常な状態で、このゲートを回し直してください" >&2
+    ff_wait_cleanup_state
     exit 2
   fi
 }
 
-if ff_scripts_include_run_all_verify; then
+if ff_scripts_include_run_all_verify || [[ -n "${FF_RUN_ALL_WAIT:-}" ]] || [[ -n "${FF_RUN_ALL_WAIT_MAX_SECONDS:-}" ]]; then
   ff_startup_stop_if_concurrent
+fi
+
+if [[ -n "${FF_STARTUP_OTHER_GATES_RAW:-}" ]] && declare -F ff_gate_pid_is_waiting >/dev/null 2>&1; then
+  _f_rest="$FF_STARTUP_OTHER_GATES_RAW"
+  _f_kept=""
+  _f_changed=0
+  while [[ -n "$_f_rest" ]]; do
+    case "$_f_rest" in
+      *$'\n'*) _f_line="${_f_rest%%$'\n'*}"; _f_rest="${_f_rest#*$'\n'}" ;;
+      *) _f_line="$_f_rest"; _f_rest="" ;;
+    esac
+    [[ -n "$_f_line" ]] || continue
+    _f_pid="${_f_line%%:*}"
+    if ff_gate_pid_is_waiting "$_f_pid"; then
+      _f_changed=1
+      continue
+    fi
+    _f_kept="${_f_kept:+${_f_kept}
+}$_f_line"
+  done
+  if [[ "$_f_changed" -eq 1 ]]; then
+    FF_STARTUP_OTHER_GATES_RAW="$_f_kept"
+    if [[ -n "$_f_kept" ]]; then
+      FF_STARTUP_OTHER_GATES="${_f_kept//$'\n'/,}"
+      [[ "${FF_STARTUP_OTHER_GATES_RC:-0}" == 0 ]] || FF_STARTUP_OTHER_GATES="${FF_STARTUP_OTHER_GATES},unknown"
+    elif [[ "${FF_STARTUP_OTHER_GATES_RC:-0}" == 0 ]]; then
+      FF_STARTUP_OTHER_GATES=none
+      FF_STARTUP_PRESSURE=0
+      if [[ "$FF_STARTUP_LOAD" != unknown && "$FF_STARTUP_THRESHOLD" != unknown ]]; then
+        if awk -v l="$FF_STARTUP_LOAD" -v t="$FF_STARTUP_THRESHOLD" 'BEGIN { exit !(l > t) }' 2>/dev/null; then
+          FF_STARTUP_PRESSURE=1
+        fi
+      fi
+      FF_STARTUP_REPORT=0
+      if [[ "$FF_STARTUP_PRESSURE" == 1 || "$FF_STARTUP_LOAD" == unknown || \
+            "$FF_STARTUP_CORES" == unknown || "$FF_STARTUP_OTHER_GATES" == unknown ]]; then
+        FF_STARTUP_REPORT=1
+      fi
+    fi
+  fi
 fi
 
 if [[ "$FF_STARTUP_PRESSURE" == 1 ]]; then
@@ -2911,6 +3168,7 @@ if [[ -n "${FF_RUN_ALL_ELAPSED_FIXTURE:-}" ]]; then
   done
   set +f
   ff_emit_elapsed
+  ff_wait_cleanup_state
   exit 0
 fi
 
@@ -3019,7 +3277,7 @@ ff_consume() { # <name> <kind: run|missing|notexec|gone> <script> <rc>。本文�
 #                         実測する検査（tests/merge-freshness の抽出した記録ブロック・case 39-C）が赤になる
 # suite が内部で明示した指定はそのまま効く。
 ff_suite_env_isolate() {
-  unset FF_GATE_RECORD_FILE FF_GATE_RECORD
+  unset FF_GATE_RECORD_FILE FF_GATE_RECORD FF_RUN_ALL_WAIT FF_RUN_ALL_WAIT_MAX_SECONDS FF_RUN_ALL_WAIT_DIR FF_RUN_ALL_WAIT_POLL_INTERVAL
 }
 
 # 逐次実行。一時領域を要求しない経路で、read-only 環境の退避先でもある。
@@ -3507,7 +3765,7 @@ ff_gate_marker_set() {
 ff_gate_marker_set
 
 # INT / TERM 中断時だけ走行中マーカーを即時回収する（EXIT trap は置かない — case 12 維持）。
-if [[ -n "$GATE_MARKER_FILE" ]]; then
+if [[ -n "$GATE_MARKER_FILE" || -n "$GATE_ACTIVE_MARKER_FILE" || -n "$GATE_WAIT_MARKER_FILE" ]]; then
   trap 'if declare -F ff_gate_signal_cleanup >/dev/null 2>&1; then ff_gate_signal_cleanup INT "$GATE_MARKER_FILE"; else rm -f "$GATE_MARKER_FILE" "${GATE_MARKER_FILE}.meta" 2>/dev/null || true; trap - INT; kill -s INT "$$" 2>/dev/null || exit 1; fi' INT
   trap 'if declare -F ff_gate_signal_cleanup >/dev/null 2>&1; then ff_gate_signal_cleanup TERM "$GATE_MARKER_FILE"; else rm -f "$GATE_MARKER_FILE" "${GATE_MARKER_FILE}.meta" 2>/dev/null || true; trap - TERM; kill -s TERM "$$" 2>/dev/null || exit 1; fi' TERM
 fi
@@ -3913,11 +4171,14 @@ if [[ -n "$GATE_MARKER_FILE" ]]; then
     rm -f "$GATE_MARKER_FILE" "${GATE_MARKER_FILE}.meta" 2>/dev/null || true
   fi
   GATE_MARKER_FILE=""
-  trap - INT TERM
+  if [[ -z "${GATE_ACTIVE_MARKER_FILE:-}" && -z "${GATE_WAIT_MARKER_FILE:-}" ]]; then
+    trap - INT TERM
+  fi
 fi
 
 if [[ ${#FAILED[@]} -gt 0 || ${#NOT_RUN[@]} -gt 0 || ${#REQUIRED_SKIPPED[@]} -gt 0 ]]; then
   ff_record_gate_head fail
+  ff_wait_cleanup_state
   # 必須 suite の skip で止まる回は、出力の最後を停止文の共通形の 3 行で終える（方針 / required-suite-skipped。
   # scripts/lib/stop-block.sh / Issue `#2712`）。上の「✗ 環境都合で…」と再現コマンドの行は残したまま、
   # 次の一手に同じ再現コマンドを載せる。読めないときは stop-block-unavailable の 3 行で止める（rc は 1 のまま）。
@@ -3953,6 +4214,7 @@ fi
 # 記録の失敗は**検証結果の失敗ではない**。1 行警告して終了コードは変えない
 # （記録が無ければ照合側が「判定不能」として報告する。黙って緑にはならない）。
 ff_record_gate_head pass
+ff_wait_cleanup_state
 
 if [[ ${#SKIPPED[@]} -gt 0 ]]; then
   # skip だけで pass が 0 = 検証が 1 件も成立していない。文言だけ出して 0 で終わると、

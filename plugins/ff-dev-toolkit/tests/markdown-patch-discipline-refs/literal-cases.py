@@ -94,3 +94,70 @@ with tempfile.TemporaryDirectory(prefix="ff-literal-bytes-") as directory:
     if missing_value.returncode == 0 or target.read_bytes() != original:
         raise SystemExit("literal-patch: 値ファイル不在を対象不変のまま止めていません")
     print("  ✓ literal-patch: 値ファイル不在は対象を変更せず停止")
+
+    # Execute the documented newline-aware patch. Expected bytes are joined here, not derived from its output.
+    eol_start, eol_end = "<!-- eol-patch-example:start -->", "<!-- eol-patch-example:end -->"
+    if document.count(eol_start) != 1 or document.count(eol_end) != 1:
+        raise SystemExit("eol-patch: 改行をまたぐ例の境界が一意ではありません")
+    eol_lines = document.split(eol_start, 1)[1].split(eol_end, 1)[0].strip().splitlines()
+    if not eol_lines or eol_lines[0] != "```python" or eol_lines[-1] != "```" or len(eol_lines) < 4:
+        raise SystemExit("eol-patch: 改行をまたぐ例が空かPython fenceではありません")
+    eol_patcher = root / "documented-eol-patch.py"
+    eol_patcher.write_bytes(chr(10).join(eol_lines[1:-1]).encode("utf-8"))
+    cr, lf, crlf = bytes([13]), bytes([10]), bytes([13, 10])
+
+    def joined(eol, rows):
+        return b"".join(row + eol for row in rows)
+
+    def run_patch(script, target_bytes, anchor_bytes, replacement_bytes):
+        target.write_bytes(target_bytes)
+        anchor_file.write_bytes(anchor_bytes)
+        replacement_file.write_bytes(replacement_bytes)
+        return subprocess.run([sys.executable, "-I", "-X", "utf8", str(script), str(target), str(anchor_file), str(replacement_file)], capture_output=True, timeout=30)
+
+    before = [b"| 16 |", b"| 17 |", b"---", b"tail"]
+    anchor_rows, new_rows = [b"| 17 |", b"---"], [b"| 17 | done", b"| 18 |", b"---"]
+    after = [b"| 16 |"] + new_rows + [b"tail"]
+    eol_cases = [("LFの対象にCRLFの値", lf, crlf), ("CRLFの対象にLFの値", crlf, lf), ("CRLFの対象にCRLFの値", crlf, crlf), ("CRのみの対象にLFの値", cr, lf), ("CRLFの対象にCRのみの値", crlf, cr)]
+    for name, target_eol, value_eol in eol_cases:
+        result = run_patch(eol_patcher, joined(target_eol, before), joined(value_eol, anchor_rows), joined(value_eol, new_rows))
+        if result.returncode or target.read_bytes() != joined(target_eol, after):
+            raise SystemExit("eol-patch: " + name + " を対象の改行のまま置換できません")
+        print("  ✓ eol-patch: " + name + " は対象の改行のまま複数行を置換")
+    # Control: the byte-exact example must refuse the same multi-line anchor, or the cases above prove nothing.
+    control = run_patch(patcher, joined(crlf, before), joined(lf, anchor_rows), joined(lf, new_rows))
+    if control.returncode == 0 or target.read_bytes() != joined(crlf, before):
+        raise SystemExit("eol-patch: バイト一致の例がCRLFの対象にLFの複数行アンカーを当てました（対照が成立しません）")
+    print("  ✓ eol-patch: バイト一致の例は同じアンカーを対象不変のまま停止（対照）")
+    literal = run_patch(eol_patcher, joined(crlf, [b"head", b"TOKEN", b"tail"]), b"TOKEN", good["ts"])
+    if literal.returncode or target.read_bytes() != joined(crlf, [b"head", good["ts"][:-1], b"", b"tail"]) or bytes([92, 110]) not in target.read_bytes():
+        raise SystemExit("eol-patch: 値のbackslashを保ったまま実改行だけを対象へ合わせていません")
+    print("  ✓ eol-patch: 値のbackslashは保ち、実改行だけを対象の改行へ合わせる")
+    mixed = joined(crlf, before[:2]) + joined(lf, before[2:])
+    lone_cr = joined(crlf, before[:2]) + joined(cr, before[2:])
+    overlap_rows = [b"head", b"| a |", b"| a |", b"tail"]
+    stops = [
+        ("改行の混在", mixed, b"| 16 |", "混在"),
+        ("CRLFと単独CRの混在", lone_cr, b"| 16 |", "混在"),
+        ("LFの対象で重なる一致", joined(lf, overlap_rows), lf + b"| a |" + lf, "重なって"),
+        ("CRLFの対象で重なる一致", joined(crlf, overlap_rows), lf + b"| a |" + lf, "重なって"),
+        ("0件一致", joined(crlf, before), joined(lf, [b"| 99 |", b"---"]), "アンカー"),
+        ("複数一致", joined(crlf, before + before), joined(lf, anchor_rows), "アンカー"),
+        ("空のアンカー", joined(crlf, before), b"", "アンカー"),
+    ]
+    for name, body, anchor, reason in stops:
+        failed = run_patch(eol_patcher, body, anchor, joined(lf, new_rows))
+        if failed.returncode == 0 or target.read_bytes() != body or reason not in failed.stderr.decode("utf-8"):
+            raise SystemExit("eol-patch: " + name + " を書き込み前に理由付きで止めていません")
+        print("  ✓ eol-patch: " + name + " は対象を変更せず停止")
+    overlap_body = joined(lf, overlap_rows)
+    overlapped = run_patch(patcher, overlap_body, lf + b"| a |" + lf, lf + b"| b |" + lf)
+    if overlapped.returncode == 0 or target.read_bytes() != overlap_body or "重なって" not in overlapped.stderr.decode("utf-8"):
+        raise SystemExit("literal-patch: 重なる一致を書き込み前に理由付きで止めていません")
+    print("  ✓ literal-patch: 重なる一致は対象を変更せず停止")
+    # A read-back that always succeeds cannot be observed by running the examples, so require the statement itself.
+    readback = 'assert path.read_bytes() == patched, "書き込んだバイト列を読み戻せません"'
+    for name, body_lines in [("literal-patch", patch_lines), ("eol-patch", eol_lines)]:
+        if body_lines.count(readback) != 1 or body_lines.index(readback) != body_lines.index("path.write_bytes(patched)") + 1:
+            raise SystemExit(name + ": 書き込み直後の読み戻しがありません")
+        print("  ✓ " + name + ": 書き込み直後に読み戻しを持つ")

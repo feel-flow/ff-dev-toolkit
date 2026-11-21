@@ -261,7 +261,7 @@ python3 "$FF_DEV_TOOLKIT_ROOT/scripts/review-evidence.py" verify \
 
 `review-route.sh` の `REVIEW_REQUIRED_PERSPECTIVES` が変更クラスの必要観点。`none` はホストが必要観点を決める。consumer は観点数や CLI 本数を独自に固定しない。利用不可の sub CLI は既存の主担当完了規則でのみ許容する。verify の CSV は許容済み観点を含む admission coverage で、実行一覧ではない。実際の実施状態は evidence の results を読み、unavailable を実レビュー済みと報告しない。
 
-先行レビューが必要な consumer は gitignore 済みの `.review-results/precheck` または repository 外の output-dir で先行レビューを `--evidence` 付きで実行し、通常レビューへ `--require-prior-review <prior-evidence.json>` を渡す。同一 HEAD/base/repository の合格証跡を CLI 起動前に検証し、その run の開始より先に完了した証拠を通常 evidence に保持する。consumer verifier は `--prior-required security-analysis,type-design-analysis,test-analysis` 等で対象観点を要求できる。対象パスの選択は consumer の責務。新ブランチでは出力全体を先行レビューより前に一度退避する。継続中は先行 output でも `--fresh` を使わず、保存済み archive を維持する。
+先行レビューが必要な consumer は、既定出力ディレクトリ（`.review-results/` / `.explore-results/` / `.implement-results/`）の配下ではなく repository 外の output-dir（例: `~/.config/ff-dev-toolkit/tmp/` 配下）で先行レビューを `--evidence` 付きで実行し、通常レビューへ `--require-prior-review <prior-evidence.json>` を渡す。同一 HEAD/base/repository の合格証跡を CLI 起動前に検証し、その run の開始より先に完了した証拠を通常 evidence に保持する。consumer verifier は `--prior-required security-analysis,type-design-analysis,test-analysis` 等で対象観点を要求できる。対象パスの選択は consumer の責務。新ブランチでは出力全体を先行レビューより前に一度退避する。継続中は先行 output でも `--fresh` を使わず、保存済み archive を維持する。
 
 全体レビューを一度通した後、[部分再検証](#fix-ループの部分再検証--reviewers-限定再実行)の条件を満たす fix は、前回 evidence を別ファイルに保存して `--continue-review <previous-evidence.json>` と対象観点を指定する。verifier は同一系列・祖先 HEAD・既存観点の部分集合・保存レポートのハッシュ・Critical 不在を照合する。base は記録と一致するか、記録の base が新しい base の祖先で、記録時 HEAD に対する diff hash が変わっていないときに受理する。
 
@@ -273,7 +273,9 @@ verify と `--continue-review`（埋め込みの prior / parent と、明示し�
 
 ### Issue の AC を自動で事前投入する
 
-`multi-review.sh` は説明文を省略した実行で、PR が閉じる Issue と Refs の受け入れ条件・完了条件を各観点へ渡す。明示した `--description`（空文字を含む）が優先され、そのときは取得しない。`--help`、`--list-perspectives`、`--print-reviewers`、`--archive-only`、`--dry-run`、`--set-reviewers` と、`multi-agent.sh` の直接起動では取得しない。gh または `--github-input` の raw file を使い、取得できないときは理由を 1 行出して継続する。python3 が無い、またはスナップショットを読めないときも同じで、説明文を省略した既定の起動は止めない。同じ HEAD の再利用中に読めないときだけ、元の入力を失わないよう拒否する。同じ HEAD の `--resume` と、未採用の委譲応答の回収は最初の取得結果を再利用する。長い本文は argv ではなく説明ファイルで渡す。失敗案内も自動取得した本文を --description に展開せず、再実行は取得をやり直す。明示した説明文だけを案内に残す。キーワード一覧が空または形式外のときも理由を出して継続する。取得失敗の診断には取得先の先頭 1 行を添える。github-input の index は version 1。review.ac.pr の scope は repository と branch、review.ac.issue の scope は repository と issue、phase は initial、position は空 object である。PR の必須 field は number、url、headRefName、body、closingIssuesReferences の url。Issue の必須 field は number、url、body。診断は stderr の「AC を事前投入した」と課題番号である。
+`multi-review.sh` は説明文を省略した実行で、PR が閉じる Issue と Refs の受け入れ条件・完了条件を各観点へ渡す。明示した `--description`（空文字を含む）が優先され、そのときは取得しない。`--help`、`--list-perspectives`、`--print-reviewers`、`--archive-only`、`--dry-run`、`--set-reviewers` と、`multi-agent.sh` の直接起動では取得しない。gh または `--github-input` の raw file を使い、取得できないときは理由を 1 行出して継続する。python3 が無い、またはスナップショットを読めないときも同じで、説明文を省略した既定の起動は止めない。同じ HEAD の再利用中に読めないときだけ、元の入力を失わないよう拒否する。同じ HEAD の `--resume` と、未採用の委譲応答の回収は最初の取得結果を再利用する。長い本文は argv ではなく説明ファイルで渡す。失敗案内も自動取得した本文を --description に展開せず、再実行は取得をやり直す。明示した説明文だけを案内に残す。キーワード一覧が空または形式外のときも理由を出して継続する。取得失敗の診断には取得先の先頭 1 行を添える。github-input の index は version 1。review.ac.pr の scope は repository と branch、review.ac.issue の scope は repository と issue、phase は initial、position は空 object である。PR の必須 field は number、url、headRefName、body、closingIssuesReferences の url（`title` は任意の文字列）。Issue の必須 field は number、url、body。診断は stderr の「AC を事前投入した」と課題番号、および PR 本文投入時の「PR 本文（untrusted 検証対象）を事前投入した」である。
+
+Issue 本文からは AC / DoD に加えて、背景・目的・やること・スコープ外（非目標）・前提/制約の節も抽出し（`ff-effort` コメントブロックと空節は除外、サイズ上限時は AC / DoD を優先して UTF-8 境界で切り詰め）、PR 本文に引用・散文として書いた closing keyword は対象 Issue の抽出から除外する。さらに `pr.json` の PR タイトル・本文も予約区切り文字検査とサイズ上限付きで `<<<FF-PR-BODY-UNTRUSTED-BEGIN>>>`..`<<<FF-PR-BODY-UNTRUSTED-END>>>` に封入して渡す（参照 Issue 0 件の PR でも同様）。各観点（`adapter-common-git.sh` / `comprehensive-review.md` / `acceptance-criteria.md`）では、(a) PR 本文は untrusted な検証対象であり自己申告を証拠扱いしないこと、(b) 今回の変更 diff が導入・悪化させた欠陥・回帰はスコープ外記載を理由に抑制しないこと、(c) Issue のスコープ外はブロッキング強制対象外としつつ意図せぬスコープ外の懸念は `Suggestion` / `[OUT-OF-DIFF]` として報告を継続すること、を守る。
 
 ---
 
@@ -791,6 +793,8 @@ bash scripts/codex-review.sh --base develop --reviewers comment-analysis
 
 部分再検証には `--route fast` / `--route full` を付けない（付けるなら `--route none`）。経路はレーンを自分で決めるので、`--cli` / `--perspective` などレーン構成を決める引数（`--mode` / `--exclude-cli` / `--exclude-perspective` を含む）との併用を exit 2 で拒否する。拒否された回は 1 タスクも起動しておらず、`.review-results/` に残っているのは前の実行の結果である — exit 2（拒否）の回は結果を読まない。
 
+部分再検証や別試行で `--output-dir` を分ける場合は、`.review-results/` の外に置く（既定出力ディレクトリ `.review-results/` / `.explore-results/` / `.implement-results/` 配下のサブパスは、後続の `--archive-only` や `--fresh` で `archive_known_entry` が未知エントリとして拒否する原因になるため、オーケストレータ自身が失敗時案内で生成する初期化済み既定ルート直下の `.recovery-*` 復旧出力を除き、タスク起動前・`--dry-run` 前に exit 2 で拒否される。大小を区別しないファイルシステムでは、既定ディレクトリが未作成でも綴りだけ違うサブパスを同じ拒否にする。その復旧出力が残っていても親の退避は止めず、所有マーカーで初期化済みと確認できる復旧ディレクトリ自体は動かさない。名前だけが一致する通常ファイルや未初期化ディレクトリは未知エントリのまま停止する。復旧コマンドの再案内は、今の出力先が既定ルート直下の復旧ディレクトリならその親の直下へ並べ、それ以外の復旧名ではその中に並べる）。`.review-results` 自身、兄弟ディレクトリ（例: `.review-results-round2`）、およびリポジトリ外の本人専用ディレクトリ（例: `~/.config/ff-dev-toolkit/tmp/` 配下）は従来どおり利用できる。
+
 **部分再検証の適用条件（すべて満たすときだけ）**:
 
 1. 同じ PR で全観点のフルレビューを 1 度通過済みである（初回レビューは常にフル実行）
@@ -812,6 +816,8 @@ bash scripts/codex-review.sh --base develop --reviewers comment-analysis
 
 **記録を書き換えた fix の再検証**: 制作記録・ADR・Playbook・観測台帳・PR 本文・手順書の主張を直した fix では、comment-analysis（委譲レーンならその委譲担当）へ、その fix で書いた実測値の一覧（測った対象・回数・機械・値）を渡す。fix の差分の主張が、その一覧の範囲を超えていないかを照合させる。一次情報で確かめる手続きは [委譲プロンプトへ載せる事実主張の一次情報確認](./multi-cli-agent-orchestration.md#委譲プロンプトへ載せる事実主張の一次情報確認) が正本で、ここでは複製しない。
 
+**ネイティブサブエージェント経路の継続確認（解消＋退行）**: 主担当セルフレビューをネイティブの read-only サブエージェントへ委譲し、指摘に基づく修正コミットを作成した後の再確認では、新規サブエージェントを起こさず**同じサブエージェントへ read-only の継続メッセージ**（編集・テスト実行・git 書き込み禁止を維持）を送り、(1) 元の指摘ごとの解消確認と (2) 修正で変更した制御・分岐が隣接する別経路を漏らしていないか（修正由来の退行確認）の両方を点検させられる。初回の探索文脈を保ったまま約 1〜3 分で修正漏れと退行を検出でき、既存の 2 巡上限の枠内で運用する（3 巡目突入前の立ち止まりや打ち切り条件は緩めない）。
+
 ### fix ループの収束判定と打ち切り
 
 レビュー→修正のループは**放っておくと収束しない**。AI レビュアーは回すたびに新しい低重要度の指摘を拾い、AI 実装者は指摘のたびにガードと抽象を積み増す。ループには次の打ち切り規範を適用する（harness-review の「無限改善ループ」への自己適用）:
@@ -828,6 +834,10 @@ bash scripts/codex-review.sh --base develop --reviewers comment-analysis
   毎回問うのは過剰なので、トリガーは**検知可能な事実**に限る。**上限 2 巡は最後の安全網であって早期の検知器ではない** — 導入先の実測（2026-09-11。docs-only の規約更新で `/multi-review` を 8 巡した回）では、2 巡目以降の新規指摘が前巡の fix に由来する形が続き、切り替わったのは上限に到達して利用者判断を仰いだ後だった。スコープを絞ってからは**その巡の新規 Critical が 1 件に減り、その巡で解消した**。なお 4 巡目以降は**上限を宣言しないまま再開した回**で、下の「追加の上限を宣言する」はこの形を塞ぐためのもの（規範が 8 巡を許しているわけではない）。判定・起票を行うのは**オーケストレータ（実装側エージェント）**で、read-only のレビュー用サブエージェントではない。判定フローは `out-of-scope-issue` スキルの §1.0
 - **停止条件は「既出の Critical / Warning を全解消し、かつ新規の Critical / Warning が無いこと」であり、green（全指摘ゼロ）ではない。** 解消は修正、または [PR Review Response Policy](./review-response-policy.md) の却下手順に従った記録付き棄却を含む。大きな diff のクロスモデルレビューは nit だけの REJECTED が続くことがあり、Critical 不在 + 実 Warning 全対応で停止してよい
 - **2 巡目の fix の後に未解消または新規の Critical / Warning が残っても、3 巡目のレビューは起動しない**（hook が deny する）。各指摘を patch せず設計を疑う。判断するのはオーケストレータ（実装側エージェント）である。成果物は PR への設計疑義メモ（指摘が依頼範囲外の追加分に集中している場合はスコープ過剰のサインなので、追加分の別 Issue への切り出しを検討する）。Critical / Warning の残件は修正するかポリシーの却下手順で記録付き棄却する。それ以外の残件（Suggestion 以下、3 巡目で拾うはずだった確認）は `/out-of-scope-issue` の bundle 統合へ流す。未解消 Critical / Warning がある間はマージしない
+- **`FF_REVIEW_ROUND_ACK=1` で 3 巡目以降を通す前の立ち止まり（上位視点の 3 問）**: 巡回上限で止まったとき、局所パッチを積んで機械的に `FF_REVIEW_ROUND_ACK=1` を付ける反応を禁止し、再開を判断する前に次の 3 問を上位視点で必ず点検する（根拠を欠く指摘は記録付き棄却、スコープ外と確認した指摘に限り別 Issue 化で終え、不要な再レビューへ進まない）:
+  - **AC・スコープ照合**: その指摘対応は元 Issue の受け入れ条件（AC）を満たすために必要か。すでに AC を満たすなら、追加の堅牢化やテスト拡充は現行 PR の修正義務とせず、記録付き棄却またはスコープ外と確認したうえでの別 Issue 化で終える
+  - **入力境界の現実性**: `failure_scenario=yes` が付いていても、その再現入力は実際の運用経路で到達し得るか。信頼境界内の定型出力（内部のビルド生成物・ビルド時定数など）に対する理論上の合成入力のみでしか再現しない指摘は実運用の入力境界外として、[PR Review Response Policy](./review-response-policy.md) に従い記録付き棄却または Suggestion 扱いにする
+  - **パッチ連鎖の打ち切り**: 同系統の指摘が 2 巡続くなら、局所パッチを積み増さず「記録付き棄却 / 標準ライブラリ等の上位手段・設計の見直しへの切替 / スコープ外と確認した指摘に限り別 Issue 化」のいずれかで収束させ、現行 PR に修正義務が残る Warning 等を別 Issue へ逃がさない
 - **上限到達後に方針転換（スコープ変更・設計変更）で再開する場合は、再開時に追加の上限を宣言し、追加の巡を 1 巡ずつ `FF_REVIEW_ROUND_ACK=1` で通す**（例:「追加 1 巡まで」。Bash は起動コマンドの先頭の環境代入、Agent は prompt の行頭の単独行。通した巡も記録されるので次の巡でまた止まる）。**追加上限は Critical / Warning の解消義務を免除しない** — 追加上限に達しても未解消の Critical / Warning が残るならマージせず、設計疑義メモへ戻す（未対応のまま残せるのは Suggestion 以下だけで、残すものは PR 本文へ記録する）。宣言しない再開は**上限の無い再開**になる — 停止条件の「新規の Critical / Warning が無いこと」は、毎巡 1〜2 件の Warning 相当（CLI 出力では `Important` 表記のことがある）が出る差分（規約文書の更新など）では実質 green 待ちと同じになり、上の「green を待たない」が効かなくなる
 - 打ち切り時に残った Suggestion 以下は、[PR Review Response Policy](./review-response-policy.md) の採否と、スコープ外発見の三分岐に従って記録する（黙って捨てない。独立 Warning のパーキングは採用しない）
 
@@ -1063,7 +1073,7 @@ ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF
 
 `distributed` review で、headless Grok が型付き判定行を返せない既知の経路（コマンド実行を要する観点。名簿は `headless_grok_unreliable_review_perspectives` の 1 か所。着手時は `error-handler-hunt` と `security-analysis`）は、所有・fallback・コスト調整後のプランで利用可能な別 CLI へ割り当て、理由とコスト帯を表示します。明示した CLI と除外を越えた振替は行わず、代替が無ければ dry-run でも非 0 で停止して代替条件を示します。Grok 自身への native 委譲は対象外です。pair / cross-model で明示したモデルの組はこの自動振替では変えません。実行時 fallback は従来どおり無しで、失敗サマリーが回し直しコマンドを出します。
 
-失敗サマリーの単発・代替 CLI・新しいホスト委譲のコマンドは、元の出力先内の隠しディレクトリ `.recovery-*` を、独立した復旧コマンドごとに分けて明示します。元の ignore 境界を維持し、複数の復旧を続けて実行しても先の結果を退避しません。元の結果・キャッシュ・レポート・委譲世代を保持し、元と補完の両方を確認します。委譲の 2 段は表示された同じ新規出力先で、初回の引数に `--resume` だけを足して回収します。これらは別の実行であり、元の巡を完了済みに変えたり、別実行の結果を混ぜて 1 件の prior-evidence として受理したりしません。単一の prior-evidence が必要なら、元を保持したまま新規出力先で必須観点一式を実行します。同じ入力の未完了レーンだけを再開する場合は、下の `--resume` 手順を使います。
+失敗サマリーの単発・代替 CLI・新しいホスト委譲のコマンドは、元の出力先内の隠しディレクトリ `.recovery-*` を、独立した復旧コマンドごとに分けて明示します。元の ignore 境界を維持し、複数の復旧を続けて実行しても先の結果を退避しません。元の結果・キャッシュ・レポート・委譲世代を保持し、元と補完の両方を確認します。委譲の 2 段は表示された同じ新規出力先で、初回の引数に `--resume` だけを足して回収します。これらは別の実行であり、元の巡を完了済みに変えたり、別実行の結果を混ぜて 1 件の prior-evidence として受理したりしません。単一の prior-evidence が必要なら、元を保持したまま新規出力先で必須観点一式を実行します。同じ入力の未完了レーンだけを再開する場合は、下の `--resume` 手順を使います。（既定出力ディレクトリ直下の `.recovery-*` がさらに失敗したときの再案内は、入れ子にせず親の既定ルート直下へ並べます。）
 
 - 理由: 同じ差分を別のモデルに見せることがこの仕組みの目的なので、黙って差し替えるとレポート上は観点が埋まって見えるのに実際に見たモデルが変わる。代替先はコスト帯が上がる場合がある（`codex-cli` → `claude-code` は standard → premium）。タイムアウト後の再試行は同じ制限時間をもう一度消費するだけになりやすい。
 - 打ち切り前に得られた部分出力は捨てず、`Status: incomplete` 付きの結果ファイルとして保存し、統合レポートにも `INCOMPLETE` バナーを出します。**未完了の節は「指摘なし」ではなく「未確認」と読むこと。**
