@@ -2225,7 +2225,7 @@ ENTITY_GUARD_CASES_FILE="$SCRIPT_DIR/entity-guard-cases.sh"
 [[ "$(type -t run_entity_guard_cases)" == function ]] || { echo '✗ entity guard case function missing' >&2; exit 1; }
 ENTITY_GUARD_BEFORE=$((PASS + FAIL))
 run_entity_guard_cases
-[[ $((PASS + FAIL - ENTITY_GUARD_BEFORE)) -ge 44 ]] || { echo '✗ entity guard assertion collection empty/incomplete' >&2; exit 1; }
+[[ $((PASS + FAIL - ENTITY_GUARD_BEFORE)) -ge 56 ]] || { echo '✗ entity guard assertion collection empty/incomplete' >&2; exit 1; }
 # entity-guard-cases:end
 
 echo ""

@@ -28,6 +28,7 @@
 # 変異検出: PR 問い合わせを常に失敗へ変える・候補から chore/docs を外す・解決した Issue の保留保存を外すと、それぞれ 18 が赤（2026-10-17 実測）。
 # 変異検出: 括弧付き候補を外す・--pr を無視する・default / detached 以外で直近マージを問い合わせると 19 が赤。
 # 空振り検出: 静的契約部分で現在ブランチの取得行を除去・既存知見ブランチの PR 分岐条件を反転・default 不変更の規定を反転・新規専用 PR の即 commit を保留へ反転すると各 rc=1（2026-10-22 実測）。針は各 1 行を要求し、0 件・重複を緑にしない。
+# 空振り検出: A〜D 判定フィルタ削除（SKILL.md）・週次 flush 推奨削除（ace-cycle.md）・A〜D 見出し改名（ace-cycle.md）の 3 変異を mutation-harness.sh で実測し全件 detected（rc=1）、無変異対照は 221 件 pass（2026-11-23 macOS 実測）。
 # 空振り検出: 呼出側の祖先・許可パス・件名と停止の実測を削る3変異と、helper の責務を誤保証へ変える変異は各 rc=1。通常追記は rc=0。保護判定で専用 Git fixture への移動を外すと、origin/HEAD の無い写しで14件が赤になる（2026-10-22 同梱 mutation-harness 実測）。
 # 空振り検出: 分割先の明示stageガード除去・固定候補片側消失・旧書式追加の0件化・layout fixture helper空化は隔離layout実測で各rc=1、通常追記と対照はrc=0（2026-10-25 mutation-harness、4 detected / 1 green-ok）。
 # 空振り検出: サブdirの探索・追跡・変更判定をcwd基準へ戻す3変異は各rc=1。空ディレクトリはrc=2でindex/pending保持を実測し、0ファイルを成功にしない（2026-10-25、無変異対照は成功）。
@@ -1884,6 +1885,40 @@ else
     bad "「4. コミット」に素の git commit の実行例が戻っている（合成 identity の停止を素通りする）"
   else
     ok "「4. コミット」に素の git commit の実行例が無い"
+  fi
+fi
+
+echo "== Phase 2: Reflect の A〜D 判定と破棄理由（Issue \`#2978\`） =="
+expect_contains '**A〜D 判定**' "SKILL.md の Reflect に A〜D 判定がある"
+expect_contains 'A/D は破棄理由つきで落とす' "SKILL.md の Reflect に A/D 破棄理由の明示がある"
+expect_contains_in "$RULES_FILE" '## A〜D 判定（Phase 2: Reflect）' "curate.md に A〜D 判定節がある"
+expect_contains_in "$RULES_FILE" '**A / D の候補は破棄理由つきで落とす**' "curate.md に A / D を破棄理由つきで落とす規定がある"
+expect_contains_in "$RULES_FILE" '仕組み（hook・script・テスト）で強制し、記録は 1 行' "curate.md に C の扱い（仕組み強制＋1 行記録）がある"
+expect_contains_in "$RULES_FILE" '**破棄（A/D）**' "curate.md の結果レポートに A/D 破棄理由欄がある"
+
+echo "== ace-cycle.md の A〜D 判定と「反映の時期」週次 flush 推奨（Issue \`#2978\`） =="
+ad_sec="$(awk '/^### A〜D の 4 区分判定/{f=1;next} f&&/^#{2,3} /{exit} f' "$CYCLE_DOC" 2>/dev/null)" || ad_sec=""
+if [ -z "$ad_sec" ]; then
+  bad "ace-cycle.md の「### A〜D の 4 区分判定」節を読めない（不在・見出し変更を緑へ倒さない）"
+else
+  if grep -Fq '**A / D の候補は破棄理由つきで落とす**' <<<"$ad_sec" \
+    && grep -Fq '仕組み（hook・script・テスト）で強制し、記録は 1 行' <<<"$ad_sec"; then
+    ok "ace-cycle.md に A〜D の 4 区分判定と破棄・強制の扱いがある"
+  else
+    bad "ace-cycle.md の A〜D 判定節に必要な規定が欠落"
+  fi
+fi
+
+delivery_sec="$(awk '/^## 反映の時期/{f=1;next} f&&/^## /{exit} f' "$CYCLE_DOC" 2>/dev/null)" || delivery_sec=""
+if [ -z "$delivery_sec" ]; then
+  bad "ace-cycle.md の「## 反映の時期」節を読めない（不在・見出し変更を緑へ倒さない）"
+else
+  if grep -Fq 'まとめて（推奨: 週 1 回の flush）' <<<"$delivery_sec" \
+    && grep -Fq '開発 PR が多い導入先の推奨形は、**「まとめて」（`mode=batch`）＋週 1 回の `finish.sh knowledge-commit flush`' <<<"$delivery_sec" \
+    && grep -Fq '未反映の最古が `warn_after_days`（推奨 `7`）に達したときに `target` / `probe` が出す既存の警告を flush の合図にする' <<<"$delivery_sec"; then
+    ok "ace-cycle.md「反映の時期」に開発 PR が多い導入先向けの「まとめて」＋週 1 回 flush 推奨と warn_after_days 警告の合図がある"
+  else
+    bad "ace-cycle.md「反映の時期」に週次 flush 推奨または warn_after_days 警告の合図が欠落"
   fi
 fi
 

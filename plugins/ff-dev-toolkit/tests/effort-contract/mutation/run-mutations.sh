@@ -118,6 +118,10 @@ echo "変異 8d3: run-all.sh のゲート分の記録呼び出しを消す（綴
 python3 "$MUTDIR/mut-gate-minutes-call.py"
 probe "ゲート分の未配線への退行（検査 14j）" "$RUNNER" "git checkout -- '$RUNNER'"
 
+echo "変異 8d4: ゲート分の読み手から mode 列の絞り込みを外す（explicit 行が合算される）"
+python3 "$MUTDIR/mut-gate-mode-filter.py"
+probe "mode=explicit 混入の復活（検査 13h / 14k）" "$REPORT" "git checkout -- '$REPORT'"
+
 echo "変異 8d5: run-all.sh のゲート分の記録から走行中マーカーによる入れ子判定を外す"
 python3 "$MUTDIR/mut-gate-marker-nested.py"
 probe "env を隔離した入れ子の多重記録への退行（検査 14j）" "$RUNNER" "git checkout -- '$RUNNER'"

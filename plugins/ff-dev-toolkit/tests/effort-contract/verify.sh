@@ -776,6 +776,28 @@ contains "$CREATE_ESTIMATION" "下限（**40h**）" "ADR 横断変更の人間�
 contains "$CREATE_ESTIMATION" "8.0h → 4.3h / 乖離率 0.54、6.3h → 4.3h / 0.68、13.5h → 8.3h / 0.61" "ADR 横断変更の実測 3 件と乖離率"
 contains "$CREATE_ESTIMATION" "bundle の固定費と子の内訳」の式で別建てにする" "ADR 横断変更でも固定費は別建て式を使う"
 contains "$CREATE_ESTIMATION" "観測台帳 OBS-531（実測 3 件" "ADR 横断変更の根拠（OBS-531 実測 3 件と乖離率）"
+# 新設 ADR・移行契約の設計専用（docs-only）の行。決定後の同期へ寄せると過小、
+# 実装込みの横断へ寄せると過大になるのを防ぐ。1/3〜1/2 の積み方が当たり帯に
+# 収まった導入先の実測 3 件から足した。行の適用は設計専用であることを基準にし、
+# 後続 bundle の分割はこの Issue で行うときだけ同じ行に含める。
+contains "$CREATE_ESTIMATION" "| 新設 ADR・移行・互換契約の設計専用 docs Issue（" "設計専用 docs-only の行"
+contains "$CREATE_ESTIMATION" "レビュー・再照合を執筆の **1/3〜1/2** で積む" "設計専用行はレビュー・再照合を執筆の 1/3〜1/2 で積む"
+contains "$CREATE_ESTIMATION" "決定後の文書同期（上の「文書同期・決定記録の docs Issue」行の、文書数 × 2〜5 分）は当てない" "設計専用行は決定後の同期行と分ける"
+contains "$CREATE_ESTIMATION" "実装を含む複数コンポーネント横断（上の「ADR を伴う複数コンポーネント横断の機能追加」行の人間工数下限 40h と実装込みの内訳）も当てない" "設計専用行は実装込みの ADR 横断行と分ける"
+contains "$CREATE_ESTIMATION" "スコープは契約照合と設計不変条件の固定に絞る" "設計専用行は契約照合と設計不変条件に絞る"
+contains "$CREATE_ESTIMATION" "この 1/3〜1/2 に重ねない" "設計専用行の 1/3〜1/2 に契約変更の倍率や照合面を重ねない"
+contains "$CREATE_ESTIMATION" "乖離率 1.13" "設計専用行の実測 1（乖離率 1.13）"
+contains "$CREATE_ESTIMATION" "乖離率 1.33" "設計専用行の実測 2（乖離率 1.33）"
+contains "$CREATE_ESTIMATION" "乖離率 0.67" "設計専用行の実測 3（乖離率 0.67）"
+contains "$CREATE_ESTIMATION" "新規 ADR と移行・互換契約をこの Issue で策定する設計専用（docs-only）は、下の「新設 ADR・移行・互換契約の設計専用 docs Issue」行で積む" "文書同期の行から設計専用行へ送る"
+contains "$CREATE_ESTIMATION" "行の適用は、新規 ADR と移行・互換契約をこの Issue で策定する設計専用であることを基準にする" "設計専用行の適用は設計専用であることを基準にする"
+contains "$CREATE_ESTIMATION" "分割が無く、後続を既存の bundle に載せる設計専用も、この行で積む" "設計専用行は bundle 分割が無くても使う"
+contains "$CREATE_ESTIMATION" "後続実装を新しい bundle に分ける作業をこの Issue で行うときは、その分割もこの行の執筆に含める" "設計専用行は、この Issue で行う bundle 分割を執筆に含める"
+contains "$CREATE_ESTIMATION" "実装を含まず、新規 ADR と移行・互換契約を策定する設計専用（docs-only）は、後続 bundle の分割がこの Issue に無くても、下の「新設 ADR・移行・互換契約の設計専用 docs Issue」行で積む" "実装込みの ADR 横断行から設計専用行へ送る"
+contains "$CREATE_ESTIMATION" "新設 ADR は無く、hook の文言と判定規律を文書として固めただけで挙動は変えていない" "設計専用行の 2 件目は新設 ADR の無い近い型"
+contains "$CREATE_ESTIMATION" "新設 ADR・移行・互換契約の設計専用（docs-only）は、上の「新設 ADR・移行・互換契約の設計専用 docs Issue」行で積む" "踏襲してつなぐ feature から設計専用行へ送る"
+contains "$CREATE_ESTIMATION" "着手時に、別の ADR・PR で決着済みの論点を外し、残っている策定の物量をこの行で積み直す" "設計専用行は着手時に残っている策定の物量を積み直す"
+contains "$CREATE_ESTIMATION" "未決の論点数だけを数える決定 Issue の見直しや、決定後の同期の行へは寄せない。" "決定 Issue の数え直しへ設計専用行を寄せない"
 # 既存の仕組みを踏襲してつなぐ feature の行。人間工数の量に AI 予定を合わせて
 # 過大側へ外れた導入先の実測 3 件から足した。出所の 3 件は全件ゲートが各 1 回なので、固定費は
 # 和へ畳まず別建てにする（ゲートの重い環境で OBS-509 の過小へ戻さない）。
@@ -1066,8 +1088,9 @@ out_has "$MOUT" "instruction_bytes=(unmeasured)"  "13g: リポジトリを解決
 out_has "$MOUT" "review_rounds=(unmeasured)"      "13g: リポジトリを解決できなければ巡回数は (unmeasured)"
 out_has "$MOUT" "gate_minutes=(unmeasured)"       "13g: リポジトリを解決できなければゲート分は (unmeasured)"
 # 13h: ゲート分は gate.tsv（列: issue / gate / epoch / iso / seconds / mode / status / branch / repo）の
-# その Issue・そのリポジトリの行の秒を合算し、分（四捨五入）と回数で出す。別リポジトリの同じ番号・
-# 秒が数値でない行・別 Issue の行は採らない。記録が無い Issue は (unmeasured)（0 と区別する）
+# その Issue・そのリポジトリの正規ゲート起動（mode=fast / full / changed）の行の秒だけを合算し、
+# 分（四捨五入）と回数で出す。mode=explicit / - の行・別リポジトリの同じ番号・秒が数値でない行・
+# 別 Issue の行は採らない。対象行が無い Issue は (unmeasured)（0 と区別する）
 MOUT="$(_metrics 77 "$MTMP/m" "$REPO_A")"
 out_has "$MOUT" "gate_minutes=(unmeasured)" "13h: gate.tsv が無い Issue のゲート分は (unmeasured)"
 out_has "$MOUT" "gate_runs=(unmeasured)"    "13h: gate.tsv が無い Issue のゲート回数は (unmeasured)"
@@ -1075,19 +1098,30 @@ out_lacks "$MOUT" "gate_minutes=0"          "13h: 記録不在を 0 と書かな
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
   55 gate 2000 t0 90 fast pass 'chore/#55-x' "$KEY_A" \
   55 gate 3000 t1 1230 full fail 'chore/#55-x' "$KEY_A" \
+  55 gate 3500 t1 600 explicit partial 'chore/#55-x' "$KEY_A" \
+  55 gate 3600 t1 300 - pass 'chore/#55-x' "$KEY_A" \
   56 gate 3000 t1 6000 full pass 'chore/#56-y' "$KEY_A" \
   55 gate 3000 t1 abc full pass 'chore/#55-x' "$KEY_A" \
   55 gate 4000 t2 36000 full pass 'chore/#55-other' "$KEY_B" \
   58 gate 4000 t2 150 fast pass 'chore/#58-half' "$KEY_A" \
-  59 gate 4000 t2 20 fast pass 'chore/#59-tiny' "$KEY_A" > "$MTMP/m/gate.tsv"
+  59 gate 4000 t2 20 fast pass 'chore/#59-tiny' "$KEY_A" \
+  60 gate 4000 t2 120 changed partial 'chore/#60-chg' "$KEY_A" \
+  60 gate 4100 t2 900 explicit partial 'chore/#60-chg' "$KEY_A" \
+  61 gate 4000 t2 180 explicit partial 'chore/#61-exp-only' "$KEY_A" > "$MTMP/m/gate.tsv"
 MOUT="$(_metrics 55 "$MTMP/m" "$REPO_A")"
-out_has "$MOUT" "gate_runs=2"     "13h: 秒が数値の行だけを回数に数える（abc の行と別 Issue・別リポジトリの行は採らない）"
-out_has "$MOUT" "gate_minutes=22" "13h: 90 + 1230 秒 = 22 分（四捨五入。別リポジトリの 36000 秒を混ぜない）"
+out_has "$MOUT" "gate_runs=2"     "13h: 秒が数値かつ mode=fast/full/changed の行だけを回数に数える（explicit・-・abc・別 Issue・別リポジトリは採らない）"
+out_has "$MOUT" "gate_minutes=22" "13h: 90 + 1230 秒 = 22 分（四捨五入。explicit 600 秒や別リポジトリ 36000 秒を混ぜない）"
 MOUT="$(_metrics 58 "$MTMP/m" "$REPO_A")"
 out_has "$MOUT" "gate_minutes=3"  "13h: 150 秒 = 2.5 分は 3 分へ切り上げる（awk の %.0f の偶数丸めで 2 にしない）"
 MOUT="$(_metrics 59 "$MTMP/m" "$REPO_A")"
 out_has "$MOUT" "gate_minutes=0"  "13h: 20 秒は 0 分（記録はあるので (unmeasured) ではない。gate_runs=1 が実測の印）"
 out_has "$MOUT" "gate_runs=1"     "13h: 0 分でも回数は 1"
+MOUT="$(_metrics 60 "$MTMP/m" "$REPO_A")"
+out_has "$MOUT" "gate_runs=1"     "13h: mode=changed（ADR-094 の通常 PR 変更ベースゲート）は計上し、同 Issue の explicit は除外する"
+out_has "$MOUT" "gate_minutes=2"  "13h: mode=changed 120 秒 = 2 分（explicit 900 秒を合算しない）"
+MOUT="$(_metrics 61 "$MTMP/m" "$REPO_A")"
+out_has "$MOUT" "gate_runs=(unmeasured)"    "13h: mode=explicit だけの Issue のゲート回数は (unmeasured)"
+out_has "$MOUT" "gate_minutes=(unmeasured)" "13h: mode=explicit だけの Issue のゲート分は (unmeasured)"
 MOUT="$(_metrics 55 "$MTMP/m" "$REPO_B")"
 out_has "$MOUT" "gate_minutes=600" "13h: --repo-dir を替えると別リポジトリの同じ番号だけを読む"
 MOUT="$(_metrics 57 "$MTMP/m" "$REPO_A")"
@@ -1402,6 +1436,66 @@ if [ -f "$GM_REC" ]; then
         || bad "14j: env -i の入れ子経路の記録が期待と違う: rc=${_e_rc} [${_j}]（期待 rc=0 1|69|explicit|partial）: $(tail -3 "$MTMP/e2e.log" | tr '\n' ' ')"
       [ "$_e_left" = "0" ] && ok "14j: 外側の run-all.sh は終了時に走行中マーカーを消す" \
         || bad "14j: 走行中マーカーが残った（${_e_left} 件）"
+      # 14k: 単体 run-all/verify.sh 等の fixture 実行が実環境の metrics/gate.tsv へ混入しない構造契約（OBS-582）
+      # (1) 書き手側の隔離: run-all/verify.sh 冒頭（run_runner / suite_cases_source より前）が
+      #     FF_DEV_TOOLKIT_STATE_DIR を一時ディレクトリへ逃がし、merge-freshness /
+      #     precommit-selftest-pairs / public-layout の直接 run-all.sh 起動も隔離する
+      contains "$TESTS_DIR/run-all/verify.sh" 'export FF_DEV_TOOLKIT_STATE_DIR="$RUN_WORK/state"' \
+        "14k: run-all/verify.sh は単体実行時に FF_DEV_TOOLKIT_STATE_DIR を一時ディレクトリへ隔離する"
+      _k_exp_ln="$(awk '/^[[:space:]]*export FF_DEV_TOOLKIT_STATE_DIR="\$RUN_WORK\/state"[[:space:]]*$/ { print NR; exit }' "$TESTS_DIR/run-all/verify.sh")"
+      _k_run_ln="$(awk '/^run_runner\(\)/ { print NR; exit }' "$TESTS_DIR/run-all/verify.sh")"
+      _k_src_ln="$(awk '/^[[:space:]]*suite_cases_source / { print NR; exit }' "$TESTS_DIR/run-all/verify.sh")"
+      if [ -n "$_k_exp_ln" ] && [ -n "$_k_run_ln" ] && [ -n "$_k_src_ln" ] && [ "$_k_exp_ln" -lt "$_k_run_ln" ] && [ "$_k_exp_ln" -lt "$_k_src_ln" ]; then
+        ok "14k: run-all/verify.sh の非コメント行 export FF_DEV_TOOLKIT_STATE_DIR 隔離が run_runner / suite_cases_source より前にある"
+      else
+        bad "14k: run-all/verify.sh の FF_DEV_TOOLKIT_STATE_DIR 隔離位置が不正（export=${_k_exp_ln:-none}, run_runner=${_k_run_ln:-none}, cases=${_k_src_ln:-none}）"
+      fi
+      contains "$TESTS_DIR/merge-freshness/verify.sh" 'FF_DEV_TOOLKIT_STATE_DIR="$WORK/state"' \
+        "14k: merge-freshness/verify.sh の run-all.sh 直接起動も FF_DEV_TOOLKIT_STATE_DIR を隔離する"
+      contains "$TESTS_DIR/precommit-selftest-pairs/verify.sh" 'FF_DEV_TOOLKIT_STATE_DIR="$TMP/state"' \
+        "14k: precommit-selftest-pairs/verify.sh の run-all.sh 直接起動も FF_DEV_TOOLKIT_STATE_DIR を隔離する"
+      contains "$TESTS_DIR/public-layout/verify.sh" 'FF_DEV_TOOLKIT_STATE_DIR="$WORK/state"' \
+        "14k: public-layout/verify.sh の run-all.sh 直接起動も FF_DEV_TOOLKIT_STATE_DIR を隔離する"
+      # (2) 仕様定義の一致: effort.md と record-gate-minutes.sh が mode=explicit を合算対象外と明記する
+      contains "$CLOSE" 'mode=fast` / `full` / `changed`' \
+        "14k: effort.md に gate_minutes / gate_runs の集計対象モード（fast / full / changed）が明記されている"
+      contains "$CLOSE" 'mode=explicit` 等の明示引数実行は合算しない' \
+        "14k: effort.md に mode=explicit 非合算が明記されている"
+      contains "$GM_REC" 'mode=explicit 等）は' \
+        "14k: record-gate-minutes.sh に mode=explicit の扱いが明記されている"
+      contains "$GM_REC" '計上対象から外す' \
+        "14k: record-gate-minutes.sh に mode=explicit 等を計上対象から外す仕様が明記されている"
+      # (3) 動的実測: 実ゲート 1 回（mode=fast / 120 秒 = 2 分）の後、単体 verify 相当の明示引数実行を
+      #     (a) FF_DEV_TOOLKIT_STATE_DIR 隔離下で回せば rc=0 かつ隔離先へ explicit 行が書かれ、実 gate.tsv の行数は増えず、
+      #     (b) 仮に未隔離のまま explicit 行（実起動 + 600 秒の explicit 行）が追記されても
+      #         effort-report.sh --issue-metrics は実ゲート 1 回 / 2 分だけを返す
+      KSTATE="$MTMP/state-k"
+      KISO="$MTMP/state-k-isolated"
+      bash "$GM_REC" --repo-dir "$REPO_E" --metrics-dir "$KSTATE/metrics" --seconds 120 --status pass --mode fast --branch 'chore/#69-nested' >/dev/null 2>&1
+      _k_before="$(awk 'END { print NR + 0 }' "$KSTATE/metrics/gate.tsv" 2>/dev/null)"
+      _k_iso_rc=0
+      env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_CHANGED \
+        FF_DEV_TOOLKIT_STATE_DIR="$KISO" FF_GATE_RECORD=0 FF_RUN_ALL_JOBS=1 \
+        bash "$REPO_E/tests/run-all.sh" "$REPO_E/tests/leaf/verify.sh" >/dev/null 2>&1 || _k_iso_rc=$?
+      _k_after_iso="$(awk 'END { print NR + 0 }' "$KSTATE/metrics/gate.tsv" 2>/dev/null)"
+      _k_iso_rec="$(awk -F '\t' '{ n++; last = $1 "|" $6 "|" $7 } END { print n + 0 "|" last }' "$KISO/metrics/gate.tsv" 2>/dev/null)"
+      if [ "$_k_iso_rc" -eq 0 ] && [ "$_k_iso_rec" = "1|69|explicit|partial" ] && [ "$_k_before" = "1" ] && [ "$_k_after_iso" = "1" ]; then
+        ok "14k: FF_DEV_TOOLKIT_STATE_DIR 隔離下の単体 run-all.sh 実行は rc=0 で隔離先へ 1 行書き、実 gate.tsv は 1 行も増えない"
+      else
+        bad "14k: 隔離下の単体実行が期待と違う（rc=${_k_iso_rc}, iso=[${_k_iso_rec}], real=${_k_before}->${_k_after_iso}）"
+      fi
+      _k_uniso_rc=0
+      env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_CHANGED \
+        FF_DEV_TOOLKIT_STATE_DIR="$KSTATE" FF_GATE_RECORD=0 FF_RUN_ALL_JOBS=1 \
+        bash "$REPO_E/tests/run-all.sh" "$REPO_E/tests/leaf/verify.sh" >/dev/null 2>&1 || _k_uniso_rc=$?
+      bash "$GM_REC" --repo-dir "$REPO_E" --metrics-dir "$KSTATE/metrics" --seconds 600 --status partial --mode explicit --branch 'chore/#69-nested' >/dev/null 2>&1
+      _k_after_uniso="$(awk 'END { print NR + 0 }' "$KSTATE/metrics/gate.tsv" 2>/dev/null)"
+      KMOUT="$(_metrics 69 "$KSTATE/metrics" "$REPO_E")"
+      [ "$_k_uniso_rc" -eq 0 ] && [ "$_k_after_uniso" = "3" ] \
+        && ok "14k: 未隔離の明示引数実行（rc=0）+ 600 秒 explicit 行で gate.tsv が 3 行になる（フィルタ実測の前提）" \
+        || bad "14k: 未隔離 explicit 行が gate.tsv に書かれなかった（rc=${_k_uniso_rc}, rows=${_k_after_uniso}、前提不成立）"
+      out_has "$KMOUT" "gate_runs=1"    "14k: 未隔離 explicit 行が混入しても effort-report.sh の gate_runs は実ゲート 1 回と一致する"
+      out_has "$KMOUT" "gate_minutes=2" "14k: 未隔離 explicit 600 秒が混入しても effort-report.sh の gate_minutes は実ゲート 2 分と一致する（12 分にならない）"
     else
       bad "14j: fixture リポジトリを作成できません: $REPO_E"
     fi

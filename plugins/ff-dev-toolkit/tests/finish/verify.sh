@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 空振り検出: PR 作成前の専用セキュリティゲート記録確認（Issue `#2875`、security-record-cases.sh の R9〜R14 20 件）とクロスモデル未実施時の再プローブ記録検査（Issue `#2893`、cross-model-reprobe-cases.sh の CM 43 件）を足した対照は 588/0。単独変異 7 種は、security-record の missing を rc 0 へ倒す 579/9（R9/R10×5/R11/R12a/R12c）、usage から security-record を消す 587/1（R14）、再プローブ鮮度比較を -ge へ緩める 586/2（CM4 の UTC/JST 同一秒）、複数再プローブ行で最大時刻でなく先頭行のみを採る 587/1（CM6a）、head 時刻不明を fresh で通す 587/1（CM7a）、REVIEW_INFRA_FAILURE の識別子境界を外す 587/1（CM1）、先着停止理由を上書きする 587/1（CM8）で全件赤（SURVIVED 0、2026-11-22 macOS 実測、/bin/bash 3.2、全変異の bash 構文 rc 0）。
+# 空振り検出: 未チェックと未記入の同時案内（Issue `#2874`）。対照は 511/0。同時案内の分岐を `if false` にすると 508/3、`EFFORT_ACTUAL_MISSING_COUNT` の出力行を消すと 503/8、close-issue の「未チェックなら precheck は 1 回で止まる」を別の文へ変えると 510/1（2026-11-21 Linux 実測、Bash 5.2.37、gawk 5.3.2。変異表は mutation-harness、対照の bash 構文は通り、3 件とも赤）。
 # 空振り検出: PR 本文中の Closes 引用と散文の分離（F2820-1..10、基準 513 件緑）。merge-message.sh で CLOSES_RAW に P / Q を戻す変異は 4 件赤、finish-precheck.sh の CLOSES_TEXT_ONLY_PROSE 停止分岐を外す変異は 2 件赤（F2820-2 / F2820-4）、ff_merge_strip_quoted のキーワード引数を外す変異は 1 件赤（512/1、F2820-9、rc=1）になる（2026-11-21 macOS 実測）。
 # 空振り検出: マージ用本文を旧構文に戻すと、生成済みのコマンドを実フックへ渡す E4 guard が git-write-chain-unavailable で赤になる。生成できない入力は E4 fixture、ガードを無効化して空出力にすると E4 guard liveness が赤になる（macOS / Bash 3.2）。
 # 空振り検出: MG7 の時刻による揺れ（Issue `#2845`）。対照は 500/0、修正後は 501/0。修正前の比較のまま時計だけを 1 時間進めると 496/4（MG7 の 4 状態。不一致は EFFORT_7_wallclock_actual_h の 1 行）、修正後に値を伏せる処理を外すと 497/4（同じ 4 件。不一致の行が出る）、時計の差し替えを実時計へ素通しにすると 500/1（MG7-clock。5 回とも同じ値）、MERGEABLE のとき mergeStateStatus が CLEAN 以外なら stdout へ 1 行足す変異（finish-precheck.sh）は 497/4（MG7 の 4 状態）で赤（2026-11-18 macOS 実測、/bin/bash 3.2、全変異の bash 構文 rc 0）。
@@ -81,8 +83,8 @@ unset FORCE_COLOR CLICOLOR_FORCE CLICOLOR
 unset FF_POST_MERGE_TERMS FF_POST_MERGE_PATHS FF_MERGE_DELETE_SEPARATE
 # 保護ブランチの追加パターンは導入先の設定で動く。開発者の環境に値があると既存ケースの削除判定が変わる
 unset FF_MERGE_CLEANUP_PROTECT_BRANCHES
-# 専用セキュリティゲートの記録（Issue `#2684`）も同じく導入先の設定で動く。分類の設定を隔離する
-unset MULTI_AGENT_SECURITY_GLOB MULTI_AGENT_SECURITY_GLOB_EXTRA MULTI_AGENT_SECURITY_REVIEW MULTI_AGENT_CONFIG
+# 専用セキュリティゲートの記録（Issue `#2684` / `#2875`）も同じく導入先の設定で動く。分類・base 解決の設定を隔離する
+unset MULTI_AGENT_SECURITY_GLOB MULTI_AGENT_SECURITY_GLOB_EXTRA MULTI_AGENT_SECURITY_REVIEW MULTI_AGENT_CONFIG WORKFLOW_TIER_BASE
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
@@ -549,7 +551,9 @@ case "$1 $2" in
         if [ -n "${STUB_ISSUE_COMMENTS_FILE:-}" ]; then cat "$STUB_ISSUE_COMMENTS_FILE"; else echo '{"comments":[]}'; fi
         exit 0 ;;
     esac
-    if [ -n "${STUB_ISSUE_BODY_FILE:-}" ]; then
+    if [ -n "${STUB_ISSUE_BODY_DIR:-}" ] && [ -f "${STUB_ISSUE_BODY_DIR}/${3##*/}.md" ]; then
+      jq -n --rawfile body "${STUB_ISSUE_BODY_DIR}/${3##*/}.md" '{body:$body}'
+    elif [ -n "${STUB_ISSUE_BODY_FILE:-}" ]; then
       jq -n --rawfile body "$STUB_ISSUE_BODY_FILE" '{body:$body}'
     else
       jq -n --arg body "${STUB_ISSUE_BODY-}" '{body:$body}'
@@ -666,6 +670,8 @@ run_finish() { # <cwd> <args...>
 . "$SCRIPT_DIR/post-merge-cases.sh"
 # shellcheck source=security-record-cases.sh
 . "$SCRIPT_DIR/security-record-cases.sh"
+# shellcheck source=cross-model-reprobe-cases.sh
+. "$SCRIPT_DIR/cross-model-reprobe-cases.sh"
 # shellcheck source=mergeable-cases.sh
 . "$SCRIPT_DIR/mergeable-cases.sh"
 _ff_finish_precheck_guards
@@ -849,11 +855,201 @@ STUB_ISSUE_BODY_FILE="$TMP/u1-body.md" run_finish "$WORK" precheck 7
 if [ "$RC" -eq 1 ] && has_line "$OUT" "PRECHECK=blocked" && has_line "$OUT" "AC_UNCHECKED_COUNT=1" \
   && has_line "$OUT" "AC_UNCHECKED=owner/repo#7	- [ ] real one" \
   && ! has_text "$OUT" "MERGE_COMMAND_BEGIN" \
+  && has_line "$OUT" "EFFORT_ACTUAL_MISSING_COUNT=0" && ! has_text "$ERR" "あわせて" \
   && has_text "$ERR" "チェック" && has_text "$ERR" "Refs" && has_text "$ERR" "--ack-unchecked"; then
   ok "U1: Closes 対象の未チェックは rc 1 で止め、フェンスとコメントは数えず、次の一手を出す"
 else
   bad "U1: 未チェックの停止が違う（rc=${RC}）: ${OUT} / ${ERR}"
 fi
+if awk '
+  /未チェックなら precheck は 1 回で止まる/ && /EFFORT 行でチェックと実績を 1 回編集し再実行/ { seen = NR }
+  /^### 1\. 固定手順の実行/ { if (seen && seen < NR) ok = 1 }
+  END { exit ok ? 0 : 1 }
+' "$CLOSE_SKILL" && has_text "$CLOSE_SKILL_TEXT" "本文は**この 1 回にまとめる**（例外は 5b）"; then
+  ok "U1-order: 停止時の EFFORT 行でチェックと実績を 1 回編集する案内が手順 1 の見出しより前にあり、1 回にまとめる文は残る"
+else
+  bad "U1-order: 手順の案内か、1 回にまとめる文が違う"
+fi
+cat >"$TMP/u1d-body.md" <<'BODY'
+- [ ] real one
+<!-- ff-effort:begin -->
+- effort_unit: h
+- effort_human_planned: 8.0h
+- effort_ai_planned: 2.5h
+- effort_ai_actual: (未記入)
+<!-- ff-effort:end -->
+BODY
+STUB_ISSUE_BODY_FILE="$TMP/u1d-body.md" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "PRECHECK=blocked" && has_line "$OUT" "AC_UNCHECKED_COUNT=1" \
+  && has_line "$OUT" "EFFORT_ACTUAL_MISSING=owner/repo#7" && has_line "$OUT" "EFFORT_ACTUAL_MISSING_COUNT=1" \
+  && ! has_text "$OUT" "MERGE_COMMAND_BEGIN" \
+  && has_text "$ERR" "effort_ai_actual" && has_text "$ERR" "チェック" && has_text "$ERR" "1 回の本文編集"; then
+  ok "U1d: 未チェックと未記入の実績は 1 回の停止で両方を案内する"
+else
+  bad "U1d: 同時案内が違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+cat >"$TMP/u1e-body.md" <<'BODY'
+- [x] done
+<!-- ff-effort:begin -->
+- effort_unit: h
+- effort_ai_actual: (未記入)
+<!-- ff-effort:end -->
+BODY
+STUB_ISSUE_BODY_FILE="$TMP/u1e-body.md" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && has_line "$OUT" "AC_UNCHECKED_COUNT=0" && has_line "$OUT" "PRECHECK=undetermined" \
+  && has_line "$OUT" "EFFORT_ACTUAL_MISSING=owner/repo#7" && has_line "$OUT" "EFFORT_ACTUAL_MISSING_COUNT=1" \
+  && has_text "$OUT" "MERGE_COMMAND_BEGIN" && ! has_text "$ERR" "あわせて"; then
+  ok "U1e: 実績だけの未記入は止めず、行は出して MERGE_COMMAND を残す"
+else
+  bad "U1e: 実績だけの扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+cat >"$TMP/u1f-body.md" <<'BODY'
+- [ ] real one
+<!-- ff-effort:begin -->
+- effort_unit: h
+- effort_ai_actual: 1.2h
+<!-- ff-effort:end -->
+BODY
+STUB_ISSUE_BODY_FILE="$TMP/u1f-body.md" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "PRECHECK=blocked" && has_line "$OUT" "EFFORT_ACTUAL_MISSING_COUNT=0" \
+  && ! awk 'index($0, "EFFORT_ACTUAL_MISSING=") == 1 && index($0, "EFFORT_ACTUAL_MISSING_COUNT=") != 1 { f = 1 } END { exit f ? 0 : 1 }' <<<"$OUT" \
+  && ! has_text "$ERR" "あわせて" && has_text "$ERR" "チェック" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "U1f: 記入済みの実績は未チェックの案内に混ぜない"
+else
+  bad "U1f: 記入済みの扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+cat >"$TMP/u1g-body.md" <<'BODY'
+- [ ] real one
+<!-- ff-effort:begin -->
+- effort_unit: h
+- effort_ai_actual: (未記入)
+- effort_ai_actual: (未記入)
+<!-- ff-effort:end -->
+BODY
+STUB_ISSUE_BODY_FILE="$TMP/u1g-body.md" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "EFFORT_ACTUAL_MISSING_COUNT=0" \
+  && ! awk 'index($0, "EFFORT_ACTUAL_MISSING=") == 1 && index($0, "EFFORT_ACTUAL_MISSING_COUNT=") != 1 { f = 1 } END { exit f ? 0 : 1 }' <<<"$OUT" \
+  && ! has_text "$ERR" "あわせて"; then
+  ok "U1g: キーが重複したブロックは未記入に数えない"
+else
+  bad "U1g: 書式不正を未記入に数えている（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+cat >"$TMP/u1h-body.md" <<'BODY'
+- [ ] real one
+<!-- ff-effort:begin -->
+- effort_unit: h
+- effort_ai_actual: （未記入）
+<!-- ff-effort:end -->
+BODY
+STUB_ISSUE_BODY_FILE="$TMP/u1h-body.md" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "EFFORT_ACTUAL_MISSING_COUNT=0" \
+  && ! awk 'index($0, "EFFORT_ACTUAL_MISSING=") == 1 && index($0, "EFFORT_ACTUAL_MISSING_COUNT=") != 1 { f = 1 } END { exit f ? 0 : 1 }' <<<"$OUT" \
+  && ! has_text "$ERR" "あわせて"; then
+  ok "U1h: 全角括弧の未記入は書式不正で、未記入の案内にしない"
+else
+  bad "U1h: 全角括弧を未記入に数えている（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+cat >"$TMP/u1i-body.md" <<'BODY'
+- [ ] real one
+<!-- ff-effort:begin -->
+- effort_unit: h
+- effort_human_planned: 8.0h
+- effort_ai_planned: 2.5h
+<!-- ff-effort:end -->
+BODY
+STUB_ISSUE_BODY_FILE="$TMP/u1i-body.md" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "PRECHECK=blocked" && has_line "$OUT" "AC_UNCHECKED_COUNT=1" \
+  && has_line "$OUT" "EFFORT_ACTUAL_MISSING=owner/repo#7" && has_line "$OUT" "EFFORT_ACTUAL_MISSING_COUNT=1" \
+  && has_text "$ERR" "effort_ai_actual" && has_text "$ERR" "1 回の本文編集" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "U1i: キーが欠落した整ったブロックは未記入として同時案内する"
+else
+  bad "U1i: キー欠落の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+cat >"$TMP/u1j-body.md" <<'BODY'
+- [ ] real one
+<!-- ff-effort:begin -->
+- effort_unit: h
+- effort_ai_actual:
+<!-- ff-effort:end -->
+BODY
+STUB_ISSUE_BODY_FILE="$TMP/u1j-body.md" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "EFFORT_ACTUAL_MISSING=owner/repo#7" && has_line "$OUT" "EFFORT_ACTUAL_MISSING_COUNT=1" \
+  && has_text "$ERR" "各対象 Issue" && has_text "$ERR" "1 回の本文編集" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "U1j: 空の実績は未記入として同時案内する"
+else
+  bad "U1j: 空の実績の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+mkdir -p "$TMP/u1-multi"
+cat >"$TMP/u1-multi/7.md" <<'BODY'
+- [ ] item 7
+<!-- ff-effort:begin -->
+- effort_unit: h
+- effort_ai_actual: (未記入)
+<!-- ff-effort:end -->
+BODY
+cat >"$TMP/u1-multi/8.md" <<'BODY'
+- [ ] item 8
+<!-- ff-effort:begin -->
+- effort_unit: h
+- effort_ai_actual:
+<!-- ff-effort:end -->
+BODY
+N8=8
+write_pr_json "Closes #${PRN}
+Closes #${N8}" '[]'
+STUB_ISSUE_BODY_DIR="$TMP/u1-multi" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "PRECHECK=blocked" && has_line "$OUT" "AC_UNCHECKED_COUNT=2" \
+  && has_line "$OUT" "EFFORT_ACTUAL_MISSING=owner/repo#7" && has_line "$OUT" "EFFORT_ACTUAL_MISSING=owner/repo#8" \
+  && has_line "$OUT" "EFFORT_ACTUAL_MISSING_COUNT=2" \
+  && has_text "$ERR" "各対象 Issue" && has_text "$ERR" "全対象" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "U1k: 複数 Closes 対象で両方が未記入のとき、全件を EFFORT_ACTUAL_MISSING に出し全対象の編集を案内する"
+else
+  bad "U1k: 複数 Closes 対象の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+cat >"$TMP/u1-multi/7.md" <<'BODY'
+- [ ] item 7
+<!-- ff-effort:begin -->
+- effort_unit: h
+- effort_ai_actual: 1.5h
+<!-- ff-effort:end -->
+BODY
+cat >"$TMP/u1-multi/8.md" <<'BODY'
+- [x] item 8 done
+<!-- ff-effort:begin -->
+- effort_unit: h
+- effort_ai_actual: (未記入)
+<!-- ff-effort:end -->
+BODY
+STUB_ISSUE_BODY_DIR="$TMP/u1-multi" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "PRECHECK=blocked" && has_line "$OUT" "AC_UNCHECKED_COUNT=1" \
+  && has_line "$OUT" "EFFORT_ACTUAL_MISSING=owner/repo#8" && has_line "$OUT" "EFFORT_ACTUAL_MISSING_COUNT=1" \
+  && ! has_line "$OUT" "EFFORT_ACTUAL_MISSING=owner/repo#7" \
+  && has_text "$ERR" "effort_ai_actual" && has_text "$ERR" "全対象" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "U1l: 複数 Closes 対象で片方が未チェック・もう片方が実績未記入でも同時案内する"
+else
+  bad "U1l: 複数 Closes 対象の混在扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+write_pr_json "Closes #${PRN}" '[]'
+STUB_ISSUE_BODY_FILE="$TMP/u1d-body.md" run_finish "$WORK" precheck 7 --ack-unchecked 'owner/repo#7'
+if [ "$RC" -eq 2 ] && has_line "$OUT" "AC_ACKED=owner/repo#7" && has_line "$OUT" "PRECHECK=undetermined" \
+  && has_line "$OUT" "EFFORT_ACTUAL_MISSING=owner/repo#7" && has_line "$OUT" "EFFORT_ACTUAL_MISSING_COUNT=1" \
+  && has_text "$OUT" "MERGE_COMMAND_BEGIN" && ! has_text "$ERR" "あわせて"; then
+  ok "U1m: 未チェックを --ack-unchecked した回は EFFORT_ACTUAL_MISSING を出しつつ実績未記入だけでは止めない"
+else
+  bad "U1m: ack 併用時の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+write_pr_json "Closes #${PRN}
+Refs #${REFN}" '[]'
+STUB_ISSUE_BODY_FILE="$TMP/u1d-body.md" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "PRECHECK=blocked" && has_line "$OUT" "MERGE_MESSAGE_GATE=required" \
+  && has_line "$OUT" "AC_UNCHECKED_COUNT=1" && has_line "$OUT" "EFFORT_ACTUAL_MISSING=owner/repo#7" \
+  && has_text "$ERR" "--subject / --body が無い" && has_text "$ERR" "／さらにCloses 対象の Issue 本文に未チェック" \
+  && has_text "$ERR" "effort_ai_actual" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "U1n: 先行停止（Refs 併用）がある回も未チェックと実績未記入の同時案内を上書きせず併記する"
+else
+  bad "U1n: 先行停止との併記が違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+write_pr_json "Closes #${PRN}" '[]'
 cat >"$TMP/u1b-body.md" <<'BODY'
 ```html
 <!-- example
@@ -917,6 +1113,7 @@ else
 fi
 _ff_finish_post_merge_cases
 _ff_finish_security_record_cases
+_ff_finish_cross_model_reprobe_cases
 write_pr_json "Closes #${PRN}" '[]'
 : >"$STUB_LOG"
 FF_MERGE_DELETE_SEPARATE=yes run_finish "$WORK" precheck 7
@@ -1301,6 +1498,14 @@ if [ "$RC" -eq 0 ] && has_line "$OUT" "FRESH_STATUS=2" && has_line "$OUT" "RERUN
   ok "D3b: 印が PR の base と一致する部分実行は checks が無くても回し直さない（rc 0）。gh の --json は baseRefOid を要求する"
 else
   bad "D3b: 被覆の印の扱いが違う（rc=${RC}）: ${OUT} / ${ERR} / $(cat "$STUB_LOG")"
+fi
+# 印を受理する回の除外は「実行基盤の契約面」に限る。文書契約面だけの変更は、文書横断検査の束を
+# 足した部分実行の印で覆える（契約面を一括りに除外する文言へ戻すと、文書だけの PR に全件の
+# 再実行を案内することになる）。印の付け分けは検証スイート側の責務で、precheck は path を見ない。
+if has_line "$OUT" "RERUN_REASON=導入先の判定で差分を覆っている（リリース前・実行基盤の契約面の変更時は除く）"; then
+  ok "D3b2: 印を受理した理由の除外は「実行基盤の契約面の変更時」に限る（文書契約面を除外に含めない）"
+else
+  bad "D3b2: 印を受理した理由の文言が違う: ${OUT}"
 fi
 record partial --suites alpha --covers-diff "$HEAD_OID"
 run_finish "$WORK" precheck 7

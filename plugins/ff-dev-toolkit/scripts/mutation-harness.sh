@@ -4,15 +4,21 @@
 #
 # 使い方:
 #   mutation-harness.sh --table <変異表.tsv> --suite '<suite を実行するコマンド>'
-#                       [--root <dir>] [--out <結果.md>] [--work-dir <dir>] [--keep]
+#                       [--root <dir>] [--out <結果.md>] [--work-dir <dir>] [--remap-plugin-root] [--keep]
 #
 #   --table     変異表（下記の書式）。`-` は stdin
-#   --suite     写しのルートを cwd にして `bash -c` で実行するコマンド。plugin root の handoff
-#               （FF_DEV_TOOLKIT_ROOT / CLAUDE_PLUGIN_ROOT / GROK_PLUGIN_ROOT）は写し側へ張り替えて渡す
-#               （--root 配下を指していれば写しの同じ位置へ、外を指していれば写しの
-#               `plugins/ff-dev-toolkit` へ、それも無ければ外す）。張り替えないと、写しの中の
-#               root 固定ガード付きスクリプトが不一致で止まるか、元のファイルを検査して変異を見落とす
+#   --suite     写しのルートを cwd にして `bash -c` で実行するコマンド。
+#               既定では plugin root の handoff 環境変数（FF_DEV_TOOLKIT_ROOT / CLAUDE_PLUGIN_ROOT /
+#               GROK_PLUGIN_ROOT / FF_DEV_TOOLKIT_SKILL_FILE）をすべて外して実行する（親から継承した
+#               handoff で `tests/run-all.sh` の FF_DEV_TOOLKIT_ROOT 起動ガードや隔離 fixture / root
+#               固定契約 suite が偽赤になるのを防ぐ）。
 #               （例: 'bash plugins/ff-dev-toolkit/tests/guard-review-in-flight/verify.sh'）
+#   --remap-plugin-root
+#               親に設定されている FF_DEV_TOOLKIT_ROOT / CLAUDE_PLUGIN_ROOT / GROK_PLUGIN_ROOT を
+#               写し側へ張り替えて suite へ渡す（--root 配下を指していれば写しの同じ位置へ、外を
+#               指していれば写しの `plugins/ff-dev-toolkit` へ、それも無ければ外す。
+#               FF_DEV_TOOLKIT_SKILL_FILE は写し側へ張り替えず常に外す）。写しの中の
+#               root 固定ガード付きスクリプトを handoff 付きで直接検査する用途向け
 #   --root      写しの元（既定: cwd の git toplevel）。git が見えるファイル（tracked + ignore
 #               されていない untracked）を作業ツリーの**現在の内容**で写す。ignore 済み
 #               （node_modules 等）は写さないので、それに依存する suite は写しでは動かない
@@ -248,6 +254,7 @@ SUITE=""
 ROOT=""
 OUT=""
 WORK=""
+REMAP_PLUGIN_ROOT=0
 KEEP=0
 
 usage() {
@@ -263,6 +270,7 @@ while [ $# -gt 0 ]; do
     --root) [ $# -ge 2 ] || die_usage "--root に値がありません"; ROOT="$2"; shift 2 ;;
     --out) [ $# -ge 2 ] || die_usage "--out に値がありません"; OUT="$2"; shift 2 ;;
     --work-dir) [ $# -ge 2 ] || die_usage "--work-dir に値がありません"; WORK="$2"; shift 2 ;;
+    --remap-plugin-root) REMAP_PLUGIN_ROOT=1; shift ;;
     --keep) KEEP=1; shift ;;
     -h | --help) usage; exit 0 ;;
     *) die_usage "未知の引数: $1" ;;
@@ -396,18 +404,61 @@ remap_root() { # <写しのルート> <元の値>
 run_suite() { # <写しのルート> <ログ> → rc
   (
     cd "$1" || exit 1
-    for var in FF_DEV_TOOLKIT_ROOT CLAUDE_PLUGIN_ROOT GROK_PLUGIN_ROOT; do
-      eval "val=\${${var}:-}"
-      [ -n "$val" ] || continue
-      val="$(remap_root "$1" "$val")"
-      if [ -n "$val" ]; then export "$var=$val"; else unset "$var"; fi
-    done
+    unset FF_DEV_TOOLKIT_SKILL_FILE
+    if [ "$REMAP_PLUGIN_ROOT" -eq 1 ]; then
+      for var in FF_DEV_TOOLKIT_ROOT CLAUDE_PLUGIN_ROOT GROK_PLUGIN_ROOT; do
+        eval "val=\${${var}:-}"
+        [ -n "$val" ] || continue
+        val="$(remap_root "$1" "$val")"
+        if [ -n "$val" ]; then export "$var=$val"; else unset "$var"; fi
+      done
+    else
+      unset FF_DEV_TOOLKIT_ROOT CLAUDE_PLUGIN_ROOT GROK_PLUGIN_ROOT
+    fi
     bash -c "$SUITE"
   ) > "$2" 2>&1
 }
 
 summary_line() { # <ログ>
   awk 'NF { last = $0 } END { print last }' "$1" 2>/dev/null | tr '|' '/' | cut -c1-160
+}
+
+emit_control_diagnostics() { # <ログ>  対照が赤のとき失敗行（行頭インデント直後が ✗ の行を先頭最大 10 行、無ければまたは末尾要約行の 1 行だけなら非空ログの末尾最大 10 行）を stderr へ出す
+  local log="$1"
+  [ -r "$log" ] || return 0
+  LC_ALL=C awk '
+    BEGIN { limit = 10; n_fail = 0; n_nonempty = 0; last_ne_nr = 0; mark = "✗"; mlen = length(mark) }
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      trimmed = line
+      sub(/^[ \t]+/, "", trimmed)
+      if (substr(trimmed, 1, mlen) == mark) {
+        n_fail++
+        if (n_fail <= limit) {
+          fail[n_fail] = line
+          fail_nr[n_fail] = NR
+        }
+      }
+      if (line ~ /[^ \t]/) {
+        n_nonempty++
+        buf[n_nonempty] = line
+        last_ne_nr = NR
+      }
+    }
+    END {
+      if (n_fail > 0 && !(n_fail == 1 && fail_nr[1] == last_ne_nr && n_nonempty > 1)) {
+        print "  失敗行（✗）:"
+        m = (n_fail < limit) ? n_fail : limit
+        for (i = 1; i <= m; i++) print "    " fail[i]
+        if (n_fail > limit) printf "    ...（ほか %d 行）\n", (n_fail - limit)
+      } else if (n_nonempty > 0) {
+        print "  出力末尾:"
+        start = (n_nonempty > limit) ? (n_nonempty - limit + 1) : 1
+        for (i = start; i <= n_nonempty; i++) print "    " buf[i]
+      }
+    }
+  ' "$log" >&2
 }
 
 # 1 件を写しへ適用する。成功で rc 0、失敗で理由を APPLY_WHY に入れて rc 1。
@@ -520,6 +571,7 @@ run_suite "$CONTROL" "$BASE_LOG" || BASE_RC=$?
 [ "$KEEP" -eq 1 ] || rm -rf "$CONTROL"
 if [ "$BASE_RC" -ne 0 ]; then
   echo "✗ mutation-harness: 対照（変異なしの写し）で suite が赤です（rc=${BASE_RC}）。変異を当てずに止めます。" >&2
+  emit_control_diagnostics "$BASE_LOG"
   echo "  要約行: $(summary_line "$BASE_LOG")" >&2
   exit 2
 fi

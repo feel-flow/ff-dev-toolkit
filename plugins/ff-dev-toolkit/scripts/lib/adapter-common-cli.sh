@@ -91,58 +91,71 @@ run_with_timeout() {
   fi
   record_timeout_reason command
 
-  local out_file marker
+  local out_file err_file marker
   if ! out_file="$(mktemp "${_FF_REASON_PRIVATE_DIR}/command.XXXXXX")"; then
     echo "ERROR: run_with_timeout: cannot create a temp file for command output." >&2
     record_timeout_reason orchestrator-error
     return "$ORCHESTRATOR_ERROR_EXIT_CODE"
   fi
+  if ! err_file="$(mktemp "${_FF_REASON_PRIVATE_DIR}/command.err.XXXXXX")"; then
+    echo "ERROR: run_with_timeout: cannot create a temp file for command stderr." >&2
+    rm -f "$out_file"
+    record_timeout_reason orchestrator-error
+    return "$ORCHESTRATOR_ERROR_EXIT_CODE"
+  fi
   if ! marker="$(mktemp "${_FF_REASON_PRIVATE_DIR}/deadline.XXXXXX")"; then
     echo "ERROR: run_with_timeout: cannot create a temp file for the timeout marker." >&2
-    rm -f "$out_file"
+    rm -f "$out_file" "$err_file"
     record_timeout_reason orchestrator-error
     return "$ORCHESTRATOR_ERROR_EXIT_CODE"
   fi
 
   # Job control makes each background job a process-group leader (pgid == pid),
   # which both guard 2 and guard 3 rely on.
-  set -m
-  # stdin is closed explicitly. It is NOT enough to rely on "async lists get
-  # /dev/null": POSIX grants that only when job control is **inactive**, and the
-  # `set -m` immediately above turns it on. Measured on bash 3.2 and 5, caller
-  # stdin = a held-open pipe:
-  #     `cat &` with job control off  -> fd 0 = /dev/null, returns at once
-  #     `cat &` after `set -m`        -> fd 0 = the pipe, blocks until EOF
-  # Today every adapter calls this as `result=$(run_with_timeout ...)`, and bash
-  # forces job control off inside a command-substitution subshell — so the hazard
-  # is masked. Measured: the same call outside a substitution blocks for the full
-  # lifetime of the caller's stdin. That is one ordinary refactor away
-  # (`run_with_timeout ... > file` instead of `$(...)`), and the failure it
-  # resurrects is the worst kind: `codex exec` reads stdin when it is not a TTY,
-  # prints nothing to stdout, and waits — indistinguishable from a hang, for the
-  # full timeout (Issue `#406`, where it cost 50 minutes and a wrong diagnosis).
-  # Since Issue `#712` the prompt travels on stdin (a regular temp file via
-  # --stdin-file, default /dev/null) — both give the child a guaranteed EOF, so
-  # the held-open-pipe hang above cannot come back through this path. What must
-  # NOT come back is inheriting the **caller's** stdin.
-  "$@" >"$out_file" <"$stdin_source" &
-  local cmd_pid=$!
-  (
-    sleep "$timeout_seconds"
-    # Record the fired deadline BEFORE signalling. Written after the kill, the
-    # parent could reap the child and cancel this watchdog before the write
-    # landed, and a genuine timeout would be reported as a crash — measured at
-    # ~3% of runs (8/240) under CPU contention, returning 143 instead of 124.
-    printf 'timeout' >"$marker"
-    # Negative pid = process group. Fall back to the lone pid if the child never
-    # became a group leader, so a host without job control still gets a timeout
-    # rather than none at all.
-    kill -TERM -- -"$cmd_pid" 2>/dev/null || kill -TERM "$cmd_pid" 2>/dev/null || true
-    sleep "$TIMEOUT_KILL_GRACE"
-    kill -KILL -- -"$cmd_pid" 2>/dev/null || kill -KILL "$cmd_pid" 2>/dev/null || true
-  ) >/dev/null 2>&1 &
-  local watchdog_pid=$!
-  set +m
+  # Isolate bash's own job-control stderr (e.g. `child setpgid (...): Operation not permitted`
+  # emitted before exec under contention) from the CLI's stderr by silencing fd 2 around the
+  # `set -m` launch block while capturing the command's own stderr into $err_file (Issue `#2896`).
+  # `2>"$err_file"` precedes `<"$stdin_source"` so stdin open failures still land in $err_file.
+  local cmd_pid watchdog_pid
+  {
+    set -m
+    # stdin is closed explicitly. It is NOT enough to rely on "async lists get
+    # /dev/null": POSIX grants that only when job control is **inactive**, and the
+    # `set -m` immediately above turns it on. Measured on bash 3.2 and 5, caller
+    # stdin = a held-open pipe:
+    #     `cat &` with job control off  -> fd 0 = /dev/null, returns at once
+    #     `cat &` after `set -m`        -> fd 0 = the pipe, blocks until EOF
+    # Today every adapter calls this as `result=$(run_with_timeout ...)`, and bash
+    # forces job control off inside a command-substitution subshell — so the hazard
+    # is masked. Measured: the same call outside a substitution blocks for the full
+    # lifetime of the caller's stdin. That is one ordinary refactor away
+    # (`run_with_timeout ... > file` instead of `$(...)`), and the failure it
+    # resurrects is the worst kind: `codex exec` reads stdin when it is not a TTY,
+    # prints nothing to stdout, and waits — indistinguishable from a hang, for the
+    # full timeout (Issue `#406`, where it cost 50 minutes and a wrong diagnosis).
+    # Since Issue `#712` the prompt travels on stdin (a regular temp file via
+    # --stdin-file, default /dev/null) — both give the child a guaranteed EOF, so
+    # the held-open-pipe hang above cannot come back through this path. What must
+    # NOT come back is inheriting the **caller's** stdin.
+    "$@" 2>"$err_file" >"$out_file" <"$stdin_source" &
+    cmd_pid=$!
+    (
+      sleep "$timeout_seconds"
+      # Record the fired deadline BEFORE signalling. Written after the kill, the
+      # parent could reap the child and cancel this watchdog before the write
+      # landed, and a genuine timeout would be reported as a crash — measured at
+      # ~3% of runs (8/240) under CPU contention, returning 143 instead of 124.
+      printf 'timeout' >"$marker"
+      # Negative pid = process group. Fall back to the lone pid if the child never
+      # became a group leader, so a host without job control still gets a timeout
+      # rather than none at all.
+      kill -TERM -- -"$cmd_pid" 2>/dev/null || kill -TERM "$cmd_pid" 2>/dev/null || true
+      sleep "$TIMEOUT_KILL_GRACE"
+      kill -KILL -- -"$cmd_pid" 2>/dev/null || kill -KILL "$cmd_pid" 2>/dev/null || true
+    ) >/dev/null 2>&1 &
+    watchdog_pid=$!
+    set +m
+  } 2>/dev/null
 
   local rc=0
   wait "$cmd_pid" || rc=$?
@@ -178,6 +191,10 @@ run_with_timeout() {
   fi
   rm -f "$marker"
 
+  if [[ -s "$err_file" ]]; then
+    cat "$err_file" >&2
+  fi
+  rm -f "$err_file"
   cat "$out_file"
   rm -f "$out_file"
   return "$rc"

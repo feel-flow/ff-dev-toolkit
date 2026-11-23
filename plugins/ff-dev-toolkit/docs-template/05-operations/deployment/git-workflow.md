@@ -8,7 +8,7 @@
 
 AI開発ツールに最適化されたGit Flowベースのワークフローです。Issue作成からマージ、ナレッジ体系化までをAIツールと協働で効率的に進めます。
 
-**コアサイクル**: Issue → Branch → Implement → Test → PR → Self-Review → Review → Merge → Cleanup → ACE → Retrospective
+**コアサイクル**: Issue → Branch → Implement → Test → PR → Self-Review → Review → Merge → Cleanup → Retrospective（原則から推論で導けない知見［A〜D の B / C］がある PR のみ ACE）
 
 > **段の正本は [DEPLOYMENT.md](../DEPLOYMENT.md#主要ステップ) §主要ステップ である。** 本書は各ステップの**やり方**を書く場所で、段の一覧と、変更規模による tier（フル / 軽量 / 標準）の判定はそちらが持つ。上の矢印 1 行は**意図的に残した記憶用の要約**であり、段の一覧ではない（番号も件数も持たせない）。本書の「ステップN」は §主要ステップ の番号と同じものを指す。tier は `${CLAUDE_PLUGIN_ROOT}/scripts/workflow-tier.sh` が差分から導出する（自己申告ではない）。
 
@@ -169,6 +169,8 @@ gh api --hostname "<host>" --method POST "repos/<owner>/<repo>/issues/<Issue番�
 同じ Issue を再取得し、取得した login が担当者一覧にあることを確認する。担当者を取得できない場合は空と扱わない。権限やツールの制約で自己アサインを完了できなければ、理由を伝えて作業を続ける。
 
 GitHub MCP 経路では、認証ユーザーの login と同じ Issue の state・assignees を取得し、上の条件で `add_issue_assignees` 相当の追加操作に owner/repo・番号・login を渡す。追加後は同じ Issue の担当者一覧で login を確認する。追加専用の操作が使えなければ、利用可能な CLI で同じ追加 API を呼ぶ。担当者一覧の置換は並行して追加された担当者を消すおそれがある。
+
+また、ff-dev-toolkit の hook が有効なホスト（Claude Code / grok CLI / Google Antigravity）では、`PreToolUse`・Bash ガードの `hooks/guard-issue-assign.sh` が `git switch -c` / `git checkout -b` / `git worktree add -b` のブランチ名に含まれる Issue 番号について未アサインの open Issue を実行前に止める（同一呼び出しの `&&` 連鎖前段で自己アサインしている場合は通過。例外通過は区間先頭 `FF_ISSUE_ASSIGN_ACK=1`、ガード全体の無効化は `FF_DEV_TOOLKIT_SKIP=issue-assign`）。
 
 ##### GitHub Project の Status を更新する
 
@@ -386,7 +388,7 @@ grep -n "return " src/render.ts
 
 3. staged の `tests/<名>/verify.sh` に対する `<名>-selftest/verify.sh` の単体実行。高速モードと同じ接尾辞・consumer の実在から導出し、名簿や `tests/lib` の依存推測は持たない。selftest 名・単体コマンド・緑/赤の結果を報告に残すまで違反なしとしない。対が無い回は対象なし、未実行・SKIP・取得失敗・内容不一致は未検査として commit へ進まない。実行手順は `/pre-commit-check` の「変更 suite の対の selftest」を参照する。
 
-これを飛ばすと、同じ違反が全件ゲート（`run-all.sh` の 1 周、約 10 分）まで到達して初めて赤になる。**プリフライトは全件ゲートを置き換えない** — 全件ゲートは従来どおり全件で回し、プリフライトはその手前へ追加で置く安い先行検査である（回す suite を絞り込む仕組みではない）。
+これを飛ばすと、同じ違反が全件ゲート（`run-all.sh` の 1 周、約 10 分）まで到達して初めて赤になる。**プリフライトは全件ゲートを置き換えない** — 全件ゲートは従来どおり全件で回し、プリフライトはその手前へ追加で置く安い先行検査である（回す suite を絞り込む仕組みではない）。なお、定期全件の安全網を持つプロジェクトで Tier 1 局所変更の全件ゲートを代替するのはプリフライトではなく、変更ベースの差分ゲート（`COVERS_DIFF` 記録または PR CI）と定期全件の組である（[workflow-principles.md](./workflow-principles.md)「検証強度のリスク層別化（3 層モデル）」）。
 
 ```bash
 # AIツール（Claude Code等）で実装後、コミット
@@ -707,9 +709,9 @@ Claude Code / Codex / grok は [主担当ホストのネイティブセルフレ
 
 **親側の読み取り検査の例外**: [multi-review の「レビュー待ち時間の使い方」](../../../skills/multi-review/SKILL.md#レビュー待ち時間の使い方)が定める baseline ゲートだけは、その条件を満たす場合に凍結中も並走できる。レビュー担当側のビルド・テスト禁止は維持する。
 
-**PR 作成直後は、レビューの起動と、同じ head SHA に対する baseline ゲートの背景起動を同じターンで行う（既定）。** baseline の結果を待ってからレビューを起動すると、baseline 1 周分の待ちがレビューの前にそのまま直列に積まれる。並走させるのは既定（高速）モードのゲートだけで、`FF_RUN_ALL_FULL=1` の全件モードは並走させない（CPU を奪い合ってレビューレーンが上限時間に当たる。出典は本テンプレートのソースリポジトリの観測台帳 OBS-215）。
+**PR 作成直後は、レビューの起動と、同じ head SHA に対する baseline ゲートの背景起動を同じターンで行う（既定）。** baseline の結果を待ってからレビューを起動すると、baseline 1 周分の待ちがレビューの前にそのまま直列に積まれる。並走させるのは既定（高速）モードのゲートだけで、`FF_RUN_ALL_FULL=1` の全件モードは並走させない（CPU を奪い合ってレビューレーンが上限時間に当たる。出典は本テンプレートのソースリポジトリの観測台帳 OBS-215）。定期全件の安全網と差分被覆（`COVERS_DIFF` または PR CI）を持つプロジェクトの Tier 1 局所変更では、baseline および終端後の最終ゲートも変更ベースの部分ゲートを既定にでき、実行基盤の契約面の変更は自動で全件へ倒す（[workflow-principles.md](./workflow-principles.md)「検証強度のリスク層別化（3 層モデル）」）。
 
-baseline の全件ゲートは、元の作業ツリーを離れて **PR HEAD へ detach した一時 worktree** で回すのを既定とする（`guard-gate-in-flight` は worktree 単位でロックするため、元の作業ツリーは baseline 完走を待たず、全レビュー終端後すぐ修正に着手でき、非 `.sh` 変更の `/pre-commit-check` と commit も即座に進められる。`.sh` を含む修正の `/pre-commit-check` 固定表 C は `tests/run-all/verify.sh` を呼ぶため、同じマシンで 1 本制限を守り `FF_RUN_ALL_WAIT=1 bash plugins/ff-dev-toolkit/tests/run-all/verify.sh` で baseline 終了後すぐ自動開始して commit へ進む）:
+baseline の全件ゲートは、元の作業ツリーを離れて **PR HEAD へ detach した一時 worktree** で回すのを既定とする（`guard-gate-in-flight` は worktree 単位でロックするため、元の作業ツリーは baseline 完走を待たず、全レビュー終端後すぐ修正に着手でき、非 `.sh` 変更の `/pre-commit-check` と commit も即座に進められる。`.sh` を含む修正の `/pre-commit-check` 固定表 C が呼ぶ `bash plugins/ff-dev-toolkit/tests/run-all/verify.sh` も、baseline の完走を待たずに回して commit へ進める — ランナーの自己検証は観測を自分の系譜へ閉じ、ゲート間の排他へ参加しない。同じマシンで 1 本に限るのは全件ゲート・公開検査・リリースのあいだで、ランナーの自己検証は数えない）:
 
 1. **作成先**: ignore 済みまたはリポジトリ外（既定は `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/tmp/<Issue番号>/baseline-wt`）へ `git worktree add --detach <path> HEAD` で一時 worktree を作る
 2. **依存**: 当該プロジェクトに依存導入（このリポジトリでは `mcp/package.json` がある場合 `npm ci --prefix <path>/plugins/ff-dev-toolkit/mcp`）が要るため、起動前に一時 worktree 側で済ませる
@@ -1063,7 +1065,7 @@ mutation($body: String!) {
 既定の形は **PR トリガーの CI（open / synchronize で走る checks）がマージ前のゲートを担う**ことで、
 checks の完了と成功がマージの根拠になる（`/close-issue` の手順 7 が `statusCheckRollup` の非空を
 確かめてから `gh pr checks --watch --fail-fast` で待つ）。ローカルでは変更に関係する範囲だけを回す
-部分ゲートで足り、**全件ゲートを回すのはリリース前（タグ / Release の作成前）と契約面の変更時に
+部分ゲートで足り、**全件ゲートを回すのはリリース前（タグ / Release の作成前）と実行基盤の契約面の変更時に
 限る**。全件をマージ前の既定にすると、ローカルで数十分の待ちが PR ごとに発生し、しかも実行環境の
 差（Linux 限定の方言差など）は手元の全件でも見えない — その差は PR の checks が CI ランナー上で拾う。
 
@@ -1072,9 +1074,12 @@ checks の完了と成功がマージの根拠になる（`/close-issue` の手�
 達したら「checks の成否は未確定」（rc 2）として止める。通信エラーだけを赤い check と扱わない。
 
 - 部分ゲートの選択が漏れうる依存（字面に現れない参照）は、定期の全件実行（週次 CI など）が拾う
-- 契約面（ランナー自身・共有ライブラリ・hook 登録・配布テンプレート・CI 定義など、影響先を差分から
-  言い切れない変更）は部分ゲートでも全件へ倒す。何を契約面とするかはプロジェクトの検証スイートが
-  定める
+- 実行基盤の契約面（ランナー自身・共有ライブラリ・hook 登録・共有依存・CI 定義など、全検査の
+  実行条件になる変更）は部分ゲートでも全件へ倒す。文書契約面（入口規範・配布テンプレート・運用仕様
+  などの契約文書）だけの変更は全件へ倒さず、部分ゲートへ文書横断検査の束を必ず足して覆う。束が
+  検証スイートの登録と 1 つでも食い違う回と、実行基盤の契約面を同時に変えた回は全件へ倒す。何を
+  どちらの契約面とし、どの検査を束に入れるかはプロジェクトの検証スイートが定める（境界の正本は
+  [workflow-principles.md](./workflow-principles.md)「検証強度のリスク層別化（3 層モデル）」）
 - 鮮度照合（下記）が部分ゲートの記録で判定不能（exit 2）を返すのは想定どおりで、checks が全件成功
   していれば全件ゲートの再実行は要らない（報告の `REASON` / `ACTION` は従来どおり残す）。判定不能の
   理由が「汚れた木で測った」「記録が無い」なら、checks が成功していても全件ゲートを回し直す
@@ -1090,7 +1095,7 @@ PR トリガーの CI を設定していないリポジトリでは、`gh pr che
 **待機とマージを 1 つのコマンドチェーンに繋がない**。`gh pr checks --watch && gh pr merge ...`
 のように直結すると、`no checks reported` で `--watch` が正常終了した瞬間にマージへ進んでしまう。
 `/close-issue` の手順 7 が行う `statusCheckRollup` の空配列判定を先に独立したステップとして実行し、
-checks が無いと判った場合はローカル全件ゲート + 鮮度照合（下記）だけをマージ根拠にする。checks が
+checks が無いと判った場合はローカル全件ゲート + 鮮度照合（下記）だけをマージ根拠にする（定期全件の安全網があり `COVERS_DIFF` が PR の base と一致する変更ベースの部分ゲートを運用しているプロジェクトでは、Tier 1 局所変更と、文書横断検査の束を足して通過した Tier 2a 文書契約面の変更に限り `finish.sh precheck` の `DIFF_COVERED=yes` / `RERUN_FULL_GATE=no` 経路をマージ根拠に含めてよい。Tier 2b 実行基盤の契約面の変更は含めない。境界の正本は [workflow-principles.md](./workflow-principles.md)「検証強度のリスク層別化（3 層モデル）」）。checks が
 登録されている場合のみ、その完了と成功を確認してからマージへ進む（Monitor 規定が扱うのは終了条件が
 必ず訪れる待機で、ここは待機自体を張らないのが正解）。
 
@@ -1128,7 +1133,7 @@ esac
 
 終了コードの意味: **0 = 一致（無出力）** / **1 = 不一致（マージを止める）** / **2 = 判定不能（止めないが「実測対象を特定できないためマージ前の再実行を推奨」と報告する）** / **3 = 検査不成立（停止する）**。
 
-判定不能には**部分実行の記録**も含まれる。検証スイートを名指し引数で回した回は `STATUS=partial` として記録され、全件緑へは昇格しない — つまり**部分記録は一致していても exit 2** になる。差分を覆う印（`COVERS_DIFF`）が PR の base と一致する部分実行も exit 2 のままである。`finish.sh precheck` だけが、その印を「導入先の判定で差分を覆っている」として全件の再実行を要求しない（リリース前・契約面の変更時は除く）。マージは止まらないので、報告の `REASON`（何を検証したのか。通った suite 名・ゲート名・実測時刻）と `ACTION`（その範囲で足りるか）を**両方**そのまま完了報告へ載せる。head が一致する `STATUS=unverified` も exit 2 で、理由は「環境起因で未確認」とステップ名、次の一手は環境を直すか PR 本文に記録して判断することで、再実行は案内しない。head が違えば従来どおり exit 1 で止める。
+判定不能には**部分実行の記録**も含まれる。検証スイートを名指し引数で回した回は `STATUS=partial` として記録され、全件緑へは昇格しない — つまり**部分記録は一致していても exit 2** になる。差分を覆う印（`COVERS_DIFF`）が PR の base と一致する部分実行も exit 2 のままである。`finish.sh precheck` だけが、その印を「導入先の判定で差分を覆っている」として全件の再実行を要求しない（リリース前・実行基盤の契約面の変更時は除く。文書契約面だけの変更は、文書横断検査の束を足した部分実行の印で覆える）。マージは止まらないので、報告の `REASON`（何を検証したのか。通った suite 名・ゲート名・実測時刻）と `ACTION`（その範囲で足りるか）を**両方**そのまま完了報告へ載せる。head が一致する `STATUS=unverified` も exit 2 で、理由は「環境起因で未確認」とステップ名、次の一手は環境を直すか PR 本文に記録して判断することで、再実行は案内しない。head が違えば従来どおり exit 1 で止める。
 
 ただし**同じコミットに全件緑の記録が既にあれば、部分実行で上書きされない**（`pass@X` は `partial@X` の上位互換の証拠であり、置き換えは安全側への寄与がゼロの情報の純減になるため。差分を覆う印を付けても同じ）。同一ブランチで全件ゲートを回した後にレビュー対応で名指し suite を 1 本回した、という並びは exit 0 のままである。赤い実行と、環境起因で未確認の記録は同じコミットでも従来どおり前回の緑を無効化する。
 
@@ -1259,11 +1264,11 @@ git branch -r --list "origin/feature/${ISSUE_NUM}-user-auth"
 - `/merge-cleanup` が「スキップした削除候補」を報告した場合は、警告文だけで判断せず `git ls-remote --heads origin <branch>` と `git branch --list` の実測で現物を確認する（`gh pr merge --delete-branch` を併用していると、削除済みブランチに対する lease 拒否が偽陽性として出る）
 - 未コミット変更が残っている場合、コマンドは中断して分類判断を仰ぐ。`git restore` / `git clean` で勝手に消さない
 
-### ステップ10: ACE ナレッジ体系化（マージ後）【重要】
+### ステップ10: ACE ナレッジ体系化（マージ後・条件付き）
 
-**目的**: 開発プロセスで得た知見を体系的に整理し、チーム全体で共有可能な資産として蓄積する
+**目的**: 開発プロセスで得た知見のうち、原則から推論で導けない固有の事実や取り返しのつかない罠を体系的に整理し、チーム全体で共有可能な資産として蓄積する
 
-**実行タイミング**: マージ後・cleanup 後（develop ブランチで実行）
+**実行タイミング**: マージ後・cleanup 後（`<default-branch>` で実行）。**既定チェーン（`/merge-cleanup` → `/retrospective`）では毎 PR 回さず、原則から推論で導けない知見（A〜D で B / C の候補）がある PR だけ**実行する（判定基準の正本は [ace-cycle.md](./ace-cycle.md)）。
 
 ナレッジとして記録する対象・分類体系・記録の書き方・GitHub Discussions への登録手順は [knowledge-management.md](./knowledge-management.md) が正本。あわせて ACE Playbook への構造化した記録を推奨する。手順（Generate → Reflect → Curate）は [ace-cycle.md](./ace-cycle.md) にある。GitHub Discussions は人間向けの物語的な記録、ACE Playbook は AI ツール向けの構造化した知見として使い分ける。
 
@@ -1277,7 +1282,7 @@ git branch -r --list "origin/feature/${ISSUE_NUM}-user-auth"
 
 **既定（推奨）— `<default-branch>` 直マージ**: 直 push を止める保護の無い `<default-branch>` にのみ適用（force push の禁止だけの保護は対象に含む）。マージ・cleanup 後の `<default-branch>` で `/ace-curate <PR番号>` を実行し、PLAYBOOK.md 追記を **`<default-branch>` に直接 commit + push** する。PLAYBOOK.md は append-only で構造化されており、ID も PRスコープ式（[エントリID規則](../../08-knowledge/PLAYBOOK.md#エントリid規則)）で衝突しないため、ACE 1 サイクル分の小さな知見追加を毎回 PR 化するのは過剰なオーバーヘッド。
 
-**knowledge コミットの書き込み口（共通）**: `/ace-curate` の PLAYBOOK 追記と `/retrospective` の観測台帳（`OBSERVATIONS.md`）追記は、同梱の `scripts/finish.sh knowledge-commit`（`add` → `commit` → `push`。実体は `scripts/knowledge-commit.sh` で、claim の再生成 `add --claim`・保護判定 `probe`・直 push・PR 経由 `pr` も同じ入口が持つ）で commit を作る。同じセッションで両方が書いた回は 1 コミット（`knowledge: ACE-… / OBS-…`）に畳み、片方だけなら従来どおりの件名の単独コミットになる。commit は記録したパス（PLAYBOOK・台帳と各 claim）へ固定し、コードの変更を含めない。commit の直前に検査用の合成 identity（`fixture` / `*@example.invalid`）を止める。`/ace-curate` は既定ではその場で commit し、チェーンの起動元（振り返りの事前注入 hook の文面）が `ACE_DEFER_TO_RETRO=1` を指示した回だけ `add` までで止める。`/retrospective` はモード判定の直後に保留を確かめ、振り返りを実施しない回でも回収する。
+**knowledge コミットの書き込み口（共通）**: `/ace-curate` の PLAYBOOK 追記と `/retrospective` の観測台帳（`OBSERVATIONS.md`）追記は、同梱の `scripts/finish.sh knowledge-commit`（`add` → `commit` → `push`。実体は `scripts/knowledge-commit.sh` で、claim の再生成 `add --claim`・保護判定 `probe`・直 push・PR 経由 `pr` も同じ入口が持つ）で commit を作る。同じセッションで両方が書いた回は 1 コミット（`knowledge: ACE-… / OBS-…`）に畳み、片方だけなら従来どおりの件名の単独コミットになる。commit は記録したパス（PLAYBOOK・台帳と各 claim）へ固定し、コードの変更を含めない。commit の直前に検査用の合成 identity（`fixture` / `*@example.invalid`）を止める。`/ace-curate` は既定ではその場で commit し、同じターンで `/retrospective` へ合流したいときに `ACE_DEFER_TO_RETRO=1` を明示した回だけ `add` までで止める（事前注入 hook は毎 PR の `/ace-curate` や `ACE_DEFER_TO_RETRO=1` を前提にしない）。`/retrospective` はモード判定の直後に保留を確かめ、振り返りを実施しない回でも回収する。
 
 **chore PR 経路**: 大人数チーム、または知見内容自体をレビューに残したい場合は任意エスカレーション、**`<default-branch>` に直 push を止める保護がある場合は必須経路**。`<default-branch>` から `chore/ace-from-pr-<PR番号>` ブランチを切り、PLAYBOOK.md 追記を小さい chore PR として PR レビュー → squash merge する（保護判定は `/ace-curate` 手順1、commitlint type 置換の詳細は手順5）。
 
@@ -1287,7 +1292,7 @@ git branch -r --list "origin/feature/${ISSUE_NUM}-user-auth"
 
 ### チェーン末尾: セッション振り返り（/retrospective）
 
-ACE 完了後、チェーンの末尾として `/retrospective` を毎回実行する（`/merge-cleanup` → `/ace-curate` → `/retrospective`）。ACE がコード・設計のプロジェクト知見を Playbook へ蓄積するのに対し、`/retrospective` はプロセス/ツール/スキルのメタ知見（そのセッションで**実測した**手戻り・無駄時間）から改善提案を最大 3 件出す（該当なしなら「振り返り: 改善候補なし」の 1 行で終了）。起票は既存確認 → 提案 → 対象 repo へ Issue 作成の順で、同一 private 確認済み repo では既定で自動起票し、発行番号を振り返り結果で報告する（`RETROSPECTIVE_FILING=ask` で承認待ち式）。外部・公開・未確認の送り先への書き込みは、完成本文・送信先・公開範囲の承認を得る（正本はスキルの「承認と起票」「外部公開の承認境界」）。提案の提示前に既存知見・既存 Issue との重複を確認し、重複していた提案は新規起票ではなく既存への追記へ切り替える（確認手順の詳細はスキルの「起票前の既存確認」。手順そのものはここへ複製せず参照する）。
+クリーンアップ完了後、チェーンの末尾として `/retrospective` を毎回実行する（既定: `/merge-cleanup` → `/retrospective`。原則から推論で導けない知見［A〜D の B / C］がある PR だけ前に `/ace-curate` を挟む）。ACE がコード・設計のプロジェクト知見を Playbook へ蓄積するのに対し、`/retrospective` はプロセス/ツール/スキルのメタ知見（そのセッションで**実測した**手戻り・無駄時間）から改善提案を最大 3 件出す（該当なしなら「振り返り: 改善候補なし」の 1 行で終了）。起票は既存確認 → 提案 → 対象 repo へ Issue 作成の順で、同一 private 確認済み repo では既定で自動起票し、発行番号を振り返り結果で報告する（`RETROSPECTIVE_FILING=ask` で承認待ち式）。外部・公開・未確認の送り先への書き込みは、完成本文・送信先・公開範囲の承認を得る（正本はスキルの「承認と起票」「外部公開の承認境界」）。提案の提示前に既存知見・既存 Issue との重複を確認し、重複していた提案は新規起票ではなく既存への追記へ切り替える（確認手順の詳細はスキルの「起票前の既存確認」。手順そのものはここへ複製せず参照する）。
 
 観測は起票の前に**作業中リポジトリ**の観測台帳（`docs/08-knowledge/OBSERVATIONS.md`。無ければスキルがテンプレートから作成する）へ蓄積し、同じ観測の再発はエントリの Count +1 に畳む。Issue 起票を提案するのは原則として Count が累計 3 回に到達した再発（または一回でも重大な特急レーン）だけで、起票先は改善対象で分岐する — ツール群（スキル・hook・スクリプト）の改善は到達可能な SSOT（不能なら配布元）、プロジェクト固有のプロセス改善はこのリポジトリ自身。台帳の作成・定型記録は承認不要。Issue の新規起票・既存への追記等は送信境界を先に判定する（詳細はスキルの「観測の記録」「承認と起票」「外部公開の承認境界」。手順そのものはここへ複製せず参照する）。
 
@@ -1309,7 +1314,7 @@ ACE 完了後、チェーンの末尾として `/retrospective` を毎回実行�
 5. [ ] Push + PR 作成
 6. [ ] セルフレビュー（PR の head SHA を対象に 1 回。担当は [選択ルール](./self-review.md#レビュー担当の選択と利用制限時の継続) の正本に従う）
 7. [ ] レビュー指摘修正・コミット・push（1 fix commit）
-8. [ ] 全件/ビルドの重いゲート（指摘 0 件でもレビュー終端後に 1 回）
+8. [ ] 検証ゲート（指摘 0 件でもレビュー終端後に 1 回。リスク層別: 局所変更は差分を覆う部分ゲート、文書契約面は部分ゲート + 文書横断検査の束、実行基盤の契約面・安全網なしは全件）
 9. [ ] /close-issue（AC 照合ゲート: チェックボックス - [x] 更新 + 完了報告コメント）
 10. [ ] マージ（Squash merge、--match-head-commit 付き）
 ```

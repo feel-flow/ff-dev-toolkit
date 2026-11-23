@@ -8,6 +8,9 @@
 # 空振り検出: case51は案内行の次の行から再実行コマンドを取り出し、取り出せない回（空）・形が違う回は赤にして実行しない（引数の欠けたコマンドで既定一覧を再帰起動しない。実行時は入れ子の印も付ける）。案内を外す・suite名を渡す・相対パスのまま出す・赤のパスを集めない・上書きで最後の1本だけにする・全件モードの前置を落とす、の各変異を検出した（2026-10-30 macOS実測）。
 # 空振り検出: 鮮度だけの赤の案内順（Issue `#2763`、case 51-G〜51-K）は、mutation-harness で 9 件（分岐無効化 / 部分案内を先出し / 根拠外文言の欠落 / 混在赤を鮮度単独へ倒す / 全件モード前置の欠落 / NOT_RUN ガード除去 / REQUIRED_SKIPPED ガード除去 / 重複 `✗ stale` 抑止除去 + cases 内コメント 1 行追加の green 対照）を当てて detected 8 / green-ok 1 / SURVIVED 0 / FALSE-POSITIVE 0 / NOT-APPLIED 0（対照 809 件 pass。2026-11-15 macOS 実測）。行一致が無い場合は案内行番号や抽出コマンドが空になり `if` / `case` で赤へ倒す。
 # 空振り検出: case 54-I は TERM を走行中マーカーの出現と suite（sleep-probe）の起動の印の両方を待ってから送り、10 秒以内に揃わない回は赤にする（Issue `#2878`）。修正前の待ち条件（マーカーの出現だけ）を sleep 無しで詰めた診断は 20/20 回が suite 未起動のまま残存して赤、修正後の待ち条件を同じく詰めた形は 10/10 回緑、run-all.sh から TERM の trap 行を消した写しでは修正後の 54-I が 3/3 回赤（2026-11-19 macOS / Bash 3.2 実測）。54-I / 54-J はマーカーの消失に加えて run-all の終了コード 143（TERM の再送出による終了）も確かめる。TERM の trap を `trap '' TERM`（TERM を無視して suite を完走させ、正常終了の後片付けでマーカーを消す形）にした写しでは、マーカーと子 suite の検査は緑のまま、終了コードの検査だけが 54-I / 54-J とも rc=0 で赤になる（同日実測）。
+# 空振り検出: case 55-Q（Issue `#2946` / `#2954`）は、通常ファイル消失 TOCTOU（55-Q1）・`kill -0`〜`ps` 間プロセス終了 TOCTOU（55-Q2）・実在読み取り不可 / symlink / 生存 PID の `ps` 異常の 3 陰性 fail-closed（55-Q3a〜c）を固定し、消失分岐除去（55-Q4a）・`kill_ok` 分岐の `kill -0` 再確認除去（55-Q4b）の 2 変異がいずれも unknown 誤停止として検出されることを本 suite 内で常時実測する（2026-11-22 macOS / Bash 3.2 実測、全 959 件 pass）。
+# 空振り検出: case 55-R（Issue `#2967` / `#2983`）は、55-A〜55-P のブロッカー解除を固定 sleep から待機ログ同期待機（`_c55_wait_for_log`）と同期成立確認へ置換したうえで、0.8 秒起動遅延ラッパー下での同期待機成立（55-R1）・不一致ログの有界タイムアウト（55-R2）・未同期の先行解除変異で待機ログが欠落する決定論的対照（55-R3）を本 suite 内で常時実測する（2026-11-23 macOS / Bash 3.2 実測）。
+# 空振り検出: case 56（Issue `#2981` / `#2983`）は、`ff-stdout-write-block` 抽出単体の一過性 EINTR 再試行回復と恒久失敗 1 回警告（最大 3 回試行＝初回 1 回＋再試行 2 回、56-A）・`ff_emit_summary_head` 途中行の行単位再試行（56-A3）・閉じた stdout（`1>&-`）下での逐次・並列完走と `gate-record` 書込み（56-B）・失敗 suite / 不在 suite の fail-closed 維持（56-C1 / 56-C2）・素の `printf` へ戻した変異で途中終了し後続 suite と `gate-record` が欠落する対照（56-D）を本 suite 内で常時実測する（2026-11-23 macOS / Bash 3.2 実測）。
 #
 # verify.sh — テストランナー run-all.sh 自身の回帰検証（Issue #146 / 縮小: Issue #1022）
 #
@@ -142,9 +145,12 @@
 # 空振り検出: consumer context helper不在・読めない・同名0byte・mode集合0、実tracked入力から危険形を
 #   消す各写しは親の集合検査または実走査検査1件で赤（対照8/0、各rc=1、2026-10-22）。
 # 空振り検出: case 35 の pipe-and-chain（Issue `#2593`）は、検出の print を外す・pipefail の宣言を無視する・解除を宣言扱いにする・フェンス開始で状態を戻さない・`||` まで対象にする・tail / tee 以外で終わる左辺まで止める・`|&` を background と読む 7 変異が各 rc=1。無変異対照は rc=0（2026-11-04 WSL 実測）
-# 空振り検出: case 52 は独立した run-all.sh（4194303:/x/run-all.sh）を与えると rc 2、プロセス一覧の取得失敗は rc 2、並走なしは GUARD_PASSED。ガード内のシェルの exit 2 行だけを外した写しは並走を名指した stderr（4194303:/x/run-all.sh）のあと GUARD_PASSED で rc 0（awk の END exit 2 は残す）。並走を ○ skip や GUARD_PASSED だけにすると 52-A が赤（2026-11-05 実測）。
+# 空振り検出: case 52（観測の隔離。ADR-095）は、独立した run-all.sh（4194303:/x/run-all.sh）が見える一覧でも rc 0 で GUARD_PASSED と ISOLATED_OTHER_GATES=none を出す。プロセス一覧の取得失敗は rc 2。待機の指定（FF_RUN_ALL_WAIT=1・上限 1 秒）と入れ子の指定なしで起動しても待たず、内側の実行が受け継ぐ環境は ISOLATED_ENV=wait:unset nested:1 wait-dir:private になる（52-E。待機の指定を外す・入れ子にする・待機領域を私有にする、の 3 行のどれを落としても値が変わって赤）。置いた ps の絞り込みの行だけを外した写し（52-D）は、隔離した後の観測に 4194303:/x/run-all.sh が残って rc 2 で名指しする（針の行が 1 行でなければ 52-D 自身が赤）。別のゲートを名指す・○ skip や判定不能へ倒すと 52-A が赤（2026-11-23 WSL 実測）。
 # 空振り検出: case 53 は suite へ両方を継承する修正前の run-all.sh で 53-B / 53-C / 53-E が逐次・並列とも赤、変異の対象行の不在で 53-M1 / 53-M2 が赤（8 件）。FF_GATE_RECORD_FILE だけを外す版では 53-B が逐次・並列とも赤（FF_GATE_RECORD の継承）。逐次・並列の各呼び出しだけを外した写しは、その経路の suite が親の 2 つの値を受け取る（2026-11-07 WSL 実測）。一時領域・fixture を作れない回と、並列を指定したのに並列経路で走らない回は構造上赤（未実測）。
-# 空振り検出: case 55（自動待機・リリース待機・相互待ち回避・上限停止・待機中 HEAD 更新再評価 55-L2・未検証親除外防止 55-O・単体 verify 可視化 55-P・start-reclaim.lock 回収 55-K）は mutation-harness で 5 変異すべて detected（wait-ignore-flag=30 fail / wait-drop-timeout-blocker-name=4 fail / wait-drop-waiting-exclusion=5 fail / wait-drop-release-scan=5 fail / wait-drop-cross-release-scan=2 fail、SURVIVED 0、対照 932 件 pass、追記後の最終対照 全 943 件 pass）に加え、case 55-M で waiting 除外無効化が rc=2 で落ちることを実測（2026-11-21 実測）。
+# 空振り検出: case 55（自動待機・リリース待機・相互待ち回避・上限停止・待機中 HEAD 更新再評価 55-L2・未検証親除外防止 55-O・単体 verify の非参加 55-I / 55-P・印だけで見える先行者の待機 55-P2・start-reclaim.lock 回収 55-K）は mutation-harness で 5 変異すべて detected（wait-ignore-flag=39 fail / wait-drop-timeout-blocker-name=1 fail / wait-drop-waiting-exclusion=5 fail / wait-drop-release-scan=5 fail / wait-drop-cross-release-scan=2 fail、SURVIVED 0、対照 全 1151 件 pass。測定の後に case 47 へ検査を足したので、いまの全体は 1168 件）に加え、case 55-M で waiting 除外無効化が rc=2 で落ちることを実測（2026-11-23 WSL 実測。変異は tests/lib/gate-in-flight.sh への置換 5 件: 待機の指定を無視する・上限で止まるときの相手の名指しを落とす・待機中のプロセスの除外を無効にする・リリースの印の走査を落とす・別 clone のリリースのプロセス走査を落とす。55-E は相手の名指しを上限超過の停止文の後ろでも確かめる — 出力全体への照合だけだと、待機開始の行が相手を名指しした回に、停止文から名指しを落とす変異が通る（その行が出るかどうかは開始時刻の秒の位相で決まり、同じ変異が回によって detected にも SURVIVED にもなった。いまは停止文の後ろの照合が毎回赤になり、待機開始の行が出なかった回は出力全体への照合も一緒に赤になる）。55-P2 は、待機側が「待っています」を出力してから先行者を解放するので、印の走査を落とすと待たずに始まって赤になる）。
+# 空振り検出: case 47-M〜47-S（文書契約面と、選択に入れない suite。ADR-095）は、ランナーの写しへ変異を 1 つずつ当て、case 47 だけを同じ cases ファイルで回して測った（件数は赤になった検査項目の数）。束の suite を足さない → 34 件（47-M 18・47-Q 9・47-S 7）/ 文書契約面を見つけた時点で実行基盤の照合を打ち切る → 8 件（47-N 6・47-R 2）/ 束と登録一覧の件数照合を外す → 17 件（47-O 10・47-S 7）/ 束が空の回の全件フォールバックを外す → 5 件（47-O）/ 文書契約面を実行基盤の名簿へ戻す → 27 件（47-M 11・47-N 1・47-P 1・47-Q 5・47-R 2・47-S 7）/ 配布テンプレート配下の文書でないファイルも文書として扱う → 7 件（47-R）/ 束の suite が交差でも選ばれた回を「登録一覧に在った」と数えない → 5 件（47-Q）/ 実行基盤の要素（共有 lib）を文書契約面の名簿へ移す → 2 件（47-P）/ 文書契約面の入口を別名へ置き換える → 1 件（47-P）/ 常に skip する suite を選択から外さない → 20 件（47-S）/ 明示起動の指定がある回も選択から外す → 17 件（47-S 16・47-P 1）/ 選択から外す判定を束の照合の後ろへ回す → 11 件（47-S）/ 名簿に在るが「常に skip する」条件を書いていない名前も外す → 3 件（47-S）/ 外した suite を実行の入口で名乗らない → 2 件（47-S）。無変異の対照は 256 件 pass・0 件赤（2026-11-23 WSL 実測）。47-S の fixture の public-layout は実行ビットを付けず、選択に入った回もランナーは起動しない（この名前の実プロセスは、同じホストの別セッションのゲートが公開検査の並走として読むため）。47-P は、選択に入れない suite の名簿・ランナーの条件と公開検査の先頭の分岐の字面・分岐が無条件に skip して終わることを実物から読み、読めた箇所が 1 つでなければ赤。
+# 空振り検出: case 57（自己検証とゲート間の排他の境界。ADR-095）は、合成したプロセス一覧を並走検出へ読ませる。候補から自己検証の子孫を外す条件を消した写し（57-D）は fixture のランナー（4194101）を並走として返し、同じ一覧の 57-A を赤にする形になる（条件の行が 1 行でなければ 57-D 自身が赤）。cwd からの起動・`-c` に続く語がパスである形・別 suite・名前の後方一致の親は自己検証として読まず、子を並走に数える（57-C）。57-E は実プロセスの孤児と子で、この suite の ps が系譜の外を全列挙へ出さないことを測り、孤児・子・一覧のどれかを用意できない回は赤。57-F は、ランナーと待機 lib が全プロセスを列挙する起動（4 箇所）がこの suite の ps の絞る 2 つの形から外れていないことを実装から拾って突き合わせ、拾えた箇所が 4 未満なら赤（2026-11-23 WSL 実測）。
+# 空振り検出: case 56（`cases/git-env-isolation.sh`）は `tests/lib/git-isolated.gitconfig` 不在・`user.useConfigOnly` / `core.excludesFile` 欠落で 56-0 が赤（`--file` で作業リポから隔離読取）、隔離無しで `core.excludesFile` / `$XDG_CONFIG_HOME/git/ignore`（`*~`）が `git check-ignore "~/app.txt"` へ漏れない前提不成立で 56-pre が赤、`ff_suite_env_isolate` から git 隔離を外した写しで逐次・並列（2 suite 同時）とも作者無し commit 緑化と excludesfile 漏れ赤化を 56-M1 で実測、空の隔離設定での `useConfigOnly` 欠落を 56-M2 で実測する（2026-11-23 macOS 実測: case 56 全 11 件 pass、隔離除去変異で逐次・並列とも 56-A / 56-D が赤転）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -176,43 +182,121 @@ done
 
 [ -f "$RUNNER" ] || { echo "✗ run-all.sh が見つかりません: $RUNNER" >&2; exit 1; }
 
-GATE_WAIT_MARKER_FILE=""
-GATE_ACTIVE_MARKER_FILE=""
-
-ff_verify_wait_cleanup() {
-  if [[ -n "${GATE_WAIT_MARKER_FILE:-}" ]]; then
-    if declare -F ff_gate_wait_marker_remove >/dev/null 2>&1; then
-      ff_gate_wait_marker_remove "$GATE_WAIT_MARKER_FILE"
-    else
-      rm -f -- "$GATE_WAIT_MARKER_FILE" 2>/dev/null || true
-    fi
-    GATE_WAIT_MARKER_FILE=""
-  fi
-  if [[ -n "${GATE_ACTIVE_MARKER_FILE:-}" ]]; then
-    if declare -F ff_gate_active_marker_remove >/dev/null 2>&1; then
-      ff_gate_active_marker_remove "$GATE_ACTIVE_MARKER_FILE"
-    else
-      rm -f -- "$GATE_ACTIVE_MARKER_FILE" "${GATE_ACTIVE_MARKER_FILE}.meta" 2>/dev/null || true
-    fi
-    GATE_ACTIVE_MARKER_FILE=""
-  fi
-  if declare -F ff_gate_wait_lock_release >/dev/null 2>&1; then
-    ff_gate_wait_lock_release 2>/dev/null || true
-  fi
+# ── 観測の隔離（ADR-095）────────────────────────────────────────────────────
+# この suite は一時領域の fixture へ run-all.sh を起動し、その出力を照合する。内側の run-all.sh が
+# ホストのプロセス一覧と待機領域をそのまま観測すると、別セッションの全件ゲートが「他ゲート」として
+# 見え、内側の既定一覧の実行は並走を検出して rc 2 で止まり、明示引数の実行は起動時の負荷の警告と
+# `startup-load:` 行を照合対象の出力へ足す。どちらも偽の赤になる。原因は負荷ではなく観測の混入で、
+# 負荷を足さない偽のゲート（sleep するだけの run-all.sh）を 1 本置くだけで、隔離を外した写しは 31 件
+# 赤になり、隔離した実物は同じ条件で全件 pass する（2026-11-23 WSL 実測）。以前はその回を走査の前に
+# 判定不能（rc 2）で止めていたが、止める代わりに**内側から見えるものをこの suite の系譜へ閉じる**。
+# 別セッションのゲートはこの suite を止めず、この suite も待機領域へ走行中の印を置かない。
+#
+#   - プロセス一覧: PATH の先頭へ ps を置き、全プロセスを列挙する形だけを、この suite の祖先・
+#     自分・子孫へ絞る。内側の run-all.sh が読む 3 経路（他ゲート・公開検査・リリース）はすべて
+#     この形で一覧を取る（形が変わると ps が素通しになるので、case 57-F が実装の起動形と突き
+#     合わせる）。個別の PID を問う形はホストの ps へそのまま渡す。case 52 / 54 / 55 の fixture は、
+#     この ps を「本物」として自分の stub を上へ重ねる
+#   - 待機領域: 待機の指定（FF_RUN_ALL_WAIT など）は持ち込まず、待機領域を私有の一時領域へ向ける
+#   - 入れ子: 単体で起動された回も、内側の明示引数の実行を入れ子として扱わせる（ゲートの suite
+#     として走る回と同じ環境にする）。入れ子の実行は作業ツリーへ走行中の印を置かない。ただし
+#     非入れ子の挙動そのものを測る数ケース（起動順の記録など。入れ子の指定を外して実物のランナーを
+#     起動する）は、その実行のあいだだけ従来どおり印を置く — その一瞬に別 worktree で非待機の
+#     ゲートが起動すると、印を名指して判定不能になりうる（待機起動なら印が消えてから始まる）
+#
+# 隔離を確かめられない回（ps が無い・一覧を取れない・一覧に自分が居ない・ps を置けない・置いた ps が
+# 先頭で解決されない・並走検出の関数を取り出せない・隔離した後も系譜の外のゲートが見える）は、
+# ○ skip にも緑にもせず rc 2（判定不能）で止め、stderr の「復帰:」行に次の一手を出す。
+ff_verify_isolation_stop() { # <理由> <復帰>
+  echo "✗ 判定不能: ${1}（実行できなかった）" >&2
+  echo "  復帰: ${2}" >&2
+  exit 2
 }
-
-# 並走・待機判定（別 worktree の run-all.sh、worktree/active マーカー、別ツリーの public-layout/verify.sh、
-# 進行中リリースの ff-release-in-flight / release-dev-toolkit.sh、またはプロセス・マーカー状態が取れない回）。
-# 親および同一ゲートの系譜と、waiting（待機専用）マーカーで確認できるプロセス・その子孫は除外する。
-# FF_RUN_ALL_WAIT=1 指定時は先行完了まで上限付き（FF_RUN_ALL_WAIT_MAX_SECONDS、既定 3600 秒）で自動待機し、
-# 上限超過・不正設定・非待機の並走検出時は走査の前に rc=2（判定不能は緑にしない）で停止する。
-# 抽出に失敗した回も ○ skip にせず rc 2（判定不能は緑にしない）。
-ff_verify_concurrency_guard() {
-  local extract others="" rc=0 wait_rc=0
-  extract="$(mktemp "${TMPDIR:-/tmp}/run-all-other-gates.XXXXXX" 2>/dev/null)" || {
-    echo "✗ 判定不能: 並走検出の抽出先を作れません（プロセス一覧の判定が成立していない。実行できなかった）" >&2
-    exit 2
+ff_verify_isolate_observation() {
+  local host_ps="" shim_dir="" snapshot="" extract="" others="" rc=0
+  host_ps="$(command -v ps 2>/dev/null)" || host_ps=""
+  if [ -z "$host_ps" ]; then
+    ff_verify_isolation_stop "プロセス一覧を取得できないため観測を隔離できません（ps が見つかりません）" "ps が使える状態で、この suite を回す"
+  fi
+  snapshot="$(LC_ALL=C "$host_ps" -ww -eo pid=,ppid=,args= 2>/dev/null)" || snapshot=""
+  if [ -z "$snapshot" ] || ! printf '%s\n' "$snapshot" | awk -v self="$$" '$1 == self { found = 1 } END { exit found ? 0 : 1 }'; then
+    ff_verify_isolation_stop "プロセス一覧を取得できないため観測を隔離できません" "プロセス一覧が取れる状態で、この suite を回す"
+  fi
+  shim_dir="$RUN_WORK/host-ps"
+  if ! mkdir -p "$shim_dir"; then
+    ff_verify_isolation_stop "観測を隔離する ps を一時領域へ置けません" "一時領域へ書ける状態で、この suite を回す"
+  fi
+  # ホストの ps のパスと系譜の根（この suite の PID）は、環境変数で渡さずファイルへ焼き込む。
+  # この suite は自分の写しを fixture として起動する（case 52 / 55）。環境変数で渡すと、内側の
+  # 写しが上書きした値を外側の ps が読み、stub と ps が互いを呼び続ける。
+  if ! {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf 'host_ps=%q\n' "$host_ps"
+    printf 'scope_pid=%q\n' "$$"
+    cat <<'PS_SHIM_BODY'
+# tests/run-all/verify.sh が PATH の先頭へ置く ps。全プロセスを列挙する形だけを、verify.sh の
+# 系譜（祖先・自分・子孫）へ絞って返す。それ以外の形はホストの ps へそのまま渡す。
+case "$*" in
+  '-ww -eo pid=,ppid=,args=' | '-eo pid=,ppid=') ;;
+  *) exec "$host_ps" "$@" ;;
+esac
+listing="$("$host_ps" "$@")" || exit $?
+printf '%s\n' "$listing" | awk -v scope="$scope_pid" '
+  NF == 0 { next }
+  $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ { odd[++m] = $0; next }
+  {
+    n++
+    pid[n] = $1
+    par[$1] = $2
+    row[$1] = $0
   }
+  END {
+    if (!(scope in par)) exit 3
+    p = scope
+    for (i = 0; i <= n; i++) {
+      keep[p] = 1
+      if (par[p] == p || par[p] == 0 || !(par[p] in par)) break
+      p = par[p]
+    }
+    inside[scope] = 1
+    changed = 1
+    while (changed) {
+      changed = 0
+      for (i = 1; i <= n; i++) {
+        if (!(pid[i] in inside) && (par[pid[i]] in inside)) {
+          inside[pid[i]] = 1
+          keep[pid[i]] = 1
+          changed = 1
+        }
+      }
+    }
+    for (i = 1; i <= n; i++) if (pid[i] in keep) print row[pid[i]]
+    for (i = 1; i <= m; i++) print odd[i]
+  }
+'
+PS_SHIM_BODY
+  } > "$shim_dir/ps"; then
+    ff_verify_isolation_stop "観測を隔離する ps を一時領域へ書けません" "一時領域へ書ける状態で、この suite を回す"
+  fi
+  if ! chmod +x "$shim_dir/ps"; then
+    ff_verify_isolation_stop "観測を隔離する ps を実行可能にできません" "一時領域へ書ける状態で、この suite を回す"
+  fi
+  PATH="$shim_dir:$PATH"
+  export PATH
+  hash -r 2>/dev/null || true
+  # 置いた ps が実際に先頭で解決されることを、別ゲートの有無に依らず確かめる（下の観測の確認は、
+  # その瞬間に系譜の外のゲートが居る回にしか効かない）。
+  if [ "$(command -v ps 2>/dev/null)" != "$shim_dir/ps" ]; then
+    ff_verify_isolation_stop "置いた ps が PATH の先頭で解決されないため観測を隔離できません" "ps を関数・別名で差し替えていない状態で、この suite を回す"
+  fi
+  unset FF_RUN_ALL_WAIT FF_RUN_ALL_WAIT_MAX_SECONDS FF_RUN_ALL_WAIT_POLL_INTERVAL
+  FF_RUN_ALL_WAIT_DIR="$RUN_WORK/wait-state"
+  FF_RUN_ALL_NESTED=1
+  export FF_RUN_ALL_WAIT_DIR FF_RUN_ALL_NESTED
+
+  # 隔離した後の観測を、内側の run-all.sh と同じ関数で 1 回取る。系譜の外のゲートが 1 つでも
+  # 見えたら隔離は成立していない（ps が別の経路で解決された・絞り込みが効いていない）。
+  extract="$RUN_WORK/other-gates-fn.sh"
   if ! awk '
     BEGIN { found = 0 }
     /^# >>> ff-startup-other-gates$/ { grab = 1; next }
@@ -220,144 +304,33 @@ ff_verify_concurrency_guard() {
     grab { print }
     END { if (!found) exit 2 }
   ' "$RUNNER" >"$extract"; then
-    rm -f "$extract"
-    echo "✗ 判定不能: 並走検出の関数を取り出せません（実行できなかった）" >&2
-    exit 2
+    ff_verify_isolation_stop "並走検出の関数を取り出せないため観測の隔離を確かめられません" "run-all.sh の ff-startup-other-gates の範囲を確かめてから、この suite を回す"
   fi
   if ! awk 'BEGIN { c = 0 } /^ff_startup_other_gates\(\) \{/ { c++ } END { exit c == 1 ? 0 : 1 }' "$extract"; then
-    rm -f "$extract"
-    echo "✗ 判定不能: 並走検出の関数が 1 つではありません（実行できなかった）" >&2
-    exit 2
+    ff_verify_isolation_stop "並走検出の関数が 1 つではないため観測の隔離を確かめられません" "run-all.sh の ff-startup-other-gates の範囲を確かめてから、この suite を回す"
   fi
   # shellcheck disable=SC1090
   if ! . "$extract"; then
-    rm -f "$extract"
-    echo "✗ 判定不能: 並走検出の関数を読み込めません（実行できなかった）" >&2
-    exit 2
-  fi
-  rm -f "$extract"
-  if [ -r "$TESTS_DIR/lib/gate-in-flight.sh" ]; then
-    # shellcheck source=../lib/gate-in-flight.sh
-    . "$TESTS_DIR/lib/gate-in-flight.sh"
-  fi
-  if declare -F ff_gate_parse_wait_config >/dev/null 2>&1; then
-    if ! ff_gate_parse_wait_config; then
-      ff_verify_wait_cleanup
-      exit 2
-    fi
-    if [[ "${GATE_WAIT_ENABLED:-0}" -eq 1 ]]; then
-      trap 'if declare -F ff_gate_signal_cleanup >/dev/null 2>&1; then ff_gate_signal_cleanup INT ""; else ff_verify_wait_cleanup; trap - INT; kill -s INT "$$" 2>/dev/null || exit 1; fi' INT
-      trap 'if declare -F ff_gate_signal_cleanup >/dev/null 2>&1; then ff_gate_signal_cleanup TERM ""; else ff_verify_wait_cleanup; trap - TERM; kill -s TERM "$$" 2>/dev/null || exit 1; fi' TERM
-      wait_rc=0
-      ff_gate_wait_for_slot "$TESTS_DIR" "tests/run-all/verify.sh" ff_startup_other_gates || wait_rc=$?
-      if [[ "$wait_rc" -ne 0 ]]; then
-        if [[ -n "${GATE_WAIT_TIMEOUT_BLOCKERS:-}" ]]; then
-          echo "✗ 判定不能: 待機上限（${GATE_WAIT_MAX_SECONDS} 秒）に達したため停止しました（実行できなかった）。待機対象:" >&2
-          printf '%s\n' "$GATE_WAIT_TIMEOUT_BLOCKERS" >&2
-          echo "  復帰: 上の実行が終わってから再実行するか、FF_RUN_ALL_WAIT_MAX_SECONDS で上限を調整してください" >&2
-        else
-          echo "✗ 判定不能: 待機制御または並走判定を継続できないため停止しました（実行できなかった）" >&2
-          if [[ -n "${GATE_BLOCKER_UNKNOWN:-}" ]]; then
-            echo "  取得できた候補:" >&2
-            printf '%s\n' "$GATE_BLOCKER_UNKNOWN" >&2
-          fi
-          echo "  復帰: プロセス一覧とマーカー／待機領域が正常な状態で、この suite を回す" >&2
-        fi
-        ff_verify_wait_cleanup
-        exit 2
-      fi
-      if [[ "${GATE_DID_WAIT:-0}" -eq 1 ]]; then
-        echo "▶ 先行処理の終了を確認しました（待機 ${GATE_WAIT_ELAPSED} 秒）。tests/run-all/verify.sh を開始します" >&2
-      fi
-      return 0
-    fi
-    others="$(ff_startup_other_gates)" || rc=$?
-    ff_gate_collect_blockers "$TESTS_DIR" "$others" "$rc"
-    if [[ "${GATE_HAS_BLOCKER:-0}" -eq 1 ]]; then
-      echo "✗ 判定不能: 別の全件ゲート／公開検査／リリースが動いています（実行できなかった）。並走:" >&2
-      printf '%s\n' "$GATE_BLOCKERS" >&2
-      case "$GATE_BLOCKERS" in
-        *release:*)
-          echo "  復帰: 先行するゲート／リリースが終わってからこの suite を回す（自動で待つ場合は FF_RUN_ALL_WAIT=1。期限切れの担当を前の実行の停止確認後に引き継ぐ場合は scripts/release-dev-toolkit.sh --take-over を確認）" >&2
-          ;;
-        *)
-          echo "  復帰: 並走中の tests/run-all.sh（または public-layout）が終わってから、この suite を回す（自動で待つ場合は FF_RUN_ALL_WAIT=1）" >&2
-          ;;
-      esac
-      exit 2
-    fi
-    if [[ "${GATE_HAS_UNKNOWN:-0}" -eq 1 ]]; then
-      if [[ "$rc" -ne 0 ]]; then
-        echo "✗ 判定不能: プロセス一覧を取得できないため並走を判定できません（実行できなかった）" >&2
-      else
-        echo "✗ 判定不能: ゲート状態マーカーを判定できないため並走を判定できません（実行できなかった）" >&2
-      fi
-      if [[ -n "${GATE_BLOCKER_UNKNOWN:-}" ]]; then
-        echo "  取得できた候補:" >&2
-        printf '%s\n' "$GATE_BLOCKER_UNKNOWN" >&2
-      fi
-      echo "  復帰: プロセス一覧が取れる状態で、この suite を回す" >&2
-      exit 2
-    fi
-    if [[ "${FF_RUN_ALL_VERIFY_STOP_AFTER_GUARD:-}" != "1" && "${FF_RUN_ALL_NESTED:-0}" == "0" ]] \
-      && declare -F ff_gate_active_marker_write >/dev/null 2>&1; then
-      trap 'if declare -F ff_gate_signal_cleanup >/dev/null 2>&1; then ff_gate_signal_cleanup INT ""; else ff_verify_wait_cleanup; trap - INT; kill -s INT "$$" 2>/dev/null || exit 1; fi' INT
-      trap 'if declare -F ff_gate_signal_cleanup >/dev/null 2>&1; then ff_gate_signal_cleanup TERM ""; else ff_verify_wait_cleanup; trap - TERM; kill -s TERM "$$" 2>/dev/null || exit 1; fi' TERM
-      GATE_ACTIVE_MARKER_FILE="$(ff_gate_active_marker_write "tests/run-all/verify.sh" 2>/dev/null || true)"
-      rc=0
-      others="$(ff_startup_other_gates)" || rc=$?
-      ff_gate_collect_blockers "$TESTS_DIR" "$others" "$rc"
-      if [[ "${GATE_HAS_BLOCKER:-0}" -eq 1 ]]; then
-        ff_verify_wait_cleanup
-        echo "✗ 判定不能: 別の全件ゲート／公開検査／リリースが動いています（実行できなかった）。並走:" >&2
-        printf '%s\n' "$GATE_BLOCKERS" >&2
-        exit 2
-      fi
-      if [[ "${GATE_HAS_UNKNOWN:-0}" -eq 1 ]]; then
-        ff_verify_wait_cleanup
-        echo "✗ 判定不能: プロセス一覧またはゲート状態マーカーを判定できません（実行できなかった）" >&2
-        exit 2
-      fi
-    fi
-    return 0
-  fi
-  if [[ -n "${FF_RUN_ALL_WAIT:-}" && "${FF_RUN_ALL_WAIT}" != "0" ]]; then
-    echo "✗ 判定不能: 待機ライブラリ tests/lib/gate-in-flight.sh を読み込めないか FF_RUN_ALL_WAIT=\"${FF_RUN_ALL_WAIT}\" を検証できません" >&2
-    exit 2
+    ff_verify_isolation_stop "並走検出の関数を読み込めないため観測の隔離を確かめられません" "run-all.sh の ff-startup-other-gates の範囲を確かめてから、この suite を回す"
   fi
   others="$(ff_startup_other_gates)" || rc=$?
-  if [[ "$rc" -ne 0 ]]; then
-    echo "✗ 判定不能: プロセス一覧を取得できないため並走を判定できません（実行できなかった）" >&2
-    if [[ -n "$others" ]]; then
-      echo "  取得できた候補:" >&2
-      printf '%s\n' "$others" >&2
-    fi
-    echo "  復帰: プロセス一覧が取れる状態で、この suite を回す" >&2
-    exit 2
+  if [ "$rc" -ne 0 ]; then
+    ff_verify_isolation_stop "隔離した後のプロセス一覧を取得できないため観測の隔離を確かめられません" "プロセス一覧が取れる状態で、この suite を回す"
   fi
-  if [[ -n "$others" ]]; then
-    echo "✗ 判定不能: 別の全件ゲートが動いています（実行できなかった）。並走:" >&2
+  if [ -n "$others" ]; then
+    echo "✗ 判定不能: 観測の隔離が成立していません（隔離した後も、この suite の系譜の外にあるゲートが見えています。実行できなかった）:" >&2
     printf '%s\n' "$others" >&2
-    echo "  復帰: 並走中の tests/run-all.sh が終わってから、この suite を回す" >&2
+    echo "  復帰: PATH の先頭の ps がこの suite の置いたものであることを確かめてから、この suite を回す" >&2
     exit 2
   fi
+  ISOLATED_OTHER_GATES_SEEN="${others:-none}"
 }
-ff_verify_concurrency_guard
-if [[ "${FF_RUN_ALL_VERIFY_STOP_AFTER_GUARD:-}" == "1" ]]; then
-  ff_verify_wait_cleanup
-  trap - INT TERM
-  echo "GUARD_PASSED"
-  exit 0
-fi
 
 # rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
 # 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
 if _ff_tmp_probe="$(mktemp -d "${TMPDIR:-/tmp}/run-all-preflight.XXXXXX" 2>&1)" && [ -d "$_ff_tmp_probe" ]; then
   RUN_WORK="$_ff_tmp_probe"
 else
-  if declare -F ff_verify_wait_cleanup >/dev/null 2>&1; then
-    ff_verify_wait_cleanup
-  fi
   echo "○ skip: 一時ディレクトリを作成できないため run-all self-test をスキップ（検査は1件も実行されていません）"
   printf '  mktemp: %s\n' "$_ff_tmp_probe"
   exit 0
@@ -368,9 +341,6 @@ fi
 FF_REACHED_END=0
 ff_cleanup() {
   ff_rc=$?
-  if declare -F ff_verify_wait_cleanup >/dev/null 2>&1; then
-    ff_verify_wait_cleanup
-  fi
   rm -rf "$RUN_WORK"
   if [ "$FF_REACHED_END" != "1" ] && [ "$ff_rc" -eq 0 ]; then ff_rc=1; fi
   exit "$ff_rc"
@@ -382,6 +352,27 @@ FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
+# 観測の隔離は、一時領域を確保した後・検査が run-all.sh を起動する前に 1 回だけ行う（定義は上）。
+ISOLATED_OTHER_GATES_SEEN=""
+ff_verify_isolate_observation
+if [[ "${FF_RUN_ALL_VERIFY_STOP_AFTER_GUARD:-}" == "1" ]]; then
+  echo "ISOLATED_OTHER_GATES=${ISOLATED_OTHER_GATES_SEEN:-unset}"
+  # 内側の実行が受け継ぐ環境を、子プロセスに名乗らせる（case 52 / 55-I が照合する。隔離の 3 行
+  # — 待機の指定を外す・待機領域を私有にする・入れ子にする — のどれを落としても値が変わる）。
+  bash -c 'case "${FF_RUN_ALL_WAIT_DIR-}" in "$1"/*) d=private ;; *) d=shared ;; esac
+    printf "ISOLATED_ENV=wait:%s nested:%s wait-dir:%s\n" "${FF_RUN_ALL_WAIT-unset}" "${FF_RUN_ALL_NESTED-unset}" "$d"' _ "$RUN_WORK"
+  echo "GUARD_PASSED"
+  FF_REACHED_END=1
+  exit 0
+fi
+
+# 待機・走行中マーカーの補助関数（ff_gate_ps_lstart など）は case 54 / 55 の fixture が使う。
+# この suite 自身の起動判定には使わない（上の隔離は run-all.sh から取り出した関数だけで確かめる）。
+if [ -r "$TESTS_DIR/lib/gate-in-flight.sh" ]; then
+  # shellcheck source=../lib/gate-in-flight.sh
+  . "$TESTS_DIR/lib/gate-in-flight.sh"
+fi
+
 RUN_OUT=""
 RUN_RC=0
 
@@ -390,10 +381,13 @@ RUN_RC=0
 # （`STATUS=fail`）で潰れる（マージ直前の鮮度照合が判定不能になる）。末尾で消す。
 RUN_GATE_RECORD="$RUN_WORK/ff-run-all-gate-record"
 rm -f "$RUN_GATE_RECORD"
+# 単体実行時の内部 fixture 起動（run-all.sh）が開発者本人の実 metrics/gate.tsv へ追記し、
+# effort-report.sh の gate_runs / gate_minutes を水増しするのを構造的に防ぐ（OBS-582）。
+export FF_DEV_TOOLKIT_STATE_DIR="$RUN_WORK/state"
 
 # 並走の fixture。本物の run-all.sh は起動しない。ps を差し替え、STOP_AFTER_GUARD で
-# ガードの直後に戻す（ガードを外した変異が全件の走査へ進んで再帰しないようにする）。
-echo "== case 52: 並走中は走査を始めない（rc 2） =="
+# 隔離の直後に戻す（隔離を壊した変異が全件の走査へ進んで再帰しないようにする）。
+echo "== case 52: 別のゲートが動いていても観測を隔離して走査へ進む =="
 _ff_guard_stub="$RUN_WORK/ps-stub"
 mkdir -p "$_ff_guard_stub"
 _ff_guard_real_ps="$(command -v ps)"
@@ -443,48 +437,94 @@ ff_guard_invoke() { # <script> <graph>
   _ff_guard_err_text="$(cat "$_ff_guard_err")"
 }
 ff_guard_invoke "$SCRIPT_DIR/verify.sh" independent
-if [ "$_ff_guard_rc" -eq 2 ] \
-  && case "$_ff_guard_err_text" in *"4194303:/x/run-all.sh"*) true ;; *) false ;; esac \
-  && case "$_ff_guard_out$_ff_guard_err_text" in *GUARD_PASSED*|*'○ skip'*) false ;; *) true ;; esac; then
-  ok "52-A: 独立した run-all.sh が見えると走査を始めず rc 2 で並走を名指しする"
+if [ "$_ff_guard_rc" -eq 0 ] \
+  && case "$_ff_guard_out" in *GUARD_PASSED*) true ;; *) false ;; esac \
+  && case "$_ff_guard_out" in *ISOLATED_OTHER_GATES=none*) true ;; *) false ;; esac \
+  && case "$_ff_guard_out$_ff_guard_err_text" in *"4194303"*|*'○ skip'*|*'判定不能'*) false ;; *) true ;; esac; then
+  ok "52-A: 独立した run-all.sh がホストに見えていても止まらず、隔離した後の観測にそのゲートが現れない"
 else
-  bad "52-A: 並走の停止が違う（rc=${_ff_guard_rc}） out=[${_ff_guard_out}] err=[${_ff_guard_err_text}]"
+  bad "52-A: 別のゲートが動いている回の扱いが違う（rc=${_ff_guard_rc}） out=[${_ff_guard_out}] err=[${_ff_guard_err_text}]"
 fi
+case "$_ff_guard_out" in
+  *'wait-dir:private'*)
+    ok "52-A: 渡された待機領域を使わず、内側の実行へ私有の待機領域を受け継がせる（ゲート間の排他へ参加しない）"
+    ;;
+  *)
+    bad "52-A: 内側の実行が受け継ぐ待機領域が私有ではない out=[${_ff_guard_out}]"
+    ;;
+esac
 ff_guard_invoke "$SCRIPT_DIR/verify.sh" fail
 if [ "$_ff_guard_rc" -eq 2 ] \
   && case "$_ff_guard_err_text" in *"プロセス一覧を取得できない"*) true ;; *) false ;; esac \
   && case "$_ff_guard_out$_ff_guard_err_text" in *GUARD_PASSED*|*'○ skip'*) false ;; *) true ;; esac; then
-  ok "52-B: プロセス一覧を取得できない回は rc 2（緑にも skip にもしない）"
+  ok "52-B: プロセス一覧を取得できない回は観測を隔離できないので rc 2（緑にも skip にもしない）"
 else
   bad "52-B: プロセス一覧の失敗が違う（rc=${_ff_guard_rc}） out=[${_ff_guard_out}] err=[${_ff_guard_err_text}]"
 fi
 ff_guard_invoke "$SCRIPT_DIR/verify.sh" clean
 if [ "$_ff_guard_rc" -eq 0 ] && case "$_ff_guard_out" in *GUARD_PASSED*) true ;; *) false ;; esac; then
-  ok "52-C: 並走が無いスナップショットはガードを通過する（このあと全検査へ進む）"
+  ok "52-C: 並走が無いスナップショットは隔離を通過する（このあと全検査へ進む）"
 else
-  bad "52-C: 並走なしでガードが通らない（rc=${_ff_guard_rc}） out=[${_ff_guard_out}] err=[${_ff_guard_err_text}]"
+  bad "52-C: 並走なしで隔離が通らない（rc=${_ff_guard_rc}） out=[${_ff_guard_out}] err=[${_ff_guard_err_text}]"
 fi
+# 待機の指定を持ち込まれても待たない（待つ相手が居ない。上限 1 秒でも時間切れにならない）。
+# 入れ子の指定は外して起動する — 単体で起動された回に、この suite 自身が内側の実行を入れ子に
+# することを測るため（ゲートの suite として走る回は、外側のランナーが先に入れ子にしている）。
+_ff_guard_rc=0
+_ff_guard_out="$(
+  env -u FF_RUN_ALL_NESTED FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=1 FF_RUN_ALL_WAIT_POLL_INTERVAL=0.1 \
+    FF_RUN_ALL_WAIT_DIR="$RUN_WORK/guard-wait" \
+    FF_RUN_ALL_VERIFY_STOP_AFTER_GUARD=1 \
+    FF_VERIFY_GRAPH=independent \
+    FF_VERIFY_SLEEPER_PID=4194303 \
+    FF_VERIFY_REAL_PS="$_ff_guard_real_ps" \
+    PATH="$_ff_guard_stub:$PATH" \
+    bash "$SCRIPT_DIR/verify.sh" 2>"$_ff_guard_err"
+)" || _ff_guard_rc=$?
+_ff_guard_err_text="$(cat "$_ff_guard_err")"
+if [ "$_ff_guard_rc" -eq 0 ] \
+  && case "$_ff_guard_out" in *GUARD_PASSED*) true ;; *) false ;; esac \
+  && case "$_ff_guard_out$_ff_guard_err_text" in *"待機"*|*"4194303"*) false ;; *) true ;; esac; then
+  ok "52-E: 待機の指定（FF_RUN_ALL_WAIT=1）を持ち込まれても待たず、別のゲートを名指しもしない"
+else
+  bad "52-E: 待機の指定を持ち込んだ回の扱いが違う（rc=${_ff_guard_rc}） out=[${_ff_guard_out}] err=[${_ff_guard_err_text}]"
+fi
+case $'\n'"$_ff_guard_out"$'\n' in
+  *$'\n''ISOLATED_ENV=wait:unset nested:1 wait-dir:private'$'\n'*)
+    ok "52-E: 内側の実行は、待機の指定なし・入れ子・私有の待機領域の環境を受け継ぐ（隔離の 3 行のどれを落としても赤）"
+    ;;
+  *)
+    bad "52-E: 内側の実行が受け継ぐ環境が違う out=[${_ff_guard_out}]"
+    ;;
+esac
 # 変異コピーは dirname から run-all.sh と鮮度ヘルパを探す。一時ディレクトリ直下に置くと
-# その探索が /tmp/run-all.sh になり、ガードより前の針で rc 1 になる。実ファイルと同じ
+# その探索が /tmp/run-all.sh になり、隔離より前の針で rc 1 になる。実ファイルと同じ
 # 相対配置（tests/run-all/verify.sh の隣に run-all.sh）へ置く。
 _ff_guard_tree="$RUN_WORK/guard-tree"
 mkdir -p "$_ff_guard_tree/run-all" "$_ff_guard_tree/lib"
 ln -s "$RUNNER" "$_ff_guard_tree/run-all.sh"
 ln -s "$STALE_HELPER" "$_ff_guard_tree/lib/stale-base.sh"
 _ff_guard_mut="$_ff_guard_tree/run-all/verify.sh"
-awk '
-  /^ff_verify_concurrency_guard\(\)/ { in_fn = 1 }
-  in_fn && /^}/ { in_fn = 0 }
-  in_fn && /^[[:space:]]*exit 2[[:space:]]*$/ { print "  :"; next }
+# 変異: 置いた ps の絞り込みを外す（系譜の外の行もそのまま返す）。隔離した後の観測に別のゲートが
+# 残るので、隔離の成立を確かめる検査が rc 2 で名指しする — 絞り込みが効いていない 52-A は赤になる。
+_ff_guard_needle='    for (i = 1; i <= n; i++) if (pid[i] in keep) print row[pid[i]]'
+awk -v needle="$_ff_guard_needle" '
+  $0 == needle { print "    for (i = 1; i <= n; i++) print row[pid[i]]"; next }
   { print }
 ' "$SCRIPT_DIR/verify.sh" >"$_ff_guard_mut"
-ff_guard_invoke "$_ff_guard_mut" independent
-if [ "$_ff_guard_rc" -eq 0 ] \
-  && case "$_ff_guard_out" in *GUARD_PASSED*) true ;; *) false ;; esac \
-  && case "$_ff_guard_err_text" in *"4194303:/x/run-all.sh"*) true ;; *) false ;; esac; then
-  ok "52-D: シェルの exit 2 だけを外すと並走を名指したままガードの後まで進む（その変異は 52-A が赤にする）"
+if [ "$(grep -cxF -- "$_ff_guard_needle" "$SCRIPT_DIR/verify.sh")" -eq 1 ] \
+  && [ "$(grep -cxF -- "$_ff_guard_needle" "$_ff_guard_mut")" -eq 0 ]; then
+  ff_guard_invoke "$_ff_guard_mut" independent
+  if [ "$_ff_guard_rc" -eq 2 ] \
+    && case "$_ff_guard_err_text" in *"観測の隔離が成立していません"*) true ;; *) false ;; esac \
+    && case "$_ff_guard_err_text" in *"4194303:/x/run-all.sh"*) true ;; *) false ;; esac \
+    && case "$_ff_guard_out" in *GUARD_PASSED*) false ;; *) true ;; esac; then
+    ok "52-D: 置いた ps の絞り込みを外すと、隔離した後も別のゲートが見えて rc 2 で名指しする（その変異は 52-A が赤にする）"
+  else
+    bad "52-D: 絞り込みを外した変異を検出できない（rc=${_ff_guard_rc}） out=[${_ff_guard_out}] err=[${_ff_guard_err_text}]"
+  fi
 else
-  bad "52-D: exit 2 の除去を検出できない（rc=${_ff_guard_rc}） out=[${_ff_guard_out}] err=[${_ff_guard_err_text}]"
+  bad "52-D: 絞り込みの行を変異できない（verify.sh の該当行が 1 行ではないか、置換が当たっていない。検査が空振りしている）"
 fi
 
 # ランナーを引数付きで実行し、出力と終了コードを記録する。
@@ -508,11 +548,11 @@ run_runner() {
     return 0
   fi
   if [ "${RUN_FAST:-0}" = "1" ]; then
-    if RUN_OUT="$(env -u FF_RUN_ALL_FULL -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_DIR -u FF_RUN_ALL_WAIT_POLL_INTERVAL FF_RUN_ALL_FAST=1 FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+    if RUN_OUT="$(env -u FF_RUN_ALL_FULL -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_POLL_INTERVAL FF_RUN_ALL_FAST=1 FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
   elif [ "${RUN_FULL:-0}" = "1" ]; then
-    if RUN_OUT="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_DIR -u FF_RUN_ALL_WAIT_POLL_INTERVAL FF_RUN_ALL_FULL=1 FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+    if RUN_OUT="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_POLL_INTERVAL FF_RUN_ALL_FULL=1 FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
   else
-    if RUN_OUT="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_DIR -u FF_RUN_ALL_WAIT_POLL_INTERVAL FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+    if RUN_OUT="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_POLL_INTERVAL FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
   fi
 }
 
@@ -611,9 +651,10 @@ suite_cases_source "$SCRIPT_DIR/cases" reintroduction-guards.sh
 suite_cases_source "$SCRIPT_DIR/cases" fast-mode.sh
 suite_cases_source "$SCRIPT_DIR/cases" parallel.sh
 suite_cases_source "$SCRIPT_DIR/cases" startup-guards.sh
+suite_cases_source "$SCRIPT_DIR/cases" unit-isolation.sh
 suite_cases_source "$SCRIPT_DIR/cases" cross-repo-scans.sh
 suite_cases_source "$SCRIPT_DIR/cases" execution-contracts.sh
-# 残りの 4 本は上の cases の中から同じ関数で読む（case 35・47・53）。
+# 残りの 5 本は上の cases の中から同じ関数で読む（case 35・47・53・56）。
 suite_cases_assert_all_sourced "$SCRIPT_DIR/cases"
 
 # 集約入口の契約は既存の hook 登録検査と同じ suite で実測する。

@@ -119,7 +119,7 @@ MCP: 取得値: MCP で同じ PR の state / head / base / fork / OID と merged
 - サマリーの「対象 PR のリモートブランチ」（`削除した` / `既に存在しない` / `削除していない（保護 / 要確認）`）は完了報告へそのまま引用する。`headRefOid` を取得できなかった回は削除だけをスキップし（`skipped_oid_unavailable`。Step 7 が照合済み OID で肩代わりできれば `deleted_by_leftover_retry` へ更新）、無条件の `git push origin --delete` は案内しない — `ls-remote` の OID が PR の head だと人間が確認できた場合だけ `--force-with-lease=refs/heads/<head>:<確認済みOID> :refs/heads/<head>` で消し、merge-cleanup を再実行する
 - 「スキップした削除候補」は警告文だけで判断せず `git ls-remote --heads origin <branch>` と `git branch --list` の実測で現物を確認する。設定パターンに止められた候補には、照合済み OID を lease に載せた手動削除コマンドと恒久設定の案内が付く
 - base を保持していた clean な別 worktree は同じ commit の detached で残る。worktree の削除は clean 確認後でも `.gitignore` 対象のファイル（`.env` 等）は消える
-- `/ace-curate <PR番号>` の**前に**実行する。cleanup が完了しないかぎり Git Workflow は終了していない
+- `/retrospective`（および A〜D で B / C の知見がある PR で実行する `/ace-curate <PR番号>`）の**前に**実行する。cleanup が完了しないかぎり Git Workflow は終了していない
 
 ## 安全原則（スクリプトが保証すること）
 

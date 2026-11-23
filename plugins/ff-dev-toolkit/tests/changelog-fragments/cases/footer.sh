@@ -313,8 +313,17 @@ elif [[ -z "${FF_RELEASE_GATE_HEAD:-}" && "$default_ref" != origin/* ]]; then
 # が CI について既に採っている形と同じ。workflow 側が既定ブランチ checkout の回にその ref を
 # checkout SHA へ固定する）。ローカルは従来どおり fetch して最新の base で判定する —
 # 作業者には rebase という対処があるので、古い base で緑を出す方が有害。
+# 本リポジトリの実 origin へ fetch する live 判定だけ、ランナーの git 設定隔離から
+# 起動元の GIT_CONFIG_GLOBAL / GIT_CONFIG_NOSYSTEM を復元して credential.helper を活かし、
+# 未認証時の対話プロンプト待ちは GIT_TERMINAL_PROMPT=0 で抑止する。
 elif [[ -z "${FF_RELEASE_GATE_HEAD:-}" && "$FF_AMBIENT_GITHUB_ACTIONS" != true ]] \
-  && ! git -C "$REPO_ROOT" fetch origin "+refs/heads/${default_ref#origin/}:refs/remotes/origin/${default_ref#origin/}" >/dev/null 2>&1; then
+  && ! (
+    if [[ "${FF_ORIG_GIT_CONFIG_SAVED:-0}" == "1" ]]; then
+      if [[ "${FF_ORIG_GIT_CONFIG_GLOBAL_SET:-0}" == "1" ]]; then export GIT_CONFIG_GLOBAL="${FF_ORIG_GIT_CONFIG_GLOBAL-}"; else unset GIT_CONFIG_GLOBAL; fi
+      if [[ "${FF_ORIG_GIT_CONFIG_NOSYSTEM_SET:-0}" == "1" ]]; then export GIT_CONFIG_NOSYSTEM="${FF_ORIG_GIT_CONFIG_NOSYSTEM-}"; else unset GIT_CONFIG_NOSYSTEM; fi
+    fi
+    GIT_TERMINAL_PROMPT=0 git -C "$REPO_ROOT" fetch origin "+refs/heads/${default_ref#origin/}:refs/remotes/origin/${default_ref#origin/}"
+  ) >/dev/null 2>&1; then
   bad "共有 CHANGELOG 判定前に latest default branch を fetch できない"
 elif ! git -C "$REPO_ROOT" rev-parse --verify "${default_ref}^{commit}" >/dev/null 2>&1; then
   bad "共有 CHANGELOG 判定の default branch を解決できない"

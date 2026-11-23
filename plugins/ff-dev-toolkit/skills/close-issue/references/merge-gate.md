@@ -83,13 +83,13 @@ script は対象 PR に checks が登録されているかを先に確認しま�
 <!--3ae6c2b42c6221d0-->
 MCP: 取得値: MCP の同じ PR の title/body/全 commits/closingIssuesReferences/statusCheckRollup と全 threads。形式: 完全 raw JSON と checks-retry attempt / after-checks cursor / 別取得 after-threads。渡し先: finish.sh precheck --github-input /absolute/index.json の同じ実行へ渡す。checks 取得不能を [] にしない。不足時: MCP 必須不足は operation / field / page を示して停止。
 
-- `statusCheckRollup` が**非空**の場合（PR トリガーの CI がある既定の形）は、全 checks の完了と成功を確認してからマージへ進みます。`--watch --fail-fast` で完了を待ち、非 0 なら checks の実値を読み直します。失敗した check があれば `CHECKS=failed` + rc 1 で止め、名前を示します（マージへ進まない）。**checks の成功がマージの根拠で、ローカルの全件ゲートはリリース前（タグ / Release の作成前）と契約面の変更時に限ります** — 通常の PR のローカル検証は部分ゲート（プロジェクトが変更ベースの選択を持つならその実行）で足ります
+- `statusCheckRollup` が**非空**の場合（PR トリガーの CI がある既定の形）は、全 checks の完了と成功を確認してからマージへ進みます。`--watch --fail-fast` で完了を待ち、非 0 なら checks の実値を読み直します。失敗した check があれば `CHECKS=failed` + rc 1 で止め、名前を示します（マージへ進まない）。**checks の成功がマージの根拠で、ローカルの全件ゲートはリリース前（タグ / Release の作成前）と実行基盤の契約面の変更時に限ります** — 通常の PR のローカル検証は部分ゲート（プロジェクトが変更ベースの選択を持つならその実行）で足ります
 - `statusCheckRollup` が**空配列**（`null` も同じ扱い）の場合（PR トリガーの CI を持たないリポジトリ）、checks の完了を待たずに次へ進み、`CHECKS_REPORT` の文言（「この PR に登録された checks は無い。マージ可否はローカル全件ゲート + 鮮度照合で判定する」）をそのまま手順 8 の完了報告へ明記します。マージ可否はローカル全件ゲートの実行結果と鮮度照合だけを根拠にします
 - `gh pr view` 自体が失敗した場合は、分岐を決められない＝検査が成立していないため停止します（取得失敗を「checks 無し」へ倒さない）
 - `gh pr checks` の非 0 は check の失敗だけでなく通信・認証エラーでも返ります。失敗した check がなく未完了なら上限 3 回まで再待機し、checks の成否を確定できないまま上限に達したら `CHECKS=unavailable` + rc 2 で止めます。通信エラーだけを check の失敗として扱いません
 - checks の待機を挟むので、script は照合直前に PR を読み直し、判定に使った全フィールド（先端・本文・タイトル・コミット・`closingIssuesReferences`・ファイル・checks の有無ほか）を初回と比べます。差があれば `PR_SNAPSHOT=changed` と `PR_SNAPSHOT_DIFF`（差のあるフィールド名）を出して rc 1 で止まるので、`finish.sh precheck` を**最初から**再実行します（途中の出力を流用しない — 待機中に足された `Refs` や改題は初回の抵触検査を通っていない）
 
-<!--17bbc11ad1f7efc8-->
+<!--1d201ec5dc94012e-->
 MCP: 取得値: MCP の同じ PR の title/body/全 commits/closingIssuesReferences/statusCheckRollup と全 threads。形式: 完全 raw JSON と checks-retry attempt / after-checks cursor / 別取得 after-threads。渡し先: finish.sh precheck --github-input /absolute/index.json の同じ実行へ渡す。checks 取得不能を [] にしない。不足時: MCP 必須不足は operation / field / page を示して停止。
 
 #### ゲート実測鮮度そのものの照合
@@ -116,7 +116,7 @@ MCP: 取得値: MCP の同じ PR の title/body/全 commits/closingIssuesReferen
 
 別の checkout（Windows の作業機なら WSL の clone）で全件ゲートを回した回は、`finish.sh precheck <PR番号> --gate-record <その clone の記録のパス>` で記録を明示する。明示した記録に限ってブランチ照合を外し、一致は「`COMMIT` が `headRefOid` と同じ・`STATUS=pass`・`DIRTY=no`・そのコミットが手元に実在」のときだけになる（`COMMIT` が食い違えば `FRESH_STATUS=1` で止まる。読めないパスは rc 2 で名指しして止まり、既定の記録へは戻らない）。記録は WSL 側の `git rev-parse --absolute-git-dir` の下の `ff-dev-toolkit/gate-record` にあり、Git Bash からは `//wsl.localhost/<distro>/home/...` の形で渡す。
 
-鮮度照合が判定不能（`FRESH_STATUS=2`）で、かつ `FRESH_REASON` が「汚れた木で測った / 記録が無い / 記録が部分実行である」のいずれかなら（`RERUN_FULL_GATE=yes`）、clean な作業ツリーで全件ゲートを再実行してから改めて照合します（記録の仕組みを持たないプロジェクトではこの限りではなく、2 でマージを止めない既存規定も変わりません）。**ただし `FRESH_REASON` が「記録が部分実行である」で、かつ checks が非空で全件成功した回に限り、リリース前と契約面の変更時を除き再実行しません**（`RERUN_FULL_GATE=no`） — PR の checks がリモート先端（base へのマージ結果）を実測しており、部分ゲートの記録で判定不能になるのは想定どおりだからです。印（`COVERS_DIFF`）が現在の PR の base と一致する部分実行も、checks が空でも `RERUN_FULL_GATE=no` にする（理由に「導入先の判定で差分を覆っている」と出る。照合そのものは exit 2 のまま。印が無い、または base が違う回は、checks が空なら従来どおり `yes`）。「汚れた木で測った / 記録が無い」は checks が成功していても従来どおり全件ゲートを再実行します（checks がローカルの検証スイートを回しているとは限らないため）。head が一致する `STATUS=unverified` は `RERUN_FULL_GATE=see-action` で、理由は「環境起因で未確認」とステップ名、案内は環境を直すか未確認のステップを PR 本文に記録して判断することで、再実行は案内しない（汚れた木・別ブランチの記録は、その前に判定不能として止まる）。head が違えば不一致（exit 1）として止める。それ以外の理由は `RERUN_FULL_GATE=see-action`（`FRESH_ACTION` に従う）。
+鮮度照合が判定不能（`FRESH_STATUS=2`）で、かつ `FRESH_REASON` が「汚れた木で測った / 記録が無い / 記録が部分実行である」のいずれかなら（`RERUN_FULL_GATE=yes`）、clean な作業ツリーで全件ゲートを再実行してから改めて照合します（記録の仕組みを持たないプロジェクトではこの限りではなく、2 でマージを止めない既存規定も変わりません）。**ただし `FRESH_REASON` が「記録が部分実行である」で、かつ checks が非空で全件成功した回に限り、リリース前と実行基盤の契約面の変更時を除き再実行しません**（`RERUN_FULL_GATE=no`） — PR の checks がリモート先端（base へのマージ結果）を実測しており、部分ゲートの記録で判定不能になるのは想定どおりだからです。印（`COVERS_DIFF`）が現在の PR の base と一致する部分実行も、checks が空でも `RERUN_FULL_GATE=no` にする（理由に「導入先の判定で差分を覆っている」と出る。照合そのものは exit 2 のまま。印が無い、または base が違う回は、checks が空なら従来どおり `yes`）。「汚れた木で測った / 記録が無い」は checks が成功していても従来どおり全件ゲートを再実行します（checks がローカルの検証スイートを回しているとは限らないため）。head が一致する `STATUS=unverified` は `RERUN_FULL_GATE=see-action` で、理由は「環境起因で未確認」とステップ名、案内は環境を直すか未確認のステップを PR 本文に記録して判断することで、再実行は案内しない（汚れた木・別ブランチの記録は、その前に判定不能として止まる）。head が違えば不一致（exit 1）として止める。それ以外の理由は `RERUN_FULL_GATE=see-action`（`FRESH_ACTION` に従う）。
 
 未達 AC の修正ループで fix commit を push した場合、修正前の記録とは不一致になる。**ゲートを回し直してから**マージへ進む。
 
@@ -131,7 +131,7 @@ gh 経路の生成コマンドは書き写さず、単独の Bash 呼び出し�
 <!--1ec7a8de75f94844-->
 MCP: 取得値: MCP の同じ最終 headRefOid と元 subject/body。形式: 既存 merge_pull_request の6引数。渡し先: TARGET_REPO/PR/head/MERGE_METHOD/元subject/元body を直接渡し fresh merged/state 後読。shell parse 禁止。不足時: MCP 必須不足は operation / field / page を示して停止。
 
-Closes 対象の Issue 本文に未チェックの `- [ ]` が残る回は `PRECHECK=blocked`（rc 1）で merge コマンドを出さない。見るのは行頭の空白のあとの `- [ ]` だけで、`* [ ]`、三連のバッククォートまたは `~~~` のフェンス、HTML コメントの中は数えない。対象は Closes 群の本文だけ（Refs 群は取得しない）。各行は `AC_UNCHECKED=` に残し、`AC_UNCHECKED_COUNT` を出す。取得失敗は未チェック 0 件と読まず rc 2。`--ack-unchecked` は繰り返し指定でき、`owner/repo#N`、`#N`、数値、Issue の URL を対象リポジトリの小文字 `owner/repo#N` へ揃えて `AC_ACKED=` を出す。ack した対象は止めないが、未チェック行は隠さない。別 Issue の ack は対象を消さない。先に keyword 抵触などで止まっている回は、その停止理由を上書きしない。
+Closes 対象の Issue 本文に未チェックの `- [ ]` が残る回は `PRECHECK=blocked`（rc 1）で merge コマンドを出さない。見るのは行頭の空白のあとの `- [ ]` だけで、`* [ ]`、三連のバッククォートまたは `~~~` のフェンス、HTML コメントの中は数えない。対象は Closes 群の本文だけ（Refs 群は取得しない）。各行は `AC_UNCHECKED=` に残し、`AC_UNCHECKED_COUNT` を出す。取得失敗は未チェック 0 件と読まず rc 2。`--ack-unchecked` は繰り返し指定でき、`owner/repo#N`、`#N`、数値、Issue の URL を対象リポジトリの小文字 `owner/repo#N` へ揃えて `AC_ACKED=` を出す。ack した対象は止めないが、未チェック行は隠さない。別 Issue の ack は対象を消さない。先に keyword 抵触などで止まっている回は、その停止理由を上書きせず併記する。Closes 対象があれば停止の有無に関わらず `EFFORT_ACTUAL_MISSING_COUNT=`（0 を含む）を出し、整った `ff-effort` ブロックの `effort_ai_actual` が空・欠落・`(未記入)` の対象があれば `EFFORT_ACTUAL_MISSING=` を出す。未チェックで止まる回に未記入対象が 1 件以上あれば、同じ停止で各対象 Issue ごとに未チェックと `effort_ai_actual` を 1 回の本文編集でまとめ全対象を直してから再実行するよう案内する。ブロックが無い対象と書式不正のブロックは未記入に数えず、未チェックが 0 件または全未チェックが ack 済みで実績だけが未記入の回は、この理由では止めない。
 
 <a id="post-merge-gate"></a>
 
@@ -177,6 +177,29 @@ Closes 対象の Issue 本文に未チェックの `- [ ]` が残る回は `PREC
 「対象外」「未実施」「実施しない」「を実施する」「実施予定」と、`REVIEW_SECURITY_REPORT_LINE` を貼っただけの「… を実行する（…）」は結果の無い行なので数えない。変更ファイルを読めない・変更が 0 件・設定を読めない・ルータが判定行を返さない回は該当なしへ倒さず `SECURITY_SENSITIVE=unknown` と `SECURITY_UNKNOWN_REASON=` を出して記録を求める（`off` の回も理由は出す）。根拠の path は `SECURITY_EVIDENCE=` に出す。先に別の停止理由があれば、記録の欠落は「／さらに」で併記する。
 
 止まったら、主担当の専用セキュリティゲートを実行して結果の行を本文に書く。実行できない回と、glob の誤検知と判断した回は「専用セキュリティゲート: 未確認（<理由>）」を書く（逃げ道の ack は持たない。理由が PR に残ることが記録の目的）。API の一覧が切れていて git の差分も読めなかった回は、案内の `git fetch origin <base> <head>` で取り込めば分類できる。導入先として専用ゲート自体を使わない場合は `review.security_review: "off"` を設定する。設定ファイルを読むには yq が要るので、yq の無い環境では環境変数 `MULTI_AGENT_SECURITY_REVIEW=off` を使う（yq が無いまま設定ファイルに書くと、読めない設定として全 PR が `unknown` で止まる）。
+
+**PR 作成前の事前確認（`finish.sh security-record`）**: PR 番号がまだ無い段階（本文チェックの CI や `pr:check-body` スクリプトなど）でも、同じ判定を呼べる。GitHub への問い合わせも `jq` も要らず、`--base`（省略時は `WORKFLOW_TIER_BASE` → `origin/HEAD` → `origin/develop`）からの git 差分（`<base>...HEAD`）と本文ファイルから precheck と同じ関数で `SECURITY_RECORD_GATE=` を出力する。分類できない回（差分を読めない・変更 0 件・設定を読めない）も precheck と同じく `SECURITY_SENSITIVE=unknown` として記録を求める。
+
+```bash
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" security-record --body-file <PR本文ファイル> [--base <比較元ref>]
+```
+
+終了コードは `0`（`recorded` / `not-required` / `off`）、`1`（`missing`。理由と書き方の案内を stderr へ出力）、`2`（引数の誤り・本文ファイル不在・不正な `--base`・git リポジトリ外などの判定不能）。変更ファイルの取得には `precheck` の git 差分経路および `review-route.sh --git` と同じ `git diff --no-renames` を使う（移動元のセキュリティ対象パスを見逃さない安全側。同一の変更ファイル一覧と本文に対して `precheck` と同じ関数で判定するため必ず一致する。なお GitHub API の `files` は移動元パスを返さないため、100 件未満の API 経路とはリネーム元パスの扱いにのみ差がある）。
+
+<a id="cross-model-reprobe-gate"></a>
+
+**クロスモデルレビュー未実施時の再プローブ記録**: PR 本文に cross-model 未実施の記録（可視行の `REVIEW_INFRA_FAILURE`、または `cross-model 未実施` / `cross-model レビュー: 未実施` / `クロスモデルレビュー（…）: 未実施` / `クロスモデル未実施` 等。コードフェンス・HTML コメント・引用行 `>`・リスト内引用 `- >` は数えない）がある PR は、マージ直前の precheck で再プローブの記録行と鮮度を確かめる。未実施の記録が無い PR（対象外）では、stdout にも stderr にも 1 行も出さず従来どおり進む。
+
+| `CROSS_MODEL_REPROBE_GATE` | 条件 | 止めるか |
+| --- | --- | --- |
+| （出力なし） | PR 本文に cross-model 未実施の記録が無い | 止めない |
+| `fresh` | 行頭 `再プローブ:` の有効な記録行があり、最新の記録時刻が PR の head コミット時刻より新しい | 止めない |
+| `missing` | 未実施の記録があるが、行頭 `再プローブ:` の記録行が無い | `PRECHECK=blocked`（rc 1） |
+| `invalid` | 行頭 `再プローブ:` の行はあるが、`PREFLIGHT=<verdict>` またはタイムゾーン付き時刻を解釈できない | `PRECHECK=blocked`（rc 1） |
+| `stale` | 最新の再プローブ時刻が PR の head コミット時刻以下（古い、または同一秒） | `PRECHECK=blocked`（rc 1） |
+| `unknown` | 有効な再プローブ行はあるが、PR の head コミット時刻を取得できず鮮度を照合できない | `PRECHECK=blocked`（rc 1） |
+
+一致した未実施行は `CROSS_MODEL_SKIP_RECORD=`、採用した再プローブ行は `CROSS_MODEL_REPROBE_RECORD=` に出す。再プローブの記録行として認めるのは、フェンス・HTML コメント・引用行（`>` / リスト内引用）の外で、行頭（字下げ・リスト記号・番号・強調の後）が `再プローブ:`（または `再プローブ：`、太字内コロン `**再プローブ:**` も可）で始まり、`PREFLIGHT=<verdict>` と括弧内（全角 `（...）` または半角 `(...)`）のタイムゾーン付き ISO 8601 時刻（`Z` / `UTC` / `JST` / `±HH:MM` / `±HHMM` 必須。例: `再プローブ: PREFLIGHT=failed（2026-11-20T12:34:56Z）`）を含む行である。複数行ある場合は最も新しい時刻の行を採用する。タイムゾーン無しの時刻やプレースホルダ（`<verdict>` / `<時刻>`）は認めない。本検査は記録の有無と PR の head コミット（committer 時刻）に対する鮮度のみを機械判定し、verdict 文字列による分岐や SHA 照合は行わない。再プローブの実行コマンド自体は導入先ごとに異なるため、止まったら導入先の文書にある再プローブ手順で最新の head に対して再確認し、ok なら cross-model レビューを実施してからマージ、依然として失敗なら新しい時刻の再プローブ記録行を PR 本文へ追記してから `finish.sh precheck` を再実行する。先に別の停止理由があれば「／さらに」で併記する。
 
 `FF_MERGE_DELETE_SEPARATE` が未設定または `0` のときは上の削除判定のまま。`1` のときは worktree の一覧を見ず、`DELETE_BRANCH_MODE=separate-consumer` と `DELETE_BRANCH_NOTE` を出し、`MERGE_COMMAND` は `gh pr merge` だけにする（`--delete-branch` も削除の尾もフック回避の代入も付けない）。それ以外の値（空文字を含む）は PR を読む前に rc 2。
 

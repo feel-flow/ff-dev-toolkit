@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: verify-gate の fixture で不一致のホスト実体・symlink の scripts を渡すと pnpm 起動前に exit 2。fixture を空にしても完了マーカー不在で赤。
 # 空振り検出: record-gate-head.sh のsource不在は検査対象不在を名指ししてrc1（2026-10-23 macOS実測）。
 # 空振り検出: 未追跡表示の明示を本判定だけ外す変異は4件赤、失敗診断だけ外す変異は1件赤。常時dirtyは48件赤、記録器を同名の空ファイルへ替えると119件赤。各bash-n rc0、無変異288件緑（2026-10-23 macOS実測）。
 # 空振り検出: 共有生成器の実呼出しを抽出したfocused針は旧針0/1→新針1/0。第三引数REMOTE_HEADだけをLOCAL_HEADへ変える単独変異・呼出し不在（:へ置換）・同名空対象は各0/1で赤、対象コピーは全bash-n rc0（2026-10-22 macOS実測）。
@@ -44,6 +45,7 @@
 # 依存は POSIX ユーティリティ + `git` + `mktemp`。どちらかが無い環境では suite 全体を
 # 行頭 `○ skip` + exit 0 で飛ばす（部分 skip はランナーの契約に抵触する）。本 suite は
 # run-all.sh の REQUIRED_SUITES に載っているので、その skip は明示許可が要る。
+# 品質ゲートスキルの fixture はプラグインの必須依存 Perl を追加で使う。
 #
 # 使い方: bash plugins/ff-dev-toolkit/tests/merge-freshness/verify.sh
 
@@ -1223,7 +1225,7 @@ chmod +x "$PSEUDO_DIR/verify.sh"
 PSEUDO_RECORD="$WORK/pseudo-record"
 rm -f "$PSEUDO_RECORD"
 RC=0
-FF_GATE_RECORD_FILE="$PSEUDO_RECORD" bash "$RUNNER" "$PSEUDO_DIR/verify.sh" >/dev/null 2>&1 || RC=$?
+FF_DEV_TOOLKIT_STATE_DIR="$WORK/state" FF_GATE_RECORD_FILE="$PSEUDO_RECORD" bash "$RUNNER" "$PSEUDO_DIR/verify.sh" >/dev/null 2>&1 || RC=$?
 if [[ "$RC" -eq 0 && -f "$PSEUDO_RECORD" ]]; then
   ok "明示引数の実行はランナー本体からも記録される"
   contains "$PSEUDO_RECORD" "STATUS=partial" "ランナー本体でも明示引数の緑は partial（名指しした suite だけの結果をマージの根拠にしない）"
@@ -1363,6 +1365,14 @@ else
 fi
 
 # =============================================================================
+if gate_skill_result="$(bash "$SCRIPT_DIR/project-verify-gate.sh" 2>&1)" &&
+   [[ "$gate_skill_result" == *'Project quality gate handoff checks passed.'* ]]; then
+  ok "品質ゲートスキルの実体の受け渡しと失効時停止"
+else
+  printf '%s\n' "$gate_skill_result" >&2
+  bad "品質ゲートスキルの実体の受け渡しと失効時停止"
+fi
+
 if [[ "$FAIL" -ne 0 ]]; then
   echo "✗ merge-freshness: ${FAIL} 件失敗（pass ${PASS} 件）" >&2
   exit 1

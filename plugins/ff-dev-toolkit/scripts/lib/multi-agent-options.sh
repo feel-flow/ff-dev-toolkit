@@ -620,22 +620,38 @@ parse_args() {
         shift ;;
       --allow-html-entities) ALLOW_HTML_ENTITIES=true; shift ;;
       --extract-subagent-response)
+        if [[ -n "$EXTRACT_SUBAGENT_RESPONSE" ]]; then
+          echo "ERROR: --extract-subagent-response may be specified only once." >&2
+          exit 2
+        fi
         if [[ $# -lt 2 || -z "${2:-}" || "${2:-}" == -* ]]; then
           echo "ERROR: --extract-subagent-response requires a <transcript.jsonl> path (use ./path if the filename begins with '-')." >&2
           exit 2
         fi
         EXTRACT_MODE=true; EXTRACT_SUBAGENT_RESPONSE="$2"; shift 2 ;;
       --extract-subagent-response=*)
+        if [[ -n "$EXTRACT_SUBAGENT_RESPONSE" ]]; then
+          echo "ERROR: --extract-subagent-response may be specified only once." >&2
+          exit 2
+        fi
         EXTRACT_MODE=true; EXTRACT_SUBAGENT_RESPONSE="${1#--extract-subagent-response=}"
         [[ -n "$EXTRACT_SUBAGENT_RESPONSE" ]] || { echo "ERROR: --extract-subagent-response requires a <transcript.jsonl> path." >&2; exit 2; }
         shift ;;
       --output-file)
+        if [[ -n "$EXTRACT_OUTPUT_FILE" ]]; then
+          echo "ERROR: --output-file may be specified only once." >&2
+          exit 2
+        fi
         if [[ $# -lt 2 || -z "${2:-}" || "${2:-}" == -* ]]; then
           echo "ERROR: --output-file requires a path (use ./path if the filename begins with '-')." >&2
           exit 2
         fi
         EXTRACT_MODE=true; EXTRACT_OUTPUT_FILE="$2"; shift 2 ;;
       --output-file=*)
+        if [[ -n "$EXTRACT_OUTPUT_FILE" ]]; then
+          echo "ERROR: --output-file may be specified only once." >&2
+          exit 2
+        fi
         EXTRACT_MODE=true; EXTRACT_OUTPUT_FILE="${1#--output-file=}"
         [[ -n "$EXTRACT_OUTPUT_FILE" ]] || { echo "ERROR: --output-file requires a path." >&2; exit 2; }
         shift ;;

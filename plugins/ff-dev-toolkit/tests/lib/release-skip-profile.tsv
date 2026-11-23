@@ -160,3 +160,4 @@ ln -s が symlink を作らない環境（Windows の Git Bash で MSYS=winsymli
 repository docs/06-reference/DECISIONS.md が無い checkout のため ADR 相互照合のみ対象外（配布先 checkout。SKILL 側の針と実体 pin は上で実行済み）	stop	stop	stop
 リポジトリ直下の scripts/ が無い公開 checkout のため changelog 断片検査（F 系）をスキップ（除外集合の真実源 scripts/check-release-required.sh / scripts/release-dev-toolkit.sh は SSOT 限定。この節の検査は 1 件も実行していません）	stop	stop	stop
 node が無いため MCP stdio 疎通は未検査	stop	stop	stop
+timeout / gtimeout 不在のため時間切れ境界は未検証	stop	stop	stop	plugins/ff-dev-toolkit/tests/guard-issue-assign/verify.sh

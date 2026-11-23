@@ -596,7 +596,7 @@ if [[ "$MEASURED" == "$REMOTE_HEAD" ]]; then
     if is_sha40 "${RECORD_COVERS_DIFF:-}" && [[ -n "$BASE_OID" && "$BASE_OID" == "$RECORD_COVERS_DIFF" ]]; then
       printf 'DIFF_COVERED=yes\n'
       undetermined "記録は部分実行です（名指しした suite だけを実行した記録で、ゲートの既定一覧は回っていません）。導入先の判定で差分を覆っている。検証済み: ${RECORD_SUITES:-（suite 名の記録なし）} / ゲート: ${RECORD_GATE:-不明} / モード: ${RECORD_MODE:-不明} / 実測: ${RECORD_AT:-時刻不明}" \
-                   "導入先の判定で差分を覆っているため、ゲートの既定一覧を回し直さなくてよい（リリース前・契約面の変更時は除く）"
+                   "導入先の判定で差分を覆っているため、ゲートの既定一覧を回し直さなくてよい（リリース前・実行基盤の契約面の変更時は除く）"
     fi
     undetermined "記録は部分実行です（名指しした suite だけを実行した記録で、ゲートの既定一覧は回っていません）。検証済み: ${RECORD_SUITES:-（suite 名の記録なし）} / ゲート: ${RECORD_GATE:-不明} / モード: ${RECORD_MODE:-不明} / 実測: ${RECORD_AT:-時刻不明}" \
                  "上に名指しした suite で差分の意味を検査できている変更（CHANGELOG footer の追従など）なら、このままマージしてよい。それでは足りない差分なら、ゲートの既定一覧を回して記録を更新すること"

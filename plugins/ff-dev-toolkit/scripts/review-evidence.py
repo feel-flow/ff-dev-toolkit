@@ -288,8 +288,18 @@ def main():
             raise ValueError('invalid review evidence start record')
         if record.get('producer_sha256', '') != args.producer_sha256:
             raise ValueError('review evidence producer changed between begin and finish')
-        if subject(record['subject']['base_ref'], args.output) != record['subject']:
+        try:
+            current = subject(record['subject']['base_ref'], args.output)
+        except subprocess.CalledProcessError:
             raise ValueError('repository changed during review')
+        for key in ('root', 'branch', 'base_ref', 'head', 'remotes', 'diff'):
+            if current[key] != record['subject'][key]:
+                raise ValueError('repository changed during review')
+        if not base_advance_ok(record['subject'], current['base']):
+            raise ValueError('repository changed during review')
+        if current['base'] != record['subject']['base']:
+            # Keep the start-time base in the receipt; verify applies the same ancestor + fixed-diff rule.
+            print('base advanced, diff unchanged', file=sys.stderr)
         rows = [row.split('\t') for row in Path(args.results).read_text(encoding='utf-8').splitlines()]
         if any(len(row) != 2 for row in rows) or len({row[0] for row in rows}) != len(rows):
             raise ValueError('invalid/duplicate task result')

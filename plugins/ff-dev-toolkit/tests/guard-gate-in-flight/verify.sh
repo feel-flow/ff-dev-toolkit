@@ -4,6 +4,7 @@
 #
 # 空振り検出: mutation-harness で 5 件すべて detected・SURVIVED 0・未変異対照 88 件 pass（edit-live-bypass=13 fail / bash-git-write-bypass=4 fail / dead-pid-no-reclaim=rc1 / symlink-deleted=2 fail / missing-lib-fail-open=1 fail）。
 # 空振り検出: G8（別 detach worktree での baseline 実行中は元ツリーを凍結しない）は mutation-harness で 2 変異すべて detected（g8-edit-common-dir-leak=17 fail / g8-bash-collapse-protect-trees=13 fail、SURVIVED 0、対照 98 件 pass、2026-11-21 実測）。
+# 空振り検出: G9（worktree 22 本環境での高速判定・プロセス抑止・symlink 非スキップ・サブディレクトリ symlink フォールバック、Issue `#2918` / `#2954`）は隔離コピーでの 3 変異すべて検出（g9-symlink-skip-leak=1 fail / g9-no-dotgit-cache=1 fail / g9-no-symlink-fallback=1 fail、対照 112 件 pass、2026-11-22 macOS 実測）。
 #
 # run-all-required: no — jq / git 不在での skip を許容する
 
@@ -228,7 +229,7 @@ expect_deny "G2: ツリー外から tracked.sh への symlink Write を deny" \
 rm -f "$OUTSIDE/escape.sh"
 
 ff_gate_marker_remove "$MARKER_FILE"
-sleep 30 &
+sleep 300 &
 LIVE_PID=$!
 SL_PIDS="$SL_PIDS $LIVE_PID"
 LIVE_START="$(ff_gate_ps_lstart "$LIVE_PID" || true)"
@@ -472,13 +473,13 @@ fi
 echo
 echo "== G8: 別 detach worktree の baseline 走行中は元ツリーでの修正と commit を止めない =="
 # 本ケースは hook 層（Edit/Write/Bash/git commit）が元ツリーを凍結しないことの実測。
-# .sh 修正時の /pre-commit-check が呼ぶ tests/run-all/verify.sh の自動待機は run-all/verify.sh case 55-I で測る。
+# .sh 修正時の /pre-commit-check が呼ぶ tests/run-all/verify.sh は baseline を待たない（ゲート間の排他へ参加しない。run-all/verify.sh の case 52 / 55-I / 55-P）。
 BWT="$WORK/baseline-wt"
 if git -C "$R1" worktree add -q --detach "$BWT" HEAD >/dev/null 2>&1; then
   BWT_GD="$(git -C "$BWT" rev-parse --absolute-git-dir)"
   BWT_MDIR="$(ff_gate_marker_dir "$BWT_GD")"
   mkdir -p "$BWT_MDIR"
-  sleep 30 &
+  sleep 300 &
   BWT_PID=$!
   SL_PIDS="$SL_PIDS $BWT_PID"
   BWT_START="$(ff_gate_ps_lstart "$BWT_PID" || true)"
@@ -520,6 +521,192 @@ if git -C "$R1" worktree add -q --detach "$BWT" HEAD >/dev/null 2>&1; then
   fi
 else
   bad "G8: 別 detach worktree を作成できない"
+fi
+
+echo
+echo "== G9: worktree 多数（22 本）環境での高速判定・プロセス抑止・fail-closed 維持 =="
+G9_REPO="$WORK/g9-repo"
+ff_git_fixture_init "$G9_REPO" "gate-g9" "gate-g9@example.invalid"
+git -C "$G9_REPO" symbolic-ref HEAD refs/heads/main
+printf '#!/usr/bin/env bash\necho g9\n' > "$G9_REPO/app.sh"
+mkdir -p "$G9_REPO/docs/sub" "$G9_REPO/scripts"
+printf 'doc\n' > "$G9_REPO/docs/sub/a.md"
+git -C "$G9_REPO" add -A
+git -C "$G9_REPO" commit -qm "g9 init"
+
+_g9_wt_ok=1
+_g9_i=1
+while [ "$_g9_i" -le 22 ]; do
+  _g9_wt="$WORK/g9-wt-${_g9_i}"
+  if ! git -C "$G9_REPO" worktree add -q --detach "$_g9_wt" HEAD >/dev/null 2>&1; then
+    _g9_wt_ok=0
+    break
+  fi
+  _g9_i=$((_g9_i + 1))
+done
+
+if [ "$_g9_wt_ok" -eq 1 ]; then
+  G9_WT1="$WORK/g9-wt-1"
+  G9_WT2="$WORK/g9-wt-2"
+  G9_WT15="$WORK/g9-wt-15"
+  G9_WT1_GD="$(git -C "$G9_WT1" rev-parse --absolute-git-dir)"
+  G9_WT1_MDIR="$(ff_gate_marker_dir "$G9_WT1_GD")"
+  mkdir -p "$G9_WT1_MDIR"
+  sleep 300 &
+  G9_PID=$!
+  SL_PIDS="$SL_PIDS $G9_PID"
+  G9_START="$(ff_gate_ps_lstart "$G9_PID" || true)"
+  [ -n "$G9_START" ] || { bad "G9: sleeper の lstart を取得できない"; exit 1; }
+  G9_MARKER="$G9_WT1_MDIR/$G9_PID"
+  printf '%s\n' "$G9_START" > "$G9_MARKER"
+  printf 'label=tests/run-all.sh\ntree=%s\n' "$G9_WT1" > "${G9_MARKER}.meta"
+
+  G9_BIN="$WORK/g9-bin"
+  G9_LOG="$WORK/g9-calls.log"
+  mkdir -p "$G9_BIN"
+  _g9_real_git="$(command -v git)"
+  _g9_real_jq="$(command -v jq)"
+  cat > "$G9_BIN/git" <<WRAP
+#!/bin/sh
+printf 'git\n' >> "$G9_LOG"
+exec "$_g9_real_git" "\$@"
+WRAP
+  cat > "$G9_BIN/jq" <<WRAP
+#!/bin/sh
+printf 'jq\n' >> "$G9_LOG"
+exec "$_g9_real_jq" "\$@"
+WRAP
+  chmod +x "$G9_BIN/git" "$G9_BIN/jq"
+
+  G9_CMD="bash -n \"$G9_REPO/app.sh\" \"$G9_REPO/docs/sub/a.md\" \"$G9_REPO/scripts/missing.sh\" \"$G9_REPO/app.sh\" \"$G9_REPO/docs/sub/a.md\" \"$G9_WT2/app.sh\" \"$G9_WT2/docs/sub/a.md\" docs/sub/a.md scripts/missing.sh"
+  G9_JSON="$(mk_bash_json "$G9_REPO" "$G9_CMD")"
+  : > "$G9_LOG"
+  _g9_t0="$(date +%s)"
+  G9_OUT="$(printf '%s' "$G9_JSON" | PATH="$G9_BIN:$PATH" bash "$TARGET")"
+  G9_RC=$?
+  _g9_t1="$(date +%s)"
+  _g9_elapsed=$((_g9_t1 - _g9_t0))
+  _g9_git_cnt="$(grep -c '^git$' "$G9_LOG" 2>/dev/null || true)"
+  _g9_jq_cnt="$(grep -c '^jq$' "$G9_LOG" 2>/dev/null || true)"
+  _g9_git_cnt="${_g9_git_cnt:-0}"
+  _g9_jq_cnt="${_g9_jq_cnt:-0}"
+
+  if [ "$G9_RC" -eq 0 ] && [ -z "$G9_OUT" ]; then
+    ok "G9: worktree 22 本＋別 worktree ゲート並走中でも読み取り専用 Bash は通過"
+  else
+    bad "G9: 読み取り専用 Bash が誤停止 (rc=${G9_RC} out=${G9_OUT})"
+  fi
+  if [ "$_g9_elapsed" -lt 10 ]; then
+    ok "G9: worktree 22 本環境で判定が 10 秒未満で完了（実測 ${_g9_elapsed}s）"
+  else
+    bad "G9: worktree 22 本環境で判定が遅すぎる（実測 ${_g9_elapsed}s）"
+  fi
+  if [ "$_g9_jq_cnt" -eq 1 ]; then
+    ok "G9: 起動時の jq 呼び出しを 1 回に集約（実測 ${_g9_jq_cnt} 回）"
+  else
+    bad "G9: jq 呼び出しが 1 回でない（実測 ${_g9_jq_cnt} 回）"
+  fi
+  if [ "$_g9_git_cnt" -le 3 ]; then
+    ok "G9: 22 worktree + 9 パス候補でも git 呼び出しが線形爆発しない（実測 ${_g9_git_cnt} 回）"
+  else
+    bad "G9: git 呼び出しが多すぎる（実測 ${_g9_git_cnt} 回）"
+  fi
+
+  expect_deny "G9: 22 worktree 環境でも稼働中 worktree への Edit は deny" \
+    "$(mk_edit_json Edit "$G9_WT1" "$G9_WT1/app.sh")" 0
+  expect_deny "G9: 22 worktree 環境でも稼働中 worktree への Bash 書込は deny" \
+    "$(mk_bash_json "$G9_REPO" "echo x > \"$G9_WT1/app.sh\"")" 1
+  expect_allow "G9: 22 worktree 環境でも Bash の FF_GATE_IN_FLIGHT_ACK=1 は通過" \
+    "$(mk_bash_json "$G9_REPO" "FF_GATE_IN_FLIGHT_ACK=1 echo x > \"$G9_WT1/app.sh\"")"
+
+  # GIT_TRACE=1 が継承されても stderr 混入で fail-open しない
+  _g9_tr_e="$(GIT_TRACE=1 bash "$TARGET" < <(mk_edit_json Edit "$G9_WT1" "$G9_WT1/app.sh"))"
+  _g9_tr_b="$(GIT_TRACE=1 bash "$TARGET" < <(mk_bash_json "$G9_WT1" "echo x > app.sh"))"
+  if [ "$(printf '%s' "$_g9_tr_e" | jq -r '.hookSpecificOutput.permissionDecision // ""' 2>/dev/null || true)" = "deny" ] \
+    && [ "$(printf '%s' "$_g9_tr_b" | jq -r '.hookSpecificOutput.permissionDecision // ""' 2>/dev/null || true)" = "deny" ]; then
+    ok "G9: GIT_TRACE=1 継承下でも Edit / Bash 書き込みを fail-open させず deny"
+  else
+    bad "G9: GIT_TRACE=1 継承下で fail-open した (edit=[$_g9_tr_e] bash=[$_g9_tr_b])"
+  fi
+
+  # .claude/worktrees/ 形式の隠しディレクトリ配下でも 0-fork の .git 親探索キャッシュが効く
+  G9_DOT_WT="$WORK/.claude/worktrees/g9-dot-wt"
+  mkdir -p "$WORK/.claude/worktrees"
+  if git -C "$G9_REPO" worktree add -q --detach "$G9_DOT_WT" HEAD >/dev/null 2>&1; then
+    G9_DOT_CMD="bash -n \"$G9_DOT_WT/app.sh\" \"$G9_DOT_WT/docs/sub/a.md\" \"$G9_DOT_WT/scripts/missing.sh\" docs/sub/a.md"
+    G9_DOT_JSON="$(mk_bash_json "$G9_DOT_WT" "$G9_DOT_CMD")"
+    : > "$G9_LOG"
+    G9_DOT_OUT="$(printf '%s' "$G9_DOT_JSON" | PATH="$G9_BIN:$PATH" bash "$TARGET")"
+    G9_DOT_RC=$?
+    _g9_dot_git="$(grep -c '^git$' "$G9_LOG" 2>/dev/null || true)"
+    _g9_dot_git="${_g9_dot_git:-0}"
+    if [ "$G9_DOT_RC" -eq 0 ] && [ -z "$G9_DOT_OUT" ] && [ "$_g9_dot_git" -le 2 ]; then
+      ok "G9: .claude/worktrees/ 配下でも 0-fork キャッシュが効き git 呼び出しが抑止される（実測 ${_g9_dot_git} 回）"
+    else
+      bad "G9: .claude/worktrees/ 配下で git 呼び出しが抑止されない (rc=${G9_DOT_RC} git=${_g9_dot_git} out=${G9_DOT_OUT})"
+    fi
+  else
+    bad "G9: .claude/worktrees/ 配下の worktree 作成に失敗"
+  fi
+
+  # 親パスに | を含む linked worktree でも走行中マーカーを見落とさない
+  G9_PIPE_WT="$WORK/team|archive/wt"
+  mkdir -p "$WORK/team|archive"
+  if git -C "$G9_REPO" worktree add -q --detach "$G9_PIPE_WT" HEAD >/dev/null 2>&1; then
+    G9_PIPE_GD="$(git -C "$G9_PIPE_WT" rev-parse --absolute-git-dir)"
+    G9_PIPE_MDIR="$(ff_gate_marker_dir "$G9_PIPE_GD")"
+    mkdir -p "$G9_PIPE_MDIR"
+    printf '%s\n' "$G9_START" > "$G9_PIPE_MDIR/$G9_PID"
+    printf 'label=tests/run-all.sh\ntree=%s\n' "$G9_PIPE_WT" > "$G9_PIPE_MDIR/${G9_PID}.meta"
+    expect_deny "G9: 親パスに | を含む linked worktree の相対 Bash 書き込みを deny" \
+      "$(mk_bash_json "$G9_PIPE_WT" "echo x > app.sh")" 1
+    ff_gate_marker_remove "$G9_PIPE_MDIR/$G9_PID"
+  else
+    bad "G9: パイプ文字を含むパスの worktree 作成に失敗"
+  fi
+
+  # 相対パスで登録された linked worktree（$wt/gitdir が相対パス、.meta に tree= 無し）でもメインから書き込みを deny
+  G9_REL_WT="$WORK/g9-rel-wt"
+  if git -C "$G9_REPO" worktree add -q --detach "$G9_REL_WT" HEAD >/dev/null 2>&1; then
+    G9_REL_GD="$(git -C "$G9_REL_WT" rev-parse --absolute-git-dir)"
+    G9_REL_MDIR="$(ff_gate_marker_dir "$G9_REL_GD")"
+    mkdir -p "$G9_REL_MDIR"
+    # gitdir を worktree 管理ディレクトリ基準の相対パスへ書き換えて再現
+    printf '../../../../g9-rel-wt/.git\n' > "$G9_REL_GD/gitdir"
+    [ -f "$G9_REL_GD/../../../../g9-rel-wt/.git" ] || bad "G9: 相対パス gitdir のテスト前提が不正"
+    printf '%s\n' "$G9_START" > "$G9_REL_MDIR/$G9_PID"
+    printf 'label=tests/run-all.sh\n' > "$G9_REL_MDIR/${G9_PID}.meta"
+    expect_deny "G9: 相対パス gitdir の linked worktree（tree= 無し）への Bash 書き込みを deny" \
+      "$(mk_bash_json "$G9_REPO" "echo x > \"$G9_REL_WT/app.sh\"")" 1
+    ff_gate_marker_remove "$G9_REL_MDIR/$G9_PID"
+  else
+    bad "G9: 相対パス gitdir 検証用 worktree の作成に失敗"
+  fi
+
+  # ツリー外 cwd から稼働中 worktree のサブディレクトリへの symlink 経由で Bash 書き込み（直下に .git が無いため [ -L ] フォールバックが必須）
+  G9_WT1_LINK="$WORK/g9-wt1-sub-link"
+  ln -s "$G9_WT1/docs/sub" "$G9_WT1_LINK"
+  expect_deny "G9: ツリー外 cwd からサブディレクトリ symlink 経由での Bash 書き込みを deny（find_dotgit_ancestor フォールバック）" \
+    "$(mk_bash_json "$OUTSIDE" "echo x > \"$G9_WT1_LINK/a.md\"")" 1
+  rm -f "$G9_WT1_LINK"
+
+  # 末尾に不正文字列が続く壊れた JSON は fail-open（無音通過）
+  expect_allow "G9: 末尾に不正文字列を含む壊れた JSON は無音で通過" \
+    "$(mk_bash_json "$G9_WT1" "echo x > app.sh") trailing-garbage"
+
+  ff_gate_marker_remove "$G9_MARKER"
+  kill "$G9_PID" 2>/dev/null || true
+  wait "$G9_PID" 2>/dev/null || true
+
+  G9_WT15_GD="$(git -C "$G9_WT15" rev-parse --absolute-git-dir)"
+  G9_WT15_MDIR="$(ff_gate_marker_dir "$G9_WT15_GD")"
+  mkdir -p "$(dirname "$G9_WT15_MDIR")"
+  ln -s /nonexistent "$G9_WT15_MDIR"
+  expect_deny "G9: 22 worktree の 15 本目で symlink 化したマーカー領域をスキップせず fail-closed deny" \
+    "$(mk_bash_json "$G9_REPO" "git -C \"$G9_WT15\" commit -m unsafe")" 1
+  rm -f "$G9_WT15_MDIR"
+else
+  bad "G9: 22 本の worktree 作成に失敗"
 fi
 
 echo

@@ -1788,20 +1788,17 @@ if grep -Eq '^echo .*外部ネットワークを遮断しません.*>&2' "$ADAPT
 else
   bad "grok-cli: ネットワーク開放の通知行が消えた — 開放のまま黙って走る（Issue #897 の AC 破れ）"
 fi
-# 「dispatch 前」であることも固定する。通知が**タスクの dispatch**（result を受ける
-# run_with_timeout）より後ろへ動くと、課金・実行が始まった後の通知になり AC の意味を失う。
+# 「dispatch 前」であることも固定する。通知がタスクの起動より後ろへ動くと、
+# 課金・実行が始まった後の通知になり AC の意味を失う。
 #
-# アンカーは最初の run_with_timeout ではなく `result=$(run_with_timeout` にする。
-# 同じアダプタには sandbox 適用可否の probe（モデルを呼ばない `grok --sandbox <profile>
-# inspect`）があり、そちらの run_with_timeout の方が先に現れる。probe はエージェントを
-# 走らせず課金もしないので、ネットワーク開放の通知はそこでは意味を持たない — 最初の
-# 一致を見ると、通知が本来の位置にあるのに赤になる。
+# `result=$(run_grok_command` は結果を受ける本実行の呼び出し。先にある
+# sandbox 適用可否の probe はモデルを呼ばないため、起動位置の判定に含めない。
 # grep の不一致（rc=1）が set -e / pipefail でここを途中死させないよう、
 # 失敗時は空へ倒して下の判定に届ける（空 = 赤、が正しい向き）。
 notice_line="$(grep -nE '^echo .*外部ネットワークを遮断しません' "$ADAPTERS_DIR/grok-cli-adapter.sh" | head -1 | cut -d: -f1)" || notice_line=""
-launch_line="$(grep -n '^result=\$(run_with_timeout' "$ADAPTERS_DIR/grok-cli-adapter.sh" | head -1 | cut -d: -f1)" || launch_line=""
+launch_line="$(grep -n '^result=\$(run_grok_command[[:space:]]' "$ADAPTERS_DIR/grok-cli-adapter.sh" | head -1 | cut -d: -f1)" || launch_line=""
 if [ -n "$notice_line" ] && [ -n "$launch_line" ] && [ "$notice_line" -lt "$launch_line" ]; then
-  ok "grok-cli: 通知がタスク dispatch（result=\$(run_with_timeout）より前にある"
+  ok "grok-cli: ネットワーク開放の通知がタスクの起動より前にある"
 else
   bad "grok-cli: 通知がタスク dispatch より前に無い（notice=${notice_line:-なし} / dispatch=${launch_line:-なし}）"
 fi

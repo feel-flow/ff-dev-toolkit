@@ -150,7 +150,7 @@ if [[ -n "${FF_PUBLIC_LAYOUT_SUITES:-}" ]]; then
   done
   echo "public-layout: 合成配置で ${#suites[@]} suite を回します（FF_PUBLIC_LAYOUT_SUITES）"
   public_rc=0
-  env -u FF_RUN_ALL_FULL -u FF_RUN_ALL_FAST -u FF_RUN_ALL_CHANGED -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_DIR -u FF_RUN_ALL_WAIT_POLL_INTERVAL bash tests/run-all.sh "${suites[@]}" || public_rc=$?
+  env -u FF_RUN_ALL_FULL -u FF_RUN_ALL_FAST -u FF_RUN_ALL_CHANGED -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_DIR -u FF_RUN_ALL_WAIT_POLL_INTERVAL FF_DEV_TOOLKIT_STATE_DIR="$WORK/state" bash tests/run-all.sh "${suites[@]}" || public_rc=$?
   if [[ "$public_rc" -eq 2 ]]; then
     echo "✗ 判定不能: public-layout: 並走中の全件ゲート（またはプロセス一覧取得不能）により合成配置の run-all.sh が rc=2 で停止しました" >&2
     exit 2

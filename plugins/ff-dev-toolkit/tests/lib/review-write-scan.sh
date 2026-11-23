@@ -55,7 +55,7 @@
 #     `$(…)`）の中の `cd` は親へ漏らさない（`bash -c 'cd /tmp'; touch README.md` はツリー内）
 #   - パス語は引用符をまたいで展開する（`"$D"/out/*` は `$D` と `/out` を繋いだ 1 語。引用を残した
 #     まま相対パスにすると、ツリー外の一時ディレクトリをツリー内と誤認する）。語全体が単一引用符の
-#     ときだけ展開しない。コマンド置換と `${name:-default}` は判定不能
+#     ときだけ展開しない。引用されたパス変数の既定値と、単純代入内の読み取り専用の置換だけを解決する
 #   - `trap` のコマンド文字列と `eval` のコマンド文字列は、トップレベルと同じ走査へ入れる。
 #     `eval` の引数は先に展開する。展開できない `eval` は判定不能（コマンド行では止める）。
 #     関数名だけの `trap name SIGNAL` は本文が無いので走査しない（既知の限界）
@@ -103,6 +103,7 @@ WRITE_BASE=""      # 相対パスの解決基準（`cd` で動く。空 = 不明
 WS_ROOT_PHYS=""
 WS_OUTPUT_DIR=".review-results"
 WS_ACK_VAR="FF_REVIEW_LOCK_ACK"
+WS_TOOLKIT_MULTI_AGENT="${BASH_SOURCE[0]%/*}/../../scripts/multi-agent.sh"
 RESOLVED=""
 RESOLVE_WHY=""
 VAR_TABLE=""
@@ -201,100 +202,74 @@ ws_trim() { # <s>
 # コマンド内の単純代入（`O=/path` / `D="$(mktemp -d)"`）と、hook 環境のうち秘密を持たない
 # パス系の変数（WS_ENV_PATH_VARS）だけを展開する。それ以外の継承変数は値を読まずに判定不能へ倒す —
 # 任意の変数を読むと、ファイル名に書かれた `$TOKEN` の値が拒否理由（WRITE_REASON）へ写る。
-# `\$NAME` はシェルでもリテラルなので展開しない。
-# それ以外の `$…`（コマンド置換・`${X:-y}` 等）は判定不能。`$(mktemp …)` の代入は一時領域
+# `\$NAME` はシェルでもリテラルなので展開しない。既定値は許可した環境変数とリテラルに限る。
+# 読み取り専用のコマンド置換は単純代入の右辺に限る。`$(mktemp …)` の代入は一時領域
 # （ツリー外）として扱う — 走行中の規定が勧める「`mktemp -d` へ下書き」を止めないため。
 # ただしテンプレートにディレクトリが付く形（`mktemp -d ./x.XXXXXX`）はその配置先で判定する。
 # FF_DEV_TOOLKIT_ROOT / CLAUDE_PLUGIN_ROOT / GROK_PLUGIN_ROOT はパスであって秘密ではない。
 # 任意の継承変数はここへ足さない（値を拒否理由へ写さないため）。
 WS_ENV_PATH_VARS=" HOME TMPDIR TMP TEMP USER LOGNAME CLAUDE_PROJECT_DIR RUNNER_TEMP XDG_RUNTIME_DIR XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME FF_DEV_TOOLKIT_ROOT CLAUDE_PLUGIN_ROOT GROK_PLUGIN_ROOT "
-expand_vars() { # <文字列> → 展開後を stdout。解決できなければ 1
-  local s="$1" out="" name val rest
-  while :; do
-    case "$s" in
-      *'$'*) : ;;
-      *) printf '%s' "${out}${s}"; return 0 ;;
-    esac
-    out="${out}${s%%\$*}"
-    s="${s#*\$}"
-    case "$out" in
-      *\\) out="${out%\\}\$"; continue ;;
-    esac
-    case "$s" in
-      '('* | '') return 1 ;;
-      '{'*)
-        rest="${s#\{}"
-        name="${rest%%\}*}"
-        [ "$name" != "$rest" ] || return 1
-        s="${rest#*\}}"
-        ;;
-      *)
-        name="$(printf '%s' "$s" | LC_ALL=C sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\).*/\1/p')"
-        [ -n "$name" ] || return 1
-        s="${s#"$name"}"
-        ;;
-    esac
-    case "$name" in
-      '' | *[!A-Za-z0-9_]*) return 1 ;;
-    esac
-    val="$(printf '%s\n' "$VAR_TABLE" | LC_ALL=C sed -n "s/^${name}=//p" | tail -n 1)"
-    # $PWD はツール側の cwd（cd 追跡後の解決基準）。hook プロセスの PWD ではない
-    if [ -z "$val" ] && [ "$name" = "PWD" ]; then
-      [ -n "$WRITE_BASE" ] || return 1
-      val="$WRITE_BASE"
-    fi
-    if [ -z "$val" ]; then
-      case "$WS_ENV_PATH_VARS" in
-        *" ${name} "*) : ;;
-        *) return 1 ;;
-      esac
-      if printenv "$name" >/dev/null 2>&1; then val="$(printenv "$name")"; else return 1; fi
-    fi
-    out="${out}${val}"
-  done
+ws_variable_entry() { # <検証済みの変数名>
+  printf '%s\n' "$VAR_TABLE" | LC_ALL=C sed -n "/^$1=/p; /^+$1=/p; /^!$1\$/p" | tail -n 1
 }
-# 値がシェルの 1 語か（引用符と `$(…)` / バッククォートの中の空白は語を割らない）。
-# 0 = 単純代入の値。1 = `NAME=v cmd` のように後ろにコマンドがある。
-ws_value_is_single_word() { # <value>
-  local s="$1" i=0 n c nx q="" depth=0 bq=0
-  n=${#s}
-  while [ "$i" -lt "$n" ]; do
-    c="${s:$i:1}"
-    if [ -n "$q" ]; then
-      if [ "$c" = "\\" ] && [ "$q" = '"' ]; then i=$((i + 2)); continue; fi
-      if [ "$c" = "$q" ]; then q=""; fi
-      i=$((i + 1))
-      continue
-    fi
-    if [ "$bq" -eq 1 ]; then
-      if [ "$c" = '`' ]; then bq=0; fi
-      i=$((i + 1))
-      continue
-    fi
-    if [ "$c" = "'" ]; then q="'"; i=$((i + 1)); continue; fi
-    if [ "$c" = '"' ]; then q='"'; i=$((i + 1)); continue; fi
-    if [ "$c" = "\\" ]; then i=$((i + 2)); continue; fi
-    if [ "$c" = '`' ]; then bq=1; i=$((i + 1)); continue; fi
-    if [ "$c" = '$' ]; then
-      nx="${s:$((i + 1)):1}"
-      if [ "$nx" = '(' ]; then depth=$((depth + 1)); i=$((i + 2)); continue; fi
-    fi
-    if [ "$depth" -gt 0 ] && [ "$c" = '(' ]; then depth=$((depth + 1)); i=$((i + 1)); continue; fi
-    if [ "$depth" -gt 0 ] && [ "$c" = ')' ]; then depth=$((depth - 1)); i=$((i + 1)); continue; fi
-    if [ "$depth" -eq 0 ]; then
-      case "$c" in
-        [[:space:]]) return 1 ;;
-      esac
-    fi
-    i=$((i + 1))
-  done
-  [ -z "$q" ] && [ "$depth" -eq 0 ] && [ "$bq" -eq 0 ]
+
+ws_expand_parameter() { # <NAME | NAME-default | NAME:-default> [二重引用符内は 1] [構文検証のみは 1]
+  local expr="$1" name="$1" mode="" fallback="" entry val
+  WS_PARAMETER_DYNAMIC=0
+  WS_PARAMETER_OUT=""
+  case "$expr" in
+    *-*)
+      [ "${2:-0}" -eq 1 ] && [ "${WS_DYNAMIC_CONTEXT:-unknown}" = prefix ] || return 1
+      WS_PARAMETER_DYNAMIC=1
+      name="${expr%%-*}"
+      fallback="${expr#*-}"
+      mode='unset'
+      case "$name" in *:) name="${name%:}"; mode=empty ;; esac
+      case "$WS_ENV_PATH_VARS" in *" ${name} "*) : ;; *) return 1 ;; esac
+      case "$fallback" in *[!A-Za-z0-9_./-]*) return 1 ;; esac
+      ;;
+  esac
+  case "$name" in '' | [!A-Za-z_]* | *[!A-Za-z0-9_]*) return 1 ;; esac
+  [ "${3:-0}" -eq 0 ] || return 0
+  entry="$(ws_variable_entry "$name")" || return 1
+  case "$entry" in
+    !*) return 1 ;; # 再代入が解けない場合は以前の値や継承値へ戻らない
+    +*=*)
+      [ "${2:-0}" -eq 1 ] && [ "${WS_DYNAMIC_CONTEXT:-unknown}" != unknown ] || return 1
+      WS_PARAMETER_DYNAMIC=1
+      val="${entry#*=}"
+      ;;
+    *=*) val="${entry#*=}" ;;
+    *)
+      if [ "$name" = "PWD" ]; then
+        [ -n "$WRITE_BASE" ] || return 1
+        val="$WRITE_BASE"
+      else
+        case "$WS_ENV_PATH_VARS" in *" ${name} "*) : ;; *) return 1 ;; esac
+        # 空文字と未設定を区別し、値に含まれる末尾の改行は取り除かない。
+        if val="$(command printenv "$name" 2>/dev/null && printf '.')"; then
+          case "$val" in *$'\n.') : ;; *) return 1 ;; esac
+          val="${val%$'\n.'}"
+        else
+          # printenv の 1 だけが未設定。実行できない場合は既定値の根拠にしない。
+          [ "$?" -eq 1 ] && [ -n "$mode" ] || return 1
+          val="$fallback"
+        fi
+      fi
+      ;;
+  esac
+  [ "$mode" != empty ] || [ -n "$val" ] || val="$fallback"
+  case "$val" in *[[:cntrl:]]*) return 1 ;; esac
+  case "$mode:$val" in unset:*[\*\?\[]* | empty:*[\*\?\[]*) return 1 ;; esac
+  WS_PARAMETER_OUT="$val"
+  printf '%s' "$val"
 }
+
 record_assignment() { # <区間> → 単純代入なら VAR_TABLE へ積む（コマンド前置の代入は積まない）
-  local seg name value inner tmpl d
+  local seg name value lexed tracked prefix=""
   seg="$(ws_trim "$1")"
   case "$seg" in
-    export\ * | local\ * | declare\ * | typeset\ *) seg="$(ws_trim "${seg#* }")" ;;
+    export\ * | local\ * | declare\ * | typeset\ *) seg="$(ws_trim "${seg#* }")"; WS_DYNAMIC_CONTEXT=unknown ;;
   esac
   case "$seg" in
     [A-Za-z_]*=*) : ;;
@@ -303,45 +278,68 @@ record_assignment() { # <区間> → 単純代入なら VAR_TABLE へ積む（�
   name="${seg%%=*}"
   case "$name" in *[!A-Za-z0-9_]*) return 1 ;; esac
   value="${seg#*=}"
-  # 引用符の外に空白がある値は `NAME=v cmd` の前置。ここで 0 を返すと区間の書き込み判定が飛ぶ。
-  # 引用符の中の空白（`CMD="rm -f README.md"`）は値の一部なので記録する。
-  ws_value_is_single_word "$value" || return 1
-  # 単一引用符 1 語だけの値（`X='v'`）は展開されないので、値をそのまま記録する（後の `$NAME` 参照でも
-  # 再展開しない）。
-  if ws_single_quoted_word "$value"; then
-    value="$(unquote1 "$value")"
-    case "$value" in *$'\n'*) return 1 ;; esac
-    VAR_TABLE="${VAR_TABLE}
-${name}=${value}"
-    return 0
-  fi
-  case "$value" in
-    \"*\") value="$(unquote1 "$value")" ;;
+  # リダイレクト付き代入や NAME=v cmd は、代入として消費せずコマンド全体を走査する。
+  lexed="$(ff_lex_tokens "$seg")" || return 1
+  [ "$lexed" = "$seg$WS_RS" ] || return 1
+  # Git や標準ユーティリティの起動環境が変わる代入以降は、動的な値の解決に hook の環境を使わない。
+  case "$name" in
+    BASH* | CDPATH | ENV | GIT_* | GLOBIGNORE | HOME | IFS | LANG* | LC_* | LD_* | DYLD_* | PATH | PERL* | POSIXLY_CORRECT | PWD | SHELLOPTS | XDG_CONFIG_HOME)
+      WS_DYNAMIC_CONTEXT=unknown ;;
   esac
-  case "$value" in
-    '$(mktemp'*')')
-      inner="${value#\$(mktemp}"
-      inner="${inner%)}"
-      case "$inner" in *' -p'* | *'--tmpdir'*) return 1 ;; esac
-      tmpl=""
-      for d in $inner; do
-        case "$d" in -*) : ;; *) tmpl="$d" ;; esac
-      done
-      case "$tmpl" in
-        */*)
-          resolve_target "${tmpl%/*}" || return 1
-          value="${RESOLVED}/ff-mktemp-placeholder"
-          ;;
-        *) value="${TMPDIR:-/tmp}/ff-mktemp-placeholder" ;;
+  if [ "$WS_DYNAMIC_CONTEXT" != prefix ]; then
+    tracked="$(ws_variable_entry "$name")" || return 1
+    case "$tracked" in
+      +*=* | !*) VAR_TABLE="${VAR_TABLE}
+!${name}"; return 1 ;;
+    esac
+  fi
+  if ! value="$(ws_assignment_value "$value")"; then
+    VAR_TABLE="${VAR_TABLE}
+!${name}"
+    return 1 # 解けない置換の本文も、従来どおり書き込み走査する
+  fi
+  [ "${value:0:1}" != 1 ] || prefix=+
+  VAR_TABLE="${VAR_TABLE}
+${prefix}${name}=${value:1}"
+}
+
+ws_assignment_value() {
+  local value="$1" inner tmpl d home WS_EXPAND_DYNAMIC=0
+  case "$(unquote1 "$value")" in
+    '$(mktemp)' | '$(mktemp '*')')
+      # 従来の mktemp の配置先判定。単一引用符の中では置換は実行されない。
+      if ws_single_quoted_word "$value"; then
+        value="$(unquote1 "$value")"
+      else
+        inner="$(unquote1 "$value")"
+        inner="${inner#\$(mktemp}"
+        inner="${inner%)}"
+        case "$inner" in *' -p'* | *'--tmpdir'*) return 1 ;; esac
+        tmpl=""
+        for d in $inner; do
+          case "$d" in -*) : ;; *) tmpl="$d" ;; esac
+        done
+        case "$tmpl" in
+          */*)
+            resolve_target "${tmpl%/*}" || return 1
+            value="${RESOLVED}/ff-mktemp-placeholder"
+            ;;
+          *) value="${TMPDIR:-/tmp}/ff-mktemp-placeholder" ;;
+        esac
+      fi
+      ;;
+    *)
+      ws_expand_shell_word "$value" 1 >/dev/null || return 1
+      [ "$WS_EXPAND_DYNAMIC" -eq 0 ] || [ "$WS_DYNAMIC_CONTEXT" = prefix ] || return 1
+      value="$WS_EXPAND_OUT"
+      case "$1" in
+        '~' | '~/'*) home="$(ws_expand_parameter HOME)" && [ -n "$home" ] || return 1; value="${home}${value#\~}" ;;
+        '~'*) return 1 ;;
       esac
       ;;
-    *'$('* | *'`'*) return 1 ;;
-    *'$'* | *\"* | *\'*) value="$(ws_expand_shell_word "$value")" || return 1 ;;
   esac
-  case "$value" in *$'\n'*) return 1 ;; esac
-  VAR_TABLE="${VAR_TABLE}
-${name}=${value}"
-  return 0
+  case "$value" in *[[:cntrl:]]*) return 1 ;; esac
+  printf '%s%s' "$WS_EXPAND_DYNAMIC" "$value"
 }
 
 # ---- パス --------------------------------------------------------------------------
@@ -354,6 +352,15 @@ ws_single_quoted_word() { # <token>
   case "$inner" in *\'*) return 1 ;; esac
   return 0
 }
+
+ws_double_quoted_word() { # 内部に引用符のない、二重引用符で囲んだ 1 語
+  local inner
+  case "$1" in \"*\") : ;; *) return 1 ;; esac
+  inner="${1#\"}"
+  inner="${inner%\"}"
+  case "$inner" in *\"*) return 1 ;; esac
+}
+
 # 二重引用符の eval / trap 引数の 1 層を戻す（`\"` `\\` `\$` `` \` ``）。
 ws_unescape_dq() {
   local s="$1" i=0 n c nx out=""
@@ -371,15 +378,92 @@ ws_unescape_dq() {
   done
   printf '%s' "$out"
 }
+
+# 置換の式をシェルへ渡さない。語をデータとして読み、引数の形まで一致する読み取り専用の処理だけ呼ぶ。
+ws_subst_arg() {
+  local token="$1"
+  case "$token" in
+    \'*\') ws_single_quoted_word "$token" || return 1 ;;
+    \"*\") ws_double_quoted_word "$token" || return 1 ;;
+    *[!A-Za-z0-9_./%+-]* | '') return 1 ;;
+  esac
+  ws_expand_shell_word "$token"
+}
+
+ws_subst_stage() {
+  local kind="$1" input="$2" segment="$3" lexed token value range helper helper_type
+  local args=()
+  lexed="$(ff_lex_tokens "$segment")" || return 1
+  while IFS= read -r -d "$WS_RS" token; do
+    args[${#args[@]}]="$token"
+  done <<EOF
+$lexed
+EOF
+  helper="${args[0]:-}"
+  case "$helper" in
+    git | basename | dirname | shasum | cut) helper_type=file ;;
+    printf) helper_type=builtin ;;
+    *) return 1 ;;
+  esac
+  [ "$(type -t "$helper")" = "$helper_type" ] || return 1
+  case "$kind:$helper:${#args[@]}" in
+    N:git:3)
+      [ "${args[1]}" = rev-parse ] && [ "${args[2]}" = --show-toplevel ] || return 1
+      command git rev-parse --show-toplevel
+      ;;
+    N:basename:2 | N:dirname:2)
+      value="$(ws_subst_arg "${args[1]}")" || return 1
+      case "$value" in -* | *[[:cntrl:]]*) return 1 ;; esac
+      case "${args[0]}" in basename) command basename -- "$value" ;; dirname) command dirname -- "$value" ;; esac
+      ;;
+    N:printf:3)
+      [ "$(unquote1 "${args[1]}")" = '%s' ] || return 1
+      value="$(ws_subst_arg "${args[2]}")" || return 1
+      builtin printf '%s' "$value"
+      ;;
+    P:shasum:3)
+      [ "${args[1]}" = -a ] && [ "${args[2]}" = 256 ] || return 1
+      builtin printf '%s' "$input" | command shasum -a 256
+      ;;
+    P:cut:2)
+      case "${args[1]}" in -c*) range="${args[1]#-c}" ;; *) return 1 ;; esac
+      case "$range" in '' | -* | *- | *[!0-9-]* | *-*-*) return 1 ;; esac
+      builtin printf '%s' "$input" | command cut -c "$range"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+ws_assignment_subst() {
+  local body="$1" segments segment kind expect=N output=""
+  # 括弧の入れ子、エスケープ、制御演算子、リダイレクトを含む式はこの小さな文法の対象外。
+  case "$body" in '' | *[[:cntrl:]]* | *'`'* | *[\\\(\)\<\>\;\&\#]*) return 1 ;; esac
+  segments="$(ff_lex_segments "$body")" || return 1
+  [ -n "$segments" ] || return 1
+  while IFS= read -r -d "$WS_RS" segment; do
+    kind="${segment:0:1}"
+    [ "$kind" = "$expect" ] || return 1
+    # 各段の末尾 LF は次の段に渡し、置換全体の末尾 LF だけをシェルの置換で取り除く。
+    output="$(ws_subst_stage "$kind" "$output" "${segment:1}" 2>/dev/null && printf '.')" || return 1
+    output="${output%.}"
+    expect=P
+  done <<EOF
+$segments
+EOF
+  [ "$expect" = P ] || return 1
+  printf '%s' "$output"
+}
+
 # シェルの 1 語を展開する（引用符は結果に残さない）。`" $D "/out/*` のように引用が語の途中で
 # 切れても、引用の外と二重引用符の中の `$VAR` だけを展開する。語全体が単一引用符のときは
-# 呼び出し側が先に literal 扱いにするので、ここへは来ない。コマンド置換と `${name:-x}` は 1。
+# 呼び出し側が先に literal 扱いにすることもある。置換の解決は単純代入の二重引用符内だけで行う。
 # WS_EXPAND_WHY に理由（コマンド置換 / 変数展開）を、WS_EXPAND_OUT に展開結果を残す。
 # 呼び出しを $(…) に入れると理由は親へ届かない。理由を読む側はリダイレクトで呼ぶ。
-ws_expand_shell_word() { # <token>
-  local s="$1" i=0 n c nx out="" q="" name rest val
+ws_expand_shell_word() { # <token> [代入の読み取り専用置換を許す場合は 1] [構文検証のみは 1]
+  local s="$1" i=0 n c nx out="" q="" name rest val body quoted consumed
   WS_EXPAND_WHY=""
   WS_EXPAND_OUT=""
+  WS_EXPAND_DYNAMIC=0
   case "$s" in
     *\'* | *\"* | *'$'* | *'`'* | *\\*) : ;;
     *) WS_EXPAND_OUT="$s"; printf '%s' "$s"; return 0 ;;
@@ -420,25 +504,34 @@ ws_expand_shell_word() { # <token>
       nx="${s:$((i + 1)):1}"
       if [ "$c" = '`' ] || [ "$nx" = '(' ]; then
         WS_EXPAND_WHY="コマンド置換"
-        return 1
+        [ "$c" = '$' ] && [ "$q" = '"' ] && [ "${2:-0}" -eq 1 ] &&
+          [ "${WS_DYNAMIC_CONTEXT:-unknown}" = prefix ] && [ -n "$WRITE_BASE" ] || return 1
+        rest="${s:$((i + 2))}"
+        body="${rest%%)*}"
+        [ "$body" != "$rest" ] || return 1
+        val="$(builtin cd -- "$WRITE_BASE" 2>/dev/null && ws_assignment_subst "$body")" || return 1
+        case "$val" in *[[:cntrl:]]* | *[\*\?\[]*) return 1 ;; esac
+        WS_EXPAND_WHY=""
+        WS_EXPAND_DYNAMIC=1
+        out="${out}${val}"
+        i=$((i + 3 + ${#body}))
+        continue
       fi
       if [ "$nx" = '{' ]; then
         rest="${s:$((i + 2))}"
         name="${rest%%\}*}"
         if [ "$name" = "$rest" ]; then WS_EXPAND_WHY="変数展開"; return 1; fi
-        case "$name" in
-          '' | *[!A-Za-z0-9_]*) WS_EXPAND_WHY="変数展開"; return 1 ;;
-        esac
-        val="$(expand_vars "\${${name}}")" || { WS_EXPAND_WHY="変数展開"; return 1; }
-        out="${out}${val}"
-        i=$((i + 2 + ${#name} + 1))
-        continue
+        consumed=$((3 + ${#name}))
+      else
+        name="$(printf '%s' "${s:$((i + 1))}" | LC_ALL=C sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\).*/\1/p')"
+        consumed=$((1 + ${#name}))
       fi
-      name="$(printf '%s' "${s:$((i + 1))}" | LC_ALL=C sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\).*/\1/p')"
-      if [ -z "$name" ]; then WS_EXPAND_WHY="変数展開"; return 1; fi
-      val="$(expand_vars "\$${name}")" || { WS_EXPAND_WHY="変数展開"; return 1; }
-      out="${out}${val}"
-      i=$((i + 1 + ${#name}))
+      quoted=0
+      [ "$q" != '"' ] || quoted=1
+      ws_expand_parameter "$name" "$quoted" "${3:-0}" >/dev/null || { WS_EXPAND_WHY="変数展開"; return 1; }
+      [ "$WS_PARAMETER_DYNAMIC" -eq 0 ] || WS_EXPAND_DYNAMIC=1
+      out="${out}${WS_PARAMETER_OUT}"
+      i=$((i + consumed))
       continue
     fi
     out="${out}${c}"
@@ -453,7 +546,7 @@ ws_expand_shell_word() { # <token>
 # Python / awk の文字列リテラル。`$` も `~` もシェルの展開ではない）。単一引用符の語も同じ。
 WS_LITERAL_PATHS=0
 resolve_target() { # <path token> → RESOLVED（物理パス）。判定不能は 1 + RESOLVE_WHY
-  local t d rest leaf pd ws_drive exp_rc literal="${WS_LITERAL_PATHS:-0}"
+  local t d rest leaf pd ws_drive exp_rc home literal="${WS_LITERAL_PATHS:-0}"
   RESOLVED=""
   RESOLVE_WHY=""
   ws_single_quoted_word "$1" && literal=1
@@ -468,13 +561,21 @@ resolve_target() { # <path token> → RESOLVED（物理パス）。判定不能�
       return 1
     fi
     t="$WS_EXPAND_OUT"
+    if [ "$WS_EXPAND_DYNAMIC" -eq 1 ]; then
+      ws_double_quoted_word "$1" || { RESOLVE_WHY="変数展開"; return 1; }
+      case "$t" in *[\*\?\[]*) RESOLVE_WHY="変数展開"; return 1 ;; esac
+    fi
   fi
   case "$t" in
     '') RESOLVE_WHY="空のパス"; return 1 ;;
   esac
-  if [ "$literal" -ne 1 ]; then
-    case "$t" in
-      '~' | '~/'*) t="${HOME}${t#\~}" ;;
+  if [ "$literal" -ne 1 ] && [ "${WS_NO_TILDE:-0}" -ne 1 ]; then
+    # チルダ展開は変数展開より先。引用符や変数の値から現れた ~ はリテラルの相対パス。
+    case "$1" in
+      '~' | '~/'*)
+        home="$(ws_expand_parameter HOME)" && [ -n "$home" ] || { RESOLVE_WHY="HOME を解決できない"; return 1; }
+        t="${home}${t#\~}"
+        ;;
       '~'*) RESOLVE_WHY="~user 形式"; return 1 ;;
     esac
   fi
@@ -1079,6 +1180,153 @@ $lines
 EOF
   return 1
 }
+# ツールキット自身の multi-agent.sh --extract-subagent-response 起動の高速・厳格判定（Issue `#2948`）。
+# multi-agent.sh 本文（約 73KB）を毎回シェル字句解析すると 1 本約 10 秒かかり、複数本の抽出や
+# ロック削除と連結した呼び出しが PreToolUse timeout（30 秒 / onFailure: block）で signal: killed になる。
+# 物理実体がこのプラグイン自身の multi-agent.sh（非 symlink）と一致し、引数に --extract-subagent-response が
+# 含まれる場合は通常走査（WS_IN_FILE=1 で動的書き込み先を不問とする経路）へ落とさず、全引数の語分割リスクと
+# すべての --output-file を judge_target で直接判定する。--extract-subagent-response を含まない通常実行だけ 2 を返す。
+ws_is_toolkit_multi_agent() { # <resolved_script_path>
+  [ -n "$1" ] || return 1
+  [ -f "$WS_TOOLKIT_MULTI_AGENT" ] && [ ! -L "$WS_TOOLKIT_MULTI_AGENT" ] || return 1
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  [ "$1" -ef "$WS_TOOLKIT_MULTI_AGENT" ]
+}
+ws_has_unquoted_word_split() { # <raw_token> → 0=引用符外に展開/語分割メタ文字あり, 1=なし
+  local s="$1" i=0 len ch q="" esc=0
+  len="${#s}"
+  while [ "$i" -lt "$len" ]; do
+    ch="${s:$i:1}"
+    i=$((i + 1))
+    if [ "$esc" -eq 1 ]; then
+      esc=0
+      continue
+    fi
+    if [ "$q" = "'" ]; then
+      [ "$ch" = "'" ] && q=""
+      continue
+    fi
+    if [ "$q" = '"' ]; then
+      if [ "$ch" = '\' ]; then esc=1
+      elif [ "$ch" = '"' ]; then q=""
+      fi
+      continue
+    fi
+    case "$ch" in
+      '\') esc=1 ;;
+      "'" | '"') q="$ch" ;;
+      '$' | '`' | '*' | '?' | '[') return 0 ;;
+    esac
+  done
+  return 1
+}
+ws_judge_toolkit_extract_output() { # <raw_out_arg> <no_tilde:0|1> → 0=hit(deny), 1=safe
+  local prev_nt="${WS_NO_TILDE:-0}" rc=0
+  WS_NO_TILDE="$2"
+  judge_target "$1" "multi-agent.sh --extract-subagent-response の --output-file"
+  rc=$?
+  WS_NO_TILDE="$prev_nt"
+  return "$rc"
+}
+ws_judge_toolkit_extract() { # <script_args...> → 0=hit(deny), 1=safe(allow), 2=not-extract-invocation
+  local has_extract=0 tok u next_val seen_src=0 seen_out=0 out_arg no_tilde=0
+  for tok in "$@"; do
+    u="$(unquote1 "$tok")"
+    case "$u" in
+      --extract-subagent-response | --extract-subagent-response=*) has_extract=1; break ;;
+    esac
+  done
+  [ "$has_extract" -eq 1 ] || return 2
+  # extract モードでは引数に非クォートの展開・語分割メタ文字が 1 つでもあれば、
+  # 実行時に追加の --output-file へ割れ得るため判定不能（deny 側）へ倒す。
+  for tok in "$@"; do
+    if ws_has_unquoted_word_split "$tok"; then
+      undeterminable "multi-agent.sh --extract-subagent-response の引数に非クォートの展開があり書き込み先を判定できない（${tok}）"
+      return $?
+    fi
+  done
+  while [ "$#" -gt 0 ]; do
+    tok="$1"
+    shift
+    u="$(unquote1 "$tok")"
+    case "$u" in
+      --extract-subagent-response)
+        if [ "$#" -lt 1 ]; then
+          undeterminable "multi-agent.sh --extract-subagent-response の引数が不足している"
+          return $?
+        fi
+        next_val="$(unquote1 "$1")"
+        case "$next_val" in '' | -*)
+          undeterminable "multi-agent.sh --extract-subagent-response の値が不正（${1}）"
+          return $? ;;
+        esac
+        seen_src=$((seen_src + 1))
+        shift
+        ;;
+      --extract-subagent-response=?*)
+        seen_src=$((seen_src + 1))
+        ;;
+      --output-file)
+        if [ "$#" -lt 1 ]; then
+          undeterminable "multi-agent.sh --output-file の引数が不足している"
+          return $?
+        fi
+        next_val="$(unquote1 "$1")"
+        case "$next_val" in '' | -*)
+          undeterminable "multi-agent.sh --output-file の値が不正（${1}）"
+          return $? ;;
+        esac
+        out_arg="$1"
+        no_tilde=0
+        case "$out_arg" in
+          \"* | \'* | \\*) no_tilde=1 ;;
+        esac
+        ws_judge_toolkit_extract_output "$out_arg" "$no_tilde" && return 0
+        seen_out=$((seen_out + 1))
+        shift
+        ;;
+      --output-file=?*)
+        case "$tok" in
+          \"--output-file=*\")
+            out_arg="\"${tok#\"--output-file=}"
+            ;;
+          \'--output-file=*\')
+            out_arg="'${tok#\'--output-file=}"
+            ;;
+          --output-file=*)
+            out_arg="${tok#--output-file=}"
+            ;;
+          *)
+            out_arg="${u#--output-file=}"
+            ;;
+        esac
+        # Bash は通常引数の `=` 右辺をチルダ展開しないため常にリテラル扱い。
+        ws_judge_toolkit_extract_output "$out_arg" 1 && return 0
+        seen_out=$((seen_out + 1))
+        ;;
+      --task | --wrapper-route | --invocation-display)
+        if [ "$#" -lt 1 ]; then
+          undeterminable "multi-agent.sh ${u} の引数が不足している"
+          return $?
+        fi
+        shift
+        ;;
+      --task=* | --wrapper-route=* | --invocation-display=*)
+        :
+        ;;
+      *)
+        undeterminable "multi-agent.sh --extract-subagent-response に未対応の引数がある（${tok}）"
+        return $?
+        ;;
+    esac
+  done
+  if [ "$seen_src" -ne 1 ] || [ "$seen_out" -ne 1 ]; then
+    undeterminable "multi-agent.sh --extract-subagent-response の必須引数が不足または重複している（src=${seen_src}, out=${seen_out}）"
+    return $?
+  fi
+  return 1
+}
+
 # インタプリタ区間: 本文を取り、判定する。<basename> <生の区間> <深さ> <args...>
 judge_interpreter() {
   local hb="$1" raw="$2" depth="$3" a prog="" src="" valued script lang has_heredoc=0 stdin_file="" skip=0 nonopt=0 srcpath="" prog_literal=0 heredoc_unquoted=0 judged
@@ -1194,6 +1442,31 @@ judge_interpreter() {
         return $?
       fi
       if [ -f "$RESOLVED" ] && [ -r "$RESOLVED" ]; then
+        if [ "$lang" = "sh" ] && [ "$hb" != "source" ] && [ "$hb" != "." ] && ws_is_toolkit_multi_agent "$RESOLVED"; then
+          local _ws_sh_skip=0 _ws_sh_found=0 _ws_sh_a _ws_sh_args=() _ws_ext_rc
+          for _ws_sh_a in "$@"; do
+            if [ "$_ws_sh_found" -eq 1 ]; then
+              _ws_sh_args+=("$_ws_sh_a")
+              continue
+            fi
+            if [ "$_ws_sh_found" -eq 2 ]; then
+              _ws_sh_found=1
+              continue
+            fi
+            if [ "$_ws_sh_skip" -eq 1 ]; then _ws_sh_skip=0; continue; fi
+            case "$_ws_sh_a" in
+              --) _ws_sh_found=2 ;;
+              -o | -O | +o | +O) _ws_sh_skip=1 ;;
+              -* | +*) : ;;
+              *) _ws_sh_found=1 ;;
+            esac
+          done
+          if [ "$_ws_sh_found" -eq 1 ] && [ "${#_ws_sh_args[@]}" -gt 0 ]; then
+            ws_judge_toolkit_extract "${_ws_sh_args[@]}"
+            _ws_ext_rc=$?
+            [ "$_ws_ext_rc" -ne 2 ] && return "$_ws_ext_rc"
+          fi
+        fi
         prog="$(LC_ALL=C head -c 262144 "$RESOLVED" 2>/dev/null)"
         src="file"
         srcpath="$RESOLVED"
@@ -1271,8 +1544,22 @@ scan_segment() {
   WS_SEG_OVR="$saved"
   return $rc
 }
+
+ws_dynamic_segment_is_safe() { # <字句解析済みの語...>
+  local token head="${1:-}"
+  [ "$head" != '(' ] || head="${2:-}"
+  case "$head" in [A-Za-z_]*=*) return 1 ;; esac
+  for token in "$@"; do
+    case "$token" in
+      '((' | '[[' | '<('* | '>('* | '<<' | '<<-' | [0-9]*'<<' | [0-9]*'<<-' | '{'?*'}') return 1 ;;
+      *'$'* | *'`'*) ws_expand_shell_word "$token" 0 1 >/dev/null || return 1 ;;
+    esac
+  done
+}
+
 ws_scan_segment_body() {
   local seg="$1" depth="$2" toks n i tok t target inq hb head seg_override=0 a body lexed wrap="" lrc ws_hcount ws_ht ws_hi ws_producer="" ws_ops=0 ws_j=0 ws_heredoc_at=-1 ws_stdin_after=0 ws_k=0
+  local WS_DYNAMIC_CONTEXT="${WS_DYNAMIC_CONTEXT:-unknown}"
   # 語分割は引用符を保つ（`'s/a b/c d/'` を 1 語のまま扱う。Issue `#1868`）。引用符の外の
   # リダイレクト演算子は独立した語として切り出されるので、`hi>f` / `2>/dev/null` も同じ形で読める。
   # 字句解析に失敗した区間（引用符が閉じない）は断片を書き込み先として名指ししないよう、
@@ -1302,6 +1589,11 @@ EOF
   n=${#toks[@]}
   # 空白でない区間から語が 1 つも出ないのは字句解析器の異常（空振りを「何もしない区間」へ畳まない）
   [ "$n" -gt 0 ] || { ws_fail "字句解析器が語を返さない"; return 0; }
+  # 同じ区間の引数評価が変数を変えうる。書き込み先の判定より先に語の構文を照合し、
+  # 解決を許すのは、値を読み取るだけの形に限る。
+  if [ "$WS_DYNAMIC_CONTEXT" != unknown ] && ! ws_dynamic_segment_is_safe "${toks[@]}"; then
+    WS_DYNAMIC_CONTEXT=unknown
+  fi
   # a) `$(…)` / バッククォートの本文はサブシェルとして先に走査する
   body="$(ws_extract_substs "$seg")" || { ws_fail "置換の本文の切り出し（awk）が失敗"; return 0; }
   while IFS= read -r a; do
@@ -1858,6 +2150,12 @@ EOF
             esac
             ;;
         esac
+        if ws_is_toolkit_multi_agent "$RESOLVED"; then
+          local _ws_ext_rc2
+          ws_judge_toolkit_extract "$@"
+          _ws_ext_rc2=$?
+          [ "$_ws_ext_rc2" -ne 2 ] && return "$_ws_ext_rc2"
+        fi
         ws_judge_file_program "$hb" "$lang2" "$(LC_ALL=C head -c 262144 "$RESOLVED" 2>/dev/null)" "$RESOLVED" "$depth"
         return $?
       fi
@@ -1923,8 +2221,30 @@ ws_scan_nested() {
   HEREDOC_STATE="$state_saved"; HEREDOC_BODIES="$bodies_saved"
   return $rc
 }
+
+ws_keeps_dynamic_context() { # <区間>
+  local segment="$1" head operand expected name
+  case "$segment" in
+    'mkdir -p '*) head=mkdir; expected=file; operand="${segment#mkdir -p }" ;;
+    'mkdir '*) head=mkdir; expected=file; operand="${segment#mkdir }" ;;
+    '(cd '*) head=cd; expected=builtin; operand="${segment#(cd }" ;;
+    'cd '*) head=cd; expected=builtin; operand="${segment#cd }" ;;
+    *) return 1 ;;
+  esac
+  # 引数評価の途中でシェル状態を変えない、二重引用符付きの単純な変数参照 1 語に限る。
+  case "$operand" in '"$'*'"') : ;; *) return 1 ;; esac
+  name="${operand#\"\$}"
+  name="${name%\"}"
+  case "$name" in '' | [!A-Za-z_]* | *[!A-Za-z0-9_]*) return 1 ;; esac
+  [ "$(type -t "$head")" = "$expected" ]
+}
+
 ws_scan_code() { # <heredoc 除去後の本文> <深さ> → 0 = hit
   local code="$1" depth="$2" segs seg rc=1 trimmed opened=0
+  # 動的な値はトップレベルの単純代入列で確定し、既知の mkdir / cd を越える間だけ再利用する。
+  # 入れ子の評価環境や任意のコマンドが実行された後のシェル状態は再現しない。
+  local WS_DYNAMIC_CONTEXT=prefix
+  [ "$depth" -eq 0 ] || WS_DYNAMIC_CONTEXT=unknown
   if [ "$HEREDOC_STATE" != "ok" ]; then
     case "$HEREDOC_STATE" in
       unterminated) ws_fail "heredoc が終端していない" ;;
@@ -1943,6 +2263,7 @@ ws_scan_code() { # <heredoc 除去後の本文> <深さ> → 0 = hit
     seg="${seg#?}"
     trimmed="$(ws_trim "$seg")"
     [ -n "$trimmed" ] || continue
+    case "$kind" in O | P | B) WS_DYNAMIC_CONTEXT=unknown ;; esac
     if [ "$kind" = "B" ]; then
       # 直前の区間は `&` で background に投げられた = サブシェル。その cd と代入は親へ漏れない
       WRITE_BASE="$prev_base"
@@ -1973,6 +2294,9 @@ ws_scan_code() { # <heredoc 除去後の本文> <深さ> → 0 = hit
           rc=0
           break
         fi
+      fi
+      if [ "$WS_DYNAMIC_CONTEXT" != unknown ]; then
+        if ws_keeps_dynamic_context "$trimmed"; then WS_DYNAMIC_CONTEXT=known; else WS_DYNAMIC_CONTEXT=unknown; fi
       fi
     fi
     # パイプ（`x | cd d`）・background（`cd d &`）の区間はサブシェルで走るので cd と代入は親へ

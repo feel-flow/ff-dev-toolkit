@@ -1054,14 +1054,47 @@ class Evidence(HostDelegationCases, unittest.TestCase):
         self.call('finish', '--results', str(self.output / 'results'))
         self.call('verify', '--required', 'code-review', '--prior-required', 'code-review')
 
-    def test_finish_rejects_in_run_base_advance(self):
+    def test_finish_accepts_in_run_base_advance_with_same_diff(self):
+        self.commit_diff()
+        self.call('begin', '--plan', 'codex-cli:code-review')
+        start_base = json.loads((self.output / 'start.json').read_text())['subject']['base']
+        (self.output / 'integrated-report.md').write_text(REPORT)
+        (self.output / 'results').write_text('codex-cli:code-review\tcomplete\n')
+        self.advance_develop_unrelated()
+        result = self.call('finish', '--results', str(self.output / 'results'))
+        self.assertIn('base advanced, diff unchanged', result.stderr)
+        receipt = json.loads(self.receipt.read_text())
+        self.assertEqual(receipt['subject']['base'], start_base)
+        verified = self.call('verify', '--required', 'code-review')
+        self.assertEqual(verified.stdout, 'code-review\n')
+        # Continuation and prior-review checks accept the receipt under ancestor + fixed-diff rules.
+        parent = self.output / 'parent-inrun.json'
+        shutil.copyfile(self.receipt, parent)
+        self.call('begin', '--plan', 'codex-cli:code-review', '--parent', str(parent))
+        self.call('begin', '--plan', 'codex-cli:code-review', '--prior', str(parent))
+
+    def test_finish_rejects_in_run_base_advance_when_diff_changes(self):
         self.commit_diff()
         self.call('begin', '--plan', 'codex-cli:code-review')
         (self.output / 'integrated-report.md').write_text(REPORT)
         (self.output / 'results').write_text('codex-cli:code-review\tcomplete\n')
-        self.advance_develop_unrelated()
+        self.git('branch', '-f', 'develop', 'HEAD')
         result = self.call('finish', '--results', str(self.output / 'results'), success=False)
         self.assertIn('repository changed during review', result.stderr)
+        self.assertFalse(self.receipt.exists())
+
+    def test_finish_rejects_in_run_non_ancestor_base_move(self):
+        self.commit_diff()
+        self.git('switch', '-q', 'develop')
+        self.git('commit', '-q', '--allow-empty', '-m', 'empty on develop')
+        self.git('switch', '-q', 'feature/test')
+        self.call('begin', '--plan', 'codex-cli:code-review')
+        (self.output / 'integrated-report.md').write_text(REPORT)
+        (self.output / 'results').write_text('codex-cli:code-review\tcomplete\n')
+        self.git('branch', '-f', 'develop', 'develop^')
+        result = self.call('finish', '--results', str(self.output / 'results'), success=False)
+        self.assertIn('repository changed during review', result.stderr)
+        self.assertFalse(self.receipt.exists())
 
 if __name__ == '__main__':
     unittest.main()

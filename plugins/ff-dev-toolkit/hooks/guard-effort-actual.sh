@@ -890,6 +890,7 @@ esac
 
 # ブロックがあるのに未記入か（集計器の planned_only と同じ判定）。マーカーの一致条件・
 # キーの解析・`as_days()` の書式・malformed への振り分けは集計器の実装と同形にする。
+# scripts/lib/finish-precheck.sh の ff_precheck_effort_actual_missing と同じ判定（変えるときは両方同時に直す）。
 # 終了コード 0 = 未記入（= 集計器の planned_only）/ 1 = それ以外（ブロック不在・
 # 記入済み・書式不正）。
 is_effort_unfilled() {

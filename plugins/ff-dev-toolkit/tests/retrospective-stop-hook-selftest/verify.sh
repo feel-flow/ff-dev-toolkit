@@ -283,10 +283,14 @@ check_mutation "事前注入の off ガード削除" "context hook も RETROSPEC
 # 向きなので、6 分岐すべてを常設の変異で固定する。
 ROOT="$(make_fixture context-skill-path-default-removed)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" '%s%s"}}' 2
-# 既定分岐の文面は末尾に ACE_DEFER_TO_RETRO の案内（`#1841`）が続くので、散文ではなく
-# 書式と引数の並び（+ 直後の exit 0）だけで位置を決める
+# 散文ではなく書式と引数の並び（+ 直後の exit 0）だけで既定分岐の位置を決める
 perl -0pi -e 's/ %s%s"\}\}\\n. "\$FILING_CLAUSE" "\$SKILL_PATH_CLAUSE"\n\nexit 0/ %s"}}\\n\x27 "\$FILING_CLAUSE"\n\nexit 0/' "$ROOT/hooks/retrospective-context.sh"
 check_mutation "既定分岐からスキル経路を削除" "事前注入（__unset__）のスキル経路が不正" "$ROOT" context-path
+
+ROOT="$(make_fixture context-ace-defer-restored)"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" 'The retrospective inspection is read-only. %s%s' 2
+perl -0pi -e 's/The retrospective inspection is read-only\. %s%s"\}\}\\n\x27 "\$FILING_CLAUSE" "\$SKILL_PATH_CLAUSE"\n\nexit 0/When this turn runs \/ace-curate before the retrospective, run it with ACE_DEFER_TO_RETRO=1. The retrospective inspection is read-only. %s%s"}}\\n\x27 "\$FILING_CLAUSE" "\$SKILL_PATH_CLAUSE"\n\nexit 0/' "$ROOT/hooks/retrospective-context.sh"
+check_mutation "事前注入へ ACE_DEFER_TO_RETRO=1 前提を復元" "UserPromptSubmit の事前注入契約が不正" "$ROOT" context
 
 ROOT="$(make_fixture context-skill-path-ask-removed)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" '%s%s"}}' 2
@@ -916,7 +920,7 @@ if [ "$JOB_N" -gt "$RETRO_JOBS" ] && [ "$_retro_waits" -eq 0 ]; then
 fi
 
 # 件数は名前付き定数で持つ（このファイルは EXPECTED_CONSUMER_CHECKS で既にその慣習）。
-EXPECTED_MUTATIONS=83
+EXPECTED_MUTATIONS=84
 if [ "$MUTATIONS" -ne "$EXPECTED_MUTATIONS" ]; then
   echo "✗ mutation 実行数が不正: ${MUTATIONS}（期待 ${EXPECTED_MUTATIONS}）" >&2
   exit 1

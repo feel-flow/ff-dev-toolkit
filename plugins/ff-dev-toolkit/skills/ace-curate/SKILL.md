@@ -1,6 +1,6 @@
 ---
 name: ace-curate
-description: マージ済み PR または指定資料から根拠付きの業務・開発知見を抽出し ACE Playbook（docs/08-knowledge/）へ構造化エントリとして追記する
+description: 原則から推論で導けない知見（A〜D の B/C）があるマージ済み PR または指定資料から根拠付き知見を抽出し ACE Playbook（docs/08-knowledge/）へ追記する
 ---
 
 # /ace-curate — ACE サイクル実行（Playbook 増分更新）
@@ -13,7 +13,7 @@ GitHub MCP の raw-file 入力は[共通契約](references/curate.md#github-file
 
 `features.ace=false` のとき、ワークフローからの自動実行・Playbook作成・収集・整理を行わない。ユーザーがACEを明示依頼した場合は依頼範囲で実行するが、永続設定を勝手に変更しない。完了後の振り返りも `features.retrospective` が有効な場合だけ自動実行する。
 
-知見を ACE Playbook へ追記する。固定手順は同梱 `scripts/finish.sh knowledge-commit`。全文は [references/curate.md](references/curate.md)。
+原則から推論で導けない知見（A〜D の B/C）がある PR のみ実行（既定チェーンは `/merge-cleanup` → `/retrospective`）。固定手順は `scripts/finish.sh knowledge-commit`、全文は [references/curate.md](references/curate.md)。
 
 **domainは通常curateの標準収集対象です。** 引数なし・PR番号のみでも他の知見と同時に評価し、opt-inを要求しません。根拠がある未確認知識もunverifiedで収集し、確認済みになるまで収集自体を待たせません。
 
@@ -56,7 +56,7 @@ fi
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/knowledge-lookup.sh" --resolve-playbook --with-index-mode
 ```
 
-`ACE_PLAYBOOK_STATE=ok` と [索引方式](references/curate.md#索引方式) を確認。非 0・repo 外は変更前に停止。既定パスの例は `ACE_PLAYBOOK_REL` に合わせる。
+`ACE_PLAYBOOK_STATE=ok` と [索引方式](references/curate.md#索引方式) を確認。非 0・repo 外は変更前に停止。既定例は `ACE_PLAYBOOK_REL` に合わせる。
 
 ## 前提と引数
 
@@ -104,7 +104,7 @@ MCP: 取得値: MCP の PR diff/body/全comments/reviews と関連Issue本文。
 
 [保留候補の再評価](references/pending.md)を読む。解決済みPLAYBOOKと同階層の `PENDING_CANDIDATES.md` を確認し、新規PRの候補が0件でも保留を同じ新規性ゲートへ掛け直す。保留は採用済みACEとして扱わない。
 
-**domainの判定を先行する**: コード/テストだけならunverified、正式資料か確認者の承認があればconfirmed、矛盾はconflictingと両側の根拠を記録し、既存仕様や既存ACEを自動deprecatedにしない。Distilled-Toは収集時には付けない。評価ゲート: 再現性・影響度が「中」以上か（低→スキップ）/ **新規性があるか？**（「**読者が取る実行可能なアクションが既存エントリと同一か**」。同一なら `Helpful` +1 のみ。domainは主体・条件・例外・確認状態が違えば同一としない）/ **抽象度の下限を満たすか？**（固有名なしで書けるなら 1 段上げてから新規性を判定。上げすぎたら棄却）/ **一回性のインシデント叙述は Playbook に書かない**（TROUBLESHOOTING / runbook へ）。
+**domainの判定を先行する**: コード/テストだけならunverified、正式資料か承認があればconfirmed、矛盾はconflictingと両側根拠を記録し、既存仕様や既存ACEを自動deprecatedにしない。Distilled-Toは収集時には付けない。評価ゲート: **A〜D 判定**（[curate.md](references/curate.md#a-d-判定) — A/D は破棄理由つきで落とす、B は記録、C は仕組み強制＋1 行記録）/ 再現性・影響度が中以上（低→スキップ）/ **新規性**（読者の行動が既存と同一なら `Helpful` +1 のみ。domainは主体・条件・例外・確認状態が違えば別）/ **抽象度下限**（固有名なしで1段上げ再判定、上げすぎ棄却）/ **一回性のインシデント叙述は Playbook に書かない**（TROUBLESHOOTING/runbookへ）。
 
 `FF_JEV_MODE=on` の候補は [triage](references/curate.md#triage) で先に選別する。`off` は従来経路・出力とバイト同一。[索引方式別の照合](references/curate.md#索引方式)で他カテゴリも確認する。**重複** → `Helpful` +1 / **矛盾（非domain）** → 既存を `deprecated` にして新エントリ / **新規** → Phase 3。**Reuse 記録の反映**: PR body の「参照して役立った」既存 ACE ID があれば `Helpful` を +1（候補 0 件でも行う）。
 
@@ -116,7 +116,7 @@ MCP: 取得値: MCP の PR diff/body/全comments/reviews と関連Issue本文。
 
 #### 4-b-0. 追記前にブロック上限の超過を予測する（必須・停止点）
 
-`/ace-curate` は追加のみ。整理に必要な `/ace-refine` の承認必須は正しく、変えないため超える前に止める。
+`/ace-curate` は追加のみ（整理は `/ace-refine` の役割で承認必須は正しく、変えない）。超える前に止める。
 
 ```bash
 # 閾値も件数の数え方も二重に持たない（正本は check-category-size）
@@ -177,7 +177,7 @@ commit_type="knowledge"
 if [[ "$ACE_MODE" == sources ]]; then origin=(--issue "${ISSUE_NUMBER:?}"); else origin=(--pr "${PR_NUMBER:?}"); fi
 protected=0   # 保護判定は手順 1 で済み、保護時は知見ブランチ上にいる
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit add --ace-playbook docs/08-knowledge/PLAYBOOK.md --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" ${origin[@]+"${origin[@]}"} --category "<category[, category...]>" --type "${commit_type}" || exit 1
-ace_defer="${ACE_DEFER_TO_RETRO:-0}"   # 事前注入 hook が 1 を指示した回だけ add で止め /retrospective へ合流
+ace_defer="${ACE_DEFER_TO_RETRO:-0}"   # 1 を明示した回だけ add で止め /retrospective へ合流
 if [[ "$ace_defer" == 1 ]]; then echo "commit と push は /retrospective の書き込みへ合流させます"; exit 0; fi
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit commit --type "${commit_type}" ${origin[@]+"${origin[@]}"} || exit 1
 current_branch="$(git branch --show-current)" || exit 1
@@ -191,12 +191,12 @@ case "$push_rc" in
 esac
 ```
 
-`KNOWLEDGE_CI=` が未完了なら待ち、`failure` なら revert ではなく ACE コミットを前進で直して push し直す。**任意エスカレーション — chore PR**（**default branch が保護されている場合はこの経路が必須**）の新規ブランチは references/curate.md の fence で即 commit する。既存知見ブランチの保留は同じブランチで `/retrospective` へ渡す。`knowledge:` 付き PLAYBOOK 単独コミットの `<default-branch>` 直 push は意図的フローであり、直 push 禁止ルールとは別物。
+`KNOWLEDGE_CI=` が未完了なら待ち、`failure` なら revert ではなく ACE コミットを前進で直して push し直す。**任意エスカレーション — chore PR**（**default branch が保護されている場合はこの経路が必須**）の新規ブランチは references/curate.md の fence で即 commit する。既存知見ブランチの保留は同じブランチで `/retrospective` へ渡す。`knowledge:` 付き PLAYBOOK 単独コミットの `<default-branch>` 直 push は意図的フローであり、直 push 禁止とは別物。
 
 ### 6. 結果レポートと次のステップ
 
-[結果レポート](references/curate.md#結果レポート)に従い、domain は評価済み（候補N件）/ 未実施（理由）、source の取得 / 未確認、登録 / push / CI を分けて報告する。ACE 完了後、ワークフローチェーンの末尾として `/retrospective` を実行する（`/merge-cleanup` → `/ace-curate` → `/retrospective`）。メタ知見は ACE Playbook ではなく `/retrospective` の提案経路で扱う。
+[結果レポート](references/curate.md#結果レポート)に従い、domain は評価済み（候補N件）/ 未実施（理由）、A/D 破棄理由、source・登録/push/CI を報告。既定チェーンは `/merge-cleanup` → `/retrospective`（B/C 候補がある PR だけ挟む）。実行後は `/retrospective` へ進む。メタ知見は ACE Playbook ではなく `/retrospective` の提案経路で扱う。
 
 ## 注意事項
 
-追記は**末尾のみ**、既存本文の書き換えは禁止（整理は `/ace-refine`）。Helpful/Harmful は**インクリメントのみ**。候補0でもReuse反映し、「知見なし」と報告。
+追記は**末尾のみ**（既存書換え禁止、整理は `/ace-refine`）。Helpful/Harmful は増分のみ。候補 0 でも Reuse 反映し「知見なし」と報告。

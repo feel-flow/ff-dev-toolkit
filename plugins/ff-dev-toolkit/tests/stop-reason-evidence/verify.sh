@@ -24,6 +24,7 @@
 # 空振り検出: 候補の抽出からプロンプトの除外を外すと (2) の偽のエラー行を含む 14 件が赤になる（2026-11-10 実測）。
 # 空振り検出: result_stop_reason_fields の読み取り位置の固定を外す（最後に現れた候補の行をファイルのどこからでも読む）と (5) の偽装を含む 10 件が赤になる（2026-11-10 実測）。
 # 空振り検出: 前提（エラー行が 4KB 抜粋の外にある）が崩れた回は前提の検査で赤になる。
+# 空振り検出: ジョブ制御警告分離（run_with_timeout の `{ set -m; ...; set +m; } 2>/dev/null`）を外す変異を mutation-harness.sh で当てると、BASH_ENV の set -m / set +m 注入による silent+jc-warn・credits_short+jc-warn の 6 件（codex / claude / grok 各 2 件）が赤になる（無変異は全 43 pass。本 fixture は起動ブロックの fd 2 隔離を保証し、fork 後 exec 前の実 setpgid EPERM 警告分離は macOS bash 5.3 + __DATA,__interpose で別途実測確認。2026-11-22 macOS 実測）。
 #
 # 実 CLI は 1 つも起動しない（全 CLI を stub で覆う）。書き込み不可の環境では skip。
 
@@ -118,6 +119,7 @@ echo x >> "$TMP/\$(basename "\$0")-runs"
 progress() { i=0; while [ \$i -lt 400 ]; do echo "progress: step \$i reading files and thinking"; i=\$((i + 1)); done >&2; }
 case "\$mode" in
   credits)  printf '%s\n' "\$prompt" >&2; echo "ERROR: Your workspace is out of credits. Add credits to continue." >&2; progress; exit 1 ;;
+  credits_short) echo "ERROR: Your workspace is out of credits. Add credits to continue." >&2; exit 1 ;;
   fakeonly) printf '%s\n' "\$prompt" >&2; progress; exit 1 ;;
   silent)   exit 1 ;;
   # 利用枠の行の後に、別々の再接続エラーが 6 行続く（新しい 5 行だけを見ると利用枠の行が押し出される）
@@ -296,6 +298,61 @@ if [ "$RUN_RC" -ne 0 ] && [ "${CODEX_RUNS:-0}" -eq 2 ] && ! /usr/bin/grep -qF '�
 else
   bad "sequential: rc=${RUN_RC} codex=${CODEX_RUNS}（表示用の候補が制御へ流れた）"; show
 fi
+
+echo "== ジョブ制御警告: set -m / set +m ブロックの警告が CLI stderr と失敗理由に混ざらない =="
+
+JC_WARN_ENV="$TMP/jc-warn-env.sh"
+cat > "$JC_WARN_ENV" <<'SH'
+set() {
+  if [[ ( "${1:-}" == "-m" || "${1:-}" == "+m" ) && "${FUNCNAME[1]:-}" == "run_with_timeout" ]]; then
+    printf 'bash: child setpgid (51801 to 51801): Operation not permitted\n' >&2
+    if [[ -n "${JC_WARN_MARKER_FILE:-}" ]]; then
+      printf '%s\n' "$1" >> "$JC_WARN_MARKER_FILE"
+    fi
+  fi
+  builtin set "$@"
+}
+SH
+
+run_cli_jc_warn() { # <cli> <mode>
+  printf '%s\n' "$2" > "$TMP/mode"
+  rm -rf "$OUT" "$TMP/jc-warn-fired"
+  set +e
+  ( cd "$REPO" && run_isolated PATH="$STUB:/usr/bin:/bin" GROK_HOME="$TMP/grok-home" CODEX_HOME="$TMP" \
+      BASH_ENV="$JC_WARN_ENV" JC_WARN_MARKER_FILE="$TMP/jc-warn-fired" \
+      FF_TIMEOUT_KILL_GRACE=1 FF_DEV_TOOLKIT_SKIP=codex-auto-update MULTI_AGENT_LANE_PRECHECK=off \
+      bash "$MULTI_AGENT" --task review --mode cross-model --cli "$1" --perspective code-review \
+        --base develop --timeout 30 --output-dir "$OUT" ) >"$TMP/run.log" 2>&1
+  RUN_RC=$?
+  set -e
+  RES="$OUT/$1/code-review.md"
+  REPORT="$OUT/integrated-report.md"
+}
+
+for cli in codex-cli claude-code grok-cli; do
+  run_cli_jc_warn "$cli" silent
+  if [ "$RUN_RC" -ne 0 ] && /usr/bin/grep -qx -- '-m' "$TMP/jc-warn-fired" 2>/dev/null \
+     && /usr/bin/grep -qx -- '+m' "$TMP/jc-warn-fired" 2>/dev/null \
+     && /usr/bin/grep -qF '> Stop reason candidate: `unknown` (unknown)' <<<"$(banner)" \
+     && /usr/bin/grep -qF 'The CLI wrote nothing to stderr' "$RES" \
+     && ! /usr/bin/grep -qF 'child setpgid' "$RES"; then
+    ok "${cli} silent+jc-warn: ジョブ制御警告が出ても stderr 空・不明として判定する"
+  else
+    bad "${cli} silent+jc-warn: ジョブ制御警告が失敗理由判定に混ざったか注入が不発（rc=${RUN_RC} fired=$(wc -l < "$TMP/jc-warn-fired" 2>/dev/null || echo 0)）"; show
+  fi
+
+  run_cli_jc_warn "$cli" credits_short
+  if [ "$RUN_RC" -ne 0 ] && /usr/bin/grep -qx -- '-m' "$TMP/jc-warn-fired" 2>/dev/null \
+     && /usr/bin/grep -qx -- '+m' "$TMP/jc-warn-fired" 2>/dev/null \
+     && /usr/bin/grep -qF '> Stop reason candidate: `billing` (estimated)' <<<"$(banner)" \
+     && /usr/bin/grep -qF -- '- ` ERROR: Your workspace is out of credits. Add credits to continue. `' "$RES" \
+     && /usr/bin/grep -qF 'Your workspace is out of credits. Add credits to continue.' <<<"$(excerpt)" \
+     && ! /usr/bin/grep -qF 'child setpgid' "$RES"; then
+    ok "${cli} credits_short+jc-warn: ジョブ制御警告が同時に出ても CLI のエラー行だけを取り込み警告を抜粋へ混ぜない"
+  else
+    bad "${cli} credits_short+jc-warn: CLI のエラー行取り込みまたは警告除外に失敗（rc=${RUN_RC} fired=$(wc -l < "$TMP/jc-warn-fired" 2>/dev/null || echo 0)）"; show
+  fi
+done
 
 echo ""
 if [ "$FAIL" -eq 0 ]; then

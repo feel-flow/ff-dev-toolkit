@@ -211,23 +211,28 @@ guard_and_select_delegation_generation() {
   head="$(git -C "$REPO_ROOT" rev-parse HEAD)" || return 1
   if [[ -n "$DELEGATION_PREVIOUS_GENERATION" ]]; then
     pending="$(delegation_pending_entries "$DELEGATION_PREVIOUS_GENERATION")" || return 1
-    if [[ "$RESUME" == true && "$head" == "$DELEGATION_PREVIOUS_HEAD" && -n "$pending" \
+    if [[ "$head" == "$DELEGATION_PREVIOUS_HEAD" && -n "$pending" \
       && "$RESUME_IDENTITY" != "$DELEGATION_PREVIOUS_IDENTITY" ]]; then
-      # Adopt the saved generation and its resume cache when only the base moved forward
-      # and the fixed diff is unchanged. The cache key is the original identity.
+      # Adopt the saved generation (and its resume cache when resuming) when only
+      # the base moved forward and the fixed diff is unchanged. The cache key is
+      # the original identity. This also covers RESUME=false reruns such as
+      # --require-prior-review / --continue-review so completed delegated
+      # responses are adopted instead of restarting Stage 2.
       if resume_base_advance_compatible "$DELEGATION_PREVIOUS_MANIFEST" "$RESUME_INPUT_MANIFEST"; then
         RESUME_IDENTITY="$DELEGATION_PREVIOUS_IDENTITY"
         return 0
       fi
-      echo 'ERROR: --resume input differs from the initial host delegation at the same HEAD.' >&2
-      print_resume_manifest_changes "$DELEGATION_PREVIOUS_MANIFEST" "$RESUME_INPUT_MANIFEST"
-      echo '       To adopt these responses, restore the changed input components and the original config-selection environment.' >&2
-      echo '       Repeat the initial command (including --route and --description), then add --resume:' >&2
-      printf '       %s\n' "$DELEGATION_PREVIOUS_INVOCATION" >&2
-      echo '       For intentional input changes, keep these responses and start a new round without --resume.' >&2
-      echo '       No response, handoff, report or cache was changed.' >&2
-      print_resume_base_reject_guidance "$DELEGATION_PREVIOUS_MANIFEST" "$RESUME_INPUT_MANIFEST"
-      return 1
+      if [[ "$RESUME" == true ]]; then
+        echo 'ERROR: --resume input differs from the initial host delegation at the same HEAD.' >&2
+        print_resume_manifest_changes "$DELEGATION_PREVIOUS_MANIFEST" "$RESUME_INPUT_MANIFEST"
+        echo '       To adopt these responses, restore the changed input components and the original config-selection environment.' >&2
+        echo '       Repeat the initial command (including --route and --description), then add --resume:' >&2
+        printf '       %s\n' "$DELEGATION_PREVIOUS_INVOCATION" >&2
+        echo '       For intentional input changes, keep these responses and start a new round without --resume.' >&2
+        echo '       No response, handoff, report or cache was changed.' >&2
+        print_resume_base_reject_guidance "$DELEGATION_PREVIOUS_MANIFEST" "$RESUME_INPUT_MANIFEST"
+        return 1
+      fi
     fi
     if [[ "$head" == "$DELEGATION_PREVIOUS_HEAD" && "$RESUME_IDENTITY" == "$DELEGATION_PREVIOUS_IDENTITY" ]]; then
       return 0
@@ -326,7 +331,8 @@ print_delegation_step2_guidance() {
   echo "      output-file bound at launch (do NOT copy from <task-notification> text," >&2
   echo "      which escapes <, > and & into &lt;, &gt; and &amp; that --resume refuses):" >&2
   printf '      bash %s --extract-subagent-response <transcript.jsonl> --output-file <output-file>\n' "$(shell_quote "${SCRIPT_DIR}/multi-agent.sh")" >&2
-  echo "      (For Antigravity, pass transcript_full.jsonl when transcript.jsonl truncates content/tool_calls.)" >&2
+  echo "      (Claude Code Agent output_file symlinks into ~/.claude/projects/.../subagents/*.jsonl are resolved automatically;" >&2
+  echo "       for Antigravity, pass transcript_full.jsonl when transcript.jsonl truncates content/tool_calls.)" >&2
   echo "      The subagent does not create or modify files." >&2
 }
 
@@ -336,6 +342,7 @@ run_extract_subagent_response() {
     return 1
   fi
   python3 -I -B - "$EXTRACT_SUBAGENT_RESPONSE" "$EXTRACT_OUTPUT_FILE" <<'PY'
+import errno
 import json
 import os
 import pathlib
@@ -349,7 +356,7 @@ def fail(msg):
     sys.exit(1)
 
 
-def check_non_symlink_ancestors(target_path):
+def to_lexical_abs(target_path):
     norm = target_path.rstrip("/") or "/"
     raw_p = pathlib.Path(norm)
     if not raw_p.is_absolute():
@@ -362,11 +369,12 @@ def check_non_symlink_ancestors(target_path):
                     base_dir = pwd
             except OSError:
                 pass
-        p = pathlib.Path(base_dir, raw_p)
-    else:
-        p = raw_p
-    if p.is_symlink():
-        fail(f"refusing symlink target: {target_path}")
+        return pathlib.Path(base_dir, raw_p)
+    return raw_p
+
+
+def check_non_symlink_ancestors(target_path, allow_target_symlink=False):
+    p = to_lexical_abs(target_path)
     # macOS maps /tmp -> /private/tmp, /var -> /private/var, /etc -> /private/etc.
     system_links = {pathlib.Path("/tmp"), pathlib.Path("/var"), pathlib.Path("/etc"), pathlib.Path("/")}
     for anc in p.parents:
@@ -376,6 +384,203 @@ def check_non_symlink_ancestors(target_path):
             fail(f"refusing symlink directory component: {anc}")
         if anc.exists() and not anc.is_dir():
             fail(f"parent component is not a directory: {anc}")
+    if p.is_symlink():
+        if not allow_target_symlink:
+            fail(f"refusing symlink target: {target_path}")
+        return resolve_allowed_transcript_symlink(p, target_path)
+    return str(p), None, None
+
+
+def allowed_transcript_roots():
+    roots = []
+    candidates = []
+    try:
+        candidates.append(pathlib.Path.home() / ".claude" / "projects")
+    except (OSError, RuntimeError):
+        pass
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR", "")
+    if cfg and os.path.isabs(cfg):
+        candidates.append(pathlib.Path(cfg) / "projects")
+    for cand in candidates:
+        try:
+            if cand.is_dir():
+                roots.append(pathlib.Path(os.path.realpath(str(cand))))
+        except OSError:
+            continue
+    return roots
+
+
+def resolve_allowed_transcript_symlink(link_path, original_target):
+    try:
+        resolved = pathlib.Path(os.path.realpath(str(link_path)))
+    except OSError:
+        fail(f"refusing symlink target: {original_target}")
+    matched_root = None
+    matched_rel = None
+    for root in allowed_transcript_roots():
+        try:
+            rel = resolved.relative_to(root)
+        except ValueError:
+            continue
+        if len(rel.parts) >= 3 and rel.parts[-2] == "subagents" and resolved.suffix == ".jsonl" and resolved.name != ".jsonl":
+            matched_root = root
+            matched_rel = rel
+            break
+    if matched_root is None or matched_rel is None:
+        fail(f"refusing symlink target: {original_target}")
+    try:
+        st = os.lstat(str(resolved))
+    except OSError:
+        fail(f"refusing symlink target: {original_target}")
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        fail(f"refusing symlink target: {original_target}")
+    return str(resolved), matched_root, matched_rel
+
+
+def read_regular_utf8_confined(root_path, rel_path, display_path):
+    # Open the allowed root directory and traverse each path component with O_NOFOLLOW
+    # via dir_fd so an intermediate component cannot be swapped for an outside symlink
+    # between realpath() validation and open().
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    odir = getattr(os, "O_DIRECTORY", 0)
+    supports_dir_fd = os.open in getattr(os, "supports_dir_fd", set())
+    if not supports_dir_fd or not nofollow:
+        return read_regular_utf8(str(root_path / rel_path), display_path)
+    dfd = None
+    fd = None
+    try:
+        dfd = os.open(str(root_path), os.O_RDONLY | odir | nofollow)
+        parts = rel_path.parts
+        for comp in parts[:-1]:
+            next_dfd = os.open(comp, os.O_RDONLY | odir | nofollow, dir_fd=dfd)
+            os.close(dfd)
+            dfd = next_dfd
+        fd = os.open(parts[-1], os.O_RDONLY | nofollow, dir_fd=dfd)
+        os.close(dfd)
+        dfd = None
+        fst = os.fstat(fd)
+        if not stat.S_ISREG(fst.st_mode):
+            fail(f"refusing symlink target: {display_path}")
+        with os.fdopen(fd, "rb") as f:
+            fd = None
+            return f.read().decode("utf-8")
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            fail(f"refusing symlink target: {display_path}")
+        fail(f"cannot read UTF-8 transcript {display_path}: {exc}")
+    except UnicodeDecodeError as exc:
+        fail(f"cannot read UTF-8 transcript {display_path}: {exc}")
+    finally:
+        for handle in (fd, dfd):
+            if handle is not None:
+                try:
+                    os.close(handle)
+                except OSError:
+                    pass
+
+
+def read_regular_utf8(read_path, display_path):
+    try:
+        lst = os.lstat(read_path)
+    except OSError as exc:
+        fail(f"cannot stat transcript {display_path}: {exc}")
+    if stat.S_ISLNK(lst.st_mode):
+        fail(f"refusing symlink target: {display_path}")
+    if not stat.S_ISREG(lst.st_mode):
+        fail(f"transcript is not a regular file: {display_path}")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(read_path, flags)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            fail(f"refusing symlink target: {display_path}")
+        fail(f"cannot read UTF-8 transcript {display_path}: {exc}")
+    try:
+        fst = os.fstat(fd)
+        if not stat.S_ISREG(fst.st_mode) or (fst.st_dev, fst.st_ino) != (lst.st_dev, lst.st_ino):
+            fail(f"transcript changed or is not a regular file: {display_path}")
+        with os.fdopen(fd, "rb") as f:
+            fd = None
+            return f.read().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        fail(f"cannot read UTF-8 transcript {display_path}: {exc}")
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def release_completed_delegated_lane(output_path, out_mtime_ns):
+    try:
+        resolved_out = pathlib.Path(os.path.realpath(output_path))
+    except OSError:
+        return
+    delegated_dir = None
+    for anc in resolved_out.parents:
+        if anc.name == ".delegated":
+            delegated_dir = anc
+            break
+    if delegated_dir is None:
+        return
+    cli_dir = delegated_dir.parent
+    out_dir = cli_dir.parent
+    if out_dir == cli_dir:
+        return
+    lane_dir = out_dir / ".review-in-flight.d"
+    try:
+        out_st = os.lstat(str(out_dir))
+        lane_st = os.lstat(str(lane_dir))
+    except OSError:
+        return
+    if stat.S_ISLNK(out_st.st_mode) or not stat.S_ISDIR(out_st.st_mode):
+        return
+    if stat.S_ISLNK(lane_st.st_mode) or not stat.S_ISDIR(lane_st.st_mode):
+        return
+    try:
+        if pathlib.Path(os.path.realpath(str(lane_dir))) != pathlib.Path(os.path.realpath(str(out_dir))) / ".review-in-flight.d":
+            return
+        entries = list(os.scandir(str(lane_dir)))
+    except OSError:
+        return
+    out_mtime_sec = out_mtime_ns // 1_000_000_000
+    for entry in entries:
+        if not entry.name.endswith(".lane"):
+            continue
+        lane_path = entry.path
+        try:
+            st = os.lstat(lane_path)
+            if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+                continue
+            # Match guard-review-in-flight (-nt): release only when the written response
+            # is strictly newer than the lane file so a same-timestamp or newer relaunch stays intact.
+            if st.st_mtime_ns >= out_mtime_ns:
+                continue
+            with open(lane_path, "r", encoding="utf-8", errors="replace") as lf:
+                lines = lf.read().splitlines()
+        except OSError:
+            continue
+        if "perspectives=delegated-review" not in lines:
+            continue
+        lane_of = ""
+        started_epoch = None
+        for line in lines:
+            if line.startswith("output_file="):
+                lane_of = line[len("output_file="):]
+            elif line.startswith("started_epoch="):
+                raw_ep = line[len("started_epoch="):]
+                if raw_ep.isdigit():
+                    started_epoch = int(raw_ep)
+        if not lane_of:
+            continue
+        if started_epoch is not None and started_epoch > out_mtime_sec:
+            continue
+        try:
+            if pathlib.Path(os.path.realpath(lane_of)) == resolved_out:
+                os.unlink(lane_path)
+        except OSError:
+            continue
 
 
 def extract_claude(rows):
@@ -600,18 +805,11 @@ def main():
     transcript_path = sys.argv[1]
     output_path = sys.argv[2]
 
-    check_non_symlink_ancestors(transcript_path)
-    try:
-        st = os.stat(transcript_path)
-    except OSError as exc:
-        fail(f"cannot stat transcript {transcript_path}: {exc}")
-    if not stat.S_ISREG(st.st_mode):
-        fail(f"transcript is not a regular file: {transcript_path}")
-    try:
-        with open(transcript_path, "rb") as f:
-            raw_jsonl = f.read().decode("utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        fail(f"cannot read UTF-8 transcript {transcript_path}: {exc}")
+    resolved_transcript, confined_root, confined_rel = check_non_symlink_ancestors(transcript_path, allow_target_symlink=True)
+    if confined_root is not None and confined_rel is not None:
+        raw_jsonl = read_regular_utf8_confined(confined_root, confined_rel, transcript_path)
+    else:
+        raw_jsonl = read_regular_utf8(resolved_transcript, transcript_path)
 
     lines = raw_jsonl.splitlines()
     if not lines:
@@ -686,6 +884,11 @@ def main():
         fail(f"cannot read back written response {output_path}: {exc}")
     if readback != raw_out:
         fail(f"read-back byte mismatch at {output_path}")
+    try:
+        out_mtime_ns = os.lstat(output_path).st_mtime_ns
+    except OSError:
+        return
+    release_completed_delegated_lane(output_path, out_mtime_ns)
 
 
 if __name__ == "__main__":

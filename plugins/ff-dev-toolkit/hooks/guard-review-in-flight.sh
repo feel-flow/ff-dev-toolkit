@@ -716,10 +716,23 @@ if [ "$LANE_RECLAIMED" -gt 0 ]; then
 fi
 
 undetermined_prefix=""
-case "${WRITE_REASON:-}${write_note:-}" in
-  *判定できません*)
+case "${WRITE_REASON:-}" in
+  '書き込み先を判定できません（変数展開:'* | '書き込み先を判定できません（コマンド置換:'*)
+    undetermined_prefix="書き込み先の値を前の呼び出しで求め、ツリー外への書き込みなら、絶対パスのリテラルで指定して再実行してください。
+"
+    ;;
+  '書き込み先を判定できません（スクリプトを読めない（'* | \
+  '書き込み先を判定できません（直接実行するスクリプトを読めない（'* | \
+  '書き込み先を判定できません（スクリプトのパスを解決できない（'*)
     undetermined_prefix="ファイルは Write ツールで作り、実行は別の呼び出しにしてください。
 "
+    ;;
+esac
+# 完了イベントを受け取れないホストにも、PreToolUse の拒否理由で同じ手順を届ける。
+case "$tool" in
+  Edit | Write | MultiEdit | NotebookEdit)
+    undetermined_prefix="編集中の内容は、作業ツリー外の scratchpad へ差分やメモとして保存してください。レビューがすべて完了したら、対象ファイルを読み直して変更を適用してください。
+${undetermined_prefix}"
     ;;
 esac
 # 停止文の次の一手は、その呼び出しが実際に通せる形だけを案内する（ACE-2615-2）。コマンド先頭の

@@ -16,13 +16,14 @@
 #   rule    <node-id>   <キー>   <値>
 #     choice ノードの機械判定規則。root の 4 キーは route.sh のヘッダが意味を持つ
 #
-# 制約（--check が固定する）: 深さ（root から葉までの辺数）≤ 4、葉 ≤ 60、
+# 制約（--check が固定する）: 深さ（root から葉までの辺数）≤ 4、葉 ≤ 61、
 # 実在しない葉 / 到達不能なノード / 木に載っていないスキル・hook / 同じ (node, key) の rule の重複 /
 # 未知の rule キーはいずれも赤。葉の上限は「27 スキル + 起票時の 16 hook + 熟慮へ + アーカイブ候補
 # = 45」から、Wave 0 が hook を 2 本足したぶんを含めて 50 へ置いた。28 本目のスキル（gh-auth-doctor）で
 # 「28 スキル + 22 hook + 熟慮へ = 51」になったので、上限だけを 55 へ補正した（深さの上限は据え置き）。
 # 29 本目のスキル（observation-refine）で「29 スキル + 26 hook + 熟慮へ = 56」になったので、同じ導出で
 # 上限を 60 へ補正した（深さの上限は据え置き。hook は 22 本から 26 本へ増えており、55 は 28 スキルの時点で埋まっていた）。
+# verify-gate の追加時は実在する葉が 61 本になったため上限を 1 本増やした。
 
 # ---- 根: 経路分岐（fast / full / none）------------------------------------------------
 # 規則の評価順（route.sh）: contract-path に当たる path が 1 つでもあれば full →
@@ -87,6 +88,7 @@ answer	implement	none	none
 node	review	select	レビュー段で何を通すか
 answer	review	cross-review	skill:multi-review
 answer	review	staged-check	skill:pre-commit-check
+answer	review	project-gate	skill:verify-gate
 answer	review	out-of-scope	skill:out-of-scope-issue
 answer	review	deliberate	doc:docs-template/05-operations/deployment/workflow-principles.md#原則4: 定型判断の即決と熟慮の起動条件
 answer	review	none	none
@@ -145,6 +147,7 @@ answer	bash-guard	literal-write	hook:guard-literal-write
 answer	bash-guard	credential-output	hook:guard-credential-output
 answer	bash-guard	wsl-shell	hook:guard-wsl-shell
 answer	bash-guard	default-branch-commit	hook:guard-default-branch-commit
+answer	bash-guard	issue-assign	hook:guard-issue-assign
 answer	bash-guard	issue-collision	hook:guard-issue-collision
 answer	bash-guard	gate-in-flight	hook:guard-gate-in-flight
 answer	bash-guard	review-lock	hook:guard-review-in-flight

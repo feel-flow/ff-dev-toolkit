@@ -1,13 +1,14 @@
 # 別 worktree の baseline 実行と自動待機（Git Workflow ステップ6）:
 # PR 作成直後の baseline 全件ゲートは PR HEAD へ detach した一時 worktree で回し、
-# 元の作業ツリーを凍結せずに全レビュー終端後すぐ修正へ着手・非 .sh commit（.sh 変更時は
-# FF_RUN_ALL_WAIT=1 で run-all/verify.sh 待機）できる手順と、gate-record 引継を固定する。
+# 元の作業ツリーを凍結せずに全レビュー終端後すぐ修正へ着手・commit（.sh 変更時の
+# run-all/verify.sh も baseline を待たない）できる手順と、gate-record 引継を固定する。
 section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	baseline の全件ゲートは、元の作業ツリーを離れて **PR HEAD へ detach した一時 worktree** で回すのを既定とする	Git Workflow ステップ6 が別 detach worktree での baseline 実行を既定にする
 section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	git worktree add --detach	Git Workflow ステップ6 が detach worktree の作成手順を持つ
 section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	npm ci --prefix	Git Workflow ステップ6 が一時 worktree 側での依存導入手順を持つ
 section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	FF_RUN_ALL_WAIT=1 bash	Git Workflow ステップ6 が自動待機付き baseline 起動形を持つ
-section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	元の作業ツリーは baseline 完走を待たず、全レビュー終端後すぐ修正に着手でき、非 `.sh` 変更の `/pre-commit-check` と commit も即座に進められる	Git Workflow ステップ6 が非 .sh の即時修正・commit 可と .sh 時の FF_RUN_ALL_WAIT=1 待機を明記する
-section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	FF_RUN_ALL_WAIT=1 bash plugins/ff-dev-toolkit/tests/run-all/verify.sh	Git Workflow ステップ6 が .sh 変更時の /pre-commit-check 自動待機コマンドを持つ
+section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	元の作業ツリーは baseline 完走を待たず、全レビュー終端後すぐ修正に着手でき、非 `.sh` 変更の `/pre-commit-check` と commit も即座に進められる	Git Workflow ステップ6 が baseline の完走を待たない即時修正・commit を明記する
+section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	`bash plugins/ff-dev-toolkit/tests/run-all/verify.sh` も、baseline の完走を待たずに回して commit へ進める	Git Workflow ステップ6 が .sh 変更時の /pre-commit-check を baseline の完走待ちにしない
+section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	同じマシンで 1 本に限るのは全件ゲート・公開検査・リリースのあいだで、ランナーの自己検証は数えない	Git Workflow ステップ6 が 1 本制限の対象からランナーの自己検証だけを外す
 section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	rev-parse --absolute-git-dir	Git Workflow ステップ6 が一時 worktree の git-dir 解決方法を持つ
 section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	ff-dev-toolkit/gate-record	Git Workflow ステップ6 が正しい記録ファイル名 gate-record を指す
 section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	baseline の赤とレビュー指摘を **1 つの fix commit に束ね**	Git Workflow ステップ6 が 1 fix commit への集約契約を維持する

@@ -20,6 +20,47 @@
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-11-23
+
+### 破壊的変更
+
+- `hooks/retrospective-context.sh` の事前注入から毎 PR の `/ace-curate` と `ACE_DEFER_TO_RETRO` の前提を外したため、`ACE_DEFER_TO_RETRO` を公開契約（5-1）から内部（5-2）へ移しました。既定チェーンは `/merge-cleanup` → `/retrospective` となり、`/ace-curate` は原則から推論で導けない知見（A〜D の B / C）がある PR のみ実行します。同じターンで `/ace-curate` の追記を `/retrospective` のコミットへ合流させたい導入先は、`/ace-curate` 実行時に `ACE_DEFER_TO_RETRO=1` を明示指定してください
+
+### 追加
+
+- `finish.sh security-record --body-file ... [--base ...]` を追加し、PR 作成前でも `finish.sh precheck` と同じ関数で `SECURITY_RECORD_GATE=` を判定できるようにした。
+- `finish.sh precheck` にクロスモデルレビュー未実施時の再プローブ記録検査（`CROSS_MODEL_REPROBE_GATE`）を追加し、PR の head コミットより新しい `再プローブ: PREFLIGHT=...（タイムゾーン付き時刻）` が無い場合は `PRECHECK=blocked` で案内するようにした。
+- 未アサインの open Issue に対するブランチ作成（`git switch -c` / `git checkout -b` / `git worktree add -b`）を実行前に止める `PreToolUse` ガード（`hooks/guard-issue-assign.sh`）を追加しました。同一呼び出しの前段（失敗分岐を除く）での自己アサインは免除し、GHES の `--hostname` 再照会にも対応します。照会不能・`gh` 不在・コマンド解析不能は止めずに理由を出し、抜け道は区間先頭の `FF_ISSUE_ASSIGN_ACK=1`、無効化は `FF_DEV_TOOLKIT_SKIP=issue-assign` です
+- `/retrospective` の提案生成へ「除去 → 代替・層別化 → 構造への組み込み → ルール追加（最終手段）」の引き算・代替ファースト検討順・時間損失時の前提問い直し・トレードオフ記載・Keep 拡張を追加し、ワークフロー正本（`workflow-principles.md` / `git-workflow.md`）へ検証強度のリスク層別化（3 層モデル）を明文化、`tests/run-all.sh` の `FF_RUN_ALL_CHANGED` クリーン通過時に `COVERS_DIFF` を記録するよう接続しました
+- 対応プロジェクトで「品質ゲートを回して」と依頼すると、`verify-gate` スキルが読み込んだ toolkit のパスを `pnpm verify:gate` に渡し、検証結果と HEAD の記録を確認します。
+- `/create-issue` の AI 工数の目安（`skills/create-issue/references/estimation.md`）に、新規 ADR と移行・互換契約を策定する設計専用（docs-only）の行を追加しました。後続実装を新しい bundle に分ける作業は、この Issue で行うときだけ同じ行に含めます。参照文書と現行コードの照合および執筆に、レビューと再照合を執筆の 1/3 から 1/2 で積みます。決定後の文書同期の行と、実装を含む複数コンポーネント横断の行とは分け、契約の照合と設計上の不変条件の固定にスコープを限ります。
+
+### 変更
+
+- `/close-issue` は、未チェックで precheck が止まったとき、その停止の EFFORT 行を使ってチェックと実績を 1 回の本文編集で直す。未記入の実績も同じ案内に含める。
+- `scripts/mutation-harness.sh` が対照（変異なし）の失敗時に失敗行と出力末尾を表示し、既定では plugin root handoff 環境変数を子 suite へ継承せず、`--remap-plugin-root` 指定時のみ写し側へ張り替えるように改善しました
+- `tests/lib/skill-byte-guard.sh` が SKILL 本線の容量上限超過時に、テスト suite の針を持たない行をバイト数降順で短縮候補として提示し、針の抽出に失敗した場合は候補を出さず理由のみを表示（fail-closed）するように改善しました
+- ワークフローチェーンの既定を `/merge-cleanup` → `/retrospective` とし、`/ace-curate` は原則から推論で導けない知見（A〜D の B / C）がある PR のみ実行する運用へ改めました
+- `/ace-curate` の Phase 2（Reflect）に A〜D の 4 区分判定を追加し、A（原則から推論で導ける）/ D（手続きのための手続き）の候補は破棄理由つきで落とし、C（1 回の失敗が取り返せない）は仕組みで強制して記録は 1 行に留める規則を明記しました
+- `hooks/retrospective-context.sh` の事前注入文から毎 PR の `/ace-curate` と `ACE_DEFER_TO_RETRO=1` の前提を外しました
+- `docs-template/05-operations/deployment/ace-cycle.md` の「反映の時期」に、開発 PR が多い導入先向けの推奨形として「まとめて（`mode=batch`）＋週 1 回の flush（`warn_after_days` の既存警告を合図にする）」を明示しました
+- `/retrospective` の改善提案が規則を足す場合は、消す規則か強制する仕組みを必ず添える規則を追加しました
+- 検証強度の 3 層モデルで、契約面の変更（Tier 2）を文書契約面（Tier 2a）と実行基盤の契約面（Tier 2b）へ分けました。入口規範や配布テンプレートなど契約文書だけの変更は、全件ゲートの代わりに「差分と交差する検査 + 文書横断検査の束」を通して差分を覆った印を記録でき、`finish.sh precheck` が全件ゲートの再実行を求めません。組み込み方は配布テンプレート `plugins/ff-dev-toolkit/docs-template/04-quality/TESTING.md` の「文書契約面を部分ゲートで覆う」にあります。実行基盤の契約面（ランナー・共有ライブラリ・hook 登録・共有依存・CI）の変更は、これまでどおり全件へ倒れます
+- `tests/run-all.sh` の変更ベースの選択（`FF_RUN_ALL_CHANGED`）は、`docs-template/` 配下の Markdown と root の `CLAUDE.md` / `AGENTS.md` だけの変更を全件へ倒さず、文書横断 suite の束を足して実行します。実行基盤の契約面と同時に変えた回、`docs-template/` 配下の Markdown 以外（同梱の実行コード・設定）を変えた回、束が登録一覧と対応しない回は全件へ倒れます
+- `tests/run-all.sh` の変更ベースの選択は、公開同期の直前にだけ明示起動する公開検査（run-all からは常に skip する）を、変更と字面が交差しても選択に入れなくなりました。これまでは skip が必ず 1 件混じるため、プラグイン配下の変更は部分ゲートを通しても差分を覆った印が付きませんでした。外した回は `🎯 選択に入れない suite:` 行で名乗ります
+- ランナーの自己検証 `tests/run-all/verify.sh` を単体で起動したとき、別セッションの全件ゲート・公開検査・リリースが動いていても止まらず、待たなくなりました（`FF_RUN_ALL_WAIT` の指定も要りません）。`.sh` を変えた回のコミット前検査で、ゲート 1 周ぶん待つ必要が無くなります。全件ゲートどうしの排他は変わりません
+
+### 修正
+
+- 並行レビュー中でも、対応する変数展開や読み取り専用のコマンド置換から出力先を特定できる場合は、作業ツリー外へレビューのログを保存できます。書き込みを止めた場合は、出力先の指定方法や、下書きの退避とレビュー完了後の再適用手順を案内します。 [報告](https://github.com/feel-flow/ff-dev-toolkit/issues/164)
+- 全件ゲート（`tests/run-all.sh`）の suite 起動環境を開発者のグローバル／システム git 設定・作者環境変数から隔離し、単体テスト実行由来の `mode=explicit` 記録がゲート回数・時間計測に混入しないようにしました。
+- `hooks/guard-gate-in-flight.sh` と `tests/lib/gate-in-flight.sh` で worktree 走査・`jq` 解析・`git rev-parse` 呼び出しを集約し、worktree が多い環境や高負荷下でも走行中ガードの判定が 30 秒タイムアウトへ到達しにくい構造へ改善しました。
+- `tests/lib/gate-in-flight.sh` のマーカー生存判定で、走査〜読み取り間の通常ファイル消失および生存確認〜時刻取得間のプロセス終了（TOCTOU）を非生存として扱い、実在する読み取り不可ファイルや symlink・生存 PID の時刻取得不能では引き続き fail-closed を維持します。
+- ホスト委譲・外部 CLI レビューの 4 件の不具合を修正しました: Claude Code の Agent ツールが返す transcript 置き場（`~/.claude/projects/.../subagents/*.jsonl` 等）への `output_file` symlink を `--extract-subagent-response` で安全に解決（置き場外・非通常ファイルは引き続き拒否）、抽出成功時に対応する `delegated-review` レーンのみを解放しつつ `guard-review-in-flight` で `--extract-subagent-response` 単独実行を高速・厳格判定、ベースブランチの fast-forward 前進かつ差分不変時に `review-evidence.py finish` と `--resume` なしの委譲再実行でも証跡・前世代を保持、および `run_with_timeout` の `set -m` 起動段のジョブ制御警告を CLI の stderr から分離
+- Grok CLI のレビュー中に、その実行のセッションから確認した推論・ツール実行の状態と経過時間を表示します。
+- `tests/run-all.sh` の標準出力書き込みをサブシェル隔離の再試行付きヘルパ（`ff_stdout_write` / `ff_stdout_retry_cmd`、最大 3 回試行＝初回 1 回＋再試行 2 回。部分出力後の再試行で stdout 出力が重複する場合あり）へ集約し、PTY への大量出力中に `EINTR` 等の書き込みエラーが起きてもランナーが途中終了せず、全 suite 集計・サマリー・鮮度記録（`gate-record`）・fail-closed の終了コード判定まで完走するよう修正しました。
+- `tests/run-all/cases/startup-guards.sh` の case 55 待機テストで固定 `sleep` に依存していたブロッカー解除を待機ログ同期待機（`_c55_wait_for_log`）とシグナルファイルへ置き換え、高負荷時の起動遅延による一過性失敗を防ぎつつ回帰検証（55-R）と標準出力書き込みエラー耐性検証（case 56）を追加しました。
+
 ## [1.12.0] - 2026-11-22
 
 ### 追加

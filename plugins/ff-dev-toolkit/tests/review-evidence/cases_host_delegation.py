@@ -322,3 +322,42 @@ class HostDelegationCases:
         self.assertIsNone(receipt['parent'])
         self.assertIsNone(receipt['prior'])
         self.call('verify', '--required', 'code-review,test-analysis,comprehensive-review')
+
+    def test_prior_only_host_delegation_adopts_on_base_advance_without_resume(self):
+        context = self.delegated_continuation(boundary=True)
+        parent_index = context['cmd'].index('--continue-review')
+        del context['cmd'][parent_index:parent_index + 2]
+        tasks, command = self.continuation_handoff(context)
+        # Base advances fast-forward with an unrelated commit while host subagents run.
+        self.advance_develop_unrelated()
+        result = self.finish_continuation_handoff(context, tasks, command)
+        self.assertEqual(result.returncode, 0, result.stderr[-4000:])
+        self.assertNotIn('was not adopted', result.stderr)
+        self.assertNotIn('<<<FF-DELEGATED-TASKS>>>', result.stdout)
+        receipt = json.loads(self.receipt.read_text())
+        self.assertEqual(set(receipt['results'].values()), {'complete'})
+        self.assertEqual(receipt['prior']['id'], context['prior']['id'])
+        for task in tasks:
+            accepted = self.output / task['cli'] / (task['perspective'] + '.md')
+            self.assertIn('HOST-' + task['perspective'], accepted.read_text())
+        coverage = self.call('verify', '--required', 'code-review,test-analysis,comprehensive-review',
+                             '--prior-required', 'code-review')
+        self.assertEqual(set(coverage.stdout.strip().split(',')),
+                         {'code-review', 'test-analysis', 'comprehensive-review'})
+
+    def test_prior_only_host_delegation_does_not_adopt_when_base_advance_changes_diff(self):
+        context = self.delegated_continuation(boundary=True)
+        parent_index = context['cmd'].index('--continue-review')
+        del context['cmd'][parent_index:parent_index + 2]
+        tasks, command = self.continuation_handoff(context)
+        # Base advances to HEAD, shrinking the diff; prior verification / adoption must reject.
+        self.git('branch', '-f', 'develop', 'HEAD')
+        for task in tasks:
+            Path(task['output-file']).write_text(
+                '## Findings\n- verdict: none\nHOST-' + task['perspective'] + '\n')
+        result = subprocess.run(['bash', '-c', command], capture_output=True, text=True,
+                                env=context['env'], timeout=600)
+        self.assertNotEqual(result.returncode, 0)
+        for task in tasks:
+            self.assertTrue(Path(task['output-file']).is_file(),
+                            'stale delegated response should not have been adopted after diff change')

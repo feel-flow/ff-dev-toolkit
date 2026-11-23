@@ -620,9 +620,12 @@ EOF
 
 # ゲート分: tests/run-all.sh が終了時に scripts/record-gate-minutes.sh で書く gate.tsv
 # （列: issue / gate / epoch / iso / seconds / mode / status / branch / repo）から、その Issue ・
-# そのリポジトリの行の秒を合算して分で出す（端数は 0.5 分以上を切り上げ = 四捨五入。awk の
+# そのリポジトリの正規ゲート起動（mode が fast / full / changed。ADR-094 の通常 PR 向け変更ベース
+# ゲートを含む）の行の秒だけを合算して分で出す（端数は 0.5 分以上を切り上げ = 四捨五入。awk の
 # `%.0f` は偶数丸めで 90 秒が 2 分・150 秒が 2 分になるので使わない）。回数（gate_runs）も添える。
-# 行が無い・読めない・秒が数値でない（そういう行は数えない）ときは (unmeasured)（0 と区別する）。
+# 明示引数の部分実行（mode が explicit 等）は単体検証 fixture 起動や個別 suite 実行の混入を
+# 防ぐため計上しない（OBS-582）。
+# 対象行が無い・読めない・秒が数値でない（そういう行は数えない）ときは (unmeasured)（0 と区別する）。
 metrics_gate_minutes() { # <issue> <metrics_dir> <repo>
   local issue="$1" dir="$2" repo="$3" f="$2/gate.tsv" out
   if [ ! -f "$f" ] || [ ! -r "$f" ]; then
@@ -630,7 +633,7 @@ metrics_gate_minutes() { # <issue> <metrics_dir> <repo>
     return 0
   fi
   out="$(LC_ALL=C awk -F '\t' -v want="$issue" -v repo="$repo" '
-    $1 == want && $2 == "gate" && $9 == repo && $5 ~ /^[0-9]+$/ { total += $5; n++ }
+    $1 == want && $2 == "gate" && $9 == repo && ($6 == "fast" || $6 == "full" || $6 == "changed") && $5 ~ /^[0-9]+$/ { total += $5; n++ }
     END {
       if (n > 0) { printf "gate_runs=%d\ngate_minutes=%d\n", n, int(total / 60 + 0.5) }
       else print "gate_runs=(unmeasured)\ngate_minutes=(unmeasured)"

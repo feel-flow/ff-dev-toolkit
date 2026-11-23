@@ -125,6 +125,256 @@ exit 7
 STUB
   chmod +x "$stub/wc"
   BYTE_STUB=pass BYTE_REAL_GIT="$REAL_GIT" PATH="$stub:$PATH" byte_expect 'wc failure is unmeasured even with numeric output' 2 'バイト数を測れません'
+
+  # --- Shortening candidate suggestions & fail-closed behavior ---
+  local rcand p_cand p_cand2 cand_out cand_err cand_rc pos_long pos_mid pos_short sym_oid
+  rcand="$(new_repo skill-byte-candidates)"
+  mkdir -p "$rcand/$fixture/tests/finish" \
+           "$rcand/$fixture/tests/review-rejection-discipline" \
+           "$rcand/$fixture/tests/alpha-suite" \
+           "$rcand/$fixture/tests/beta-suite" \
+           "$rcand/$fixture/skills/cand-skill" \
+           "$rcand/$fixture/skills/multi-review"
+  printf '%s\n' 'SKILL_BYTE_LIMIT=120' 'SKILL_ROSTER="cand-skill"' >"$rcand/$finish"
+  printf '%s\n' 'SKILL_MAX_BYTES=120' >"$rcand/$review"
+  cat >"$rcand/$fixture/tests/alpha-suite/verify.sh" <<'ALPHA'
+#!/usr/bin/env bash
+contains() { grep -qF -- "$2" "$1"; }
+needle=const-var-needle-keep
+contains "$SKILL" "alpha-needle-one" "label 1"
+contains "$SKILL" 'OK' 'short 2-byte marker'
+not_contains "$SKILL" "alpha-forbid-two" "label 2"
+contains "$SKILL" \
+  "alpha-multiline-needle" \
+  "label multiline"
+contains "$SKILL" "$needle" "const var needle"
+contains "two-arg-needle-keep" "label two-arg"
+true && contains "$SKILL" "chained-and-needle" "label chained"
+ALPHA
+  cat >"$rcand/$fixture/tests/beta-suite/verify.sh" <<'BETA'
+#!/usr/bin/env bash
+section_contains "$SKILL" "## Guarded Section" "beta-section-needle" "label 3"
+section_not_contains "$SKILL" "beta-sec-forbid" "label 4"
+doc_has "$SKILL" "disp" "beta-dochas-needle" "label 5"
+section_has "$SEC" "disp" "beta-sechas-needle" "label 6"
+if [ -f "$SKILL" ] && grep -q -e 'gamma-grep-needle' -- "$SKILL"; then
+  echo ok
+fi
+grep -qF '^fixed-caret-needle$' "$SKILL"
+BETA
+  git -C "$rcand" add .
+  git -C "$rcand" commit -qm cand-setup
+  p_cand="$fixture/skills/cand-skill/SKILL.md"
+  p_cand2="$fixture/skills/multi-review/SKILL.md"
+  cat >"$rcand/$p_cand" <<'SKILL'
+---
+name: cand-skill
+description: frontmatter-should-not-appear-in-candidates-even-when-very-long-line
+---
+<!-- ff-dev-toolkit-plugin-root-guard:start -->
+GUARD_BLOCK_LINE_SHOULD_NOT_BE_SUGGESTED_EVEN_IF_VERY_LONG_012345678901234567890123456789
+<!-- ff-dev-toolkit-plugin-root-guard:end -->
+PINNED_ALPHA_LINE_WITH_alpha-needle-one_PADDING_0123456789012345678901234567890123456789
+PINNED_NOTCONTAINS_alpha-forbid-two_PADDING_012345678901234567890123456789
+PINNED_MULTILINE_alpha-multiline-needle_PADDING_012345678901234567890123456789
+PINNED_CONSTVAR_const-var-needle-keep_PADDING_012345678901234567890123456789
+PINNED_TWOARG_two-arg-needle-keep_PADDING_01234567890123456789
+PINNED_CHAINED_chained-and-needle_PADDING_01234567890123456789
+PINNED_BETA_LINE_beta-section-needle_AND_gamma-grep-needle_PADDING_0123456789
+PINNED_BETA_EXTRA_beta-sec-forbid_beta-dochas-needle_beta-sechas-needle_PADDING_0123456789
+PINNED_SHORT_2B_MARKER_OK_PADDING_01234567890123456789012345678901234567890123456789
+PINNED_FIXED_CARET_^fixed-caret-needle$_PADDING_0123456789012345678901234567890123456789
+FREE_SHORT_20B_XXXXX
+FREE_LONGEST_LINE_日本語バイト計測テスト_0123456789012345678901234567890123456789
+FREE_SECOND_LINE_MIDDLE_BYTES_01234567890123456789
+SKILL
+  git -C "$rcand" add -- "$p_cand"
+  cand_rc=0
+  cand_out="$(skill_byte_scan "$rcand" 2>"$TMP/cand-err")" || cand_rc=$?
+  cand_err="$(cat "$TMP/cand-err")"
+  printf '%s\n' "$cand_out" >"$TMP/cand-out"
+  pos_long="$(awk '/FREE_LONGEST_LINE_/{print NR; exit}' "$TMP/cand-out")"
+  pos_mid="$(awk '/FREE_SECOND_LINE_/{print NR; exit}' "$TMP/cand-out")"
+  pos_short="$(awk '/FREE_SHORT_20B_XXXXX/{print NR; exit}' "$TMP/cand-out")"
+  if [ "$cand_rc" -eq 1 ] \
+    && grep -qF -- '短縮候補（針なし・バイト数降順' "$TMP/cand-out" \
+    && [ -n "$pos_long" ] && [ -n "$pos_mid" ] && [ -n "$pos_short" ] \
+    && [ "$pos_long" -lt "$pos_mid" ] && [ "$pos_mid" -lt "$pos_short" ]; then
+    ok 'SB over limit lists non-needle candidates in descending byte order'
+  else
+    bad "SB candidate order failed (rc=${cand_rc} pos=${pos_long}/${pos_mid}/${pos_short} out=${cand_out} err=${cand_err})"
+  fi
+  if ! grep -qF -- 'PINNED_ALPHA_LINE_' "$TMP/cand-out" \
+    && ! grep -qF -- 'PINNED_NOTCONTAINS_' "$TMP/cand-out" \
+    && ! grep -qF -- 'PINNED_MULTILINE_' "$TMP/cand-out" \
+    && ! grep -qF -- 'PINNED_CONSTVAR_' "$TMP/cand-out" \
+    && ! grep -qF -- 'PINNED_TWOARG_' "$TMP/cand-out" \
+    && ! grep -qF -- 'PINNED_CHAINED_' "$TMP/cand-out" \
+    && ! grep -qF -- 'PINNED_BETA_LINE_' "$TMP/cand-out" \
+    && ! grep -qF -- 'PINNED_BETA_EXTRA_' "$TMP/cand-out" \
+    && ! grep -qF -- 'PINNED_SHORT_2B_MARKER_' "$TMP/cand-out" \
+    && ! grep -qF -- 'PINNED_FIXED_CARET_' "$TMP/cand-out" \
+    && ! grep -qF -- 'GUARD_BLOCK_LINE_' "$TMP/cand-out" \
+    && ! grep -qF -- 'frontmatter-should-not-appear' "$TMP/cand-out" \
+    && grep -qF -- '針あり（alpha-suite）' "$TMP/cand-out" \
+    && grep -qF -- '針あり（beta-suite）' "$TMP/cand-out"; then
+    ok 'SB pinned lines (including const var, chained, doc_has, section_has, grep -e) and protected blocks are excluded'
+  else
+    bad "SB pinned/protected exclusion failed (out=${cand_out})"
+  fi
+
+  # Index vs worktree: removing needle in worktree without staging must NOT expose index-pinned line as candidate
+  printf '%s\n' '#!/usr/bin/env bash' 'contains "$SKILL" "only-unrelated-wt" "wt"' >"$rcand/$fixture/tests/alpha-suite/verify.sh"
+  cand_rc=0
+  cand_out="$(skill_byte_scan "$rcand" 2>"$TMP/cand-err")" || cand_rc=$?
+  printf '%s\n' "$cand_out" >"$TMP/cand-out"
+  if [ "$cand_rc" -eq 1 ] \
+    && ! grep -qF -- 'PINNED_ALPHA_LINE_' "$TMP/cand-out" \
+    && grep -qF -- 'FREE_LONGEST_LINE_' "$TMP/cand-out"; then
+    ok 'SB reads needles from git index and ignores unstaged worktree edits to verify.sh'
+  else
+    bad "SB index needle isolation failed (rc=${cand_rc} out=${cand_out})"
+  fi
+  git -C "$rcand" checkout -- "$fixture/tests/alpha-suite/verify.sh"
+
+  # Multiple over-limit skills reuse cached needle extraction and emit candidates for both
+  cat >"$rcand/$p_cand2" <<'SKILL2'
+PINNED_SECOND_FILE_alpha-needle-one_0123456789012345678901234567890123456789
+FREE_MULTI_REVIEW_CANDIDATE_LINE_01234567890123456789012345678901234567890123456789
+SKILL2
+  git -C "$rcand" add -- "$p_cand2"
+  cand_rc=0
+  cand_out="$(skill_byte_scan "$rcand" 2>"$TMP/cand-err")" || cand_rc=$?
+  printf '%s\n' "$cand_out" >"$TMP/cand-out"
+  if [ "$cand_rc" -eq 1 ] \
+    && grep -qF -- 'FREE_LONGEST_LINE_' "$TMP/cand-out" \
+    && grep -qF -- 'FREE_MULTI_REVIEW_CANDIDATE_LINE_' "$TMP/cand-out" \
+    && ! grep -qF -- 'PINNED_SECOND_FILE_' "$TMP/cand-out"; then
+    ok 'SB multiple over-limit skills reuse extracted needles and suggest candidates for each'
+  else
+    bad "SB multiple over-limit skills failed (rc=${cand_rc} out=${cand_out})"
+  fi
+  git -C "$rcand" reset -q HEAD -- "$p_cand2"
+  rm -f "$rcand/$p_cand2"
+
+  # Within limit: output and rc remain completely unchanged
+  printf 'short body under limit\n' >"$rcand/$p_cand"
+  git -C "$rcand" add -- "$p_cand"
+  cand_rc=0
+  cand_out="$(skill_byte_scan "$rcand" 2>"$TMP/cand-err")" || cand_rc=$?
+  if [ "$cand_rc" -eq 0 ] && [ "$cand_out" = 'skill-byte: ok 1' ]; then
+    ok 'SB within limit keeps exact ok output and rc=0'
+  else
+    bad "SB within limit changed output (rc=${cand_rc} out=${cand_out})"
+  fi
+
+  # Over limit where every non-empty line is pinned -> no candidates (distinct from extraction error)
+  cat >"$rcand/$p_cand" <<'ALLPIN'
+PINNED_ONLY_1_alpha-needle-one_01234567890123456789012345678901234567890123456789
+PINNED_ONLY_2_gamma-grep-needle_01234567890123456789012345678901234567890123456789
+ALLPIN
+  git -C "$rcand" add -- "$p_cand"
+  cand_rc=0
+  cand_out="$(skill_byte_scan "$rcand" 2>"$TMP/cand-err")" || cand_rc=$?
+  printf '%s\n' "$cand_out" >"$TMP/cand-out"
+  if [ "$cand_rc" -eq 1 ] \
+    && grep -qF -- '短縮候補: なし（針を持たない行がありません' "$TMP/cand-out" \
+    && ! grep -qF -- 'PINNED_ONLY_1_' "$TMP/cand-out"; then
+    ok 'SB all-pinned over-limit reports no free candidates without listing pinned lines'
+  else
+    bad "SB all-pinned handling failed (rc=${cand_rc} out=${cand_out})"
+  fi
+
+  # Fail-closed (1): dynamic/unresolved variable needle mixed with fixed literal needle -> no candidates, prints suite:line reason
+  cat >"$rcand/$p_cand" <<'OVER'
+FREE_CANDIDATE_MUST_NOT_APPEAR_WHEN_EXTRACTION_FAILS_0123456789012345678901234567890123456789
+FREE_CANDIDATE_SECOND_LINE_0123456789012345678901234567890123456789
+OVER
+  git -C "$rcand" add -- "$p_cand"
+  cat >"$rcand/$fixture/tests/alpha-suite/verify.sh" <<'DYNVAR'
+#!/usr/bin/env bash
+contains "$SKILL" "fixed-needle-ok" "fixed"
+dyn="$(printf keep-this-line)"
+contains "$SKILL" "$dyn" "dynamic"
+DYNVAR
+  git -C "$rcand" add -- "$fixture/tests/alpha-suite/verify.sh"
+  cand_rc=0
+  cand_out="$(skill_byte_scan "$rcand" 2>"$TMP/cand-err")" || cand_rc=$?
+  printf '%s\n' "$cand_out" >"$TMP/cand-out"
+  if [ "$cand_rc" -eq 1 ] \
+    && grep -qF -- '短縮候補なし（針の抽出に失敗:' "$TMP/cand-out" \
+    && grep -qF -- '未解決の変数を含む針を静的抽出できません（alpha-suite:4）' "$TMP/cand-out" \
+    && ! grep -qF -- 'FREE_CANDIDATE_MUST_NOT_APPEAR' "$TMP/cand-out"; then
+    ok 'SB fail-closed on unresolved dynamic variable needle omits candidates and names suite:line'
+  else
+    bad "SB fail-closed unresolved dynamic variable failed (rc=${cand_rc} out=${cand_out})"
+  fi
+
+  # Fail-closed (2): regex grep pattern without -F -> no candidates, prints suite:line reason
+  cat >"$rcand/$fixture/tests/alpha-suite/verify.sh" <<'GREPREGEX'
+#!/usr/bin/env bash
+contains "$SKILL" "fixed-needle-ok" "fixed"
+grep -qE '^Required completion marker$' "$SKILL"
+GREPREGEX
+  git -C "$rcand" add -- "$fixture/tests/alpha-suite/verify.sh"
+  cand_rc=0
+  cand_out="$(skill_byte_scan "$rcand" 2>"$TMP/cand-err")" || cand_rc=$?
+  printf '%s\n' "$cand_out" >"$TMP/cand-out"
+  if [ "$cand_rc" -eq 1 ] \
+    && grep -qF -- '短縮候補なし（針の抽出に失敗:' "$TMP/cand-out" \
+    && grep -qF -- '固定文字列として解釈できない grep パターン（alpha-suite:3）' "$TMP/cand-out" \
+    && ! grep -qF -- 'FREE_CANDIDATE_MUST_NOT_APPEAR' "$TMP/cand-out"; then
+    ok 'SB fail-closed on regex grep pattern without -F omits candidates and names suite:line'
+  else
+    bad "SB fail-closed regex grep failed (rc=${cand_rc} out=${cand_out})"
+  fi
+
+  # Fail-closed (3): malformed quote in chained helper call -> no candidates, prints reason
+  printf '%s\n' '#!/usr/bin/env bash' 'true && contains "$SKILL" "unterminated-needle' >"$rcand/$fixture/tests/alpha-suite/verify.sh"
+  git -C "$rcand" add -- "$fixture/tests/alpha-suite/verify.sh"
+  cand_rc=0
+  cand_out="$(skill_byte_scan "$rcand" 2>"$TMP/cand-err")" || cand_rc=$?
+  printf '%s\n' "$cand_out" >"$TMP/cand-out"
+  if [ "$cand_rc" -eq 1 ] \
+    && grep -qF -- '短縮候補なし（針の抽出に失敗:' "$TMP/cand-out" \
+    && grep -qF -- '引用符が閉じていません（alpha-suite:2）' "$TMP/cand-out" \
+    && ! grep -qF -- 'FREE_CANDIDATE_MUST_NOT_APPEAR' "$TMP/cand-out"; then
+    ok 'SB fail-closed on unterminated quote in helper call omits candidates and explains reason'
+  else
+    bad "SB fail-closed unterminated quote failed (rc=${cand_rc} out=${cand_out})"
+  fi
+
+  # Fail-closed (3): non-regular verify.sh entry in index (120000 symlink) -> no candidates, prints reason
+  git -C "$rcand" checkout HEAD -- "$fixture/tests/alpha-suite/verify.sh"
+  sym_oid="$(printf 'target' | git -C "$rcand" hash-object -w --stdin)"
+  git -C "$rcand" update-index --add --cacheinfo "120000,${sym_oid},${fixture}/tests/bad-link/verify.sh"
+  cand_rc=0
+  cand_out="$(skill_byte_scan "$rcand" 2>"$TMP/cand-err")" || cand_rc=$?
+  printf '%s\n' "$cand_out" >"$TMP/cand-out"
+  if [ "$cand_rc" -eq 1 ] \
+    && grep -qF -- '短縮候補なし（針の抽出に失敗:' "$TMP/cand-out" \
+    && grep -qF -- '通常ファイルではありません' "$TMP/cand-out" \
+    && ! grep -qF -- 'FREE_CANDIDATE_MUST_NOT_APPEAR' "$TMP/cand-out"; then
+    ok 'SB fail-closed on non-regular verify.sh in index omits candidates and explains reason'
+  else
+    bad "SB fail-closed non-regular verify.sh failed (rc=${cand_rc} out=${cand_out})"
+  fi
+  git -C "$rcand" rm -q --cached -- "$fixture/tests/bad-link/verify.sh"
+
+  # Fail-closed (4): zero extracted needles in index -> no candidates, prints reason
+  git -C "$rcand" rm -q -r -- "$fixture/tests/alpha-suite" "$fixture/tests/beta-suite"
+  cand_rc=0
+  cand_out="$(skill_byte_scan "$rcand" 2>"$TMP/cand-err")" || cand_rc=$?
+  printf '%s\n' "$cand_out" >"$TMP/cand-out"
+  if [ "$cand_rc" -eq 1 ] \
+    && grep -qF -- '短縮候補なし（針の抽出に失敗:' "$TMP/cand-out" \
+    && grep -qF -- '針を 1 件も抽出できませんでした' "$TMP/cand-out" \
+    && ! grep -qF -- 'FREE_CANDIDATE_MUST_NOT_APPEAR' "$TMP/cand-out"; then
+    ok 'SB fail-closed on zero extracted needles omits candidates and explains reason'
+  else
+    bad "SB fail-closed zero needles failed (rc=${cand_rc} out=${cand_out})"
+  fi
+
   # Let the caller detect removal of this whole body, not just missing calls.
   SKILL_BYTE_CASES_REACHED=1
 }

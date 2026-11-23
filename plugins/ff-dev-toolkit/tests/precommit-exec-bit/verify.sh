@@ -84,6 +84,7 @@
 # SKILL容量検査は skill-byte-cases.sh でindexの境界・上限定義の変更・判定不能を測る。
 # skip 理由行・許容表検査は skip-line-cases.sh で index/HEAD の差分・ヘルパー呼び出し・削除のみ・未検査(rc=2)を測る。
 # 空振り検出: index超過の許可は5件、WT読取への逆行は2件、定義異常の無視は3件、multi-review除外は2件、衝突無視は1件が赤。case本体を空にすると末尾sentinelが赤（2026-10-23、正常対照/良性コメント緑を含め変異ハーネスで実測）。
+# 空振り検出: SKILL上限超過の針なし短縮候補提示と抽出失敗時 fail-closed について、候補生成抑止・バイト数降順ソート反転・針あり除外無効化・3バイト未満の短針切り捨て・非-F正規表現grepのfail-closed無効化・未解決変数針fail-closed無効化・未閉引用符fail-closed無効化・抽出0件fail-closed無効化・非通常index verify.sh検査無効化・worktree読み取りへの逆行の 10 変異がすべて rc=1（detected 10）、無害コメント追記 1 件のみ rc=0（green-ok 1 / SURVIVED 0 / FALSE-POSITIVE 0 / NOT-APPLIED 0、対照 163 pass / 0 fail、2026-11-22 macOS 実測）。
 # 空振り検出: 読み直しWARNの抑止は7件、WT本文の誤使用と対象外断片での抑止は各1件、case空は末尾sentinel1件が赤。staged/集合/保存本文の診断を一般エラーへ変える変異は各1/1/2件が赤（2026-10-24実測）。確定集合の不在/空/不正と一覧・保存本文の読取失敗はW9/W10/W11が固有診断とrc2/WARNなしを要求する。
 # 空振り検出: 種別 H の常時 none 化・正規化時の行番号維持（無関係行シフトで偽陽性）・GIT_LITERAL_PATHSPECS 対応無効化・削除 D の HEAD 比較抑止・未解決衝突 U の通過・lib 不在の none 倒し（rc=0）の 6 変異がすべて rc=1、無害コメント追記 1 件のみ rc=0（7 件 / detected 6 / green-ok 1 / SURVIVED 0 / FALSE-POSITIVE 0 / NOT-APPLIED 0、正常 152 件 pass、2026-11-18 mutation-harness 実測）。
 
@@ -103,6 +104,10 @@ PASS=0
 FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
+# 出力の照合ヘルパは最初の利用箇所より前で定義する。後ろで定義すると、手前の `if has_text …; then bad`
+# が command not found（rc 127）で偽になり、その否定の検査は赤になれない。
+has_line() { grep -Fqx -- "$2" <<<"$1"; }
+has_text() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 
 REAL_GIT="$(command -v git 2>/dev/null || true)"
 if [ -z "$REAL_GIT" ]; then
@@ -905,9 +910,6 @@ run_attr() {
   OUT="$(FF_RELEASE_CHECK_PUBLIC="$1" FF_RELEASE_CHECK_PUBLIC_URL="$2" changelog_fragment_scan "$3" 2>"$TMP/err")" || RC=$?
   ERR="$(cat "$TMP/err")"
 }
-
-has_line() { grep -Fqx -- "$2" <<<"$1"; }
-has_text() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 
 ATTR_HIT="ATTRIBUTION_PATH=skills/x/SKILL.md -> ${ATTR_SKILL} (v0.10.0 と同一 object)"
 ATTR_NAME="✗ ${ATTR_FRAG}: 前版 v0.10.0 と同一内容の path を backtick で参照している"

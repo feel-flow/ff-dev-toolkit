@@ -3,7 +3,7 @@
 #
 # no-checks-merge-basis-contract: マージ前のゲートの分岐（checks の有無）の回帰検査。
 # 既定は PR トリガーの CI がある形で、checks の成功がマージ根拠・ローカル全件はリリース前と
-# 契約面の変更時に限る（ADR-062）。PR トリガーの CI を持たないリポジトリでは、checks を待たず
+# 実行基盤の契約面の変更時に限る（ADR-062 / ADR-095）。PR トリガーの CI を持たないリポジトリでは、checks を待たず
 # ローカル全件ゲート + 鮮度照合をマージ根拠にする。
 #
 # 守っている事故: `gh pr checks --watch` は checks が 1 件も登録されない repo では
@@ -13,9 +13,11 @@
 # 観測台帳 OBS-070 が Count 3 に到達した事例（この分岐を手順として固定していなかった
 # ため、実行者が毎回別の待機ループを自作していた）。
 #
-# 検査対象は 2 文書 3 箇所:
-#   - close-issue/SKILL.md 手順 7 の「CI checks の有無による分岐」小節
-#     （checks がある既定の分岐でローカル全件をリリース前と契約面の変更時に限る旨、
+# 検査対象:
+#   - workflow-principles.md「検証強度のリスク層別化（3 層モデル）」節（Tier 1 / 2a / 2b / 3 と、
+#     文書と実行基盤の同時変更・束の欠落・fail-closed の境界を全件側へ倒す旨）
+#   - close-issue/SKILL.md 手順 7（本文は references/merge-gate.md）の「CI checks の有無による分岐」小節
+#     （checks がある既定の分岐でローカル全件をリリース前と実行基盤の契約面の変更時に限る旨、
 #     `statusCheckRollup` 空配列 → checks を待たない分岐と完了報告への明記）
 #   - git-workflow.md ステップ8（マージ）の「マージ前のゲート: PR トリガーの CI がある場合
 #     （既定）」小節と「PR トリガーの CI を持たないリポジトリでの checks 待機」小節
@@ -43,6 +45,7 @@ GATE_REF="$PLUGIN_ROOT/skills/close-issue/references/merge-gate.md"
 # precheck 本体の実際の配置を検査する（入口に残る名前だけでは緑にしない）。
 FINISH="$PLUGIN_ROOT/scripts/lib/finish-precheck.sh"
 WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
+PRINCIPLES="$PLUGIN_ROOT/docs-template/05-operations/deployment/workflow-principles.md"
 
 # shellcheck source=../lib/section-scope.sh
 . "$SCRIPT_DIR/../lib/section-scope.sh"
@@ -51,6 +54,7 @@ SKILL_HEADING='#### CI checks の有無による分岐（待つか、ローカ�
 WORKFLOW_HEADING='#### PR トリガーの CI を持たないリポジトリでの checks 待機'
 WORKFLOW_CI_HEADING='#### マージ前のゲート: PR トリガーの CI がある場合（既定）'
 FRESHNESS_HEADING='#### ゲート実測鮮度そのものの照合'
+TIER_GATE_HEADING='### 検証強度のリスク層別化（3 層モデル）'
 
 PASS=0
 FAIL=0
@@ -86,14 +90,14 @@ section_contains() {
   fi
 }
 
-for file in "$SKILL" "$GATE_REF" "$FINISH" "$WORKFLOW"; do
+for file in "$SKILL" "$GATE_REF" "$FINISH" "$WORKFLOW" "$PRINCIPLES"; do
   if [[ ! -s "$file" ]]; then
     echo "  ✗ 必須ファイルが無い、または空: $file" >&2
     echo "✗ no-checks-merge-basis-contract verify: 必須ファイル欠落のため中断" >&2
     exit 1
   fi
 done
-ok "必須ファイルが 4 件とも存在し非空"
+ok "必須ファイルが 5 件とも存在し非空"
 
 echo
 echo "-- close-issue references/merge-gate.md（手順 7）: checks 有無の分岐 --"
@@ -119,8 +123,8 @@ section_contains "$GATE_REF" "$SKILL_HEADING" \
   "分岐の既定が PR トリガーの CI がある形である旨がある"
 
 section_contains "$GATE_REF" "$SKILL_HEADING" \
-  '**checks の成功がマージの根拠で、ローカルの全件ゲートはリリース前（タグ / Release の' \
-  "checks がある既定ではローカル全件をリリース前と契約面の変更時に限る旨がある"
+  '**checks の成功がマージの根拠で、ローカルの全件ゲートはリリース前（タグ / Release の作成前）と実行基盤の契約面の変更時に限ります**' \
+  "checks がある既定ではローカル全件をリリース前と実行基盤の契約面の変更時に限る旨がある"
 
 file_contains_count "$FINISH" 'statusCheckRollup,' 1 \
   "finish.sh precheck が statusCheckRollup を PR の取得項目に含める"
@@ -163,7 +167,7 @@ section_contains "$GATE_REF" "$FRESHNESS_HEADING" \
   "判定不能時の全件ゲート再実行が FRESH_REASON 条件付きで書かれている"
 
 section_contains "$GATE_REF" "$FRESHNESS_HEADING" \
-  '**ただし `FRESH_REASON` が「記録が部分実行である」で、かつ checks が非空で全件成功した回に限り、リリース前と契約面の変更時を除き再実行しません**' \
+  '**ただし `FRESH_REASON` が「記録が部分実行である」で、かつ checks が非空で全件成功した回に限り、リリース前と実行基盤の契約面の変更時を除き再実行しません**' \
   "再実行しない例外は部分実行の記録 + checks 全件成功に限る旨がある"
 
 section_contains "$GATE_REF" "$FRESHNESS_HEADING" \
@@ -178,8 +182,8 @@ section_contains "$WORKFLOW" "$WORKFLOW_CI_HEADING" \
   "checks の成功がマージ根拠である旨がある"
 
 section_contains "$WORKFLOW" "$WORKFLOW_CI_HEADING" \
-  '**全件ゲートを回すのはリリース前（タグ / Release の作成前）と契約面の変更時に' \
-  "ローカル全件をリリース前と契約面の変更時に限る旨がある"
+  '**全件ゲートを回すのはリリース前（タグ / Release の作成前）と実行基盤の契約面の変更時に' \
+  "ローカル全件をリリース前と実行基盤の契約面の変更時に限る旨がある"
 
 echo
 echo "-- git-workflow.md ステップ8: no checks reported の扱い --"
@@ -199,6 +203,45 @@ section_contains "$WORKFLOW" "$WORKFLOW_HEADING" \
 section_contains "$WORKFLOW" "$WORKFLOW_HEADING" \
   'checks が無いと判った場合はローカル全件ゲート + 鮮度照合' \
   "checks が無い場合のマージ根拠（ローカル全件ゲート + 鮮度照合）を明記している"
+
+section_contains "$WORKFLOW" "$WORKFLOW_HEADING" \
+  'DIFF_COVERED=yes' \
+  "checks が無い場合でも定期全件の安全網と COVERS_DIFF 一致時は Tier 1 部分ゲート経路を示している"
+
+echo
+echo "-- workflow-principles.md: 検証強度のリスク層別化（3 層モデル）--"
+
+section_contains "$PRINCIPLES" "$TIER_GATE_HEADING" \
+  '**Tier 1: 局所変更**' \
+  "検証強度層別: Tier 1（局所変更）がある"
+
+section_contains "$PRINCIPLES" "$TIER_GATE_HEADING" \
+  '**Tier 2a: 文書契約面の変更**' \
+  "検証強度層別: Tier 2a（文書契約面の変更）がある"
+
+section_contains "$PRINCIPLES" "$TIER_GATE_HEADING" \
+  '**Tier 2b: 実行基盤の契約面の変更**' \
+  "検証強度層別: Tier 2b（実行基盤の契約面の変更）がある"
+
+section_contains "$PRINCIPLES" "$TIER_GATE_HEADING" \
+  '実行基盤の契約面と同時に触れた変更は、変更一覧の並びに関係なく全件へ倒す' \
+  "検証強度層別: 文書と実行基盤を同時に変えた回は全件へ倒す旨がある"
+
+section_contains "$PRINCIPLES" "$TIER_GATE_HEADING" \
+  '検査の改名・削除で 1 つでも欠けた回は、見つかった分だけで通さない' \
+  "検証強度層別: 束が登録と食い違う回を少なく回す側へ倒さない旨がある"
+
+section_contains "$PRINCIPLES" "$TIER_GATE_HEADING" \
+  'Tier 1 / Tier 2a として扱わず全件へ倒す' \
+  "検証強度層別: fail-closed の境界が Tier 2a にも掛かる"
+
+section_contains "$PRINCIPLES" "$TIER_GATE_HEADING" \
+  '**Tier 3: リリース・不可逆境界**' \
+  "検証強度層別: Tier 3（リリース・不可逆境界）がある"
+
+section_contains "$PRINCIPLES" "$TIER_GATE_HEADING" \
+  '**fail-closed の境界**:' \
+  "検証強度層別: 安全網なし・解決不能・skip 混入時の fail-closed 境界がある"
 
 echo
 if [[ "$FAIL" -gt 0 ]]; then

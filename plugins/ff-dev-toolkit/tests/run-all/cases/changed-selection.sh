@@ -26,6 +26,10 @@
 #   - ff_changed_select の契約面照合を外すと 47-E の全件マーカーが名簿の全要素で赤
 #   - 交差 0 件の分岐で `suites: selected=0` を出さないと 47-B が赤
 #   - 祖先ディレクトリの token を捨てると 47-I が赤
+#
+# 文書契約面と選択に入れない suite（47-M〜47-S。ADR-095）の変異検出は、ランナーの写しへ変異を 1 つずつ当て、このファイル
+# だけを回して測る。変異の一覧と実測の件数は verify.sh ヘッダの `# 空振り検出:` 行（case 47-M〜47-S）に
+# 置く（件数をここへ書き写さない）。
 
 echo ""
 echo "== case 47: 変更ベースの部分ゲート（FF_RUN_ALL_CHANGED）=="
@@ -118,10 +122,15 @@ awk '
   }
   in_baseline && /^\)$/ { in_baseline = 0; print; next }
   in_baseline { next }
+  /^CHANGED_DOC_SUITES=\($/ { print; print "  \"chg-required-probe\""; in_bundle = 1; next }
+  in_bundle && /^\)$/ { in_bundle = 0; print; next }
+  in_bundle { next }
   { print }
 ' "$RUNNER" > "$_chg_plug/tests/run-all.sh"
 [ "$(grep -c '^  chg-tree-probe$' "$_chg_plug/tests/run-all.sh")" -eq 1 ] \
   || bad "case 47: 複製ランナーの名簿差し替えが適用されていない（見出し行の改稿で awk が空振り）"
+[ "$(grep -c '^  "chg-required-probe"$' "$_chg_plug/tests/run-all.sh")" -eq 1 ] \
+  || bad "case 47: 複製ランナーの文書横断 suite の束の差し替えが適用されていない（CHANGED_DOC_SUITES の書式変更で awk が空振り）"
 
 # 契約面の名簿は実装（run-all.sh の配列）から読む。ここへ書き写すと、名簿へ足した要素が
 # 検査されないまま残る（47-E が名簿の全要素を 1 つずつ当てる）。
@@ -134,6 +143,9 @@ _chg_list() { # <配列名>
 }
 _chg_plugin_list="$(_chg_list CHANGED_FULL_PLUGIN_PATHS)"
 _chg_repo_list="$(_chg_list CHANGED_FULL_REPO_PATHS)"
+_chg_doc_plugin_list="$(_chg_list CHANGED_DOC_PLUGIN_PATHS)"
+_chg_doc_repo_list="$(_chg_list CHANGED_DOC_REPO_PATHS)"
+_chg_doc_suites="$(_chg_list CHANGED_DOC_SUITES)"
 
 _chg_git() { git -c commit.gpgsign=false -c user.email=t@example.invalid -c user.name=T -c init.defaultBranch=main -C "$_chg_repo" "$@"; }
 _chg_setup_rc=0
@@ -184,6 +196,9 @@ expect_lacks '^All ff-dev-toolkit fixture checks passed\.$' "47-A: 部分実行�
 _chg_rec_has 'STATUS=partial' "47-A: 鮮度記録は部分実行（partial）として書かれる"
 _chg_rec_has 'MODE=changed' "47-A: 鮮度記録のモードは changed"
 _chg_rec_has 'SUITES=chg-docs-probe chg-tree-probe' "47-A: 鮮度記録に通った suite だけを残す"
+_chg_rec_has "COVERS_DIFF=${_chg_base}" "47-A: 実行基盤の契約面に非該当かつ skip 0 件の pass では解決済み base SHA を COVERS_DIFF に残す（ADR-094）"
+expect_lacks '^CHG-REQUIRED-PROBE-EXECUTED$' "47-A: 文書契約面に触れない変更では文書横断 suite の束を足さない（陰性対照）"
+expect_lacks '^doc-contract: ' "47-A: 文書契約面に触れない変更では束の件数行を出さない"
 
 # 47-B: 交差 0 件 → suite は回さず、登録照合（メタ検査）だけを実行したことを selected=0 で明示する
 _chg_step "無関係なファイルを変える" "printf 'x\\n' > other/unrelated.txt"
@@ -225,12 +240,13 @@ for _chg_kind in PLUGIN REPO; do
     _chg_run FF_RUN_ALL_CHANGED="$_chg_base"
     expect_rc 0 "47-E: 契約面 ${_chg_e} の変更は全件実行で rc=0"
     expect_has '^🔎 全件実行: 登録されている 4 suite をすべて実行対象にします' "47-E: 契約面 ${_chg_e} の変更は全件実行へ倒れる"
-    expect_has "^↪ 変更ベースの選択（FF_RUN_ALL_CHANGED）から全件実行へ倒しました: 契約面に触れる変更: ${_chg_p}（CHANGED_FULL_${_chg_kind}_PATHS の ${_chg_e}）" "47-E: 倒した理由（${_chg_p}）を実行の入口で出す"
+    expect_has "^↪ 変更ベースの選択（FF_RUN_ALL_CHANGED）から全件実行へ倒しました: 実行基盤の契約面に触れる変更: ${_chg_p}（CHANGED_FULL_${_chg_kind}_PATHS の ${_chg_e}）" "47-E: 倒した理由（${_chg_p}）を実行の入口で出す"
     if [ "$_chg_e_first" = 1 ]; then
       _chg_e_first=0
-      expect_has "^🎯 変更ベースの選択は全件実行へ倒れた（理由: 契約面に触れる変更: ${_chg_p}" "47-E: 倒した理由をサマリーにも出す"
+      expect_has "^🎯 変更ベースの選択は全件実行へ倒れた（理由: 実行基盤の契約面に触れる変更: ${_chg_p}" "47-E: 倒した理由をサマリーにも出す"
       expect_lacks '^suites: selected=' "47-E: 全件へ倒した回は部分実行の件数行を出さない"
       _chg_rec_has 'MODE=full' "47-E: 全件へ倒した回の記録は full"
+      _chg_rec_has 'COVERS_DIFF=' "47-E: 全件へ倒した回は COVERS_DIFF を空にする"
     fi
   done <<CHG_ELEMS
 $_chg_elems
@@ -342,6 +358,551 @@ _chg_run FF_RUN_ALL_CHANGED="$_chg_base_h2"
 expect_rc 0 "47-H: 参照 0 本の suite を含む実行が rc=0"
 expect_has '^🎯   chg-docs-probe ← 参照パスを 1 つも導出できない（fail-safe で常に選ぶ）$' "47-H: 参照を 1 つも導出できない suite は常に選ぶ"
 expect_has '^CHG-DOCS-PROBE-EXECUTED$' "47-H: 参照 0 本の suite は無関係な変更でも実行される"
+
+# 47-L: COVERS_DIFF の fail-closed と check-merge-freshness.sh との結合確認（ADR-094）
+# (1) クリーン通過（skip 0 件）の記録を check-merge-freshness.sh へ渡すと、一致する base SHA では
+#     DIFF_COVERED=yes を返し、異なる base SHA では DIFF_COVERED=yes を出さない
+# (2) 選択された suite のうち 1 件でも suite-level skip を出した回は、pass 扱いでも COVERS_DIFF=
+#     を空にする（skip 混入の部分実行で差分被覆を名乗らない）
+_chg_git reset -q --hard "$_chg_base" >/dev/null 2>&1
+_chg_git clean -qfd >/dev/null 2>&1
+_chg_step "alpha を変える（47-L COVERS_DIFF 結合）" "printf 'alpha-l\\n' > plugins/ff/docs/alpha.md"
+_chg_run FF_RUN_ALL_CHANGED="$_chg_base"
+expect_rc 0 "47-L: クリーン通過の実行が rc=0"
+_chg_rec_has "COVERS_DIFF=${_chg_base}" "47-L: クリーン通過の記録に COVERS_DIFF=<base SHA> が書かれる"
+_chg_head_l="$(_chg_git rev-parse HEAD 2>/dev/null)"
+_chg_fresh_rc=0
+_chg_fresh_out="$(cd "$_chg_repo" && env -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT FF_DEV_TOOLKIT_ROOT="$TESTS_DIR/.." bash "$TESTS_DIR/../scripts/check-merge-freshness.sh" \
+  --record "$_chg_rec" --remote-head "$_chg_head_l" --base "$_chg_base" 2>&1)" || _chg_fresh_rc=$?
+if [ "$_chg_fresh_rc" -eq 2 ] && printf '%s\n' "$_chg_fresh_out" | grep -xF 'DIFF_COVERED=yes' >/dev/null; then
+  ok "47-L: 一致する --base での鮮度照合は exit 2 かつ DIFF_COVERED=yes を返す"
+else
+  bad "47-L: 一致する --base での鮮度照合が期待外（rc=${_chg_fresh_rc}）: ${_chg_fresh_out}"
+fi
+_chg_other_base="0000000000000000000000000000000000000000"
+_chg_fresh_rc2=0
+_chg_fresh_out2="$(cd "$_chg_repo" && env -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT FF_DEV_TOOLKIT_ROOT="$TESTS_DIR/.." bash "$TESTS_DIR/../scripts/check-merge-freshness.sh" \
+  --record "$_chg_rec" --remote-head "$_chg_head_l" --base "$_chg_other_base" 2>&1)" || _chg_fresh_rc2=$?
+if [ "$_chg_fresh_rc2" -eq 2 ] && ! printf '%s\n' "$_chg_fresh_out2" | grep -xF 'DIFF_COVERED=yes' >/dev/null; then
+  ok "47-L: 異なる --base での鮮度照合は DIFF_COVERED=yes を返さない（古い base の記録で通さない）"
+else
+  bad "47-L: 異なる --base での鮮度照合が被覆扱いになった（rc=${_chg_fresh_rc2}）: ${_chg_fresh_out2}"
+fi
+# skip 混入時の fail-closed: chg-docs-probe が skip を返すよう一時差し替えてコミットし直す
+_chg_git reset -q --hard "$_chg_base" >/dev/null 2>&1
+cat > "$_chg_plug/tests/chg-docs-probe/verify.sh" <<'PROBE_SKIP'
+#!/usr/bin/env bash
+# run-all-required: no — 47-L の skip 混入 fail-closed 検査用の任意 suite
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+ALPHA="$ROOT/docs/alpha.md"
+echo "○ skip: 47-L skip 混入テスト"
+exit 0
+PROBE_SKIP
+chmod +x "$_chg_plug/tests/chg-docs-probe/verify.sh"
+printf 'alpha-skip\n' > "$_chg_plug/docs/alpha.md"
+_chg_git add -A >/dev/null 2>&1
+_chg_git commit -qm "47-L skip 混入" >/dev/null 2>&1 || bad "case 47: 47-L skip 混入をコミットできない"
+_chg_run FF_RUN_ALL_CHANGED="$_chg_base"
+expect_rc 0 "47-L: 任意 suite の skip 混入自体は rc=0"
+_chg_rec_has 'STATUS=partial' "47-L: skip 混入時も記録は partial"
+_chg_rec_has 'COVERS_DIFF=' "47-L: skip が 1 件でも混入した部分実行は COVERS_DIFF を空にする（fail-closed）"
+
+# 47-M: 文書契約面（配布テンプレート配下の文書・root の 2 入口）だけの変更は全件へ倒さず、字面の交差に
+# 文書横断 suite の束を足して実行し、クリーン通過なら COVERS_DIFF を残す（ADR-095）。名簿
+# （run-all.sh の 2 配列）の全要素を 1 つずつ変更して確かめる。fixture の束は chg-required-probe
+# 1 件で、この suite は docs/gamma.md しか参照しないので、選ばれるのは束として足された回だけ。
+_chg_m_n=0
+_chg_m_first=1
+for _chg_kind in PLUGIN REPO; do
+  if [ "$_chg_kind" = PLUGIN ]; then
+    _chg_elems="$_chg_doc_plugin_list"; _chg_pre="plugins/ff/"; _chg_m_sel=2
+  else
+    _chg_elems="$_chg_doc_repo_list"; _chg_pre=""; _chg_m_sel=1
+  fi
+  while IFS= read -r _chg_e; do
+    [ -n "$_chg_e" ] || continue
+    _chg_m_n=$((_chg_m_n + 1))
+    case "$_chg_e" in
+      */) _chg_p="${_chg_pre}${_chg_e}zz-doc-probe.md" ;;
+      *) _chg_p="${_chg_pre}${_chg_e}" ;;
+    esac
+    _chg_step "文書契約面 ${_chg_e} を変える" "mkdir -p \"\$(dirname '$_chg_p')\" && printf '# probe\\n' >> '$_chg_p'"
+    _chg_run FF_RUN_ALL_CHANGED="$_chg_base"
+    expect_rc 0 "47-M: 文書契約面 ${_chg_e} だけの変更の実行が rc=0"
+    expect_lacks '^🔎 全件実行' "47-M: 文書契約面 ${_chg_e} だけの変更は全件へ倒れない"
+    expect_lacks '^↪ 変更ベースの選択' "47-M: 文書契約面 ${_chg_e} だけの変更は全件フォールバックの理由行を出さない"
+    expect_has "^🎯 文書契約面に触れる変更: ${_chg_p}（CHANGED_DOC_${_chg_kind}_PATHS の ${_chg_e}） — 全件へは倒さず" "47-M: 文書契約面（${_chg_p}）であることと全件へ倒さないことを実行の入口で名乗る"
+    expect_has "^🎯   chg-required-probe ← ${_chg_p}（CHANGED_DOC_${_chg_kind}_PATHS の ${_chg_e}） ← 文書横断 suite の束（CHANGED_DOC_SUITES）\$" "47-M: 束として足した suite の根拠に、文書契約面の変更パスと束を出す（${_chg_e}）"
+    expect_has '^CHG-REQUIRED-PROBE-EXECUTED$' "47-M: 字面の交差に無い束の suite が実行される（${_chg_e}）"
+    expect_lacks '^CHG-SCRIPT-PROBE-EXECUTED$' "47-M: 束にも交差にも無い suite は実行しない（${_chg_e}）"
+    expect_has "^suites: selected=${_chg_m_sel} registered=4\$" "47-M: 選択は字面の交差 + 束（${_chg_e}: ${_chg_m_sel} 件）"
+    expect_has '^doc-contract: bundle=1 added=1$' "47-M: 束の件数と、束として足した件数をサマリーへ出す（${_chg_e}）"
+    _chg_rec_has 'STATUS=partial' "47-M: 文書契約面 ${_chg_e} の記録は部分実行（partial）"
+    _chg_rec_has 'MODE=changed' "47-M: 文書契約面 ${_chg_e} の記録のモードは changed（full へ倒れていない）"
+    _chg_rec_has "COVERS_DIFF=${_chg_base}" "47-M: 文書契約面 ${_chg_e} のクリーン通過は解決済み base SHA を COVERS_DIFF に残す"
+    if [ "$_chg_m_first" = 1 ]; then
+      _chg_m_first=0
+      # finish.sh precheck が RERUN_FULL_GATE=no へ倒す入力（DIFF_COVERED=yes）になることを、
+      # 鮮度照合の実物で確かめる（precheck 側の分岐は tests/finish が固定する）。
+      _chg_head_m="$(_chg_git rev-parse HEAD 2>/dev/null)"
+      _chg_fresh_rc=0
+      _chg_fresh_out="$(cd "$_chg_repo" && env -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT FF_DEV_TOOLKIT_ROOT="$TESTS_DIR/.." bash "$TESTS_DIR/../scripts/check-merge-freshness.sh" \
+        --record "$_chg_rec" --remote-head "$_chg_head_m" --base "$_chg_base" 2>&1)" || _chg_fresh_rc=$?
+      if [ "$_chg_fresh_rc" -eq 2 ] && printf '%s\n' "$_chg_fresh_out" | grep -xF 'DIFF_COVERED=yes' >/dev/null; then
+        ok "47-M: 文書契約面の記録を鮮度照合へ渡すと exit 2 かつ DIFF_COVERED=yes（precheck が全件の再実行を求めない入力）"
+      else
+        bad "47-M: 文書契約面の記録での鮮度照合が期待外（rc=${_chg_fresh_rc}）: ${_chg_fresh_out}"
+      fi
+    fi
+  done <<CHG_DOC_ELEMS
+$_chg_elems
+CHG_DOC_ELEMS
+done
+if [ "$_chg_m_n" -ge 3 ]; then
+  ok "47-M: 文書契約面の名簿から ${_chg_m_n} 要素を読んで、全件へ倒れず束が足されることを確かめた"
+else
+  bad "47-M: 文書契約面の名簿を run-all.sh から読めない（${_chg_m_n} 要素。配列の書式変更で検査が空振りしている）"
+fi
+
+# 47-N: 文書契約面と実行基盤の契約面を同時に変えた回は全件へ倒す。変更一覧の並びで文書が先に
+# 来る組（docs-template → hooks）と後に来る組（.github → AGENTS.md）の両方で確かめる
+# （文書契約面を見つけた時点で return する変異は、文書が先に来る組だけが赤にする）。
+_chg_step "文書契約面と実行基盤の契約面を同時に変える（文書が先）" "mkdir -p plugins/ff/docs-template plugins/ff/hooks && printf '# d\\n' > plugins/ff/docs-template/zz-doc-probe.md && printf '{}\\n' > plugins/ff/hooks/hooks.json"
+_chg_run FF_RUN_ALL_CHANGED="$_chg_base"
+expect_rc 0 "47-N: 文書 + 実行基盤（文書が先）の実行が rc=0"
+expect_has '^🔎 全件実行: 登録されている 4 suite をすべて実行対象にします' "47-N: 文書 + 実行基盤（文書が先）は全件へ倒れる"
+expect_has '^↪ 変更ベースの選択（FF_RUN_ALL_CHANGED）から全件実行へ倒しました: 実行基盤の契約面に触れる変更: plugins/ff/hooks/hooks.json（CHANGED_FULL_PLUGIN_PATHS の hooks/hooks.json）' "47-N: 倒した理由に実行基盤側の変更を出す（文書が先）"
+expect_lacks '^🎯 文書契約面に触れる変更' "47-N: 全件へ倒した回は文書契約面の部分実行を名乗らない（文書が先）"
+expect_lacks '^doc-contract: ' "47-N: 全件へ倒した回は束の件数行を出さない（文書が先）"
+_chg_rec_has 'MODE=full' "47-N: 文書 + 実行基盤（文書が先）の記録は full"
+_chg_rec_has 'COVERS_DIFF=' "47-N: 文書 + 実行基盤（文書が先）は COVERS_DIFF を空にする"
+_chg_step "文書契約面と実行基盤の契約面を同時に変える（実行基盤が先）" "mkdir -p .github/workflows && printf 'name: zz\\n' > .github/workflows/zz-probe.yml && printf '# probe\\n' >> AGENTS.md"
+_chg_run FF_RUN_ALL_CHANGED="$_chg_base"
+expect_rc 0 "47-N: 文書 + 実行基盤（実行基盤が先）の実行が rc=0"
+expect_has '^↪ 変更ベースの選択（FF_RUN_ALL_CHANGED）から全件実行へ倒しました: 実行基盤の契約面に触れる変更: .github/workflows/zz-probe.yml（CHANGED_FULL_REPO_PATHS の .github/workflows/）' "47-N: 文書 + 実行基盤（実行基盤が先）も全件へ倒れる"
+_chg_rec_has 'COVERS_DIFF=' "47-N: 文書 + 実行基盤（実行基盤が先）は COVERS_DIFF を空にする"
+
+# 47-R: 文書契約面のディレクトリ要素の配下でも、文書（拡張子の名簿）でないファイルは実行基盤の契約面
+# として全件へ倒す。配布テンプレートは実行コードも同梱していて、それを別の suite が import・実行する。
+# 文書と同時に変えた回も、文書を先に見つけた後で全件へ倒れる（変更一覧では .md が .ts より先に並ぶ）。
+_chg_step "配布テンプレート配下の実行コードだけを変える" "mkdir -p plugins/ff/docs-template/scripts && printf 'export const zz = 1\\n' > plugins/ff/docs-template/scripts/zz-probe.ts"
+_chg_run FF_RUN_ALL_CHANGED="$_chg_base"
+expect_rc 0 "47-R: 配布テンプレート配下の実行コードだけの変更の実行が rc=0"
+expect_has '^🔎 全件実行: 登録されている 4 suite をすべて実行対象にします' "47-R: 配布テンプレート配下でも文書でないファイルは全件へ倒れる"
+expect_has '^↪ 変更ベースの選択（FF_RUN_ALL_CHANGED）から全件実行へ倒しました: 実行基盤の契約面に触れる変更: plugins/ff/docs-template/scripts/zz-probe.ts（CHANGED_DOC_PLUGIN_PATHS の docs-template/ の配下だが、CHANGED_DOC_FILE_SUFFIXES の文書ではない）' "47-R: 倒した理由に、文書でないファイルを名指す"
+expect_lacks '^🎯 文書契約面に触れる変更' "47-R: 文書でないファイルの変更は文書契約面の部分実行を名乗らない"
+_chg_rec_has 'MODE=full' "47-R: 配布テンプレート配下の実行コードの変更の記録は full"
+_chg_rec_has 'COVERS_DIFF=' "47-R: 配布テンプレート配下の実行コードの変更は COVERS_DIFF を空にする"
+_chg_step "配布テンプレートの文書と実行コードを同時に変える" "mkdir -p plugins/ff/docs-template/scripts && printf '# d\\n' > plugins/ff/docs-template/aa-doc-probe.md && printf 'export const zz = 2\\n' > plugins/ff/docs-template/scripts/zz-probe.ts"
+_chg_run FF_RUN_ALL_CHANGED="$_chg_base"
+expect_rc 0 "47-R: 文書 + 配布テンプレート配下の実行コードの実行が rc=0"
+expect_has '^↪ 変更ベースの選択（FF_RUN_ALL_CHANGED）から全件実行へ倒しました: 実行基盤の契約面に触れる変更: plugins/ff/docs-template/scripts/zz-probe.ts' "47-R: 文書を先に見つけた後でも、文書でないファイルで全件へ倒れる"
+_chg_rec_has 'COVERS_DIFF=' "47-R: 文書 + 配布テンプレート配下の実行コードは COVERS_DIFF を空にする"
+
+# 47-O: 束が登録一覧と 1 対 1 に対応しない回（suite の改名・削除・重複・空）は、見つかった分だけで
+# 通さず全件へ倒す。複製ランナー自身は実行基盤の契約面なので、束を書き換えた木を新しい base に
+# してから文書契約面を変える（47-H と同じ組み方）。
+_chg_bundle_case() { # <検査名の見出し> <束の要素（空白区切り。空なら空の束）> <期待する理由の BRE>
+  _chg_git reset -q --hard "$_chg_base" >/dev/null 2>&1
+  _chg_git clean -qfd >/dev/null 2>&1
+  awk -v names="$2" '
+    /^CHANGED_DOC_SUITES=\($/ {
+      print
+      n = split(names, a, " ")
+      for (i = 1; i <= n; i++) print "  \"" a[i] "\""
+      skip = 1
+      next
+    }
+    skip && /^\)$/ { skip = 0; print; next }
+    skip { next }
+    { print }
+  ' "$_chg_plug/tests/run-all.sh" > "$_chg_plug/tests/run-all.sh.new" \
+    && mv "$_chg_plug/tests/run-all.sh.new" "$_chg_plug/tests/run-all.sh" \
+    || bad "case 47: $1 の束の差し替えを当てられない"
+  _chg_git commit -qam "束を差し替える: $1" >/dev/null 2>&1 || bad "case 47: $1 の base をコミットできない"
+  _chg_base_o="$(_chg_git rev-parse HEAD 2>/dev/null)"
+  printf '# probe\n' >> "$_chg_repo/AGENTS.md"
+  _chg_git add -A >/dev/null 2>&1
+  _chg_git commit -qm "文書契約面を変える: $1" >/dev/null 2>&1 || bad "case 47: $1 の変更をコミットできない"
+  _chg_run FF_RUN_ALL_CHANGED="$_chg_base_o"
+  expect_rc 0 "47-O: $1 の実行が rc=0（全件が通る）"
+  expect_has '^🔎 全件実行: 登録されている 4 suite をすべて実行対象にします' "47-O: $1 は全件へ倒れる（見つかった分だけで通さない）"
+  expect_has "^↪ 変更ベースの選択（FF_RUN_ALL_CHANGED）から全件実行へ倒しました: $3" "47-O: $1 の倒した理由を出す"
+  expect_lacks '^🎯 文書契約面に触れる変更' "47-O: $1 は文書契約面の部分実行を名乗らない"
+  _chg_rec_has 'MODE=full' "47-O: $1 の記録は full"
+  _chg_rec_has 'COVERS_DIFF=' "47-O: $1 は COVERS_DIFF を空にする"
+}
+_chg_bundle_case "登録一覧に無い名前を含む束" "chg-required-probe no-such-suite" \
+  '文書横断 suite の束（CHANGED_DOC_SUITES）が登録一覧と 1 対 1 に対応しない: no-such-suite — 文書契約面に触れる変更: AGENTS.md'
+_chg_bundle_case "同じ名前を 2 回持つ束" "chg-required-probe chg-required-probe" \
+  '文書横断 suite の束（CHANGED_DOC_SUITES）が登録一覧と 1 対 1 に対応しない: （件数の不一致） — 文書契約面に触れる変更: AGENTS.md'
+_chg_bundle_case "空の束" "" \
+  '文書契約面に触れる変更だが、文書横断 suite の束（CHANGED_DOC_SUITES）が空: AGENTS.md'
+_chg_git reset -q --hard "$_chg_base" >/dev/null 2>&1
+
+# 47-Q: 束が 2 要素以上で、束の suite が字面の交差でも選ばれる回（実物の束は毎回この形になる）。
+# 交差で選ばれた束の suite も「登録一覧に在った」と数えなければ、件数照合が不一致になって文書だけの
+# 変更が毎回全件へ倒れる。束 = chg-required-probe（交差しない）+ chg-tree-probe（プラグイン配下の
+# 変更と交差する）で、交差の有無が違う 2 つの変更を測る。
+_chg_bundle_ok() { # <検査名の見出し> <束の要素（空白区切り）> <変更の sh 断片> <選択件数> <束として足した件数>
+  _chg_git reset -q --hard "$_chg_base" >/dev/null 2>&1
+  _chg_git clean -qfd >/dev/null 2>&1
+  awk -v names="$2" '
+    /^CHANGED_DOC_SUITES=\($/ {
+      print
+      n = split(names, a, " ")
+      for (i = 1; i <= n; i++) print "  \"" a[i] "\""
+      skip = 1
+      next
+    }
+    skip && /^\)$/ { skip = 0; print; next }
+    skip { next }
+    { print }
+  ' "$_chg_plug/tests/run-all.sh" > "$_chg_plug/tests/run-all.sh.new" \
+    && mv "$_chg_plug/tests/run-all.sh.new" "$_chg_plug/tests/run-all.sh" \
+    || bad "case 47: $1 の束の差し替えを当てられない"
+  _chg_git commit -qam "束を差し替える: $1" >/dev/null 2>&1 || bad "case 47: $1 の base をコミットできない"
+  _chg_base_q="$(_chg_git rev-parse HEAD 2>/dev/null)"
+  (cd "$_chg_repo" && sh -c "$3") >/dev/null 2>&1 || bad "case 47: $1 の変更を当てられない"
+  _chg_git add -A >/dev/null 2>&1
+  _chg_git commit -qm "文書契約面を変える: $1" >/dev/null 2>&1 || bad "case 47: $1 の変更をコミットできない"
+  _chg_run FF_RUN_ALL_CHANGED="$_chg_base_q"
+  expect_rc 0 "47-Q: $1 の実行が rc=0"
+  expect_lacks '^🔎 全件実行' "47-Q: $1 は全件へ倒れない（交差で選ばれた束の suite も登録一覧に在ったと数える）"
+  expect_has "^suites: selected=$4 registered=4\$" "47-Q: $1 の選択は $4 件"
+  expect_has "^doc-contract: bundle=2 added=$5\$" "47-Q: $1 は束 2 件のうち $5 件を束として足す"
+  expect_has '^CHG-REQUIRED-PROBE-EXECUTED$' "47-Q: $1 で交差しない束の suite が実行される"
+  expect_has '^CHG-TREE-PROBE-EXECUTED$' "47-Q: $1 で束のもう 1 件も実行される"
+  _chg_rec_has 'MODE=changed' "47-Q: $1 の記録のモードは changed"
+  _chg_rec_has "COVERS_DIFF=${_chg_base_q}" "47-Q: $1 のクリーン通過は COVERS_DIFF を残す"
+}
+_chg_bundle_ok "束の 1 件が交差でも選ばれる変更" "chg-required-probe chg-tree-probe" \
+  "mkdir -p plugins/ff/docs-template && printf '# d\\n' > plugins/ff/docs-template/zz-doc-probe.md" 2 1
+_chg_bundle_ok "束のどれも交差しない変更" "chg-required-probe chg-tree-probe" \
+  "printf '# probe\\n' >> AGENTS.md" 2 2
+_chg_git reset -q --hard "$_chg_base" >/dev/null 2>&1
+
+# 47-S: このランナーからは常に suite ごと skip する suite（CHANGED_NEVER_RUN_SUITES。実物では公開検査）は、
+# 字面が交差しても選択に入れない（ADR-095）。選択に残すと skip が必ず 1 件混じり、交差する変更
+# （公開検査はプラグインルートを参照するので、プラグイン配下のすべての変更）では COVERS_DIFF が
+# 何度回しても付かない。fixture の public-layout はプラグインルートを参照し、実行ビットを付けない —
+# 選択に入った回もランナーは起動しない（この名前のスクリプトを実プロセスとして起動すると、同じ
+# ホストの別セッションのゲートが公開検査の並走として読むため。選択に入ったことは、根拠の行と
+# 未実行の計上で観測する）。登録を足した木を新しい base にしてから変更を当てる（47-O と同じ組み方）。
+_chg_git reset -q --hard "$_chg_base" >/dev/null 2>&1
+_chg_git clean -qfd >/dev/null 2>&1
+mkdir -p "$_chg_plug/tests/public-layout"
+cat > "$_chg_plug/tests/public-layout/verify.sh" <<'PROBE'
+#!/usr/bin/env bash
+# 空振り検出: 47-S の fixture（明示起動の指定が無い回は常に suite ごと skip する suite を模す）
+# run-all-required: no — 明示起動の指定が無い回は常に suite ごと skip する（47-S の fixture）
+REPO_ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
+TREE="$REPO_ROOT/plugins/ff"
+if [[ "${FF_RUN_PUBLIC_LAYOUT:-}" != "1" && -z "${FF_PUBLIC_LAYOUT_SUITES:-}" ]]; then
+  echo "○ skip: 明示起動する suite です（47-S の fixture。検査は 1 件も実行していません）"
+  exit 0
+fi
+echo "CHG-NEVER-RUN-PROBE-EXECUTED"
+exit 0
+PROBE
+awk '
+  { print }
+  $0 == "    \"$SCRIPT_DIR/chg-tree-probe/verify.sh\"" { print "    \"$SCRIPT_DIR/public-layout/verify.sh\"" }
+' "$_chg_plug/tests/run-all.sh" > "$_chg_plug/tests/run-all.sh.new" \
+  && mv "$_chg_plug/tests/run-all.sh.new" "$_chg_plug/tests/run-all.sh" \
+  || bad "case 47: 47-S の登録の追加を当てられない"
+[ "$(grep -c '^    "\$SCRIPT_DIR/public-layout/verify\.sh"$' "$_chg_plug/tests/run-all.sh")" -eq 1 ] \
+  || bad "case 47: 47-S の複製ランナーへ public-layout の登録が入っていない（一覧の書式変更で awk が空振り）"
+_chg_git add -A >/dev/null 2>&1
+_chg_git commit -qm "47-S: 常に skip する suite を登録する" >/dev/null 2>&1 || bad "case 47: 47-S の base をコミットできない"
+_chg_base_s="$(_chg_git rev-parse HEAD 2>/dev/null)"
+_chg_s_step() { # <説明> <sh 断片（fixture リポジトリのルートを cwd にして評価する）>
+  _chg_git reset -q --hard "$_chg_base_s" >/dev/null 2>&1
+  _chg_git clean -qfd >/dev/null 2>&1
+  (cd "$_chg_repo" && sh -c "$2") >/dev/null 2>&1 || bad "case 47: 47-S の変更を当てられない: $1"
+  _chg_git add -A >/dev/null 2>&1
+  _chg_git commit -qm "$1" >/dev/null 2>&1 || bad "case 47: 47-S の変更をコミットできない: $1"
+}
+# 選択の名簿を差し替えた木を新しい base にする（束は 47-O / 47-Q と同じ書式の配列）。
+_chg_s_rebase() { # <説明> <配列名> <要素（空白区切り）>
+  _chg_git reset -q --hard "$_chg_base_s" >/dev/null 2>&1
+  _chg_git clean -qfd >/dev/null 2>&1
+  awk -v head="^$2=\\\\($" -v names="$3" '
+    $0 ~ head {
+      print
+      n = split(names, a, " ")
+      for (i = 1; i <= n; i++) print "  \"" a[i] "\""
+      skip = 1
+      next
+    }
+    skip && /^\)$/ { skip = 0; print; next }
+    skip { next }
+    { print }
+  ' "$_chg_plug/tests/run-all.sh" > "$_chg_plug/tests/run-all.sh.new" \
+    && mv "$_chg_plug/tests/run-all.sh.new" "$_chg_plug/tests/run-all.sh" \
+    || bad "case 47: 47-S の名簿の差し替えを当てられない: $1"
+  [ "$(awk -v head="^$2=\\\\($" '$0 ~ head { on = 1; next } on && /^\)$/ { exit } on { n++ } END { print n + 0 }' "$_chg_plug/tests/run-all.sh")" -eq "$(printf '%s\n' "$3" | wc -w | tr -d ' ')" ] \
+    || bad "case 47: 47-S の名簿の差し替えが入っていない（$2 の書式変更で awk が空振り）: $1"
+  _chg_git commit -qam "47-S: $1" >/dev/null 2>&1 || bad "case 47: 47-S の名簿の base をコミットできない: $1"
+  _chg_base_s2="$(_chg_git rev-parse HEAD 2>/dev/null)"
+}
+_chg_s_change() { # <説明> <sh 断片> — 直前の _chg_s_rebase の木へ変更を 1 コミット積む
+  (cd "$_chg_repo" && sh -c "$2") >/dev/null 2>&1 || bad "case 47: 47-S の変更を当てられない: $1"
+  _chg_git add -A >/dev/null 2>&1
+  _chg_git commit -qm "47-S: $1" >/dev/null 2>&1 || bad "case 47: 47-S の変更をコミットできない: $1"
+}
+
+# (1) プラグイン配下の変更: 公開検査の fixture は字面が交差するが、選択に入らず、外したことを名乗る。
+# skip も未実行も混じらないので COVERS_DIFF が残る（修正前の実物ではここで skipped=1 になり、空の
+# ままだった。この fixture は実行ビットが無いので、修正前の形なら not-run=1 になる）。
+_chg_s_step "47-S: alpha を変える" "echo alpha-s > plugins/ff/docs/alpha.md"
+_chg_run -u FF_RUN_PUBLIC_LAYOUT -u FF_PUBLIC_LAYOUT_SUITES FF_RUN_ALL_CHANGED="$_chg_base_s"
+expect_rc 0 "47-S: 常に skip する suite と交差する変更の実行が rc=0"
+expect_has '^suites: selected=2 registered=5$' "47-S: 常に skip する suite は選択の件数に入らない"
+expect_has '^🎯 選択に入れない suite: public-layout — 選択の条件には当たるが、このランナーからは常に suite ごと skip する' "47-S: 外した suite と理由を実行の入口で名乗る（黙って消さない）"
+expect_has '^never-run: excluded=1 (public-layout)$' "47-S: 外した件数と名前をサマリーへ出す"
+expect_lacks '^🎯   public-layout ← ' "47-S: 外した suite を選んだ根拠の一覧へ載せない"
+expect_has '^suites: total=2 run=2 passed=2 failed=0 skipped=0 not-run=0$' "47-S: 外した回は skip も未実行も 0 件"
+_chg_rec_has 'SUITES=chg-docs-probe chg-tree-probe' "47-S: 記録には通った suite だけが残る"
+_chg_rec_has "COVERS_DIFF=${_chg_base_s}" "47-S: 常に skip する suite と交差する変更でも、クリーン通過は COVERS_DIFF を残す"
+
+# fixture の公開検査に実行ビットが見えない環境でだけ、選択に残る場面（(2)・(5) の後半）を回す。
+# 実行ビットが見える環境（全ファイルが実行可能に見えるファイルシステムなど）では、ランナーがこの名前の
+# スクリプトを実プロセスとして起動してしまうので、回さずに赤にする。
+_chg_s_noexec=1
+if [ -x "$_chg_plug/tests/public-layout/verify.sh" ]; then
+  _chg_s_noexec=0
+  bad "47-S: fixture の公開検査に実行ビットが見える（選択に残る場面を、実プロセスを起動せずに測れません）"
+fi
+
+# (2) 明示起動の指定がある回は、suite が回りうるので選択に残す（2 つの指定のどちらでも）。
+# FF_RUN_PUBLIC_LAYOUT は 1 だけが指定で、0 は指定に数えない（suite 側の分岐と同じ読み）。
+# 選択に残った fixture は未実行（実行ビットなし）なので、この回は赤で終わり、COVERS_DIFF は付かない。
+if [ "$_chg_s_noexec" = 1 ]; then
+  for _chg_s_opt in "FF_RUN_PUBLIC_LAYOUT=1" "FF_PUBLIC_LAYOUT_SUITES=some-suite"; do
+    _chg_run -u FF_RUN_PUBLIC_LAYOUT -u FF_PUBLIC_LAYOUT_SUITES "$_chg_s_opt" FF_RUN_ALL_CHANGED="$_chg_base_s"
+    expect_rc 1 "47-S: 選択に残った fixture が未実行なので rc=1（${_chg_s_opt}）"
+    expect_has '^suites: selected=3 registered=5$' "47-S: 明示起動の指定（${_chg_s_opt}）がある回は選択に残す"
+    expect_has '^🎯   public-layout ← plugins/ff/docs/alpha.md ← ' "47-S: 明示起動の指定（${_chg_s_opt}）がある回は選んだ根拠を出す"
+    expect_lacks '^🎯 選択に入れない suite' "47-S: 明示起動の指定（${_chg_s_opt}）がある回は外したと名乗らない"
+    expect_lacks '^never-run: ' "47-S: 明示起動の指定（${_chg_s_opt}）がある回はサマリーにも外した行を出さない"
+    expect_lacks '^CHG-NEVER-RUN-PROBE-EXECUTED$' "47-S: fixture の公開検査は起動していない（${_chg_s_opt}。実行ビットが無い）"
+    expect_has '^suites: total=3 run=2 passed=2 failed=0 skipped=0 not-run=1$' "47-S: 選択に残った fixture は未実行として数える（${_chg_s_opt}）"
+    _chg_rec_has 'STATUS=fail' "47-S: 未実行が混じった回の記録は fail（${_chg_s_opt}）"
+    _chg_rec_has 'COVERS_DIFF=' "47-S: 未実行が混じった回は COVERS_DIFF を空にする（${_chg_s_opt}）"
+  done
+fi
+_chg_run -u FF_PUBLIC_LAYOUT_SUITES FF_RUN_PUBLIC_LAYOUT=0 FF_RUN_ALL_CHANGED="$_chg_base_s"
+expect_has '^suites: selected=2 registered=5$' "47-S: FF_RUN_PUBLIC_LAYOUT=0 は明示起動の指定に数えない（選択に入れない）"
+expect_has '^never-run: excluded=1 (public-layout)$' "47-S: FF_RUN_PUBLIC_LAYOUT=0 の回も外したことをサマリーへ出す"
+
+# (3) 配布テンプレートの文書だけの変更（文書契約面。実物で COVERS_DIFF が付かなかった形）: 束は足され、
+# 公開検査は外れ、クリーン通過で COVERS_DIFF が残る。
+_chg_s_step "47-S: 配布テンプレートの文書を変える" "mkdir -p plugins/ff/docs-template && echo '# d' > plugins/ff/docs-template/zz-doc-probe.md"
+_chg_run -u FF_RUN_PUBLIC_LAYOUT -u FF_PUBLIC_LAYOUT_SUITES FF_RUN_ALL_CHANGED="$_chg_base_s"
+expect_rc 0 "47-S: 配布テンプレートの文書だけの変更の実行が rc=0"
+expect_has '^🎯 文書契約面に触れる変更: plugins/ff/docs-template/zz-doc-probe.md' "47-S: 配布テンプレートの文書の変更は文書契約面として扱う"
+expect_has '^🎯 選択に入れない suite: public-layout — ' "47-S: 文書契約面の回も、常に skip する suite を外したと名乗る"
+expect_has '^suites: selected=2 registered=5$' "47-S: 文書契約面の回の選択は、交差 + 束（常に skip する suite を除く）"
+expect_has '^doc-contract: bundle=1 added=1$' "47-S: 文書契約面の回の束の件数は変わらない"
+_chg_rec_has "COVERS_DIFF=${_chg_base_s}" "47-S: 配布テンプレートの文書だけの変更のクリーン通過は COVERS_DIFF を残す"
+
+# (4) 字面が交差しない変更（root の入口）では、外したと名乗らない（選択の条件に当たった回だけ名乗る）。
+_chg_s_step "47-S: root の入口を変える" "echo '# probe' >> AGENTS.md"
+_chg_run -u FF_RUN_PUBLIC_LAYOUT -u FF_PUBLIC_LAYOUT_SUITES FF_RUN_ALL_CHANGED="$_chg_base_s"
+expect_rc 0 "47-S: 常に skip する suite と交差しない変更の実行が rc=0"
+expect_has '^suites: selected=1 registered=5$' "47-S: 交差しない変更の選択は束の 1 件だけ"
+expect_lacks '^🎯 選択に入れない suite' "47-S: 交差しない変更では外したと名乗らない"
+expect_lacks '^never-run: ' "47-S: 交差しない変更ではサマリーにも外した行を出さない"
+_chg_rec_has "COVERS_DIFF=${_chg_base_s}" "47-S: 交差しない変更のクリーン通過も COVERS_DIFF を残す"
+
+# (5) 束の suite が「常に skip する suite」でもある回は、差分を覆ったと記録しない。
+# 字面が交差する変更では、外す判定が束の照合より前にあるので、外れた分だけ件数照合が不一致になって
+# 全件へ倒れる。字面が交差しない変更では外す判定に当たらず、束として選択に入る — その suite は回らない
+# （実物なら skip、この fixture なら未実行）ので、COVERS_DIFF は付かない。どちらも「束を欠いたまま
+# 覆ったことにしない」側に倒れる（実物の束と名簿の重なりそのものは 47-P が赤にする）。
+_chg_s_rebase "束へ常に skip する suite を入れる" CHANGED_DOC_SUITES "chg-required-probe public-layout"
+_chg_s_change "束の差し替え後に配布テンプレートの文書を変える" "mkdir -p plugins/ff/docs-template && echo '# d' > plugins/ff/docs-template/zz-doc-probe.md"
+if [ "$_chg_s_noexec" = 1 ]; then
+  _chg_run -u FF_RUN_PUBLIC_LAYOUT -u FF_PUBLIC_LAYOUT_SUITES FF_RUN_ALL_CHANGED="$_chg_base_s2"
+  expect_rc 1 "47-S: 全件へ倒れた回は、全件の一覧にある fixture が未実行なので rc=1"
+  expect_has '^🔎 全件実行: 登録されている 5 suite をすべて実行対象にします' "47-S: 束の suite が常に skip する suite でもあり、字面が交差する回は全件へ倒れる"
+  expect_has '^↪ 変更ベースの選択（FF_RUN_ALL_CHANGED）から全件実行へ倒しました: 文書横断 suite の束（CHANGED_DOC_SUITES）が登録一覧と 1 対 1 に対応しない: ' "47-S: 倒した理由に束の不一致を出す"
+  # 外した名前の読み手は部分実行の出力だけなので、全件へ倒した回に名乗りが漏れないことを見る
+  # （名乗りを部分実行の分岐の外へ出す変更を赤にする）。
+  expect_lacks '^🎯 選択に入れない suite' "47-S: 全件へ倒した回は外したと名乗らない（全件の一覧にその suite が残る）"
+  expect_lacks '^never-run: ' "47-S: 全件へ倒した回はサマリーにも外した行を出さない"
+  _chg_rec_has 'MODE=full' "47-S: 全件へ倒した回の記録は full"
+  _chg_rec_has 'COVERS_DIFF=' "47-S: 束の suite が常に skip する suite でもある回（交差する）は COVERS_DIFF を空にする"
+fi
+_chg_s_rebase "束へ常に skip する suite を入れる（交差しない変更）" CHANGED_DOC_SUITES "chg-required-probe public-layout"
+_chg_s_change "束の差し替え後に root の入口を変える" "echo '# probe' >> AGENTS.md"
+if [ "$_chg_s_noexec" = 1 ]; then
+  _chg_run -u FF_RUN_PUBLIC_LAYOUT -u FF_PUBLIC_LAYOUT_SUITES FF_RUN_ALL_CHANGED="$_chg_base_s2"
+  expect_rc 1 "47-S: 束として選択に入った fixture が未実行なので rc=1"
+  expect_lacks '^🔎 全件実行' "47-S: 束の suite が常に skip する suite でも、字面が交差しない回は全件へ倒れない"
+  expect_has '^🎯   public-layout ← AGENTS.md（CHANGED_DOC_REPO_PATHS の AGENTS.md） ← 文書横断 suite の束（CHANGED_DOC_SUITES）$' "47-S: 字面が交差しない回は、束として選択に入る"
+  expect_lacks '^🎯 選択に入れない suite' "47-S: 束として選択に入った回は外したと名乗らない"
+  _chg_rec_has 'COVERS_DIFF=' "47-S: 束の suite が常に skip する suite でもある回（交差しない）も COVERS_DIFF を空にする"
+fi
+
+# (6) 名簿に名前があっても、「常に skip する」条件を書いていない名前は選択に残す（多く回す側）。
+# 名簿へ chg-tree-probe（条件を持たない）を足した木で、選択も外した名前も変わらないことを見る。
+_chg_s_rebase "名簿へ条件を持たない名前を足す" CHANGED_NEVER_RUN_SUITES "public-layout chg-tree-probe"
+_chg_s_change "名簿の差し替え後に alpha を変える" "echo alpha-s6 > plugins/ff/docs/alpha.md"
+_chg_run -u FF_RUN_PUBLIC_LAYOUT -u FF_PUBLIC_LAYOUT_SUITES FF_RUN_ALL_CHANGED="$_chg_base_s2"
+expect_rc 0 "47-S: 名簿へ条件を持たない名前を足した回の実行が rc=0"
+expect_has '^suites: selected=2 registered=5$' "47-S: 条件を書いていない名前は名簿に在っても選択に残る"
+expect_has '^CHG-TREE-PROBE-EXECUTED$' "47-S: 条件を書いていない名前の suite は実行される"
+expect_has '^never-run: excluded=1 (public-layout)$' "47-S: 外すのは条件を書いた名前だけ"
+_chg_git reset -q --hard "$_chg_base" >/dev/null 2>&1
+_chg_git clean -qfd >/dev/null 2>&1
+
+# 47-P: 実物の名簿の整合。束の全要素が既定一覧に 1 回だけ登録されていて実体があること、ADR-095
+# 決定 2 が名指す束の核（9 suite）が束から外れていないこと、2 種類の契約面の名簿が重ならず、
+# 所属が名前で固定されていることを、run-all.sh の配列から読んで確かめる（読めた要素が 0 件なら
+# 空振りとして赤）。
+_chg_default_names="$(awk '
+  /^  SCRIPTS=\($/ { on = 1; next }
+  on && /^  \)$/ { exit }
+  on && match($0, /"\$SCRIPT_DIR\/[^\/"]+\/verify\.sh"/) {
+    s = substr($0, RSTART, RLENGTH)
+    sub(/^"\$SCRIPT_DIR\//, "", s)
+    sub(/\/verify\.sh"$/, "", s)
+    print s
+  }
+' "$RUNNER")"
+_chg_p_n=0
+_chg_p_bad=""
+while IFS= read -r _chg_b; do
+  [ -n "$_chg_b" ] || continue
+  _chg_p_n=$((_chg_p_n + 1))
+  if [ ! -f "$TESTS_DIR/$_chg_b/verify.sh" ] \
+    || [ "$(printf '%s\n' "$_chg_default_names" | grep -cxF -- "$_chg_b")" -ne 1 ]; then
+    _chg_p_bad="${_chg_p_bad:+${_chg_p_bad} }${_chg_b}"
+  fi
+done <<CHG_BUNDLE
+$_chg_doc_suites
+CHG_BUNDLE
+if [ "$_chg_p_n" -ge 1 ] && [ -z "$_chg_p_bad" ]; then
+  ok "47-P: 実物の束の ${_chg_p_n} 要素はすべて既定一覧に 1 回だけ登録され、verify.sh の実体がある"
+else
+  bad "47-P: 実物の束が既定一覧と対応しない（読めた要素 ${_chg_p_n} 件 / 対応しない: ${_chg_p_bad:-なし}。0 件なら配列の書式変更で空振り）"
+fi
+if [ "$(printf '%s\n' "$_chg_doc_suites" | grep -c .)" -eq "$(printf '%s\n' "$_chg_doc_suites" | grep . | sort -u | grep -c .)" ]; then
+  ok "47-P: 実物の束に同じ名前の重複が無い"
+else
+  bad "47-P: 実物の束に同じ名前が重複している（重複は実行時に全件フォールバックになる）"
+fi
+_chg_p_missing=""
+for _chg_core in docs-gates section-ref-existence root-instructions-parity host-route-parity markdownlint \
+  sync-forbidden-patterns skill-count-consistency shared-version-convergence changelog-fragments; do
+  if [ "$(printf '%s\n' "$_chg_doc_suites" | grep -cxF -- "$_chg_core")" -ne 1 ]; then
+    _chg_p_missing="${_chg_p_missing:+${_chg_p_missing} }${_chg_core}"
+  fi
+done
+if [ -z "$_chg_p_missing" ]; then
+  ok "47-P: 束の核（ADR-095 決定 2 が名指す 9 suite）が束に残っている"
+else
+  bad "47-P: 束の核が束から外れている: ${_chg_p_missing}（外すなら ADR-095 決定 2 を改める）"
+fi
+_chg_p_overlap=""
+while IFS= read -r _chg_b; do
+  [ -n "$_chg_b" ] || continue
+  if [ "$(printf '%s\n%s\n' "$_chg_plugin_list" "$_chg_repo_list" | grep -cxF -- "$_chg_b")" -ne 0 ]; then
+    _chg_p_overlap="${_chg_p_overlap:+${_chg_p_overlap} }${_chg_b}"
+  fi
+done <<CHG_DOC_PATHS
+$_chg_doc_plugin_list
+$_chg_doc_repo_list
+CHG_DOC_PATHS
+if [ -z "$_chg_p_overlap" ] && [ "$_chg_m_n" -ge 3 ]; then
+  ok "47-P: 文書契約面の名簿と実行基盤の契約面の名簿は重ならない"
+else
+  bad "47-P: 2 種類の契約面の名簿が重なっているか、文書契約面の名簿を読めない（重なり: ${_chg_p_overlap:-なし} / 読めた要素 ${_chg_m_n} 件）"
+fi
+
+# 2 種類の名簿の所属を名前で固定する（件数だけの照合では、実行基盤の要素を文書側へ移す・文書側の
+# 要素を別名へ置き換える変更が、件数を保ったまま通る）。文書側は名簿の全体を固定し、足すときは
+# この検査も変える。実行基盤側は、文書側へ移ると少なく回す側へ倒れる要素が残っていることを見る。
+_chg_p_doc_set="$(printf '%s\n%s\n' "$_chg_doc_plugin_list" "$_chg_doc_repo_list" | grep . | sort | tr '\n' ' ')"
+if [ "$_chg_p_doc_set" = "AGENTS.md CLAUDE.md docs-template/ " ]; then
+  ok "47-P: 文書契約面の名簿は docs-template/ と root の 2 入口だけ（足すときは ADR-095 とこの検査を改める）"
+else
+  bad "47-P: 文書契約面の名簿が想定と違う: [${_chg_p_doc_set}]"
+fi
+_chg_p_suffixes="$(_chg_list CHANGED_DOC_FILE_SUFFIXES | tr '\n' ' ')"
+if [ "$_chg_p_suffixes" = ".md " ]; then
+  ok "47-P: 文書として扱う拡張子は .md だけ（配布テンプレート配下の実行コード・設定は全件へ倒れる）"
+else
+  bad "47-P: 文書として扱う拡張子の名簿が想定と違う: [${_chg_p_suffixes}]"
+fi
+_chg_p_full_missing=""
+for _chg_core in "tests/run-all.sh" "tests/lib/" "hooks/hooks.json" "mcp/package.json" "mcp/package-lock.json"; do
+  if [ "$(printf '%s\n' "$_chg_plugin_list" | grep -cxF -- "$_chg_core")" -ne 1 ]; then
+    _chg_p_full_missing="${_chg_p_full_missing:+${_chg_p_full_missing} }${_chg_core}"
+  fi
+done
+for _chg_core in ".github/workflows/" ".github/actions/"; do
+  if [ "$(printf '%s\n' "$_chg_repo_list" | grep -cxF -- "$_chg_core")" -ne 1 ]; then
+    _chg_p_full_missing="${_chg_p_full_missing:+${_chg_p_full_missing} }${_chg_core}"
+  fi
+done
+if [ -z "$_chg_p_full_missing" ]; then
+  ok "47-P: 実行基盤の契約面の名簿に、ランナー・共有 lib・hook 登録・共有依存・CI 定義が残っている"
+else
+  bad "47-P: 実行基盤の契約面の名簿から外れている要素がある: ${_chg_p_full_missing}"
+fi
+
+# 選択に入れない suite の名簿（47-S）の整合。名簿は公開検査だけで、既定一覧に 1 回だけ登録されて
+# いること、束と重ならないこと、ランナーの「常に skip する」条件が suite 側の先頭の分岐と同じ字面で、
+# その分岐が無条件に suite ごと skip して終わることを、実物から読んで確かめる。suite 側が run-all
+# から回るようになったら（分岐の削除・条件の変更）、名簿から外さないと検査を黙って落とすので赤にする。
+_chg_never_list="$(_chg_list CHANGED_NEVER_RUN_SUITES | tr '\n' ' ')"
+if [ "$_chg_never_list" = "public-layout " ]; then
+  ok "47-P: 選択に入れない suite の名簿は public-layout だけ（足すときは ADR-095 とこの検査を改める）"
+else
+  bad "47-P: 選択に入れない suite の名簿が想定と違う: [${_chg_never_list}]（0 件なら配列の書式変更で空振り）"
+fi
+if [ -f "$TESTS_DIR/public-layout/verify.sh" ] \
+  && [ "$(printf '%s\n' "$_chg_default_names" | grep -cxF -- "public-layout")" -eq 1 ]; then
+  ok "47-P: 選択に入れない suite は既定一覧に 1 回だけ登録され、verify.sh の実体がある"
+else
+  bad "47-P: 選択に入れない suite が既定一覧と対応しない（public-layout の登録か実体が無い）"
+fi
+if [ "$(printf '%s\n' "$_chg_doc_suites" | grep -cxF -- "public-layout")" -eq 0 ]; then
+  ok "47-P: 選択に入れない suite は文書横断 suite の束に入っていない"
+else
+  bad "47-P: 選択に入れない suite が文書横断 suite の束に入っている（文書契約面の変更が毎回全件へ倒れる）"
+fi
+# shellcheck disable=SC2016
+_chg_never_cond='if [[ "${FF_RUN_PUBLIC_LAYOUT:-}" != "1" && -z "${FF_PUBLIC_LAYOUT_SUITES:-}" ]]; then'
+_chg_never_suite_n="$(grep -cxF -- "$_chg_never_cond" "$TESTS_DIR/public-layout/verify.sh")"
+_chg_never_runner_n="$(grep -cF -- "$_chg_never_cond" "$RUNNER")"
+if [ "$_chg_never_suite_n" -eq 1 ] && [ "$_chg_never_runner_n" -eq 1 ]; then
+  ok "47-P: ランナーの「常に skip する」条件は、公開検査の先頭の分岐と同じ字面（どちらも 1 箇所）"
+else
+  bad "47-P: 「常に skip する」条件の字面が食い違う（公開検査 ${_chg_never_suite_n} 箇所 / ランナー ${_chg_never_runner_n} 箇所。条件を変えたら両方とこの検査を合わせる）"
+fi
+# 分岐の中身: 次の行が suite ごとの skip 理由行で、その次の行が exit 0（検査を 1 件も実行せずに終わる）。
+if awk -v cond="$_chg_never_cond" '
+    $0 == cond { on = NR; next }
+    on && NR == on + 1 { if ($0 ~ /^  echo "○ skip: /) skip_line = 1; next }
+    on && NR == on + 2 { if ($0 == "  exit 0") exit_line = 1; exit }
+    END { exit (skip_line && exit_line) ? 0 : 1 }
+  ' "$TESTS_DIR/public-layout/verify.sh"; then
+  ok "47-P: 公開検査は、明示起動の指定が無い回に検査を 1 件も実行せず suite ごと skip して終わる"
+else
+  bad "47-P: 公開検査の先頭の分岐が「skip 理由行 → exit 0」ではない（run-all から回るようになったなら CHANGED_NEVER_RUN_SUITES から外す）"
+fi
+# その分岐が、行頭の if としては suite の最初であること。手前へ if の分岐を足すと、明示起動の指定が
+# 無い回にも走る検査ができ、変更ベースの選択からはそれが黙って落ちる（1 行の検査や case など、行頭の
+# if 以外の形で手前へ足された検査までは、この照合は拾わない）。
+if [ "$(grep -m 1 '^if ' "$TESTS_DIR/public-layout/verify.sh")" = "$_chg_never_cond" ]; then
+  ok "47-P: 公開検査の「常に skip する」分岐は、行頭の if として suite の最初"
+else
+  bad "47-P: 公開検査の最初の if が「常に skip する」分岐ではない（手前に if の分岐があるなら、その検査は変更ベースの選択から落ちる）"
+fi
 fi
 rm -rf "$_chg_fx"
 fi

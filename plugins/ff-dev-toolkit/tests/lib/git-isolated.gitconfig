@@ -1,0 +1,10 @@
+# Isolated global git config for test suites (ACE-2667-1).
+# Prevents leaking developer global config (user.name, user.email, core.excludesFile,
+# and default $XDG_CONFIG_HOME/git/ignore) and disables OS-account identity auto-detection.
+# Preserves safe.directory=* so suites can read checkouts owned by another UID (e.g. CI containers).
+[user]
+	useConfigOnly = true
+[core]
+	excludesFile = /dev/null
+[safe]
+	directory = *

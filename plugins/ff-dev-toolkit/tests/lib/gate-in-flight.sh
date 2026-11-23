@@ -50,8 +50,8 @@ ff_gate_marker_meta_field() { # <meta_file> <field>
 # 引数: <marker_file>
 # 戻り値:
 #   0 = 生存中（PID が存在し、ps の lstart が 1 行目と一致）
-#   1 = 非生存・残骸（死んだ PID / 別プロセスへ再利用された PID / 空の壊れた通常ファイル。回収してよい）
-#   2 = 判定不能（symlink・読めない・生きた PID に対して ps が lstart を返さない。削除しない）
+#   1 = 非生存・残骸・消失済み（死んだ PID / 別プロセスへ再利用された PID / 空の壊れた通常ファイル / 走査中に正常終了で消えた通常ファイル。回収してよい）
+#   2 = 判定不能（symlink・実在するが読めない・生きた PID に対して ps が lstart を返さない。削除しない）
 # 出力変数（rc=0 時）:
 #   GATE_MARKER_PID / GATE_MARKER_START / GATE_MARKER_LABEL / GATE_MARKER_TREE
 ff_gate_marker_status() { # <marker_file>
@@ -70,9 +70,26 @@ ff_gate_marker_status() { # <marker_file>
   case "$base" in
     '' | *[!0-9]*) return 2 ;;
   esac
-  [ -r "$f" ] || return 2
+  if [ ! -r "$f" ]; then
+    # 走査〜読み取り間の正常終了でマーカーが消えた（TOCTOU）場合は非生存として扱う
+    # symlink や実在するが読めない通常ファイルは fail-closed（return 2）を保つ
+    [ -L "$f" ] && return 2
+    [ -e "$f" ] || return 1
+    return 2
+  fi
 
-  IFS= read -r want < "$f" 2>/dev/null || true
+  if ! IFS= read -r want < "$f" 2>/dev/null; then
+    if [ -L "$f" ]; then
+      return 2
+    fi
+    if [ ! -e "$f" ]; then
+      return 1
+    fi
+    if [ ! -r "$f" ]; then
+      return 2
+    fi
+    # 実在して読めるのに read が非 0（末尾改行なし・空ファイル）なら want の値のまま判定を続ける
+  fi
   want="${want%"$(printf '\r')"}"
 
   if kill_err="$(LC_ALL=C kill -0 "$base" 2>&1)"; then
@@ -81,15 +98,32 @@ ff_gate_marker_status() { # <marker_file>
 
   if [ "$kill_ok" -eq 1 ]; then
     have="$(ff_gate_ps_lstart "$base" 2>/dev/null || true)"
-    # プロセスは存在するが ps が lstart を返せない場合は回収せず判定不能に倒す
-    [ -n "$have" ] || return 2
+    if [ -z "$have" ]; then
+      # kill -0 〜 ps の間にプロセスが終了した（TOCTOU）場合は再確認して非生存へ逃がす
+      if ! kill_err="$(LC_ALL=C kill -0 "$base" 2>&1)"; then
+        case "$kill_err" in
+          *[Pp]ermission* | *[Pp]ermitted* | *EPERM*) return 2 ;;
+          *) return 1 ;;
+        esac
+      fi
+      # プロセスは存在するが ps が lstart を返せない場合は回収せず判定不能に倒す
+      return 2
+    fi
     # 空または開始時刻不一致は再利用 PID または不完全マーカー（残骸）
     [ -n "$want" ] && [ "$want" = "$have" ] || return 1
   else
     case "$kill_err" in
       *[Pp]ermission* | *[Pp]ermitted* | *EPERM*)
         have="$(ff_gate_ps_lstart "$base" 2>/dev/null || true)"
-        [ -n "$have" ] || return 2
+        if [ -z "$have" ]; then
+          if ! kill_err="$(LC_ALL=C kill -0 "$base" 2>&1)"; then
+            case "$kill_err" in
+              *[Pp]ermission* | *[Pp]ermitted* | *EPERM*) return 2 ;;
+              *) return 1 ;;
+            esac
+          fi
+          return 2
+        fi
         [ -n "$want" ] && [ "$want" = "$have" ] || return 1
         ;;
       *)
@@ -135,7 +169,7 @@ ff_gate_pid_in_self_lineage() { # <target_pid> -> 0 if target == self or ancesto
 #           GATE_UNKNOWN_LINES / GATE_RECLAIMED_COUNT / GATE_DIR_UNSAFE
 ff_gate_marker_sweep_dir() { # <marker_dir> [exclude_self_lineage=0] [fallback_tree]
   local dir="${1:-}" excl="${2:-0}" fb_tree="${3:-}"
-  local f="" base="" st=0 tree_val=""
+  local f="" base="" st=0 tree_val="" fb_tree_resolved=0
   GATE_LIVE_LINES=""
   GATE_LIVE_PIDS=""
   GATE_LIVE_TREES=""
@@ -145,18 +179,23 @@ ff_gate_marker_sweep_dir() { # <marker_dir> [exclude_self_lineage=0] [fallback_t
   GATE_DIR_UNSAFE=0
 
   [ -n "$dir" ] || return 0
-  [ -n "$fb_tree" ] && fb_tree="$(ff_gate_phys_dir "$fb_tree" || printf '%s' "$fb_tree")"
   if [ -L "$dir" ]; then
     GATE_DIR_UNSAFE=1
     GATE_UNKNOWN_LINES="unsafe-dir:${dir}"
-    [ -z "$fb_tree" ] || GATE_UNKNOWN_TREES="$fb_tree"
+    if [ -n "$fb_tree" ]; then
+      fb_tree="$(ff_gate_phys_dir "$fb_tree" || printf '%s' "$fb_tree")"
+      GATE_UNKNOWN_TREES="$fb_tree"
+    fi
     return 1
   fi
   [ -e "$dir" ] || return 0
   if [ ! -d "$dir" ]; then
     GATE_DIR_UNSAFE=1
     GATE_UNKNOWN_LINES="unsafe-dir:${dir}"
-    [ -z "$fb_tree" ] || GATE_UNKNOWN_TREES="$fb_tree"
+    if [ -n "$fb_tree" ]; then
+      fb_tree="$(ff_gate_phys_dir "$fb_tree" || printf '%s' "$fb_tree")"
+      GATE_UNKNOWN_TREES="$fb_tree"
+    fi
     return 1
   fi
 
@@ -176,15 +215,25 @@ ff_gate_marker_sweep_dir() { # <marker_dir> [exclude_self_lineage=0] [fallback_t
         GATE_LIVE_LINES="${GATE_LIVE_LINES:+${GATE_LIVE_LINES}
 }${GATE_MARKER_PID}:${GATE_MARKER_LABEL}"
         GATE_LIVE_PIDS="${GATE_LIVE_PIDS:+${GATE_LIVE_PIDS} }${GATE_MARKER_PID}"
-        tree_val="${GATE_MARKER_TREE:-$fb_tree}"
+        tree_val="$GATE_MARKER_TREE"
+        if [ -z "$tree_val" ] && [ -n "$fb_tree" ]; then
+          if [ "$fb_tree_resolved" -eq 0 ]; then
+            fb_tree="$(ff_gate_phys_dir "$fb_tree" || printf '%s' "$fb_tree")"
+            fb_tree_resolved=1
+          fi
+          tree_val="$fb_tree"
+        fi
         if [ -n "$tree_val" ]; then
           GATE_LIVE_TREES="${GATE_LIVE_TREES:+${GATE_LIVE_TREES}
 }${tree_val}"
         fi
         ;;
       1)
-        rm -f -- "$f" "${f}.meta" 2>/dev/null || true
-        GATE_RECLAIMED_COUNT=$((GATE_RECLAIMED_COUNT + 1))
+        # 走査中に他プロセスが消したマーカー（TOCTOU）は本プロセスが回収したわけではないため件数に含めない
+        if [ -e "$f" ] || [ -e "${f}.meta" ] || [ -L "${f}.meta" ]; then
+          rm -f -- "$f" "${f}.meta" 2>/dev/null || true
+          GATE_RECLAIMED_COUNT=$((GATE_RECLAIMED_COUNT + 1))
+        fi
         ;;
       *)
         if [ "$excl" = "1" ] && ff_gate_pid_in_self_lineage "$base"; then
@@ -193,6 +242,10 @@ ff_gate_marker_sweep_dir() { # <marker_dir> [exclude_self_lineage=0] [fallback_t
         GATE_UNKNOWN_LINES="${GATE_UNKNOWN_LINES:+${GATE_UNKNOWN_LINES}
 }${base}:${f}"
         if [ -n "$fb_tree" ]; then
+          if [ "$fb_tree_resolved" -eq 0 ]; then
+            fb_tree="$(ff_gate_phys_dir "$fb_tree" || printf '%s' "$fb_tree")"
+            fb_tree_resolved=1
+          fi
           GATE_UNKNOWN_TREES="${GATE_UNKNOWN_TREES:+${GATE_UNKNOWN_TREES}
 }${fb_tree}"
         fi
@@ -244,81 +297,152 @@ ff_gate_marker_remove() { # <marker_file>
 }
 
 # リポジトリの全 worktree 配下の run-all-in-flight を走査する。
-# 出力変数: GATE_LIVE_LINES / GATE_LIVE_PIDS / GATE_LIVE_TREES / GATE_UNKNOWN_LINES / GATE_RECLAIMED_COUNT
-ff_gate_scan_repo_worktree_markers() { # <repo_dir> [exclude_self_lineage=0]
-  local repo_dir="${1:-}" excl="${2:-0}"
-  local gdir="" cdir="" mdir="" wt="" wt_root="" gf=""
-  local dirs="" all_live="" all_pids="" all_trees="" all_unknown="" all_utrees="" total_reclaimed=0
+# 引数: <repo_dir> [exclude_self_lineage=0] [pre_gdir] [pre_cdir] [pre_top]
+#   - pre_gdir と pre_cdir の両方が絶対パスで渡された場合のみ冒頭の git rev-parse を省略する。
+#     pre_top も同じ rev-parse で得た値を渡すと current git dir 側の git 呼び出しも 0 回にできる（pre_top は検証しない）。
+#   - wt_root は論理パスのまま ff_gate_marker_sweep_dir へ渡し、live / unknown / unsafe 発生時だけ遅延で物理パス化する。
+# 出力変数: GATE_LIVE_LINES / GATE_LIVE_PIDS / GATE_LIVE_TREES / GATE_UNKNOWN_LINES / GATE_UNKNOWN_TREES
+#           GATE_RECLAIMED_COUNT / GATE_DIR_UNSAFE / GATE_SCAN_GIT_DIR / GATE_SCAN_COMMON_DIR / GATE_SCAN_TOP
+ff_gate_scan_repo_worktree_markers() { # <repo_dir> [exclude_self_lineage=0] [pre_gdir] [pre_cdir] [pre_top]
+  local repo_dir="${1:-}" excl="${2:-0}" gdir="${3:-}" cdir="${4:-}" cur_top="${5:-}"
+  local mdir="" wt="" wt_root="" gf="" rp_out="" _cand_top="" _cand_gd="" _cand_cd=""
+  local all_live="" all_pids="" all_trees="" all_unknown="" all_utrees="" total_reclaimed=0
+  local -a dir_mds=() dir_fbs=()
   GATE_LIVE_LINES=""
   GATE_LIVE_PIDS=""
   GATE_LIVE_TREES=""
   GATE_UNKNOWN_LINES=""
   GATE_UNKNOWN_TREES=""
   GATE_RECLAIMED_COUNT=0
+  GATE_DIR_UNSAFE=0
+  GATE_SCAN_GIT_DIR=""
+  GATE_SCAN_COMMON_DIR=""
+  GATE_SCAN_TOP=""
   [ -n "$repo_dir" ] || return 0
 
-  gdir="$(git -C "$repo_dir" rev-parse --absolute-git-dir 2>/dev/null)" || gdir=""
-  cdir="$(git -C "$repo_dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || cdir=""
-  if [ -z "$cdir" ] && [ -n "$gdir" ]; then
-    cdir="$gdir"
+  # 事前解決値は絶対パスかつ改行なしであることを検証し、満たさない場合は再解決する
+  case "$gdir" in
+    /* | [A-Za-z]:/*)
+      case "$gdir" in *$'\n'*) gdir="" ;; esac
+      ;;
+    *) gdir="" ;;
+  esac
+  case "$cdir" in
+    /* | [A-Za-z]:/*)
+      case "$cdir" in *$'\n'*) cdir="" ;; esac
+      ;;
+    *) cdir="" ;;
+  esac
+
+  if [ -z "$gdir" ] || [ -z "$cdir" ]; then
+    gdir=""
+    cdir=""
+    if rp_out="$(git -C "$repo_dir" rev-parse --path-format=absolute --show-toplevel --git-dir --git-common-dir 2>/dev/null)"; then
+      case "$rp_out" in
+        *$'\n'*$'\n'*)
+          _cand_top="${rp_out%%$'\n'*}"
+          _cand_top="${_cand_top%$'\r'}"
+          rp_out="${rp_out#*$'\n'}"
+          _cand_gd="${rp_out%%$'\n'*}"
+          _cand_gd="${_cand_gd%$'\r'}"
+          _cand_cd="${rp_out#*$'\n'}"
+          _cand_cd="${_cand_cd%$'\r'}"
+          case "$_cand_top" in /* | [A-Za-z]:/*)
+            case "$_cand_gd" in /* | [A-Za-z]:/*)
+              case "$_cand_cd" in
+                *$'\n'*) : ;;
+                /* | [A-Za-z]:/*)
+                  cur_top="$_cand_top"
+                  gdir="$_cand_gd"
+                  cdir="$_cand_cd"
+                  ;;
+              esac
+            ;; esac
+          ;; esac
+          ;;
+      esac
+    fi
+    if [ -z "$gdir" ] || [ -z "$cdir" ]; then
+      gdir="$(git -C "$repo_dir" rev-parse --absolute-git-dir 2>/dev/null)" || gdir=""
+      gdir="${gdir%$'\r'}"
+      cdir="$(git -C "$repo_dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || cdir=""
+      cdir="${cdir%$'\r'}"
+      case "$cdir" in
+        /* | [A-Za-z]:/*) : ;;
+        *) cdir="" ;;
+      esac
+      if [ -z "$cdir" ] && [ -n "$gdir" ]; then
+        cdir="$gdir"
+      fi
+      [ -n "$cur_top" ] || cur_top="$(git -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+      cur_top="${cur_top%$'\r'}"
+    fi
   fi
   [ -n "$cdir" ] || return 0
+  GATE_SCAN_GIT_DIR="$gdir"
+  GATE_SCAN_COMMON_DIR="$cdir"
+  GATE_SCAN_TOP="$cur_top"
 
   add_dir() {
-    local d="$1" t="$2" line="" _rest="$dirs"
+    local d="$1" t="$2" _existing=""
     [ -n "$d" ] || return 0
-    while [ -n "$_rest" ]; do
-      case "$_rest" in
-        *$'\n'*) line="${_rest%%$'\n'*}"; _rest="${_rest#*$'\n'}" ;;
-        *) line="$_rest"; _rest="" ;;
-      esac
-      [ "${line%%|*}" = "$d" ] && return 0
+    # 存在せず symlink でもないマーカー領域は 0 fork でスキップ（symlink / 壊れたファイルは走査へ渡す）
+    [ -e "$d" ] || [ -L "$d" ] || return 0
+    for _existing in "${dir_mds[@]+"${dir_mds[@]}"}"; do
+      [ "$_existing" = "$d" ] && return 0
     done
-    dirs="${dirs:+${dirs}
-}${d}|${t}"
+    dir_mds+=("$d")
+    dir_fbs+=("$t")
   }
 
   # main git dir
   if [ -n "$cdir" ]; then
-    wt_root=""
-    if [ "${cdir##*/}" = ".git" ]; then
-      wt_root="$(ff_gate_phys_dir "${cdir%/.git}" || true)"
+    mdir="${cdir%/}/ff-dev-toolkit/run-all-in-flight"
+    if [ -e "$mdir" ] || [ -L "$mdir" ]; then
+      wt_root=""
+      if [ "${cdir##*/}" = ".git" ]; then
+        wt_root="${cdir%/.git}"
+      fi
+      add_dir "$mdir" "$wt_root"
     fi
-    mdir="$(ff_gate_marker_dir "$cdir" || true)"
-    add_dir "$mdir" "$wt_root"
   fi
   # current git dir
-  if [ -n "$gdir" ]; then
-    wt_root="$(git -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null)" || wt_root=""
-    [ -n "$wt_root" ] && wt_root="$(ff_gate_phys_dir "$wt_root" || printf '%s' "$wt_root")"
-    mdir="$(ff_gate_marker_dir "$gdir" || true)"
-    add_dir "$mdir" "$wt_root"
+  if [ -n "$gdir" ] && [ "$gdir" != "$cdir" ]; then
+    mdir="${gdir%/}/ff-dev-toolkit/run-all-in-flight"
+    if [ -e "$mdir" ] || [ -L "$mdir" ]; then
+      wt_root="$cur_top"
+      [ -n "$wt_root" ] || wt_root="$(git -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+      add_dir "$mdir" "$wt_root"
+    fi
   fi
   # linked worktrees
   if [ -d "${cdir}/worktrees" ]; then
     for wt in "${cdir}/worktrees"/*; do
       [ -d "$wt" ] || continue
+      mdir="${wt%/}/ff-dev-toolkit/run-all-in-flight"
+      [ -e "$mdir" ] || [ -L "$mdir" ] || continue
       wt_root=""
       if [ -f "$wt/gitdir" ] && [ -r "$wt/gitdir" ]; then
         IFS= read -r gf < "$wt/gitdir" 2>/dev/null || gf=""
+        gf="${gf%$'\r'}"
         if [ -n "$gf" ]; then
-          wt_root="$(ff_gate_phys_dir "${gf%/.git}" || true)"
+          # git worktree add --relative-paths では gitdir が $wt 基準の相対パスになるため絶対化する
+          case "$gf" in
+            /* | [A-Za-z]:/*) wt_root="${gf%/.git}" ;;
+            *) wt_root="${wt%/}/${gf%/.git}" ;;
+          esac
         fi
       fi
-      mdir="$(ff_gate_marker_dir "$wt" || true)"
       add_dir "$mdir" "$wt_root"
     done
   fi
 
-  local entry="" md="" fb="" dir_unsafe=0 _dirs_rest="$dirs"
-  while [ -n "$_dirs_rest" ]; do
-    case "$_dirs_rest" in
-      *$'\n'*) entry="${_dirs_rest%%$'\n'*}"; _dirs_rest="${_dirs_rest#*$'\n'}" ;;
-      *) entry="$_dirs_rest"; _dirs_rest="" ;;
-    esac
-    [ -n "$entry" ] || continue
-    md="${entry%%|*}"
-    fb="${entry#*|}"
+  local _idx=0 _cnt="${#dir_mds[@]}" md="" fb="" dir_unsafe=0
+  while [ "$_idx" -lt "$_cnt" ]; do
+    md="${dir_mds[$_idx]}"
+    fb="${dir_fbs[$_idx]}"
+    _idx=$((_idx + 1))
+    [ -n "$md" ] || continue
     if ! ff_gate_marker_sweep_dir "$md" "$excl" "$fb" >/dev/null 2>&1; then
       dir_unsafe=1
     fi

@@ -226,6 +226,225 @@ _ff_finish_security_record_cases() {
     bad "R8: 停止理由の先着が崩れている（rc=${RC}）: ${OUT} / ${ERR}"
   fi
 
+  # ── R9〜R14: PR 作成前の単体入口（finish.sh security-record。Issue `#2875`） ──
+  echo
+  echo "== R-CLI. PR 作成前の専用セキュリティゲート記録確認（finish.sh security-record） =="
+  local sr_origin="$sr/cli-origin.git" sr_work="$sr/cli-work" sr_body="$sr/body.md"
+  local sr_auth_head="" sr_plain_head="" sr_base_oid=""
+  local keep_head2="$HEAD_OID" keep_base2="$BASE_OID" keep_head_ref2="${PR_HEAD_REF:-}"
+  g init -q --bare "$sr_origin" >/dev/null 2>&1
+  g clone -q "$sr_origin" "$sr_work" >/dev/null 2>&1
+  ( cd "$sr_work" \
+    && printf 'seed\n' >seed.txt && g add seed.txt >/dev/null 2>&1 && g commit -qm seed >/dev/null 2>&1 \
+    && g push -q origin develop >/dev/null 2>&1 \
+    && g checkout -q -b 'feature/#7-sr-auth' >/dev/null 2>&1 \
+    && mkdir -p plugins/media/scripts/lib docs \
+    && printf 'oauth\n' >plugins/media/scripts/lib/oauth-browser.mjs \
+    && printf 'doc\n' >docs/a.md \
+    && g add -A >/dev/null 2>&1 && g commit -qm 'feat: auth change' >/dev/null 2>&1 \
+    && g push -q -u origin 'feature/#7-sr-auth' >/dev/null 2>&1 \
+    && g checkout -q develop >/dev/null 2>&1 \
+    && g checkout -q -b 'feature/#7-sr-plain' >/dev/null 2>&1 \
+    && mkdir -p docs && printf 'plain\n' >x.txt && printf 'doc\n' >docs/a.md \
+    && g add -A >/dev/null 2>&1 && g commit -qm 'chore: plain change' >/dev/null 2>&1 \
+    && g push -q -u origin 'feature/#7-sr-plain' >/dev/null 2>&1 \
+    && g checkout -q develop >/dev/null 2>&1 \
+    && g checkout -q -b 'feature/#7-sr-empty' >/dev/null 2>&1 \
+    && g checkout -q 'feature/#7-sr-auth' >/dev/null 2>&1 )
+  g -C "$sr_work" remote set-head origin develop >/dev/null 2>&1
+  sr_base_oid="$(g -C "$sr_work" rev-parse origin/develop)"
+  sr_auth_head="$(g -C "$sr_work" rev-parse 'feature/#7-sr-auth')"
+  sr_plain_head="$(g -C "$sr_work" rev-parse 'feature/#7-sr-plain')"
+
+  _ff_sr_extract() {
+    printf '%s\n' "$1" | awk '/^SECURITY_(SENSITIVE|EVIDENCE|RECORD_GATE|RECORD)=/ { print }'
+  }
+
+  # R9: gh も jq も使わず PR 番号なしで判定できる
+  printf '%s\n' "Closes #${PRN}" '' '## セルフレビュー結果' "$route_line" >"$sr_body"
+  : >"$STUB_LOG"
+  run_finish "$sr_work" security-record --body-file "$sr_body" --base origin/develop
+  if [ "$RC" -eq 1 ] && [ ! -s "$STUB_LOG" ] && has_line "$OUT" "SECURITY_SENSITIVE=yes" \
+    && has_line "$OUT" "SECURITY_EVIDENCE=plugins/media/scripts/lib/oauth-browser.mjs" \
+    && has_line "$OUT" "SECURITY_RECORD_GATE=missing" \
+    && has_text "$ERR" "finish.sh security-record"; then
+    ok "R9: security-record は gh を呼ばず PR 番号なしで missing を rc 1 で返す"
+  else
+    bad "R9: security-record の missing 判定が違う（rc=${RC} log=$(cat "$STUB_LOG")）: ${OUT} / ${ERR}"
+  fi
+
+  # R10: 同じ本文・同じ差分で precheck と security-record の SECURITY_* 判定が完全一致する
+  local cli_out="" cli_rc=0 pre_out="" pre_fields="" cli_fields="" case_label="" case_body=""
+  HEAD_OID="$sr_auth_head"
+  BASE_OID="$sr_base_oid"
+  PR_HEAD_REF='feature/#7-sr-auth'
+  PR_FILES_JSON="$auth_files"
+  for case_label in recorded_exec recorded_unverified recorded_unsupported missing_plan missing_fence missing_comment missing_quote_fence missing_not_done; do
+    case "$case_label" in
+      recorded_exec) case_body="$(printf '%s\n' "Closes #${PRN}" '' '- 専用セキュリティゲート: /security-review 実施（指摘 0 件）')" ;;
+      recorded_unverified) case_body="$(printf '%s\n' "Closes #${PRN}" '' '- **専用セキュリティゲート**：未確認（理由あり）')" ;;
+      recorded_unsupported) case_body="$(printf '%s\n' "Closes #${PRN}" '' '- 専用セキュリティゲート: 未対応（主担当 unknown）')" ;;
+      missing_plan) case_body="$(printf '%s\n' "Closes #${PRN}" '' '- 専用セキュリティゲート: /security-review を実行する（根拠: plugins/media/scripts/lib/oauth-browser.mjs）')" ;;
+      missing_fence) case_body="$(printf '%s\n' "Closes #${PRN}" '' '```text' '専用セキュリティゲート: /security-review 実施（指摘 0 件）' '```')" ;;
+      missing_comment) case_body="$(printf '%s\n' "Closes #${PRN}" '' '<!-- 専用セキュリティゲート: /security-review 実施（指摘 0 件） -->')" ;;
+      missing_quote_fence) case_body="$(printf '%s\n' "Closes #${PRN}" '' '> ```text' '> 専用セキュリティゲート: /security-review 実施（指摘 0 件）' '> ```')" ;;
+      missing_not_done) case_body="$(printf '%s\n' "Closes #${PRN}" '' '- 専用セキュリティゲート: 未実施（時間切れ）')" ;;
+    esac
+    printf '%s\n' "$case_body" >"$sr_body"
+    write_pr_json "$case_body" '[]'
+    run_finish "$sr_work" precheck 7
+    pre_out="$OUT"
+    run_finish "$sr_work" security-record --body-file "$sr_body" --base origin/develop
+    cli_out="$OUT"; cli_rc="$RC"
+    pre_fields="$(_ff_sr_extract "$pre_out")"
+    cli_fields="$(_ff_sr_extract "$cli_out")"
+    local expect_rc=1
+    case "$case_label" in recorded_*) expect_rc=0 ;; esac
+    if [ "$cli_rc" -eq "$expect_rc" ] && [ -n "$pre_fields" ] && [ "$pre_fields" = "$cli_fields" ]; then
+      ok "R10/${case_label}: security-record と precheck の判定が完全一致（rc=${cli_rc}）"
+    else
+      bad "R10/${case_label}: precheck と食い違い（rc=${cli_rc} expect=${expect_rc}）pre=[${pre_fields}] cli=[${cli_fields}]"
+    fi
+  done
+
+  # R10b: off（env）でも precheck と完全一致し rc 0
+  printf '%s\n' "Closes #${PRN}" >"$sr_body"
+  write_pr_json "Closes #${PRN}" '[]'
+  MULTI_AGENT_SECURITY_REVIEW=off run_finish "$sr_work" precheck 7
+  pre_fields="$(_ff_sr_extract "$OUT")"
+  MULTI_AGENT_SECURITY_REVIEW=off run_finish "$sr_work" security-record --body-file "$sr_body" --base origin/develop
+  cli_fields="$(_ff_sr_extract "$OUT")"
+  if [ "$RC" -eq 0 ] && [ "$pre_fields" = "$cli_fields" ] && has_line "$OUT" "SECURITY_RECORD_GATE=off"; then
+    ok "R10b: security_review=off でも security-record と precheck が一致し rc 0"
+  else
+    bad "R10b: off で不一致（rc=${RC}）pre=[${pre_fields}] cli=[${cli_fields}]"
+  fi
+
+  # R10c: 該当なしブランチでも precheck と完全一致し rc 0
+  g -C "$sr_work" checkout -q 'feature/#7-sr-plain' >/dev/null 2>&1
+  HEAD_OID="$sr_plain_head"
+  PR_HEAD_REF='feature/#7-sr-plain'
+  PR_FILES_JSON='[{"path":"x.txt"},{"path":"docs/a.md"}]'
+  write_pr_json "Closes #${PRN}" '[]'
+  run_finish "$sr_work" precheck 7
+  pre_fields="$(_ff_sr_extract "$OUT")"
+  run_finish "$sr_work" security-record --body-file "$sr_body" --base origin/develop
+  cli_fields="$(_ff_sr_extract "$OUT")"
+  if [ "$RC" -eq 0 ] && [ "$pre_fields" = "$cli_fields" ] && has_line "$OUT" "SECURITY_RECORD_GATE=not-required"; then
+    ok "R10c: 該当なしブランチでも security-record と precheck が一致し rc 0"
+  else
+    bad "R10c: 該当なしで不一致（rc=${RC}）pre=[${pre_fields}] cli=[${cli_fields}]"
+  fi
+
+  # R11: --base 省略時は WORKFLOW_TIER_BASE → origin/HEAD → origin/develop の順に使う
+  g -C "$sr_work" checkout -q 'feature/#7-sr-auth' >/dev/null 2>&1
+  run_finish "$sr_work" security-record --body-file "$sr_body"
+  if [ "$RC" -eq 1 ] && has_line "$OUT" "SECURITY_SENSITIVE=yes" && has_line "$OUT" "SECURITY_RECORD_GATE=missing"; then
+    ok "R11: --base 省略時は origin/HEAD から差分を判定する"
+  else
+    bad "R11: --base 省略時の判定が違う（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  WORKFLOW_TIER_BASE="nonexistent-tier-base" run_finish "$sr_work" security-record --body-file "$sr_body"
+  if [ "$RC" -eq 1 ] && has_line "$OUT" "SECURITY_SENSITIVE=unknown" && has_text "$OUT" "nonexistent-tier-base...HEAD"; then
+    ok "R11b: --base 省略時は WORKFLOW_TIER_BASE を origin/HEAD より優先する"
+  else
+    bad "R11b: WORKFLOW_TIER_BASE の優先が効いていない（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  g -C "$sr_work" remote set-head origin -d >/dev/null 2>&1
+  run_finish "$sr_work" security-record --body-file "$sr_body"
+  if [ "$RC" -eq 1 ] && has_line "$OUT" "SECURITY_SENSITIVE=yes" && has_line "$OUT" "SECURITY_RECORD_GATE=missing"; then
+    ok "R11c: origin/HEAD 不在かつ --base 省略時は origin/develop へフォールバックする"
+  else
+    bad "R11c: origin/develop フォールバックが効いていない（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  g -C "$sr_work" remote set-head origin develop >/dev/null 2>&1
+
+  # R12: 分類できない回（変更 0 件・解決できない --base）は unknown として記録を求める
+  g -C "$sr_work" checkout -q 'feature/#7-sr-empty' >/dev/null 2>&1
+  run_finish "$sr_work" security-record --body-file "$sr_body" --base origin/develop
+  if [ "$RC" -eq 1 ] && has_line "$OUT" "SECURITY_SENSITIVE=unknown" && has_line "$OUT" "SECURITY_RECORD_GATE=missing"; then
+    ok "R12a: 変更 0 件は unknown として記録を求める（rc 1）"
+  else
+    bad "R12a: 変更 0 件を該当なしへ倒している（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  printf '%s\n' '- 専用セキュリティゲート: 未確認（変更 0 件）' >"$sr_body"
+  run_finish "$sr_work" security-record --body-file "$sr_body" --base origin/develop
+  if [ "$RC" -eq 0 ] && has_line "$OUT" "SECURITY_SENSITIVE=unknown" && has_line "$OUT" "SECURITY_RECORD_GATE=recorded"; then
+    ok "R12b: 変更 0 件でも未確認の記録行があれば rc 0"
+  else
+    bad "R12b: 変更 0 件の未確認記録が通っていない（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  printf '%s\n' "Closes #${PRN}" >"$sr_body"
+  g -C "$sr_work" checkout -q 'feature/#7-sr-auth' >/dev/null 2>&1
+  run_finish "$sr_work" security-record --body-file "$sr_body" --base nonexistent-ref-xyz
+  if [ "$RC" -eq 1 ] && has_line "$OUT" "SECURITY_SENSITIVE=unknown" && has_line "$OUT" "SECURITY_RECORD_GATE=missing"; then
+    ok "R12c: 解決できない --base は unknown として記録を求める（rc 1）"
+  else
+    bad "R12c: 解決できない --base の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  MULTI_AGENT_SECURITY_REVIEW=off run_finish "$sr_work" security-record --body-file "$sr_body" --base nonexistent-ref-xyz
+  if [ "$RC" -eq 0 ] && has_line "$OUT" "SECURITY_SENSITIVE=unknown" && has_line "$OUT" "SECURITY_RECORD_GATE=off"; then
+    ok "R12d: 解決できない --base でも security_review=off は rc 0"
+  else
+    bad "R12d: 解決できない --base で off が効いていない（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+
+  # R13: 引数の誤り・ファイル不在は rc 2（判定不能）
+  run_finish "$sr_work" security-record
+  if [ "$RC" -eq 2 ] && has_text "$ERR" "--body-file"; then
+    ok "R13a: --body-file 欠落は rc 2"
+  else
+    bad "R13a: --body-file 欠落の扱いが違う（rc=${RC}）: ${ERR}"
+  fi
+  run_finish "$sr_work" security-record --body-file "$sr/no-such-body.md" --base origin/develop
+  if [ "$RC" -eq 2 ] && has_text "$ERR" "読めません"; then
+    ok "R13b: 不在の --body-file は rc 2"
+  else
+    bad "R13b: 不在の --body-file の扱いが違う（rc=${RC}）: ${ERR}"
+  fi
+  run_finish "$sr_work" security-record --body-file "$sr_body" --body-file "$sr_body"
+  if [ "$RC" -eq 2 ] && has_text "$ERR" "複数回"; then
+    ok "R13c: --body-file の重複指定は rc 2"
+  else
+    bad "R13c: --body-file の重複指定が通っている（rc=${RC}）: ${ERR}"
+  fi
+  local injected_base
+  injected_base="$(printf 'bad\nSECURITY_RECORD_GATE=recorded\nSECURITY_SENSITIVE=no')"
+  run_finish "$sr_work" security-record --body-file "$sr_body" --base "$injected_base"
+  if [ "$RC" -eq 2 ] && ! has_line "$OUT" "SECURITY_RECORD_GATE=recorded" && has_text "$ERR" "--base の値が不正"; then
+    ok "R13d: 改行を含む --base は rc 2 で拒否し KEY= 行を偽造させない"
+  else
+    bad "R13d: 改行入り --base を拒否していない（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+  run_finish "$sr_work" security-record --body-file "$sr_body" --base "--output=/tmp/x"
+  if [ "$RC" -eq 2 ] && has_text "$ERR" "--base の値が不正"; then
+    ok "R13d2: 先頭 '-' の --base は rc 2 で拒否する"
+  else
+    bad "R13d2: 先頭 '-' の --base を拒否していない（rc=${RC}）: ${ERR}"
+  fi
+  printf '%s\n' "Closes #${PRN}" >"$sr_work/-n"
+  RC=0
+  OUT="$( cd "$sr_work" && printf '%s\n' '- 専用セキュリティゲート: /security-review 実施（指摘 0 件）' | PATH="$BIN:$PATH" bash "$FINISH" security-record --body-file -n --base origin/develop 2>"$TMP/err" )" || RC=$?
+  ERR="$(cat "$TMP/err")"
+  rm -f -- "$sr_work/-n"
+  if [ "$RC" -eq 1 ] && has_line "$OUT" "SECURITY_RECORD_GATE=missing"; then
+    ok "R13e: '-' 始まりの本文ファイル名（-n）でも stdin を読まずファイル本体を判定する"
+  else
+    bad "R13e: '-' 始まりのファイル名で stdin を誤読している（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+
+  # R14: finish.sh の usage と skill の文書（merge-gate.md）に使い方が載っている
+  run_finish "$sr_work" --help
+  if [ "$RC" -eq 2 ] && has_text "$ERR" "finish.sh security-record --body-file" \
+    && grep -qF "finish.sh\" security-record --body-file" "$PLUGIN_ROOT/skills/close-issue/references/merge-gate.md"; then
+    ok "R14: finish.sh の usage と close-issue の merge-gate.md に security-record の使い方が載っている"
+  else
+    bad "R14: usage または merge-gate.md に security-record の記載が無い"
+  fi
+
+  HEAD_OID="$keep_head2"
+  BASE_OID="$keep_base2"
+  PR_HEAD_REF="$keep_head_ref2"
   PR_FILES_JSON=""
   write_pr_json "Closes #${PRN}" '[]'
 }

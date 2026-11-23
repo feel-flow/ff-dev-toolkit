@@ -590,4 +590,7 @@ fi
 # case 53: ゲートの記録の制御（FF_GATE_RECORD_FILE / FF_GATE_RECORD）を suite へ継承しない（OBS-414）。
 suite_cases_source "$SCRIPT_DIR/cases" gate-record-scope.sh
 
+# case 56: suite の起動環境を開発者のグローバル／システム git 設定と作者環境変数から隔離する（ACE-2667-1）。
+suite_cases_source "$SCRIPT_DIR/cases" git-env-isolation.sh
+
 # suite-cases-end: execution-contracts.sh

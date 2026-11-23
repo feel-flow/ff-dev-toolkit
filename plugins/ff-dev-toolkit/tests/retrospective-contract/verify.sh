@@ -2,6 +2,7 @@
 # 空振り検出: 作業クラス参照はknowledge-lookupの不在・空化・正本参照削除、点検の節外移動・義務弱化・記録欠落の成功扱い・事後検索の事前扱いの7変異をrc=1で検出（2026-10-24実測。無変異対照rc=0）。
 # 空振り検出: 旧経路の承認参照/完成本文/保留marker/例外禁止/closeを外す5変異と旧経路文書の不在・空の2変異は各rc=1、正常対照244件pass（2026-10-29 macOS実測）。
 # 空振り検出: 外部公開の正本不在・空・見出し変更と、metadata失敗/host-private条件/コメント等全書込み/完成本文/既承認/包括指示/env境界の各欠落は全10変異がrc=1（2026-10-29 macOS実測）。正常対照は240件pass。
+# 空振り検出: 新チェーン表記の旧表記復元（SKILL/workflow-principles/README）と規則追加時の消す規則/強制仕組み義務の削除（promotion/filing/SKILL）の全6変異を mutation-harness.sh で実測し全件 detected（rc=1）、無変異対照は286件pass（2026-11-23 macOS実測）。
 #
 # /retrospective の規定と、ワークフローチェーン記載の相互整合を静的検査する（Issue #540）。
 #
@@ -15,7 +16,7 @@
 # Critical が人手で見つかっており、機械化されていないことが実測されている。
 #
 # 検査:
-#   A. チェーン記載サイト（`/merge-cleanup` → `/ace-curate` → `/retrospective`）が
+#   A. チェーン記載サイト（既定 `/merge-cleanup` → `/retrospective`、B / C 知見がある PR だけ前に `/ace-curate`）が
 #      全導線に存在する（導線ごとに表記が違うので、サイトごとに固定針を持つ）
 #   B. スキルの規定マーカー（提案閾値・実測限定・出力形式・承認境界・read-only 境界・
 #      ask/off モード・trigger 語）が存在する。規定は本線の SKILL.md と、条件付きで読む
@@ -215,31 +216,30 @@ section_contains "$GIT_WORKFLOW" "#### 着手前の Playbook 参照（ACE Reuse�
   "作業クラス参照: 事後検索を変更前の証拠にしない"
 
 # ── A. チェーン記載の相互整合 ────────────────────────────────────────────────
-# 同じチェーンでも導線ごとに表記が違う（バッククォート付きの 3 トークン / 「ACE」を
-# 中間トークンに使う原則ブロック / チェーン末尾だけを述べる DEPLOYMENT / 括弧で
-# 説明が挟まる README のメンテ導線）。共通の緩い判定へ寄せると識別力が落ちるため、
-# **サイトごとに固定針を持つ**。
-CHAIN="\`/merge-cleanup\` → \`/ace-curate\` → \`/retrospective\`"
+# 既定チェーンは `/merge-cleanup` → `/retrospective`（`/ace-curate` は A〜D で B / C の
+# 候補がある PR だけ挟む）。導線ごとに表記が違うのでサイトごとに固定針を持つ。
+DEFAULT_CHAIN="\`/merge-cleanup\` → \`/retrospective\`"
+OLD_CHAIN="\`/merge-cleanup\` → \`/ace-curate\` → \`/retrospective\`"
 
 CHAIN_SITES=(
-  "${SKILL}|ワークフローチェーンの末尾に位置する: ${CHAIN}|retrospective SKILL の位置づけ"
+  "${SKILL}|既定チェーンの末尾に位置する: ${DEFAULT_CHAIN}（\`/ace-curate\` は A〜D で B / C の候補がある PR だけ挟む）|retrospective SKILL の位置づけ"
   # git-workflow の冒頭サマリは読み手・エージェントが最初に当たる導線で、ここだけ
   # 裸の `Retrospective` 表記（スラッシュ無し）。他の針とは形が違うので専用に持つ。
-  "${GIT_WORKFLOW}|→ Cleanup → ACE → Retrospective|git-workflow のコアサイクル要約"
-  "${WORKFLOW_PRINCIPLES}|cleanup / ACE / \`/retrospective\` の実施を含む|原則1 のルール本文"
-  "${ACE_CURATE}|ACE 完了後、ワークフローチェーンの末尾として \`/retrospective\`|ace-curate 完了案内からの導線"
-  "${ACE_CURATE}|（${CHAIN}）|ace-curate 完了案内のチェーン表記"
+  "${GIT_WORKFLOW}|→ Cleanup → Retrospective（原則から推論で導けない知見［A〜D の B / C］がある PR のみ ACE）|git-workflow のコアサイクル要約"
+  "${WORKFLOW_PRINCIPLES}|cleanup / \`/retrospective\` の実施を含む。\`/ace-curate\` は原則から推論で導けない知見［A〜D の B / C］がある PR だけ挟む|原則1 のルール本文"
+  "${ACE_CURATE}|既定チェーンは ${DEFAULT_CHAIN}（B/C 候補がある PR だけ挟む）。実行後は \`/retrospective\` へ進む|ace-curate 完了案内からの導線"
   "${GIT_WORKFLOW}|### チェーン末尾: セッション振り返り（/retrospective）|git-workflow のチェーン末尾セクション"
-  "${GIT_WORKFLOW}|ACE 完了後、チェーンの末尾として \`/retrospective\` を毎回実行する（${CHAIN}）|git-workflow のチェーン表記"
-  "${WORKFLOW_PRINCIPLES}|→ /merge-cleanup → ACE → /retrospective（セッション振り返り）|原則1 のフロー図"
+  "${GIT_WORKFLOW}|クリーンアップ完了後、チェーンの末尾として \`/retrospective\` を毎回実行する（既定: ${DEFAULT_CHAIN}。原則から推論で導けない知見［A〜D の B / C］がある PR だけ前に \`/ace-curate\` を挟む）|git-workflow のチェーン表記"
+  "${WORKFLOW_PRINCIPLES}|→ /merge-cleanup → /retrospective（セッション振り返り。B / C 知見がある PR だけ前に /ace-curate）|原則1 のフロー図"
+  "${WORKFLOW_PRINCIPLES}|11. [ ] /ace-curate（原則から推論で導けない知見［A〜D の B / C］がある PR だけ）|標準チェックリストの条件付き ACE 項目"
   "${WORKFLOW_PRINCIPLES}|12. [ ] /retrospective（セッション振り返り）|標準チェックリストの末尾項目"
-  "${DEPLOYMENT}|ステップ 10 の後、チェーン末尾として \`/retrospective\`（セッション振り返り）を毎回実行する|DEPLOYMENT の主要ステップ末尾"
-  "${OSS_README}|ワークフローチェーン末尾（${CHAIN}）のセッション振り返り|公開 README のスキル表"
+  "${DEPLOYMENT}|クリーンアップ後（B / C 知見がある PR はステップ 10 の後）、チェーン末尾として \`/retrospective\`（セッション振り返り）を毎回実行する（既定: ${DEFAULT_CHAIN}）|DEPLOYMENT の主要ステップ末尾"
+  "${OSS_README}|ワークフローチェーン末尾（既定: ${DEFAULT_CHAIN}。B / C 知見がある PR だけ前に \`/ace-curate\`）のセッション振り返り|公開 README のスキル表"
 )
 if [[ "$IS_MONOREPO" -eq 1 ]]; then
   CHAIN_SITES+=(
-    "${ROOT_README}|ワークフローチェーン末尾（${CHAIN}）のセッション振り返り|ルート README のスキル表"
-    "${ROOT_README}|→ \`/ace-curate\`（ナレッジ蓄積）→ \`/retrospective\`（セッション振り返り・プロセス改善提案）|ルート README のメンテ導線"
+    "${ROOT_README}|ワークフローチェーン末尾（既定: ${DEFAULT_CHAIN}。B / C 知見がある PR だけ前に \`/ace-curate\`）のセッション振り返り|ルート README のスキル表"
+    "${ROOT_README}|→（原則から推論で導けない知見［A〜D の B / C］がある PR だけ \`/ace-curate\`）→ \`/retrospective\`（セッション振り返り・プロセス改善提案）|ルート README のメンテ導線"
   )
 fi
 
@@ -249,6 +249,15 @@ for site in "${CHAIN_SITES[@]}"; do
   site_needle="${site_rest%|*}"
   site_label="${site_rest##*|}"
   contains "$site_file" "$site_needle" "チェーン記載: ${site_label}"
+done
+
+# 毎 PR の `/ace-curate` を前提とする旧チェーン表記の逐語復元を塞ぐ。
+OLD_CHAIN_BAN_FILES=("$SKILL" "$ACE_CURATE" "$PLUGIN_ROOT/skills/ace-curate/references/curate.md" "$GIT_WORKFLOW" "$WORKFLOW_PRINCIPLES" "$DEPLOYMENT" "$OSS_README")
+if [[ "$IS_MONOREPO" -eq 1 ]]; then
+  OLD_CHAIN_BAN_FILES+=("$ROOT_README")
+fi
+for ban_file in "${OLD_CHAIN_BAN_FILES[@]}"; do
+  not_contains "$ban_file" "$OLD_CHAIN" "旧チェーン表記が復元されていない: ${ban_file#"$REPO_ROOT"/}"
 done
 
 # ── B. スキル（SKILL.md + references/）の規定マーカーと導出値 ─────────────────────
@@ -531,6 +540,21 @@ contains "$REF_PROMOTION" "**\`mitigated\` の再発を記録するときは \`I
 # 禁止だけで提案が出なくなるか、許可だけで同型の再提案が続くかのどちらかに退化する。
 contains "$REF_PROMOTION" "**closed 済み対策の再発時は、前の対策と同じ型を再提案しない**" "観測台帳: closed 済み対策の再発時に同型を再提案しない"
 contains "$REF_PROMOTION" "**構造を変える案**（判定をゲート側へ移す・経路自体を減らす・その工程を廃止する）だけを候補にする" "観測台帳: 再発時の候補は構造を変える案に限る"
+# 提案の検討順（引き算・代替ファースト）: 初回昇格・時間損失の単発提案を含む
+# 全提案で「除去 → 代替・層別化 → 構造への組み込み → ルール追加（最終手段）」の順を通し、
+# 時間損失では前提の問い直しと方針変更提案、出力ではトレードオフ 1 行を要求する。
+PROMO_ORDER_HEADING="## 提案の検討順（引き算・代替ファースト）"
+section_contains "$REF_PROMOTION" "$PROMO_ORDER_HEADING" "1. **除去（Eliminate）**:" "引き算・代替ファースト: 検討順 1 は除去"
+section_contains "$REF_PROMOTION" "$PROMO_ORDER_HEADING" "2. **代替・層別化（Substitute / Tiering）**:" "引き算・代替ファースト: 検討順 2 は代替・層別化"
+section_contains "$REF_PROMOTION" "$PROMO_ORDER_HEADING" "3. **構造への組み込み（Structuralize）**:" "引き算・代替ファースト: 検討順 3 は構造への組み込み"
+section_contains "$REF_PROMOTION" "$PROMO_ORDER_HEADING" "4. **ルール・手順の追加（最終手段）**:" "引き算・代替ファースト: 検討順 4 はルール追加（最終手段）"
+section_contains "$REF_PROMOTION" "$PROMO_ORDER_HEADING" "**消す規則（置き換える既存規定）か、強制する仕組み（hook・script・テスト）を必ず添える**" "引き算・代替ファースト: 規則追加には消す規則か強制する仕組みを必須化"
+contains "$SKILL" "**規則を足す提案には消す規則か強制する仕組みを添える**" "提案閾値: 規則追加時の消す規則・強制仕組みの義務が本線にある"
+section_contains "$REF_FILING" "$REF_OUTPUT_FORMAT_HEADING" "規則を足す場合は、消す規則か、強制する仕組みを必ず添える" "出力形式: 提案欄に規則追加時の義務を明記"
+contains "$REF_LEDGER" "**前提の問い直し（上位視点）**:" "引き算・代替ファースト: 時間損失の単発提案で前提を問い直す"
+contains "$REF_LEDGER" "方針側の変更提案として明示して提示してよい" "引き算・代替ファースト: 時間損失では方針側の変更提案を許す"
+contains "$REF_LEDGER" "重い検証を省けた・軽い代替手段で同等の確度を得られた成功" "引き算・代替ファースト: Keep に引き算・代替の成功を含める"
+section_contains "$REF_FILING" "$REF_OUTPUT_FORMAT_HEADING" "守る品質・許容するリスク・後段の安全網（または削る対象）のトレードオフを 1 行添える" "引き算・代替ファースト: 出力形式の期待効果欄にトレードオフ記載を求める"
 contains "$REF_FILING" "代わりに \`Status\` を \`mitigated\`、\`Issue\` を対策の所在へ更新する" "承認と起票: 見送りは mitigated へ書き戻す"
 # ── 台帳直 push の base 先行ガード（Issue `#1570`） ─────────────────────────────
 # 台帳はデフォルト統合ブランチの共有文書で、`/retrospective` はそこへ直接 push する。

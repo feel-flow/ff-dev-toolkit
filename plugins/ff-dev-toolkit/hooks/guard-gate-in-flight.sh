@@ -45,11 +45,36 @@ if ff_l4_skipped 'gate-in-flight'; then exit 0; fi
 command -v jq >/dev/null 2>&1 || exit 0
 command -v git >/dev/null 2>&1 || exit 0
 
-EVENT="$(printf '%s' "$input" | jq -r '.hook_event_name // ""' 2>/dev/null)" || exit 0
+EVENT=""
+tool=""
+CWD=""
+_tool_edit_path=""
+_tool_cmd=""
+_jq_ok=0
+while IFS= read -r -d '' EVENT \
+  && IFS= read -r -d '' tool \
+  && IFS= read -r -d '' CWD \
+  && IFS= read -r -d '' _tool_edit_path \
+  && IFS= read -r -d '' _tool_cmd; do
+  _jq_ok=1
+  break
+done < <(printf '%s' "$input" | jq -sj '
+  if length == 1 and (.[0] | type == "object") then
+    .[0] | [
+      (.hook_event_name // ""),
+      (.tool_name // ""),
+      (.cwd // ""),
+      (.tool_input | if type == "object" then (.file_path // .notebook_path // "") else "" end),
+      (.tool_input | if type == "object" then (.command // "") else "" end)
+    ] | map(tostring | gsub("\u0000"; "")) | join("\u0000") + "\u0000"
+  else empty end
+' 2>/dev/null)
+[ "$_jq_ok" -eq 1 ] || exit 0
+EVENT="${EVENT//$'\r'/}"
+tool="${tool//$'\r'/}"
 [ -n "$EVENT" ] || EVENT="PreToolUse"
 [ "$EVENT" = "PreToolUse" ] || exit 0
 
-tool="$(printf '%s' "$input" | jq -r '.tool_name // ""' 2>/dev/null)" || exit 0
 case "$tool" in
   Edit | Write | MultiEdit | NotebookEdit | Bash) : ;;
   *) exit 0 ;;
@@ -65,7 +90,6 @@ if [ -r "$WSL_LIB" ] && [ ! -L "$WSL_LIB" ]; then
   fi
 fi
 
-CWD="$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null)" || CWD=""
 CWD="${CWD//$'\r'/}"
 if [ "$WS_IS_MSYS" -eq 1 ]; then
   case "$CWD" in
@@ -154,6 +178,106 @@ EOF
   printf '%s' "$summary"
 }
 
+line_in_list() { # <needle> <newline_list>
+  local needle="${1:-}" list="${2:-}" _line="" _rest=""
+  [ -n "$needle" ] && [ -n "$list" ] || return 1
+  case "$list" in
+    "$needle") return 0 ;;
+    *"$needle"*)
+      _rest="$list"
+      while [ -n "$_rest" ]; do
+        case "$_rest" in
+          *$'\n'*) _line="${_rest%%$'\n'*}"; _rest="${_rest#*$'\n'}" ;;
+          *) _line="$_rest"; _rest="" ;;
+        esac
+        [ "$_line" = "$needle" ] && return 0
+      done
+      ;;
+  esac
+  return 1
+}
+
+resolve_git_meta() { # <dir> -> sets _GM_TOP / _GM_GDIR / _GM_CDIR (returns 0 if git repo, 1 otherwise)
+  local dir="${1:-}" rp="" rp_rc=0 _cand_top="" _cand_gd="" _cand_cd=""
+  _GM_TOP=""
+  _GM_GDIR=""
+  _GM_CDIR=""
+  [ -n "$dir" ] && [ -d "$dir" ] || return 1
+  # stdout のみを読み取る（GIT_TRACE=1 等の stderr 混入でパスがずれるのを防ぐ）
+  rp="$(git -C "$dir" rev-parse --path-format=absolute --show-toplevel --git-dir --git-common-dir 2>/dev/null)" || rp_rc=$?
+  if [ "$rp_rc" -ne 0 ]; then
+    return 1
+  fi
+  case "$rp" in
+    *$'\n'*$'\n'*)
+      _cand_top="${rp%%$'\n'*}"
+      _cand_top="${_cand_top%$'\r'}"
+      rp="${rp#*$'\n'}"
+      _cand_gd="${rp%%$'\n'*}"
+      _cand_gd="${_cand_gd%$'\r'}"
+      _cand_cd="${rp#*$'\n'}"
+      _cand_cd="${_cand_cd%$'\r'}"
+      # ちょうど 3 行かつすべて絶対パスであることを検証する（git 2.31 未満は --path-format=absolute をそのまま出力するためフォールバックへ回す）
+      case "$_cand_top" in /* | [A-Za-z]:/*)
+        case "$_cand_gd" in /* | [A-Za-z]:/*)
+          case "$_cand_cd" in
+            *$'\n'*) : ;;
+            /* | [A-Za-z]:/*)
+              _GM_TOP="$_cand_top"
+              _GM_GDIR="$_cand_gd"
+              _GM_CDIR="$_cand_cd"
+              return 0
+              ;;
+          esac
+        ;; esac
+      ;; esac
+      ;;
+  esac
+  _GM_TOP="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)"
+  _GM_TOP="${_GM_TOP%$'\r'}"
+  [ -n "$_GM_TOP" ] || return 1
+  _GM_GDIR="$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  _GM_GDIR="${_GM_GDIR%$'\r'}"
+  [ -n "$_GM_GDIR" ] || return 1
+  _GM_CDIR="$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  _GM_CDIR="${_GM_CDIR%$'\r'}"
+  case "$_GM_CDIR" in
+    /* | [A-Za-z]:/*) : ;;
+    *) _GM_CDIR="" ;;
+  esac
+  [ -n "$_GM_CDIR" ] || _GM_CDIR="$_GM_GDIR"
+  return 0
+}
+
+# 0-fork で <dir> から親へ .git を探索する。
+# 戻り値: 0=途中 symlink 無しで .git 発見 (_DG_DIR) / 1=git 外確定 / 2=symlink やパス要素の . / .. を含むため git rev-parse 要
+find_dotgit_ancestor() { # <dir>
+  local cur="${1%/}" hops=0
+  _DG_DIR=""
+  [ -n "$cur" ] || cur="/"
+  case "$cur" in
+    '.' | '..' | './'* | '../'* | *'/./'* | *'/.' | *'/../'* | *'/..') return 2 ;;
+  esac
+  while [ "$hops" -lt 64 ]; do
+    [ -L "$cur" ] && return 2
+    if [ -e "${cur}/.git" ]; then
+      _DG_DIR="$cur"
+      return 0
+    fi
+    [ "$cur" = "/" ] && return 1
+    case "$cur" in
+      [A-Za-z]: | [A-Za-z]:/) return 1 ;;
+      */*)
+        cur="${cur%/*}"
+        [ -n "$cur" ] || cur="/"
+        ;;
+      *) return 2 ;;
+    esac
+    hops=$((hops + 1))
+  done
+  return 2
+}
+
 PROTECT_TREES=""
 LIVE_SUMMARY=""
 MARKER_DIRS_NOTE=""
@@ -162,7 +286,7 @@ cmd_override=0
 
 case "$tool" in
   Edit | Write | MultiEdit | NotebookEdit)
-    edit_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // ""' 2>/dev/null)" || edit_path=""
+    edit_path="$_tool_edit_path"
     edit_path="${edit_path//$'\r'/}"
     edit_drive=0
     if [ "$WS_IS_MSYS" -eq 1 ]; then
@@ -215,24 +339,30 @@ case "$tool" in
     fi
     [ -d "${target_probe:-}" ] || target_probe="$CWD"
 
-    ROOT="$(git -C "$target_probe" rev-parse --show-toplevel 2>/dev/null || true)"
-    GIT_DIR="$(git -C "$target_probe" rev-parse --absolute-git-dir 2>/dev/null || true)"
-    if [ -z "$ROOT" ] || [ -z "$GIT_DIR" ]; then
+    ROOT=""
+    TARGET_GIT_DIR=""
+    if resolve_git_meta "$target_probe"; then
+      ROOT="$_GM_TOP"
+      TARGET_GIT_DIR="$_GM_GDIR"
+    fi
+    if [ -z "$ROOT" ] || [ -z "$TARGET_GIT_DIR" ]; then
       # 親が git 管理外でも、cwd が git 管理内かつ書き込み先判定不能時の確認に備える
-      ROOT_CWD="$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || true)"
-      [ -n "$ROOT_CWD" ] || exit 0
+      if ! resolve_git_meta "$CWD"; then
+        exit 0
+      fi
       # edit_path が symlink でなく親を辿って明確に git 外（存在ディレクトリ）なら止めない
       if [ -n "$edit_path" ] && [ ! -L "$edit_path" ] && [ -d "$target_probe" ]; then
         exit 0
       fi
-      ROOT="$ROOT_CWD"
-      GIT_DIR="$(git -C "$CWD" rev-parse --absolute-git-dir 2>/dev/null || true)"
-      [ -n "$GIT_DIR" ] || exit 0
+      ROOT="$_GM_TOP"
+      TARGET_GIT_DIR="$_GM_GDIR"
+      [ -n "$TARGET_GIT_DIR" ] || exit 0
     fi
 
     load_gif_lib_or_deny
+    MARKER_DIR="${TARGET_GIT_DIR%/}/ff-dev-toolkit/run-all-in-flight"
+    [ -e "$MARKER_DIR" ] || [ -L "$MARKER_DIR" ] || exit 0
     ROOT_PHYS="$(ff_gate_phys_dir "$ROOT" || printf '%s' "$ROOT")"
-    MARKER_DIR="$(ff_gate_marker_dir "$GIT_DIR" || true)"
     ff_gate_marker_sweep_dir "$MARKER_DIR" 0 "$ROOT_PHYS" >/dev/null 2>&1 || true
     [ -n "$GATE_LIVE_LINES$GATE_UNKNOWN_LINES" ] || [ "${GATE_DIR_UNSAFE:-0}" -eq 1 ] || exit 0
 
@@ -277,15 +407,33 @@ case "$tool" in
     ;;
 
   Bash)
-    cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null)" || exit 0
+    cmd="$_tool_cmd"
     cmd="${cmd//$'\r'/}"
     [ -n "$cmd" ] || exit 0
 
-    CWD_ROOT="$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || true)"
-    cand_dirs=""
-    if [ -n "$CWD_ROOT" ]; then
-      cand_dirs="$CWD_ROOT"
+    CWD_ROOT=""
+    ge_tops=()
+    ge_gdirs=()
+    ge_cdirs=()
+    seen_roots=""
+    seen_dotgit=""
+    seen_cands=""
+    if resolve_git_meta "$CWD"; then
+      CWD_ROOT="$_GM_TOP"
+      ge_tops+=("$_GM_TOP")
+      ge_gdirs+=("$_GM_GDIR")
+      ge_cdirs+=("$_GM_CDIR")
+      seen_roots="$_GM_TOP"
+      seen_dotgit="$_GM_TOP"
+      # GIT_DIR / GIT_WORK_TREE / GIT_COMMON_DIR が設定されると git はディレクトリ構造と無関係に解決するため 0-fork 探索を使わない
+      if [ -z "${GIT_DIR:-}" ] && [ -z "${GIT_WORK_TREE:-}" ] && [ -z "${GIT_COMMON_DIR:-}" ] && find_dotgit_ancestor "$CWD"; then
+        if ! line_in_list "$_DG_DIR" "$seen_dotgit"; then
+          seen_dotgit="${seen_dotgit}
+${_DG_DIR}"
+        fi
+      fi
     fi
+
     # cd / git -C / リダイレクト等で別リポジトリ / 別 worktree（絶対・相対・引用/括弧内パス）を指す場合も候補へ加える
     case "$cmd" in
       */* | *..* | *' '* | *$'\t'* | *$'\n'*)
@@ -320,44 +468,58 @@ case "$tool" in
               *) probe="" ;;
             esac
           done
-          if [ -n "$probe" ] && [ -d "$probe" ] && [ "$probe" != "/" ]; then
-            cand_dirs="${cand_dirs:+${cand_dirs}
+          [ -n "$probe" ] && [ -d "$probe" ] && [ "$probe" != "/" ] || continue
+          probe="${probe%/}"
+          [ -n "$probe" ] || continue
+          if [ "$probe" = "$CWD" ] || [ "$probe" = "${CWD_ROOT:-}" ]; then
+            continue
+          fi
+          if line_in_list "$probe" "$seen_cands"; then
+            continue
+          fi
+          seen_cands="${seen_cands:+${seen_cands}
 }${probe}"
+
+          _resolve_dir=""
+          # GIT_DIR / GIT_WORK_TREE / GIT_COMMON_DIR が設定されると git はディレクトリ構造と無関係に解決するため 0-fork 探索を使わない
+          if [ -z "${GIT_DIR:-}" ] && [ -z "${GIT_WORK_TREE:-}" ] && [ -z "${GIT_COMMON_DIR:-}" ]; then
+            _dg_rc=0
+            find_dotgit_ancestor "$probe" || _dg_rc=$?
+            case "$_dg_rc" in
+              0)
+                if line_in_list "$_DG_DIR" "$seen_dotgit"; then
+                  continue
+                fi
+                seen_dotgit="${seen_dotgit:+${seen_dotgit}
+}${_DG_DIR}"
+                _resolve_dir="$_DG_DIR"
+                ;;
+              1)
+                continue
+                ;;
+              *)
+                _resolve_dir="$probe"
+                ;;
+            esac
+          else
+            _resolve_dir="$probe"
+          fi
+
+          if resolve_git_meta "$_resolve_dir"; then
+            if ! line_in_list "$_GM_TOP" "$seen_roots"; then
+              seen_roots="${seen_roots:+${seen_roots}
+}${_GM_TOP}"
+              ge_tops+=("$_GM_TOP")
+              ge_gdirs+=("$_GM_GDIR")
+              ge_cdirs+=("$_GM_CDIR")
+            fi
           fi
         done
         set +f
         ;;
     esac
-    [ -n "$cand_dirs" ] || exit 0
-
     # いずれかの候補が git リポジトリに属するときだけ判定ライブラリを読み、走行中マーカーを調べる
-    git_roots=""
-    while IFS= read -r cand; do
-      [ -n "$cand" ] || continue
-      if [ "$cand" = "${CWD_ROOT:-}" ]; then
-        r="$CWD_ROOT"
-      else
-        r="$(git -C "$cand" rev-parse --show-toplevel 2>/dev/null || true)"
-      fi
-      [ -n "$r" ] || continue
-      case "$git_roots" in
-        "$r" | *"$r"*)
-          # 行一致で確認
-          seen_r=0
-          while IFS= read -r gr; do
-            [ "$gr" = "$r" ] && { seen_r=1; break; }
-          done <<EOF
-$git_roots
-EOF
-          [ "$seen_r" -eq 1 ] && continue
-          ;;
-      esac
-      git_roots="${git_roots:+${git_roots}
-}${r}"
-    done <<EOF
-$cand_dirs
-EOF
-    [ -n "$git_roots" ] || exit 0
+    [ "${#ge_tops[@]}" -gt 0 ] || exit 0
 
     load_gif_lib_or_deny
 
@@ -366,9 +528,24 @@ EOF
     all_unknown=""
     all_unsafe=0
     marker_dirs=""
-    while IFS= read -r r; do
+    scanned_cdirs=""
+    _ge_idx=0
+    _ge_cnt="${#ge_tops[@]}"
+    while [ "$_ge_idx" -lt "$_ge_cnt" ]; do
+      r="${ge_tops[$_ge_idx]}"
+      gd="${ge_gdirs[$_ge_idx]}"
+      cd_dir="${ge_cdirs[$_ge_idx]}"
+      _ge_idx=$((_ge_idx + 1))
       [ -n "$r" ] || continue
-      ff_gate_scan_repo_worktree_markers "$r" 0
+      [ -n "$gd" ] && marker_dirs="${marker_dirs:+${marker_dirs}
+}${gd%/}/ff-dev-toolkit/run-all-in-flight"
+      # 同じリポジトリ（同一 git-common-dir）の全 worktree 走査は 1 回だけ実行する
+      if [ -n "$cd_dir" ] && line_in_list "$cd_dir" "$scanned_cdirs"; then
+        continue
+      fi
+      [ -n "$cd_dir" ] && scanned_cdirs="${scanned_cdirs:+${scanned_cdirs}
+}${cd_dir}"
+      ff_gate_scan_repo_worktree_markers "$r" 0 "$gd" "$cd_dir" "$r"
       [ "${GATE_DIR_UNSAFE:-0}" -eq 1 ] && all_unsafe=1
       [ -z "$GATE_LIVE_TREES" ] || all_trees="${all_trees:+${all_trees}
 }${GATE_LIVE_TREES}"
@@ -378,12 +555,7 @@ EOF
 }${GATE_LIVE_LINES}"
       [ -z "$GATE_UNKNOWN_LINES" ] || all_unknown="${all_unknown:+${all_unknown}
 }${GATE_UNKNOWN_LINES}"
-      gd="$(git -C "$r" rev-parse --absolute-git-dir 2>/dev/null || true)"
-      [ -n "$gd" ] && marker_dirs="${marker_dirs:+${marker_dirs}
-}$(ff_gate_marker_dir "$gd" || true)"
-    done <<EOF
-$git_roots
-EOF
+    done
 
     [ -n "$all_live$all_unknown" ] || [ "$all_unsafe" -eq 1 ] || exit 0
     PROTECT_TREES="$(printf '%s\n' "$all_trees" | awk 'NF && !seen[$0]++')"

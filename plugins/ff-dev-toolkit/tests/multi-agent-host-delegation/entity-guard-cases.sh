@@ -406,6 +406,233 @@ PY
   ln -s "$fixtures/claude.jsonl" "$link_t"
   eg_expect_extract_fail "symlink-transcript" 1 "$bad_out" "$MULTI_AGENT" --extract-subagent-response "$link_t" --output-file "$bad_out"
 
+  # Claude Code Agent output_file symlink into ~/.claude/projects/.../subagents/*.jsonl is resolved
+  claude_sub_dir="$TMP/home/.claude/projects/demo-proj/sess-1/subagents"
+  mkdir -p "$claude_sub_dir" "$area/tasks"
+  cp "$fixtures/claude.jsonl" "$claude_sub_dir/agent-ok.jsonl"
+  link_claude_ok="$area/tasks/ok.output"
+  ln -s "$claude_sub_dir/agent-ok.jsonl" "$link_claude_ok"
+  OUT_N=$((OUT_N + 1))
+  out_sym_ok="$area/out-sym-claude-ok.md"
+  ext_rc=0
+  run_isolated PATH="$STUB_PATH" HOME="$TMP/home" \
+    FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash "$MULTI_AGENT" \
+    --extract-subagent-response "$link_claude_ok" --output-file "$out_sym_ok" \
+    > "$TMP/out.${OUT_N}.sym-claude-ok" 2> "$TMP/err.${OUT_N}.sym-claude-ok" || ext_rc=$?
+  if [[ "$ext_rc" -eq 0 ]] && [[ -f "$out_sym_ok" ]] && cmp -s "$out_sym_ok" "$fixtures/claude.expected.md"; then
+    ok "AC4 (claude-symlink): resolves Claude output_file symlink inside ~/.claude/projects/.../subagents/*.jsonl"
+  else
+    bad "AC4 (claude-symlink): failed to resolve valid Claude transcript symlink (rc=${ext_rc}, err=$(cat "$TMP/err.${OUT_N}.sym-claude-ok"))"
+  fi
+
+  # CLAUDE_CONFIG_DIR/projects/.../subagents/*.jsonl symlink is also resolved
+  cfg_dir="$area/custom-claude-cfg"
+  cfg_sub_dir="$cfg_dir/projects/demo-proj/sess-2/subagents"
+  mkdir -p "$cfg_sub_dir"
+  cp "$fixtures/claude.jsonl" "$cfg_sub_dir/agent-cfg.jsonl"
+  link_cfg_ok="$area/tasks/cfg.output"
+  ln -s "$cfg_sub_dir/agent-cfg.jsonl" "$link_cfg_ok"
+  OUT_N=$((OUT_N + 1))
+  out_sym_cfg="$area/out-sym-cfg-ok.md"
+  ext_rc=0
+  run_isolated PATH="$STUB_PATH" HOME="$TMP/home" CLAUDE_CONFIG_DIR="$cfg_dir" \
+    FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash "$MULTI_AGENT" \
+    --extract-subagent-response "$link_cfg_ok" --output-file "$out_sym_cfg" \
+    > "$TMP/out.${OUT_N}.sym-cfg-ok" 2> "$TMP/err.${OUT_N}.sym-cfg-ok" || ext_rc=$?
+  if [[ "$ext_rc" -eq 0 ]] && [[ -f "$out_sym_cfg" ]] && cmp -s "$out_sym_cfg" "$fixtures/claude.expected.md"; then
+    ok "AC4 (claude-symlink): resolves symlink inside CLAUDE_CONFIG_DIR/projects/.../subagents/*.jsonl"
+  else
+    bad "AC4 (claude-symlink): failed to resolve CLAUDE_CONFIG_DIR transcript symlink (rc=${ext_rc})"
+  fi
+
+  # Negative symlink checks: isolate each boundary with valid Claude transcript content and verify stderr says refusing symlink target
+  eg_expect_symlink_refusal() {
+    local label="$1" extra_cfg="${2:-}" link_path="$3"
+    OUT_N=$((OUT_N + 1))
+    ext_out="$TMP/out.${OUT_N}.${label}"
+    ext_err="$TMP/err.${OUT_N}.${label}"
+    ext_rc=0
+    if [[ -n "$extra_cfg" ]]; then
+      run_isolated PATH="$STUB_PATH" HOME="$TMP/home" CLAUDE_CONFIG_DIR="$extra_cfg" \
+        FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash "$MULTI_AGENT" \
+        --extract-subagent-response "$link_path" --output-file "$bad_out" \
+        > "$ext_out" 2> "$ext_err" || ext_rc=$?
+    else
+      run_isolated PATH="$STUB_PATH" HOME="$TMP/home" \
+        FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash "$MULTI_AGENT" \
+        --extract-subagent-response "$link_path" --output-file "$bad_out" \
+        > "$ext_out" 2> "$ext_err" || ext_rc=$?
+    fi
+    if [[ "$ext_rc" -eq 1 ]] && [[ ! -e "$bad_out" ]] && grep -qF 'refusing symlink target' "$ext_err"; then
+      ok "AC4 negative (${label}): refused symlink target (rc=1)"
+    else
+      bad "AC4 negative (${label}): expected refusing symlink target rc=1 (got rc=${ext_rc}, err=$(cat "$ext_err"))"
+    fi
+  }
+
+  # 1) Valid subagents/*.jsonl structure + valid Claude transcript, but outside allowed root
+  mkdir -p "$area/outside-root/demo-proj/sess-1/subagents"
+  cp "$fixtures/claude.jsonl" "$area/outside-root/demo-proj/sess-1/subagents/agent-out.jsonl"
+  link_outside_sub="$area/tasks/outside-sub.output"
+  ln -s "$area/outside-root/demo-proj/sess-1/subagents/agent-out.jsonl" "$link_outside_sub"
+  eg_expect_symlink_refusal "symlink-outside-root-with-subagents-shape" "" "$link_outside_sub"
+
+  # 2) Inside allowed root + valid Claude transcript + .jsonl suffix, but outside subagents/ directory
+  cp "$fixtures/claude.jsonl" "$TMP/home/.claude/projects/demo-proj/sess-1/agent-direct.jsonl"
+  link_claude_non_sub="$area/tasks/non-sub.output"
+  ln -s "$TMP/home/.claude/projects/demo-proj/sess-1/agent-direct.jsonl" "$link_claude_non_sub"
+  eg_expect_symlink_refusal "symlink-claude-outside-subagents" "" "$link_claude_non_sub"
+
+  # 3) Inside allowed root + subagents/ + valid Claude transcript, but non-.jsonl suffix
+  cp "$fixtures/claude.jsonl" "$claude_sub_dir/agent-bad.json"
+  link_claude_bad_ext="$area/tasks/bad-ext.output"
+  ln -s "$claude_sub_dir/agent-bad.json" "$link_claude_bad_ext"
+  eg_expect_symlink_refusal "symlink-claude-non-jsonl-ext" "" "$link_claude_bad_ext"
+
+  # 4) Relative CLAUDE_CONFIG_DIR is ignored (not accepted as an allowed root)
+  eg_expect_symlink_refusal "symlink-relative-claude-config-dir" "relative/claude-cfg" "$link_cfg_ok"
+
+  # 5) Directory target and dangling symlink inside allowed root
+  mkdir -p "$claude_sub_dir/not-a-file.jsonl"
+  link_claude_dir="$area/tasks/dir.output"
+  ln -s "$claude_sub_dir/not-a-file.jsonl" "$link_claude_dir"
+  eg_expect_symlink_refusal "symlink-claude-dir-target" "" "$link_claude_dir"
+
+  link_claude_dangling="$area/tasks/dangling.output"
+  ln -s "$claude_sub_dir/missing.jsonl" "$link_claude_dangling"
+  eg_expect_symlink_refusal "symlink-claude-dangling" "" "$link_claude_dangling"
+
+  # Duplicate --output-file / --extract-subagent-response are rejected (rc=2)
+  eg_expect_extract_fail "duplicate-output-file" 2 "$bad_out" "$MULTI_AGENT" --extract-subagent-response "$fixtures/claude.jsonl" --output-file "$bad_out" --output-file "$area/dup-out.md"
+  eg_expect_extract_fail "duplicate-extract-flag" 2 "$bad_out" "$MULTI_AGENT" --extract-subagent-response "$fixtures/claude.jsonl" --extract-subagent-response "$fixtures/claude.jsonl" --output-file "$bad_out"
+
+  # Delegated lane release: --extract-subagent-response releases only the matching delegated-review lane (not newer relaunched lanes or symlinks)
+  rel_root="$area/release-test-out"
+  rel_gen="$rel_root/claude-code/.delegated/generations/g-100-1-0"
+  rel_lane_dir="$rel_root/.review-in-flight.d"
+  mkdir -p "$rel_gen" "$rel_lane_dir"
+  rel_resp_a="$rel_gen/code-review.response.md"
+  rel_resp_b="$rel_gen/test-analysis.response.md"
+  printf 'pid=$$\ntask=review\n' > "$rel_root/.review-in-flight"
+  printf 'writer_pid=1\ntask=subagent-review\nstarted_epoch=1700000000\nperspectives=delegated-review\nagent_id=\noutput_file=%s\n' "$rel_resp_a" > "$rel_lane_dir/lane-a.1700000000.1.lane"
+  printf 'writer_pid=1\ntask=subagent-review\nstarted_epoch=1700000000\nperspectives=delegated-review\nagent_id=\noutput_file=%s\n' "$rel_resp_b" > "$rel_lane_dir/lane-b.1700000000.2.lane"
+  touch -t 202001010000 "$rel_lane_dir/lane-a.1700000000.1.lane" "$rel_lane_dir/lane-b.1700000000.2.lane"
+  printf 'writer_pid=1\ntask=subagent-review\nstarted_epoch=1700000000\nperspectives=pr-review-toolkit:code-reviewer\nagent_id=ag1\n' > "$rel_lane_dir/lane-other.1700000000.3.lane"
+  # Symlink decoy carries the exact matching delegated-review/output_file payload so dropping S_ISLNK fails this test.
+  printf 'writer_pid=1\ntask=subagent-review\nstarted_epoch=1700000000\nperspectives=delegated-review\nagent_id=\noutput_file=%s\n' "$rel_resp_a" > "$area/decoy.lane"
+  ln -s "$area/decoy.lane" "$rel_lane_dir/lane-sym.1700000000.4.lane"
+  # Newer lane (future mtime) for the same output_file simulates a relaunch after response write; must stay intact.
+  printf 'writer_pid=1\ntask=subagent-review\nstarted_epoch=4070908800\nperspectives=delegated-review\nagent_id=\noutput_file=%s\n' "$rel_resp_a" > "$rel_lane_dir/lane-newer.4070908800.5.lane"
+  touch -t 209901010000 "$rel_lane_dir/lane-newer.4070908800.5.lane"
+  OUT_N=$((OUT_N + 1))
+  ext_rc=0
+  run_isolated PATH="$STUB_PATH" HOME="$TMP/home" \
+    FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash "$MULTI_AGENT" \
+    --extract-subagent-response "$fixtures/claude.jsonl" --output-file "$rel_resp_a" \
+    > "$TMP/out.${OUT_N}.rel-a" 2> "$TMP/err.${OUT_N}.rel-a" || ext_rc=$?
+  if [[ "$ext_rc" -eq 0 ]] \
+    && [[ ! -e "$rel_lane_dir/lane-a.1700000000.1.lane" ]] \
+    && [[ -f "$rel_lane_dir/lane-b.1700000000.2.lane" ]] \
+    && [[ -f "$rel_lane_dir/lane-other.1700000000.3.lane" ]] \
+    && [[ -f "$rel_root/.review-in-flight" ]] \
+    && [[ -L "$rel_lane_dir/lane-sym.1700000000.4.lane" ]] \
+    && [[ -f "$area/decoy.lane" ]] \
+    && [[ -f "$rel_lane_dir/lane-newer.4070908800.5.lane" ]]; then
+    ok "AC4 (lane-release): extract releases only older matching delegated-review lane and keeps newer/other lanes, locks and symlinks"
+  else
+    bad "AC4 (lane-release): unexpected lane release state after extracting lane A (rc=${ext_rc})"
+  fi
+  OUT_N=$((OUT_N + 1))
+  ext_rc=0
+  run_isolated PATH="$STUB_PATH" HOME="$TMP/home" \
+    FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash "$MULTI_AGENT" \
+    --extract-subagent-response "$fixtures/claude.jsonl" --output-file "$rel_resp_b" \
+    > "$TMP/out.${OUT_N}.rel-b" 2> "$TMP/err.${OUT_N}.rel-b" || ext_rc=$?
+  if [[ "$ext_rc" -eq 0 ]] \
+    && [[ ! -e "$rel_lane_dir/lane-b.1700000000.2.lane" ]] \
+    && [[ -f "$rel_lane_dir/lane-other.1700000000.3.lane" ]] \
+    && [[ -f "$rel_root/.review-in-flight" ]]; then
+    ok "AC4 (lane-release): extracting second perspective releases second delegated-review lane while preserving non-delegated lane and lock"
+  else
+    bad "AC4 (lane-release): unexpected lane release state after extracting lane B (rc=${ext_rc})"
+  fi
+
+  # Boundary checks on the Python extractor helper itself:
+  # (a) same-timestamp lane (st_mtime_ns == out_mtime_ns) stays intact (matches strict -nt), while strictly older lane is removed
+  # (b) dir_fd + O_NOFOLLOW confined read rejects an intermediate directory swapped to a symlink
+  local eq_rc=0 confined_rc=0
+  python3 - "$PLUGIN_ROOT/scripts/lib/multi-agent-delegation-state.sh" "$rel_gen/same-mtime.response.md" "$rel_lane_dir" <<'PY' || eq_rc=$?
+import os, pathlib, sys
+src_text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+marker_start = "python3 -I -B - \"$EXTRACT_SUBAGENT_RESPONSE\" \"$EXTRACT_OUTPUT_FILE\" <<'PY'\n"
+marker_end = "\nPY\n}"
+i = src_text.index(marker_start) + len(marker_start)
+j = src_text.index(marker_end, i)
+ns = {"__name__": "extract_unit"}
+exec(compile(src_text[i:j], sys.argv[1], "exec"), ns)
+
+resp_path = sys.argv[2]
+lane_dir = sys.argv[3]
+pathlib.Path(resp_path).write_text("ok\n", encoding="utf-8")
+out_ns = os.lstat(resp_path).st_mtime_ns
+
+same_lane = os.path.join(lane_dir, "lane-same.1700000000.6.lane")
+older_lane = os.path.join(lane_dir, "lane-older.1700000000.7.lane")
+body = f"writer_pid=1\ntask=subagent-review\nstarted_epoch=1700000000\nperspectives=delegated-review\nagent_id=\noutput_file={resp_path}\n"
+pathlib.Path(same_lane).write_text(body, encoding="utf-8")
+pathlib.Path(older_lane).write_text(body, encoding="utf-8")
+os.utime(same_lane, ns=(out_ns, out_ns))
+os.utime(older_lane, ns=(out_ns - 2_000_000_000, out_ns - 2_000_000_000))
+assert os.lstat(same_lane).st_mtime_ns == out_ns, "same_lane mtime setup mismatch"
+assert os.lstat(older_lane).st_mtime_ns < out_ns, "older_lane mtime setup mismatch"
+
+ns["release_completed_delegated_lane"](resp_path, out_ns)
+assert os.path.exists(same_lane), "same-mtime lane was erroneously removed"
+assert not os.path.exists(older_lane), "strictly older lane was not removed"
+PY
+  if [[ "$eq_rc" -eq 0 ]]; then
+    ok "AC4 (lane-release same-mtime): preserves lane with st_mtime_ns == out_mtime_ns and removes strictly older lane"
+  else
+    bad "AC4 (lane-release same-mtime): boundary check failed (rc=${eq_rc})"
+  fi
+
+  python3 - "$PLUGIN_ROOT/scripts/lib/multi-agent-delegation-state.sh" "$area" "$fixtures/claude.jsonl" <<'PY' || confined_rc=$?
+import io, os, pathlib, sys
+src_text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+marker_start = "python3 -I -B - \"$EXTRACT_SUBAGENT_RESPONSE\" \"$EXTRACT_OUTPUT_FILE\" <<'PY'\n"
+marker_end = "\nPY\n}"
+i = src_text.index(marker_start) + len(marker_start)
+j = src_text.index(marker_end, i)
+ns = {"__name__": "extract_unit"}
+exec(compile(src_text[i:j], sys.argv[1], "exec"), ns)
+
+area = pathlib.Path(sys.argv[2])
+outside_dir = area / "swap-outside"
+outside_dir.mkdir(parents=True, exist_ok=True)
+(outside_dir / "agent-swap.jsonl").write_text(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"), encoding="utf-8")
+swap_root = area / "swap-root"
+(swap_root / "demo-proj" / "sess-1").mkdir(parents=True, exist_ok=True)
+os.symlink(str(outside_dir), str(swap_root / "demo-proj" / "sess-1" / "subagents"))
+
+buf = io.StringIO()
+orig_err = sys.stderr
+sys.stderr = buf
+try:
+    try:
+        ns["read_regular_utf8_confined"](swap_root, pathlib.Path("demo-proj/sess-1/subagents/agent-swap.jsonl"), "swapped.output")
+        raise AssertionError("expected confined read to fail on intermediate symlink")
+    except SystemExit as exc:
+        assert exc.code == 1, f"unexpected exit code: {exc.code}"
+finally:
+    sys.stderr = orig_err
+assert "refusing symlink target" in buf.getvalue(), f"unexpected stderr: {buf.getvalue()}"
+PY
+  if [[ "$confined_rc" -eq 0 ]]; then
+    ok "AC4 (claude-symlink confined): dir_fd + O_NOFOLLOW rejects intermediate symlink directory swap"
+  else
+    bad "AC4 (claude-symlink confined): confined read did not reject intermediate symlink (rc=${confined_rc})"
+  fi
+
   link_dir="$area/sym-dir"
   ln -s "$fixtures" "$link_dir"
   eg_expect_extract_fail "symlink-transcript-dir" 1 "$bad_out" "$MULTI_AGENT" --extract-subagent-response "$link_dir/claude.jsonl" --output-file "$bad_out"

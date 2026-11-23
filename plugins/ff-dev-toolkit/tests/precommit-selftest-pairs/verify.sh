@@ -177,7 +177,7 @@ run
 HELPER_MATCH=0
 if [ "$RC" -eq 0 ] && has 'selftest-pairs: ok 1' && has 'executed foo-selftest' && ! has 'executed orphan-selftest'; then HELPER_MATCH=1; fi
 RC=0
-env -u FF_DEV_TOOLKIT_ROOT -u FF_RUN_ALL_FULL -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_CHANGED FF_RUN_ALL_FAST=1 FF_GATE_RECORD=0 \
+env -u FF_DEV_TOOLKIT_ROOT -u FF_RUN_ALL_FULL -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_CHANGED FF_RUN_ALL_FAST=1 FF_GATE_RECORD=0 FF_DEV_TOOLKIT_STATE_DIR="$TMP/state" \
   bash "$TESTS/run-all.sh" "$FIXTURE_TESTS/foo-selftest/verify.sh" "$FIXTURE_TESTS/orphan-selftest/verify.sh" >"$TMP/runner.log" 2>&1 || RC=$?
 if [ "$RC" -eq 0 ] && [ "$HELPER_MATCH" -eq 1 ] && grep -q 'executed orphan-selftest' "$TMP/runner.log" && ! grep -q 'executed foo-selftest' "$TMP/runner.log"; then
   ok '実 runner の高速モードと同じ対が除外され、単独 selftest は残る'

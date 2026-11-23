@@ -220,6 +220,15 @@ fi
 # fixture リポジトリの identity を呼び出し元へ漏らさない
 # shellcheck source=../lib/git-fixture.sh
 . "$SCRIPT_DIR/../lib/git-fixture.sh"
+# 単体実行時も開発者のグローバル／システム git 設定および既定の $XDG_CONFIG_HOME/git/ignore
+# （特に core.excludesFile の *~ が git check-ignore のチルダ検査へ漏れる事象）を遮断する（ACE-2852-1）。
+# lib 不在の単独コピー時のみ /dev/null へフォールバックする（その場合は useConfigOnly / excludesFile=/dev/null は掛からない）。
+export GIT_CONFIG_NOSYSTEM=1
+if [ -r "$SCRIPT_DIR/../lib/git-isolated.gitconfig" ]; then
+  export GIT_CONFIG_GLOBAL="$SCRIPT_DIR/../lib/git-isolated.gitconfig"
+else
+  export GIT_CONFIG_GLOBAL=/dev/null
+fi
 
 # rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
 # 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
@@ -715,6 +724,11 @@ else
 fi
 run_hook "$(edit_json)"
 assert_deny "(h2) レーンが 1 本でも残っていれば Edit は deny のまま（機械的判定で守る本体）"
+case "$REASON" in
+  *'作業ツリー外の scratchpad へ差分やメモとして保存'*'レビューがすべて完了したら、対象ファイルを読み直して変更を適用'*'レビューが 1 本走行中'*)
+    ok "(h2) 部分完了後の拒否理由に、残りの本数と退避・再適用の手順がある" ;;
+  *) bad "(h2) 部分完了後の拒否理由に必要な案内がない: [$REASON]" ;;
+esac
 run_hook "$(subagent_stop_json 'pr-review-toolkit:silent-failure-hunter' agent-h2b)"
 LANES="$(lane_count)"
 if [ "$LANES" = "0" ]; then
@@ -2230,6 +2244,55 @@ clear_lock
 run_hook "$(agent_json pr-review-toolkit:code-reviewer Agent k-lane-1)"
 k_deny "tee README.md" "レーンだけが生きている状態でも Bash 書き込みは deny"
 run_hook "$(subagent_start_json pr-review-toolkit:code-reviewer k-agent-1)"
+
+# 実例のコマンドはホストの hook に渡し、mkdir とリダイレクトを同じ呼び出しで判定する。
+K2901_CMD='ROOT="$(git rev-parse --show-toplevel)" && OUT="${TMPDIR:-/tmp}/review-out/$(basename "$ROOT")-$(printf %s "$ROOT" | shasum -a 256 | cut -c1-8)" && mkdir -p "$OUT" && (cd "$ROOT" && printf ready) > "$OUT/review-1.log" 2>&1'
+K2901_PATH="$PATH"
+if ! command -v shasum >/dev/null 2>&1; then
+  # shasum の無い環境の fixture も、同じ SHA-256 の stdin 形式で検証する。
+  mkdir -p "$TEST_OUT/sha-bin"
+  printf '%s\n' '#!/usr/bin/env bash' '[ "$#" -eq 2 ] && [ "$1" = -a ] && [ "$2" = 256 ] || exit 2' \
+    'exec sha256sum' > "$TEST_OUT/sha-bin/shasum"
+  chmod +x "$TEST_OUT/sha-bin/shasum"
+  K2901_PATH="$TEST_OUT/sha-bin:$PATH"
+fi
+PATH="$K2901_PATH" TMPDIR="$TEST_OUT" run_hook "$(bash_json "$K2901_CMD")"
+assert_silent "(k2901) レビュー中も TMPDIR に組み立てた mkdir とログの出力は通る"
+PATH="$K2901_PATH" TMPDIR="" run_hook "$(bash_json "$K2901_CMD")"
+assert_silent "(k2901) TMPDIR が空なら :- は /tmp を使う"
+PATH="$K2901_PATH" TMPDIR="$REPO" run_hook "$(bash_json "$K2901_CMD")"
+assert_deny "(k2901) 同じパイプの組み立てでも TMPDIR が作業ツリー内なら止まる"
+case "$REASON" in
+  *'作業ツリー内へ書き込みます:'*'/review-out/repo-'*) ok "(k2901) 置換と既定値の候補を解決してツリー内だと判定する" ;;
+  *) bad "(k2901) 解決した作業ツリー内のパスがない: [$REASON]" ;;
+esac
+k_deny 'ROOT="$(git rev-parse --show-toplevel)" && OUT="$ROOT/out" && mkdir -p "$OUT"' "同じ代入経路の作業ツリー内の mkdir は止まる"
+k_deny 'OUT="$(cat src/app.txt)" && mkdir -p "$OUT"' "許可対象外の置換を含むパスは止まる"
+case "$REASON" in
+  '⚠️ ff-dev-toolkit guard（レビュー走行中・作業ツリー編集の抑止）: 書き込み先の値を前の呼び出しで求め、'*'絶対パスのリテラル'*)
+    ok "(k2901) 変数の判定不能では、値を先に求めてリテラルで再実行する案内を最初に出す" ;;
+  *) bad "(k2901) 判定不能の最初の案内が違う: [$REASON]" ;;
+esac
+k_deny "OUT=\"$TEST_OUT\"; OUT=\"\$(cat src/app.txt)\"; mkdir -p \"\$OUT\"" "未解決の再代入で古いツリー外パスは使わない"
+run_hook "$(bash_json 'OUT="${TMPDIR-/tmp}"; printf ready > "$OUT/review-2901.log"')" '-u TMPDIR'
+assert_silent "(k2901) TMPDIR が未設定なら - は /tmp を使う"
+run_hook "$(bash_json 'OUT="${TMPDIR-/tmp}"; printf ready > "$OUT"')" 'TMPDIR='
+assert_deny "(k2901) TMPDIR が空なら - は空のままで、空の書き込み先を拒否する"
+case "$REASON" in
+  *'空のパス'*) ok "(k2901) - は空文字を既定値に置き換えない" ;;
+  *) bad "(k2901) 空の値の理由が違う: [$REASON]" ;;
+esac
+run_hook "$(bash_json 'OUT="${TMPDIR:-/tmp}/review"; mkdir -p "$OUT"')" 'TMPDIR=~'
+assert_deny "(k2901) 変数の値に現れたチルダは展開せず、ツリー内の相対パスとして止める"
+k_deny 'OUT="${TMPDIR:-/tmp}/review"; mkdir -p $OUT' "動的に解決した値を非引用で書き込み先に使う形は判定しない"
+k_deny 'OUT="${TMPDIR:-/tmp}/review"; mkdir -p "$OUT"/logs' "出力先の語全体を引用していない場合は動的な値を使わない"
+k_deny 'printf ready && OUT="${TMPDIR:-/tmp}/review"; mkdir -p "$OUT"' "単純代入列を離れた後の動的な値は判定しない"
+k_deny 'OUT="${TMPDIR:-/tmp}/review"; printf ready; mkdir -p "$OUT"' "状態を追わないコマンドの後は以前に解決した動的な値を使わない"
+k_deny 'OUT="${TMPDIR:-/tmp}/review"; printf %s "$(printf ready)" > "$OUT/log"' "同じ区間の別の引数に未評価の置換があればリダイレクト先を確定しない"
+k_deny $'OUT="${TMPDIR:-/tmp}/review"; cat <<EOF > "$OUT/log"\nready\nEOF' "未評価の heredoc 本文がある区間では動的な値を使わない"
+k_silent 'OUT="${TMPDIR:-/tmp}/review"; printf %s "$review_fixture_argument" > "$OUT/log"' "値を変えない単純参照が別の引数にあっても、確定した出力先は使える"
+k_deny 'true || OUT="${TMPDIR:-/tmp}/review"; mkdir -p "$OUT"' "条件付きで実行される代入を確定値として使わない"
+k_deny 'OUT="${review_fixture_private_var:-/tmp}/review"; mkdir -p "$OUT"' "対象外の環境変数はリテラルの既定値付きでも判定しない"
 run_hook "$(subagent_stop_json pr-review-toolkit:code-reviewer k-agent-1)"
 clear_lanes
 # stale ロックは警告のみ
@@ -2545,6 +2608,11 @@ k_deny "bash $TEST_OUT/missing-integ.sh" "まだ無いスクリプトは止ま�
 case "$REASON" in
   *'ファイルは Write ツールで作り'*) ok "(k2501) 判定不能の案内が Write ツールでの作成を先に出す" ;;
   *) bad "(k2501) 判定不能の案内が違う: [$REASON]" ;;
+esac
+k_deny "$TEST_OUT/missing-integ.sh" "まだ無いスクリプトの直接実行は止まる"
+case "$REASON" in
+  *'ファイルは Write ツールで作り'*) ok "(k2501) 直接実行でも先にファイルを作るよう案内する" ;;
+  *) bad "(k2501) 直接実行の案内が違う: [$REASON]" ;;
 esac
 # shellcheck disable=SC1091
 . "$PLUGIN_ROOT/tests/lib/review-round-counter.sh"
@@ -2936,6 +3004,91 @@ run_hook "$(generic_agent_json "FF-REVIEW-DELEGATED: $O_DELEG/o-review.prompt.md
 o_deny "echo x > README.md" "(o6) レーンより古い結果（前の回の残り）では委譲レーンを解放しない"
 if [ "$(lane_count)" -eq 1 ]; then ok "(o6) 古い結果ではレーンが残る"; else bad "(o6) 古い結果でレーンが消えた: [$(lane_count)]"; fi
 rm -rf "$O_DELEG" "${O_OLD_RESULT%/*}"
+clear_lanes
+
+# --- (o6c) Issue `#2948`: --extract-subagent-response の高速通過・ツリー内拒否・抽出による個別レーン解放 ---
+O2948_DELEG="$REPO/.review-results/claude-code/.delegated/generations/g-2948-1-0"
+mkdir -p "$O2948_DELEG"
+O2948_P1="$O2948_DELEG/code-review.prompt.md"
+O2948_P2="$O2948_DELEG/test-analysis.prompt.md"
+O2948_R1="$O2948_DELEG/code-review.response.md"
+O2948_R2="$O2948_DELEG/test-analysis.response.md"
+printf '# prompt 1\n' > "$O2948_P1"
+printf '# prompt 2\n' > "$O2948_P2"
+printf 'cli=claude-code\nperspective=code-review\noutput-file=%s\n' "$O2948_R1" > "$O2948_DELEG/code-review.request"
+printf 'cli=claude-code\nperspective=test-analysis\noutput-file=%s\n' "$O2948_R2" > "$O2948_DELEG/test-analysis.request"
+O2948_TR="$TEST_TMP/o2948-claude.jsonl"
+printf '%s\n' \
+  '{"type":"user","message":{"role":"user","content":"review"}}' \
+  '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"## Findings\n- verdict: none"}]}}' \
+  > "$O2948_TR"
+run_hook "$(generic_agent_json "FF-REVIEW-DELEGATED: $O2948_P1" tu-o2948-a)"
+run_hook "$(generic_agent_json "FF-REVIEW-DELEGATED: $O2948_P2" tu-o2948-b)"
+if [ "$(lane_count)" -eq 2 ]; then
+  ok "(o6c) 委譲レーン 2 本を開いた状態で検査を始める"
+else
+  bad "(o6c) 委譲レーンが 2 本開いていない: $(lane_count)"
+fi
+O2948_T0="$(date -u +%s)"
+o_silent "bash '$MULTI_AGENT' --extract-subagent-response '$O2948_TR' --output-file '$O2948_R1' && bash '$MULTI_AGENT' --extract-subagent-response '$O2948_TR' --output-file '$O2948_R2'" \
+  "(o6c) 委譲レーン残存中でもツールキットの --extract-subagent-response 連結呼び出しを通す"
+O2948_DT="$(( $(date -u +%s) - O2948_T0 ))"
+if [ "$O2948_DT" -le 15 ]; then
+  ok "(o6c) --extract-subagent-response 連結の hook 判定が 15 秒以内で完了する（${O2948_DT}s）"
+else
+  bad "(o6c) --extract-subagent-response 連結の hook 判定が遅すぎる（${O2948_DT}s > 15s）"
+fi
+o_silent "'$MULTI_AGENT' --extract-subagent-response='$O2948_TR' --output-file='$O2948_R1'" \
+  "(o6c) 直接実行・= 形式の --extract-subagent-response も通す"
+o_deny "bash '$MULTI_AGENT' --extract-subagent-response '$O2948_TR' --output-file '$REPO/src/app.txt'" \
+  "(o6c) --output-file が作業ツリー内を指す --extract-subagent-response は deny する"
+o_deny "bash '$MULTI_AGENT' --extract-subagent-response '$O2948_TR' --output-file=~/app.txt" \
+  "(o6c) --output-file=~/...（= 形式のリテラルチルダ）は作業ツリー相対として deny する"
+o_deny "bash '$MULTI_AGENT' --extract-subagent-response '$O2948_TR' --output-file \"~/app.txt\"" \
+  "(o6c) --output-file \"~/...\"（引用符付きチルダ）は作業ツリー相対として deny する"
+o_deny "bash '$MULTI_AGENT' --extract-subagent-response '$O2948_TR' --output-file '$O2948_R1' --output-file '$REPO/src/app.txt'" \
+  "(o6c) 重複した --output-file に作業ツリー内が含まれる場合は deny する"
+o_deny "bash '$MULTI_AGENT' --task review --extract-subagent-response '$O2948_TR' --output-file '$REPO/src/app.txt'" \
+  "(o6c) 併用フラグ付きでも --output-file が作業ツリー内なら deny する"
+o_deny "ARGS='$O2948_TR --output-file $REPO/src/app.txt'; bash '$MULTI_AGENT' --output-file '$O2948_R1' --extract-subagent-response \$ARGS" \
+  "(o6c) 非クォートの変数展開を含む --extract-subagent-response 引数は語分割リスクとして deny する"
+o_deny "bash '$MULTI_AGENT' --extract-subagent-response '$O2948_TR' --output-file '$O2948_R1' && touch '$REPO/src/app.txt'" \
+  "(o6c) --extract-subagent-response に連結した後段のツリー内書き込みは deny する"
+printf '#!/usr/bin/env bash\necho pwn > "%s/src/app.txt"\n' "$REPO" > "$TEST_TMP/multi-agent.sh"
+chmod +x "$TEST_TMP/multi-agent.sh"
+o_deny "bash '$TEST_TMP/multi-agent.sh' --extract-subagent-response '$O2948_TR' --output-file '$O2948_R1'" \
+  "(o6c) ツールキット実体と異なる同名 multi-agent.sh は高速免除せず deny する"
+if FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash "$MULTI_AGENT" --extract-subagent-response "$O2948_TR" --output-file "$O2948_R1" >/dev/null 2>&1; then
+  if [ "$(lane_count)" -eq 1 ]; then
+    ok "(o6c) 1 観点目の抽出後に該当レーンだけが解放され残り 1 本が残る"
+  else
+    bad "(o6c) 1 観点目の抽出後のレーン数が 1 ではない: $(lane_count)"
+  fi
+  run_hook "$(edit_json)"
+  if [ "$DECISION" = "deny" ]; then
+    ok "(o6c) 残り 1 観点が未抽出の間は Edit を引き続き deny する"
+  else
+    bad "(o6c) 残り 1 観点があるのに Edit が通過した: decision=[$DECISION]"
+  fi
+  if FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash "$MULTI_AGENT" --extract-subagent-response "$O2948_TR" --output-file "$O2948_R2" >/dev/null 2>&1; then
+    if [ "$(lane_count)" -eq 0 ]; then
+      ok "(o6c) 2 観点目の抽出後に全委譲レーンが解放される"
+    else
+      bad "(o6c) 2 観点目の抽出後にレーンが残っている: $(lane_count)"
+    fi
+    run_hook "$(edit_json)"
+    if [ -z "$DECISION" ]; then
+      ok "(o6c) 全委譲レーン抽出後の Edit はブロックされない"
+    else
+      bad "(o6c) 全委譲レーン抽出後も Edit がブロックされた: decision=[$DECISION]"
+    fi
+  else
+    bad "(o6c) 2 観点目の --extract-subagent-response 実行に失敗した"
+  fi
+else
+  bad "(o6c) 1 観点目の --extract-subagent-response 実行に失敗した（python3 不在等を含む）"
+fi
+rm -rf "$O2948_DELEG" "$TEST_TMP/multi-agent.sh" "$O2948_TR"
 clear_lanes
 
 # --- (o7) bundle 追記 (a): 凍結の対象は「レビュー対象のツリー」---

@@ -52,7 +52,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 
 ## 収録内容
 
-### Skills（29）
+### Skills（30）
 
 | スキル | 用途 |
 |---|---|
@@ -76,14 +76,15 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 | `/create-issue` | 仕様バリデーション付き Issue 作成（種別・優先度ラベルは実在確認のうえ付与） |
 | `/refine-issue` | 既存 Issue の仕様精緻化 |
 | `/pre-commit-check` | コミット前チェック |
+| `/verify-gate` | 「品質ゲートを回して」で、対応プロジェクトの `pnpm verify:gate` に読み込んだ toolkit のパスを渡し、HEAD の記録を確認 |
 | `/close-issue` | マージ直前の AC 照合ゲート（チェックボックス更新 + 完了報告コメント） |
 | `/merge-cleanup` | PR マージ後のクリーンアップ一括実行（base ブランチ復帰・[gone] ブランチ / worktree 削除・リモート取り残しのガード付き自動削除） |
 | `/sweep-orphan-transcripts` | 既存の孤児 Claude Code トランスクリプトの一覧・アーカイブ回収（既定 dry-run、`--apply` で実行） |
 | `/setup-github-labels` | 推奨ラベル構成の冪等セットアップ（不足分だけ作成・既存ラベルは変更しない・照会を信用できなければ 1 件も作成せず停止） |
 | `/ace-setup` | ACE（Agentic Context Engineering）フレームワークのセットアップ |
-| `/ace-curate` | マージ済み PR からの知見抽出・プレイブック追記 |
+| `/ace-curate` | マージ済み PR から原則から推論で導けない知見（A〜D の B / C）がある回だけ抽出・プレイブック追記 |
 | `/ace-refine` | ACE Playbook の定期整理（stale アーカイブ・長大エントリ圧縮・重複統合）。dry-run → 承認 → 適用の 3 フェーズで原文を保全する |
-| `/retrospective` | ワークフローチェーン末尾（`/merge-cleanup` → `/ace-curate` → `/retrospective`）のセッション振り返り。対応ホストでは UserPromptSubmit で応答前に注入し、Stop hook は実行漏れ時だけ継続する（`RETROSPECTIVE_MODE=ask\|off` で制御）。実測した手戻り・無駄時間・Keep・過剰動作を作業中リポジトリの観測台帳（無ければテンプレートから作成）へ記録し、閾値に到達した再発からプロセス/ツール改善を最大 3 件提案（該当なしなら 1 行報告）。起票は同一 private 確認済み repo では既定で自動実行する（`RETROSPECTIVE_FILING=ask` で承認待ち式）。外部・公開・未確認の送り先は完成本文・送信先・公開範囲の承認後に書き込む（外部公開の承認境界） |
+| `/retrospective` | ワークフローチェーン末尾（既定: `/merge-cleanup` → `/retrospective`。B / C 知見がある PR だけ前に `/ace-curate`）のセッション振り返り。対応ホストでは UserPromptSubmit で応答前に注入し、Stop hook は実行漏れ時だけ継続する（`RETROSPECTIVE_MODE=ask\|off` で制御）。実測した手戻り・無駄時間・Keep・過剰動作を作業中リポジトリの観測台帳（無ければテンプレートから作成）へ記録し、閾値に到達した再発からプロセス/ツール改善を最大 3 件提案（該当なしなら 1 行報告）。起票は同一 private 確認済み repo では既定で自動実行する（`RETROSPECTIVE_FILING=ask` で承認待ち式）。外部・公開・未確認の送り先は完成本文・送信先・公開範囲の承認後に書き込む（外部公開の承認境界） |
 | `/knowledge-lookup` | ACE Playbook と観測台帳（`docs/08-knowledge/OBSERVATIONS.md`）を同じキーワードで 1 回引き、状態（ACE の active / deprecated / archived、台帳の active / promoted / mitigated / archived）で切り分けて返す読み出し器。着手前の参照と `/retrospective` の promoted × open 突き合わせ（`--promoted-open`）に使う。書き込みはしない |
 | `/observation-refine` | 観測台帳の定期整理（既存 Issue への紐付け・同じ主張の統合・stale の archive・定着済み Keep の `mitigated` 化）。dry-run → 承認 → 適用の 3 フェーズで、観測履歴は消さず状態移行として追記する |
 | `/setup-ai-config` | AI 開発ツール設定の初期化 |
@@ -139,6 +140,7 @@ export FF_DEV_TOOLKIT_SKIP=update-check,wsl-notice
 | `effort-metrics` | 工数の実測記録（`hooks/record-effort-wallclock.sh`・`hooks/record-instruction-bytes.sh`・`scripts/record-gate-minutes.sh`） | - |
 | `exit-code` | 終了コード誤読ガード（`hooks/guard-exit-code.sh`） | `timeout`・`unbounded-wait`・`rg-stdin` |
 | `gate-in-flight` | 全件ゲート走行中の作業ツリーへの書き込みガード（`hooks/guard-gate-in-flight.sh`） | - |
+| `issue-assign` | 着手時の自己アサインガード（`hooks/guard-issue-assign.sh`） | - |
 | `issue-collision` | 同じ番号のブランチ作成と PR 作成のガード（`hooks/guard-issue-collision.sh`） | - |
 | `issue-label` | 起票ラベル契約ガード（`hooks/guard-issue-labels.sh`） | - |
 | `literal-write` | literal-write ガード（`hooks/guard-literal-write.sh`） | - |
@@ -164,7 +166,7 @@ export FF_DEV_TOOLKIT_SKIP=update-check,wsl-notice
 - `FF_GATE_IN_FLIGHT_ACK=1` — 全件ゲート走行中の凍結で、その書き込みだけを通します。Bash では書き込みを含む区間の先頭に付け、Bash 以外のツールでは hook のプロセス環境で渡します
 - `FF_ISSUE_LABEL_ACK=1` — 起票ラベル契約ガードで、ラベルの欠けた `gh issue create` の先頭に付けます
 - `FF_REVIEW_LOCK_ACK=1` — レビュー走行中の凍結で、その書き込みだけを通します。Bash では書き込みを含む区間の先頭に付け、Bash 以外のツールでは hook のプロセス環境で渡します
-- 名前の変わらない ACK: `FF_CREDENTIAL_OUTPUT_ACK` / `FF_DEFAULT_BRANCH_COMMIT_ACK` / `FF_EFFORT_ACTUAL_ACK` / `FF_EXIT_CODE_ACK` / `FF_ISSUE_COLLISION_ACK` / `FF_LITERAL_WRITE_ACK` / `FF_LONG_GATE_BACKGROUND_ACK` / `FF_MERGE_CLOSING_ACK` / `FF_PR_DRAFT_ACK` / `FF_REVIEW_ROUND_ACK` / `FF_RG_STDIN_ACK` / `FF_SHELL_SAVE_ACK` / `FF_SUB_ISSUE_ID_ACK` / `FF_TIMEOUT_ACK` / `FF_UNBOUNDED_WAIT_ACK` / `FF_WSL_PATHCONV_ACK` / `FF_WSL_SHELL_ACK` / `FF_ZSH_EXPANSION_ACK` / `FF_ZSH_GLOB_ACK`
+- 名前の変わらない ACK: `FF_CREDENTIAL_OUTPUT_ACK` / `FF_DEFAULT_BRANCH_COMMIT_ACK` / `FF_EFFORT_ACTUAL_ACK` / `FF_EXIT_CODE_ACK` / `FF_ISSUE_ASSIGN_ACK` / `FF_ISSUE_COLLISION_ACK` / `FF_LITERAL_WRITE_ACK` / `FF_LONG_GATE_BACKGROUND_ACK` / `FF_MERGE_CLOSING_ACK` / `FF_PR_DRAFT_ACK` / `FF_REVIEW_ROUND_ACK` / `FF_RG_STDIN_ACK` / `FF_SHELL_SAVE_ACK` / `FF_SUB_ISSUE_ID_ACK` / `FF_TIMEOUT_ACK` / `FF_UNBOUNDED_WAIT_ACK` / `FF_WSL_PATHCONV_ACK` / `FF_WSL_SHELL_ACK` / `FF_ZSH_EXPANSION_ACK` / `FF_ZSH_GLOB_ACK`
 
 この形にまとめる前の個別の名前（旧名）は、もう読みません。ガードと通知を止めていた旧名は効かず、そのガードと通知は動きます。副作用のある 4 つの鍵（`auto-update` / `codex-auto-update` / `effort-metrics` / `decision-tree`）だけは、旧名の値が空でなければ（`0` でも）その処理を止めたままにします（旧名で止めていた更新や記録が黙って動き出さないため）。hooks が発火するホスト（Claude Code など）では、旧名が環境に残っているとセッション開始時に毎回、置き換えを通知します。旧名と新しい書き方の対応表は、同梱の `PUBLIC-SURFACE.md` の「破壊的変更の記録」と CHANGELOG にあります。
 
@@ -241,7 +243,7 @@ Issue の工数ブロック（`ff-effort`。単位は人時 `h`）の自己申�
 
 ### Bash ガード（PreToolUse）
 
-プラグインをインストールすると、Bash ツールの実行前に 15 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-long-gate-background.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-merge-closing-keyword.sh` / `hooks/guard-issue-labels.sh` / `hooks/guard-sub-issue-id.sh` / `hooks/guard-exit-code.sh` / `hooks/guard-zsh-glob.sh` / `hooks/guard-literal-write.sh` / `hooks/guard-credential-output.sh` / `hooks/guard-wsl-shell.sh` / `hooks/guard-default-branch-commit.sh` / `hooks/guard-issue-collision.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している（PreToolUse の `additionalContext` はエージェントへ届くが、Claude Code の CLI と Remote Control の画面にも表示されるため、呼び出しごとの警告には使わない）。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。**例外は `guard-exit-code.sh` と `guard-zsh-glob.sh` と `guard-literal-write.sh` と `guard-credential-output.sh` と `guard-wsl-shell.sh` と `guard-default-branch-commit.sh` で、判定を完了できないときは候補コマンドに限り停止する**（fail-closed。下記）。同じ番号のブランチと PR のガードは、照会や字句解析を完了できないときは止めずに理由を出します。
+プラグインをインストールすると、Bash ツールの実行前に 16 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-long-gate-background.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-merge-closing-keyword.sh` / `hooks/guard-issue-labels.sh` / `hooks/guard-sub-issue-id.sh` / `hooks/guard-exit-code.sh` / `hooks/guard-zsh-glob.sh` / `hooks/guard-literal-write.sh` / `hooks/guard-credential-output.sh` / `hooks/guard-wsl-shell.sh` / `hooks/guard-default-branch-commit.sh` / `hooks/guard-issue-collision.sh` / `hooks/guard-issue-assign.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している（PreToolUse の `additionalContext` はエージェントへ届くが、Claude Code の CLI と Remote Control の画面にも表示されるため、呼び出しごとの警告には使わない）。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。**例外は `guard-exit-code.sh` と `guard-zsh-glob.sh` と `guard-literal-write.sh` と `guard-credential-output.sh` と `guard-wsl-shell.sh` と `guard-default-branch-commit.sh` で、判定を完了できないときは候補コマンドに限り停止する**（fail-closed。下記）。同じ番号のブランチと PR のガードおよび着手時の自己アサインガードは、照会や字句解析を完了できないときは止めずに理由を出します。
 
 **認証設定の表示ガード（`guard-credential-output.sh`）** は `.npmrc` / `.netrc` /
 `.pypirc` / `.aws/credentials` / `.docker/config.json` / `.config/gh/hosts.yml` /
@@ -268,6 +270,8 @@ Codex の Bash 相当ツールでの実発火は未実測。
 **既定ブランチ上の commit ガード（`guard-default-branch-commit.sh`）** は、現在ブランチが `origin/HEAD` の指す既定ブランチと一致するときの `git commit` を実行前に止める。件名の先頭（空白を除いた 1 行目）が `knowledge:` または `release:` のときだけ通す。HEAD が detached のとき、既定ブランチを確定できないとき、現在ブランチが違うときは止めない。件名を確定できない commit は既定ブランチ上では止める。作業ディレクトリはホストが渡す cwd に、同じ呼び出しの `cd` / `pushd` / `popd`・括弧のサブシェル・前の区間で字面の値を代入した変数（`R=/path; cd "$R"`）を当てて決める（サブシェルの `cd` は外へ漏れず、存在しない行き先への `cd` は失敗して元の場所に留まるものとして扱う）。行き先が字面で決まらない `cd` の後と `git -C` は、どのリポジトリか確定できないので止めない。同じ呼び出しで `git switch` / `git checkout` によりブランチを切り替えたときは、切り替え後のブランチで判定する（既定ブランチから離れる切り替えは、条件分岐の外で commit まで `&&` だけで繋がるときだけ）。件名が `$(…)` で始まるときは、置換の中の heredoc が呼び出しで唯一の heredoc のときだけその本文で読む。候補コマンドで判定を完了できないときは判定不能として停止する。誤検知のときはその区間の先頭へ `FF_DEFAULT_BRANCH_COMMIT_ACK=1` を付ける。プロセス環境の同じ変数は通さない。無効化は `FF_DEV_TOOLKIT_SKIP=default-branch-commit`。
 
 **同じ番号のブランチと PR のガード（`guard-issue-collision.sh`）** は、`git switch -c` / `git checkout -b` / `git worktree add -b`（`-C` / `--create` / `-B` を含む）で作る名前と、`gh pr create`（別名 `gh pr new`）の件名または本文（`--body "$(cat <<'EOF' … EOF)"` の heredoc と `--body-file` を含む）が閉じる番号について、open PR がその番号を閉じているか、リモートに `*/#番号-*` のブランチがあるかを照会して止める。どちらも見つからなければ止めない。照会が失敗したとき、取得が 50 件で打ち切られて一致が無いとき、本文を読めないとき（`--fill` を含む）、コマンドを読み切れないときは止めずに理由を出す。片方の実在を確認できていれば、もう片方が失敗しても止める。PR 作成では、自分のブランチ（`--head` の値、無ければ PR を作る場所の現在ブランチ）のリモートと、自分のブランチを head に持つ open PR は衝突に数えない（push した自分のブランチから PR を作る手順）。PR を作る場所はホストの cwd に同じ呼び出しの `cd` を当てて決め、決まらないときはリモートブランチを照会せずに理由を出す。`--repo` で別のリポジトリを指すときも、リモートブランチは照会しない。ブランチ作成は、一致が現在ブランチだけでも止める。停止文には衝突した番号だけを並べる。誤検知のときはその区間の先頭へ `FF_ISSUE_COLLISION_ACK=1` を付ける。プロセス環境の同じ変数は通さない。無効化は `FF_DEV_TOOLKIT_SKIP=issue-collision`。`$(…)` の中で起動する `git` / `gh` は見ない。
+
+**着手時の自己アサインガード（`guard-issue-assign.sh`）** は、`git switch -c` / `git checkout -b` / `git worktree add -b`（`-C` / `--create` / `--force-create` / `--orphan` / `-B` を含む）で作るブランチ名から `scripts/lib/branch-issue.sh` で Issue 番号を抽出し、`gh api user --jq .login`（GHES URL のときは `--hostname` 付きで再照会）と `gh issue view <N> --json state,assignees,url` を 4 秒枠で並列照会して、対象が open かつ現在の認証ユーザーが担当者一覧に無い場合に実行前に止める（同一呼び出しの `&&` 連鎖前段で `!`・失敗分岐 `||`・`if` 等の外にある `gh issue edit ... --add-assignee @me|<自分>` または `gh api -X POST repos/<owner>/<repo>/issues/<N>/assignees` により明確に自己アサインしている場合のみ免除し、展開不能な動的担当者指定は免除せず、異なる作業ディレクトリ間では `${GH_HOST:-github.com}` とのホスト一致も要求する。停止時は追加専用 API を案内）。照会に失敗した・`gh` が無い・JSON 異常（`assignees` 要素の `login` 欠落を含む）・タイムアウト・認証ユーザー不明・コマンドを読み切れない・`--git-dir` / `--work-tree` / `GIT_DIR` / `GIT_WORK_TREE` 等により作業ディレクトリを確定できないときは止めずに理由を出す（fail-open）。誤検知や意図して未アサインのまま進める場合はその区間の先頭へ `FF_ISSUE_ASSIGN_ACK=1` を付ける。プロセス環境の同じ変数は通さない。無効化は `FF_DEV_TOOLKIT_SKIP=issue-assign`。`$(…)` の中で起動する `git` / `gh`・引用符内の文字列・未解決変数だけで組んだブランチ名は見ない。
 
 **未コミット変更ガード（`guard-checkout-restore.sh`）** — 未コミット変更のあるファイルへの `git checkout [--] <path>` / `git restore <path>` を検出し、変更消失の前に警告する。警告文は代替手段（`cp` バックアップ / `git stash push -- <file>` → `pop`）を案内する。ブランチ切り替え（`git checkout <branch>` / `git switch`）、clean・untracked なファイルへの復元、`git restore --staged`（worktree 非破壊）では発火しない。
 

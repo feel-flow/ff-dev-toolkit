@@ -234,7 +234,16 @@ set +e
 if [[ -n "${FF_RELEASE_GATE_HEAD:-}" ]]; then
   live_claims_out="$("$CLAIM_VALIDATOR" --root "$REPO_ROOT" --snapshot-head "$FF_RELEASE_GATE_HEAD" 2>&1)"
 else
-  live_claims_out="$(GITHUB_ACTIONS="$FF_AMBIENT_GITHUB_ACTIONS" validate_live_claims 2>&1)"
+  # 本リポジトリ自身の live 検査は origin へ git fetch するため、ランナーの git 設定隔離から
+  # 起動元の GIT_CONFIG_GLOBAL / GIT_CONFIG_NOSYSTEM を復元して credential.helper を活かし、
+  # 未認証時の対話プロンプト待ちは GIT_TERMINAL_PROMPT=0 で抑止する。
+  live_claims_out="$( (
+    if [[ "${FF_ORIG_GIT_CONFIG_SAVED:-0}" == "1" ]]; then
+      if [[ "${FF_ORIG_GIT_CONFIG_GLOBAL_SET:-0}" == "1" ]]; then export GIT_CONFIG_GLOBAL="${FF_ORIG_GIT_CONFIG_GLOBAL-}"; else unset GIT_CONFIG_GLOBAL; fi
+      if [[ "${FF_ORIG_GIT_CONFIG_NOSYSTEM_SET:-0}" == "1" ]]; then export GIT_CONFIG_NOSYSTEM="${FF_ORIG_GIT_CONFIG_NOSYSTEM-}"; else unset GIT_CONFIG_NOSYSTEM; fi
+    fi
+    GIT_TERMINAL_PROMPT=0 GITHUB_ACTIONS="$FF_AMBIENT_GITHUB_ACTIONS" validate_live_claims
+  ) 2>&1)"
 fi
 live_claims_rc=$?
 set -e

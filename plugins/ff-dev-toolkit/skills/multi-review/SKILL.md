@@ -106,7 +106,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ### レビュー待ち時間の使い方
 
-既定（高速）の `run-all.sh` は PR head へ detach した**別 worktree** で `FF_RUN_ALL_WAIT=1` 並走可（PR 作成直後・同ターンが既定。元ツリーは baseline 完走を待たず全レビュー終端後すぐ修正可。非 `.sh` はそのまま commit、`.sh` 変更時は `FF_RUN_ALL_WAIT=1` で `run-all/verify.sh` を待機。手順: [ステップ6](../../docs-template/05-operations/deployment/git-workflow.md#ステップ6-セルフレビューpr作成後重要)）。`FF_RUN_ALL_FULL=1` は並走不可（OBS-215）。baseline の赤と指摘は 1 fix commit へ束ね、HEAD が動いたら最終ゲートを省かない。
+既定（高速）の `run-all.sh` は PR head へ detach した**別 worktree** で `FF_RUN_ALL_WAIT=1` 並走可（PR 作成直後・同ターンが既定。元ツリーは baseline 完走を待たず全レビュー終端後すぐ修正可。非 `.sh` も `.sh` もそのまま commit（`.sh` 変更時の `run-all/verify.sh` は baseline を待たない）。手順: [ステップ6](../../docs-template/05-operations/deployment/git-workflow.md#ステップ6-セルフレビューpr作成後重要)）。`FF_RUN_ALL_FULL=1` は並走不可（OBS-215）。baseline の赤と指摘は 1 fix commit へ束ね、HEAD が動いたら最終ゲートを省かない。
 
 **許可側**: `gh` 経由の GitHub 側作業（Issue 本文の AC 更新・PR 本文の更新・follow-up の起票・完了報告の下書き）は作業ツリーを触らないので回してよい。**禁止側**: 編集は溜めず、**レビュー終端後に直したらすぐ commit し、次の回転を dirty な作業ツリーで起動しない**。dirty のまま起動すると CLI 側は DISCARDED になり、レビューエージェント（`git diff <base>...HEAD` を見る）は PR の内容としては未解消のままと判定する。
 

@@ -114,13 +114,27 @@
 # 選択からも消える。
 #
 # 倒れる向きはすべて「多く回す」側に置く:
-#   - 契約面（CHANGED_FULL_PLUGIN_PATHS / CHANGED_FULL_REPO_PATHS。名簿の正本は実装箇所）に
+#   - 実行基盤の契約面（CHANGED_FULL_PLUGIN_PATHS / CHANGED_FULL_REPO_PATHS。名簿の正本は実装箇所）に
 #     触れた変更、base / merge-base / 差分一覧を解決できない回は全件実行へ倒し、理由を出す
+#   - 文書契約面（CHANGED_DOC_PLUGIN_PATHS / CHANGED_DOC_REPO_PATHS。配布テンプレートの文書と root の
+#     2 入口）だけに触れた変更は全件へ倒さず、字面の交差に文書横断 suite の束（CHANGED_DOC_SUITES）を
+#     必ず足す。束は手書きの名簿で、文書の集合そのものを入力に取る検査（節参照・入口のパリティ・
+#     版の claim など）が変更パスを字面に持たないために置く。束の名前が登録一覧に 1 つでも無い回は、
+#     少なく回さず全件へ倒す。実行基盤の契約面と同時に触れた変更も、配布テンプレートの配下で文書で
+#     ないファイル（同梱の実行コード・設定）の変更も全件へ倒す
 #   - suite 自身のディレクトリの変更はその suite を選ぶ。参照パスを 1 つも導出できない
 #     suite は常に選ぶ
 #   - 交差が 0 件なら「何も回さない緑」にせず、登録照合（メタ検査）だけを実行したことを
 #     `suites: selected=0 registered=N` として明示する
+# 「多く回す」の例外は 1 つだけ: このランナーからは環境に関係なく常に suite ごと skip する suite
+# （CHANGED_NEVER_RUN_SUITES。公開同期の直前にだけ明示起動する公開検査）は、選択の条件に当たっても
+# 選択に入れず、外したことを 1 行で名乗る。選んでも検査は 1 件も走らず、skip の混入で下の COVERS_DIFF が
+# 永久に付かなくなるため（全件ゲートでも回らないので、覆う範囲は減らない。ADR-095）。
 # 部分実行なので鮮度記録は `STATUS=partial` / `MODE=changed` で書く（全件緑へ昇格しない）。
+# 実行基盤の契約面に非該当で選択 suite が 1 件以上あり、skip / 未実行 0 件で pass した回だけ、
+# 解決済みの base SHA（40 桁小文字 16 進）を `COVERS_DIFF` として記録する（ADR-094。文書契約面
+# だけの変更も同じ条件で記録する。ADR-095）。skip 混入・失敗・交差 0 件・全件フォールバックでは
+# `COVERS_DIFF` を付けない（fail-closed）。
 # 対を持つ selftest の除外（高速モード）は掛けない — 選ぶかどうかは参照の交差だけで決める。
 # FULL / FAST との同時指定は既存の矛盾警告と同じ形で 1 行警告し、除外の少ない側を採る。
 # 明示引数の実行では無視する（名指しを優先。1 行警告）。
@@ -397,11 +411,59 @@ ff_emit_summary_head() {
     fi
   fi
   RUN=$(( ${#PASSED[@]} + ${#FAILED[@]} + ${#SKIPPED[@]} ))
-  echo "== summary =="
-  echo "suites: total=${#SCRIPTS[@]} run=$RUN passed=${#PASSED[@]} failed=${#FAILED[@]} skipped=${#SKIPPED[@]} not-run=${#NOT_RUN[@]}"
-  echo "checks-skipped: total=${CHECKS_SKIPPED_TOTAL} suites=${#CHECKS_SKIPPED[@]}"
+  ff_stdout_retry_cmd echo "== summary =="
+  ff_stdout_retry_cmd echo "suites: total=${#SCRIPTS[@]} run=$RUN passed=${#PASSED[@]} failed=${#FAILED[@]} skipped=${#SKIPPED[@]} not-run=${#NOT_RUN[@]}"
+  ff_stdout_retry_cmd echo "checks-skipped: total=${CHECKS_SKIPPED_TOTAL} suites=${#CHECKS_SKIPPED[@]}"
 }
 # <<< ff-summary-head-block
+
+# >>> ff-stdout-write-block
+# 大量出力を PTY へ直接書く際に並列子の SIGCHLD 等で EINTR（Interrupted system call）が
+# 起きると、stock bash の builtin printf / echo が rc=1 を返して set -e でランナーごと即死し、
+# 全 suite 通過後にサマリーと鮮度記録（gate-record）が失われる。各出力行ごとに最大 3 回試行
+# （初回 1 回＋再試行 2 回。再試行時は部分書き込み残余と連結して `^suites:` 等の行頭判定を
+# 壊さないよう改行を先行させて新しい行頭から書き直す）し、それでも書けない場合も 1 回だけ
+# stderr へ警告を出して集計・鮮度記録・終了コード判定を継続する（終了コードは suite の成否
+# と gate-record の STATUS だけで決める — fail-closed 維持）。
+# また Bash 3.2（macOS BSD libc）では親シェルの builtin printf / echo が書き込み失敗すると
+# stdout の stdio バッファに未送出バイトが残留し、後続の $(...) コマンド置換の fork 先へ
+# 混入して suite 判定を壊すため、出力はサブシェル内へ隔離して親の stdio バッファを汚染させない。
+STDOUT_WRITE_ERRORS=0
+STDOUT_WRITE_WARNED=0
+ff_stdout_note_error() { # <rc>
+  local rc="${1:-1}"
+  STDOUT_WRITE_ERRORS=$((STDOUT_WRITE_ERRORS + 1))
+  if [[ "$STDOUT_WRITE_WARNED" -eq 0 ]]; then
+    STDOUT_WRITE_WARNED=1
+    ( printf '%s\n' "⚠️  標準出力への書き込みに失敗しました（rc=${rc}）。テストの集計と鮮度記録は継続します" >&2 ) || true
+  fi
+  return 0
+}
+ff_stdout_retry_cmd() { # <cmd> [args...]
+  local attempt=0 rc=0
+  while [[ "$attempt" -lt 3 ]]; do
+    rc=0
+    if [[ "$attempt" -gt 0 ]]; then
+      ( printf '\n' && "$@" ) || rc=$?
+    else
+      ( "$@" ) || rc=$?
+    fi
+    if [[ "$rc" -eq 0 ]]; then
+      return 0
+    fi
+    attempt=$((attempt + 1))
+  done
+  ff_stdout_note_error "$rc"
+  return 0
+}
+ff_stdout_write() { # [text]
+  if [[ $# -eq 0 ]]; then
+    ff_stdout_retry_cmd printf '\n'
+  else
+    ff_stdout_retry_cmd printf '%s\n' "$1"
+  fi
+}
+# <<< ff-stdout-write-block
 
 # >>> ff-startup-load-block
 ff_startup_sysctl() {
@@ -446,7 +508,8 @@ FF_STARTUP_LOAD_PER_CORE=10
 # Independent runners are found across repositories/worktrees. The existing Git-dir
 # marker serves nested effort accounting and is deliberately not a host registry.
 # >>> ff-startup-other-gates
-# tests/run-all/verify.sh がこの関数だけを抽出して、走査の前に呼ぶ。
+# tests/run-all/verify.sh と cases/unit-isolation.sh がこの関数だけを抽出して呼ぶ（観測の隔離の
+# 確認と、合成したプロセス一覧での境界の検査）。
 ff_startup_other_gates() {
   local snapshot candidates pid script recorded observed cwd_info process_cwd
   snapshot="$(LC_ALL=C ps -ww -eo pid=,ppid=,args= 2>/dev/null)" || return 1
@@ -483,6 +546,33 @@ ff_startup_other_gates() {
       }
       return 0
     }
+    # The runner self-test (tests/run-all/verify.sh) starts run-all.sh on throwaway
+    # fixtures. Those children are not gates: a candidate with such a suite process
+    # among its ancestors is dropped. A gate that runs the self-test as one of its
+    # suites is still reported through its own row (it has no such ancestor).
+    # Only the shell-script form with a recognisable path counts; anything else keeps
+    # the old reading and is reported.
+    function unitsuite(s, a,n,i,b) {
+      n=split(s,a,/[[:space:]]+/); b=base(a[1])
+      if(a[1] ~ /(^|\/)run-all\/verify[.]sh$/) return 1
+      if(b!="bash" && b!="sh") return 0
+      for(i=2;i<=n;i++) {
+        if(a[i]=="-c" || a[i] ~ /^-[^-]*c/) return 0
+        if(a[i]=="-o" || a[i]=="+o" || a[i]=="-O" || a[i]=="+O" || a[i]=="--rcfile" || a[i]=="--init-file") { i++; continue }
+        if(a[i]=="--") { i++; break }
+        if(a[i] ~ /^[-+]/) continue
+        break
+      }
+      return (a[i] ~ /(^|\/)run-all\/verify[.]sh$/) ? 1 : 0
+    }
+    function underunit(p, i) {
+      for(i=0;i<=count && p in parent;i++) {
+        if(p==0 || parent[p]==p) break
+        p=parent[p]
+        if(p in units) return 1
+      }
+      return 0
+    }
     function samegate(a,b, g) {
       for(g in gates) if(ancestor(g,a) && ancestor(g,b)) return 1
       return 0
@@ -495,9 +585,10 @@ ff_startup_other_gates() {
     }
     END {
       if(bad || !(self in parent)) exit 1
+      for(pid in commands) if(unitsuite(commands[pid])) units[pid]=1
       for(pid in commands) {
         paths[pid]=runner(commands[pid])
-        if(paths[pid]!="") gates[pid]=1
+        if(paths[pid]!="" && !underunit(pid)) gates[pid]=1
       }
       for(pid in gates) {
         path=paths[pid]
@@ -629,9 +720,9 @@ ff_capture_startup_load() {
 
 ff_emit_startup_load() {
   [[ "$FF_STARTUP_REPORT" == 1 ]] || return 0
-  echo "startup-load: load=${FF_STARTUP_LOAD} cores=${FF_STARTUP_CORES} threshold=${FF_STARTUP_THRESHOLD} other-gates=${FF_STARTUP_OTHER_GATES} (unknown=未測定)"
+  ff_stdout_write "startup-load: load=${FF_STARTUP_LOAD} cores=${FF_STARTUP_CORES} threshold=${FF_STARTUP_THRESHOLD} other-gates=${FF_STARTUP_OTHER_GATES} (unknown=未測定)"
   if [[ "$FF_STARTUP_PRESSURE" == 1 && ${#FAILED[@]} -gt 0 ]]; then
-    echo "⚠️  負荷の高い状態または別ゲートの並走中に開始しました。赤の suite は単体で再実行して切り分けてください。"
+    ff_stdout_write "⚠️  負荷の高い状態または別ゲートの並走中に開始しました。赤の suite は単体で再実行して切り分けてください。"
   fi
   return 0
 }
@@ -939,6 +1030,8 @@ else
     "$SCRIPT_DIR/guard-default-branch-commit/verify.sh"
     # 同じ番号の open PR またはリモートブランチがあるときのブランチ作成と PR 作成を止める。
     "$SCRIPT_DIR/guard-issue-collision/verify.sh"
+    # 未アサインの open Issue に対するブランチ作成（git switch -c / checkout -b / worktree add -b）を止める。
+    "$SCRIPT_DIR/guard-issue-assign/verify.sh"
     # PreToolUse（Edit/Write/MultiEdit/NotebookEdit/Bash）の全件ゲート走行中ガード
     # （hooks/guard-gate-in-flight.sh）。共有ライブマーカー判定・死んだ PID/再利用 PID 回収・
     # 作業ツリー内書き込み遮断・ツリー外/.review-results/gitignore/別worktree 通過・抜け道を固定する。
@@ -995,8 +1088,8 @@ else
     # SKILL.md から引用関数を抽出して LC_ALL=C で round-trip を実測する。
     # 同じ SKILL.md の同じ窓（マージ直前）を守るので closing-keyword-guard の隣に置く。
     "$SCRIPT_DIR/close-issue-shell-quote/verify.sh"
-    # マージ前のゲートの分岐: checks がある既定の形ではローカル全件をリリース前と契約面の
-    # 変更時に限り（ADR-062）、PR トリガーの CI を持たない repo では checks を待たず
+    # マージ前のゲートの分岐: checks がある既定の形ではローカル全件をリリース前と実行基盤の
+    # 契約面の変更時に限り（ADR-062 / ADR-095）、PR トリガーの CI を持たない repo では checks を待たず
     # ローカル全件ゲート + 鮮度照合をマージ根拠にする（OBS-070 Count 3 昇格）。
     # close-issue/SKILL.md 手順 7 と git-workflow.md マージ節の 2 文言を節スコープで
     # 固定する。同じ「マージ直前の窓」を守る契約なので close-issue-shell-quote の
@@ -2180,7 +2273,7 @@ check_suite_registration() {
     echo "  規定の正本は docs/04-quality/TESTING.md §針が当たらない入力の既定 を参照してください。" >&2
     return 1
   fi
-  echo "ℹ️  既定 suite 一覧の登録漏れなし（実体 ${#disk_names[@]} 件 / 必須 ${#REQUIRED_SUITES[@]} 件 — 実体からの導出と一致 / 空振り検出の免除名簿 ${#MISS_PROBE_BASELINE[@]} 件）"
+  ff_stdout_write "ℹ️  既定 suite 一覧の登録漏れなし（実体 ${#disk_names[@]} 件 / 必須 ${#REQUIRED_SUITES[@]} 件 — 実体からの導出と一致 / 空振り検出の免除名簿 ${#MISS_PROBE_BASELINE[@]} 件）"
   return 0
 }
 
@@ -2414,11 +2507,13 @@ if [[ "$FULL_EXPLICIT" == "1" && "$FAST_EXPLICIT" == "1" ]]; then
 fi
 
 # ── 変更ベースの部分ゲート（FF_RUN_ALL_CHANGED。ADR-062。背景はヘッダー）──────────
-# 全件へ倒す契約面の名簿。**名簿の正本はここ**（docs/04-quality/TESTING.md は配列名を参照し、
+# 契約面の名簿は 2 種類ある。**名簿の正本はここ**（docs/04-quality/TESTING.md は配列名を参照し、
 # 中身を書き写さない）。末尾が `/` の要素はその配下すべて、それ以外は完全一致で照合する。
-# 共通の前提は「ここを変えると、字面の交差では影響先を言い切れない」こと — ランナー自身・
-# 共有 lib・hook 登録は多数の suite が間接的に読み、docs-template と root の 2 入口は契約文の
-# 正本として節単位・文言単位で横断参照され、CI 定義と共有依存は全 suite の実行条件になる。
+# 共通の前提は「ここを変えると、字面の交差だけでは影響先を言い切れない」こと。言い切れない
+# 理由が違うので、倒す先を分ける（ADR-095）。
+#
+# 1) 実行基盤の契約面 → 全件へ倒す。ランナー自身・共有 lib・hook 登録は多数の suite が間接的に
+#    読み、CI 定義と共有依存は全 suite の実行条件になる。影響先は suite の集合全体で、絞れない。
 #
 # プラグインルート（tests/ の親）からの相対パス:
 # 要素は引用符で囲む（行頭の素の `tests/run-all.sh` はゲート起動の静的検査〔tests/lib/exit-code-guard.sh〕
@@ -2427,28 +2522,111 @@ CHANGED_FULL_PLUGIN_PATHS=(
   "tests/run-all.sh"
   "tests/lib/"
   "hooks/hooks.json"
-  "docs-template/"
   "mcp/package.json"
   "mcp/package-lock.json"
 )
 # リポジトリルートからの相対パス:
 CHANGED_FULL_REPO_PATHS=(
-  "CLAUDE.md"
-  "AGENTS.md"
   ".github/workflows/"
   ".github/actions/"
+)
+# 2) 文書契約面 → 字面の交差 + 文書横断 suite の束。docs-template の文書と root の 2 入口は契約文の
+#    正本として節単位・文言単位で横断参照される。影響先は「その文書を名指す suite」（字面の交差が
+#    拾う）と「文書の集合そのものを入力に取る検査」（下の束）で、実装を実行する suite までは及ばない。
+#
+# プラグインルートからの相対パス:
+CHANGED_DOC_PLUGIN_PATHS=(
+  "docs-template/"
+)
+# 上のディレクトリ要素（末尾 `/`）の配下で、文書として扱う拡張子。配布テンプレートは文書のほかに
+# 実行コード（scripts/ の TypeScript・シェル）と設定も同梱していて、それらは他の suite が import・
+# 実行する（例: scripts/ace の履歴解析を別ディレクトリのスクリプトが import する）。字面の交差と
+# 束だけでは影響先を言い切れないので、配下でも文書でないファイルは実行基盤の契約面として全件へ倒す。
+# この名簿が空なら、配下のファイルはすべて全件へ倒れる。
+CHANGED_DOC_FILE_SUFFIXES=(
+  ".md"
+)
+# リポジトリルートからの相対パス:
+CHANGED_DOC_REPO_PATHS=(
+  "CLAUDE.md"
+  "AGENTS.md"
+)
+# 文書契約面の変更で必ず選ぶ suite（suite のディレクトリ名）。入れる基準は「検査の入力が、名指しの
+# ファイルではなく文書の集合である」こと — 追跡下の Markdown 全体・入口の対・節参照の飛び先・版の
+# claim と変更一覧の突き合わせ・公開同期対象の走査。字面の交差で既に選ばれる suite も入れてある
+# （交差は suite が token を書き換えると黙って外れるので、文書契約面では名指しで下限を固定する）。
+# 名前は登録一覧に実在しなければならない: 改名・削除で 1 つでも欠けた回は全件へ倒す（少なく回す
+# 側へ倒さない）。束の全要素が登録一覧に在ることは tests/run-all/cases/changed-selection.sh が固定する。
+CHANGED_DOC_SUITES=(
+  "run-all"
+  "docs-gates"
+  "section-ref-existence"
+  "root-instructions-parity"
+  "host-route-parity"
+  "markdownlint"
+  "sync-forbidden-patterns"
+  "skill-count-consistency"
+  "shared-version-convergence"
+  "changelog-fragments"
+  "docs-version-changelog"
+  "docs-template-frontmatter"
+  "docs-template-portability"
+  "docs-fact-drift"
+)
+# 3) 変更ベースの選択に入れない suite（suite のディレクトリ名）。入れる基準は「このランナーからは、
+#    環境に関係なく常に suite ごと skip する」こと。選んでも検査は 1 件も走らず、skip が 1 件でも
+#    混じった部分実行は COVERS_DIFF を残さない（fail-closed）ので、選択に残すと、その suite と字面が
+#    交差する変更は何度回しても「差分を覆った」と記録できない（公開検査はプラグインルートそのものを
+#    参照するので、プラグイン配下のすべての変更と交差する）。全件ゲートでもその suite は回らない
+#    （公開同期の gate 段が明示起動で回す）ので、外しても全件に対して覆う範囲は減らない。
+#    依存の不在など環境都合で skip する suite は入れない — 回せる環境では回るので、skip の
+#    fail-closed を保つ。明示起動の指定がある回は、suite が回りうるので外さない（判定は
+#    ff_changed_never_runs。CI などで suite が別の理由で skip した回は、従来どおり印が付かない）。
+#    名簿と suite 側の分岐の対応は tests/run-all/cases/changed-selection.sh（47-P）が固定する。
+CHANGED_NEVER_RUN_SUITES=(
+  "public-layout"
 )
 
 CHANGED_MODE=0              # 1 = 変更ベースの選択で SCRIPTS を絞った
 CHANGED_FALLBACK_REASON=""  # 空でなければ全件へ倒した理由
 CHANGED_BASE_LABEL=""
+CHANGED_BASE_SHA=""         # 解決済みの base コミット SHA（40 桁小文字 16 進。全件フォールバック時は空）
 CHANGED_FILE_COUNT=0
 CHANGED_REGISTERED=0
 CHANGED_EVIDENCE=()
+CHANGED_DOC_HIT=""          # 文書契約面に触れた最初の変更パス（空なら非該当。全件フォールバック時も空）
+CHANGED_DOC_ADDED=0         # 字面の交差では選ばれず、束として足した suite の件数
+CHANGED_NEVER_RUN_DROPPED=() # 字面の交差では選ばれたが、CHANGED_NEVER_RUN_SUITES により選択から外した suite
 
 ff_changed_fallback() { # <理由>
   CHANGED_FALLBACK_REASON="$1"
+  CHANGED_BASE_SHA=""
+  CHANGED_DOC_HIT=""
+  CHANGED_DOC_ADDED=0
+  CHANGED_NEVER_RUN_DROPPED=()
   FULL_RUN_REQUESTED=1
+}
+
+# このランナーからは常に suite ごと skip する suite か（0 = そうなので、変更ベースの選択に入れない）。
+# 名簿に名前があるだけでは外さない: 「常に skip する」条件を下に書いた名前だけを外し、条件を
+# 書いていない名前・明示起動の指定がある回は選択に残す（多く回す側）。
+ff_changed_never_runs() { # <suite 名>
+  local n
+  for n in ${CHANGED_NEVER_RUN_SUITES[@]+"${CHANGED_NEVER_RUN_SUITES[@]}"}; do
+    [[ "$n" == "$1" ]] || continue
+    case "$n" in
+      public-layout)
+        # tests/public-layout/verify.sh の先頭の分岐と同じ条件。どちらかの明示起動の指定が
+        # ある回は suite が回りうるので、選択に残す。
+        if [[ "${FF_RUN_PUBLIC_LAYOUT:-}" != "1" && -z "${FF_PUBLIC_LAYOUT_SUITES:-}" ]]; then
+          return 0
+        fi
+        return 1
+        ;;
+    esac
+    return 1
+  done
+  return 1
 }
 
 # 参照パスの導出。suite のディレクトリにあるスクリプトの各行から、パス様の token を拾って
@@ -2561,6 +2739,17 @@ ff_changed_derive() { # <走査するファイル>...
   ' "$@"
 }
 
+# 文書契約面のディレクトリ要素の配下で、文書として扱うファイルか（拡張子の名簿との後方一致）。
+ff_changed_is_doc_file() { # <変更パス>
+  local s
+  for s in ${CHANGED_DOC_FILE_SUFFIXES[@]+"${CHANGED_DOC_FILE_SUFFIXES[@]}"}; do
+    if [[ -n "$s" && "$1" == *"$s" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 ff_changed_surface_hit() { # <変更パス> <名簿の要素（リポジトリルート相対に解決済み）>
   if [[ "$2" == */ ]]; then
     [[ "$1" == "$2"* ]]
@@ -2575,6 +2764,7 @@ ff_changed_select() { # <FF_RUN_ALL_CHANGED の値>
   local req="$1" top top_abs plugin_abs plugin_rel base_ref base_sha mb files extra p e
   local derive_files alias_entry alias_from="" entry_changed=0
   local script name found line derive_out
+  local doc_hit="" doc_elem="" doc_e="" doc_name doc_matched=0 doc_added=0 doc_missing=""
   local -a scan_files=() selected=() derived_names=() derived_evs=()
   if [[ "$req" == -* ]]; then
     ff_changed_fallback "base の指定を解釈できない（先頭が -）: ${req}"
@@ -2635,17 +2825,52 @@ ff_changed_select() { # <FF_RUN_ALL_CHANGED の値>
     CHANGED_FILE_COUNT=$((CHANGED_FILE_COUNT + 1))
     for e in "${CHANGED_FULL_PLUGIN_PATHS[@]}"; do
       if ff_changed_surface_hit "$p" "${plugin_rel}${e}"; then
-        ff_changed_fallback "契約面に触れる変更: ${p}（CHANGED_FULL_PLUGIN_PATHS の ${e}）"
+        ff_changed_fallback "実行基盤の契約面に触れる変更: ${p}（CHANGED_FULL_PLUGIN_PATHS の ${e}）"
         return 0
       fi
     done
     for e in "${CHANGED_FULL_REPO_PATHS[@]}"; do
       if ff_changed_surface_hit "$p" "$e"; then
-        ff_changed_fallback "契約面に触れる変更: ${p}（CHANGED_FULL_REPO_PATHS の ${e}）"
+        ff_changed_fallback "実行基盤の契約面に触れる変更: ${p}（CHANGED_FULL_REPO_PATHS の ${e}）"
         return 0
       fi
     done
+    # 文書契約面は覚えるだけで return しない。後ろの変更が実行基盤の契約面なら、上の 2 つの
+    # 照合が全件へ倒す（文書と実行基盤を同時に変えた回を、並び順で文書側へ倒さない）。
+    # 照合は変更ごとに行う — ディレクトリ要素の配下にある文書でないファイルは、文書契約面を
+    # 既に見つけた後でも全件へ倒す。
+    doc_elem=""
+    doc_e=""
+    for e in ${CHANGED_DOC_PLUGIN_PATHS[@]+"${CHANGED_DOC_PLUGIN_PATHS[@]}"}; do
+      if ff_changed_surface_hit "$p" "${plugin_rel}${e}"; then
+        doc_elem="CHANGED_DOC_PLUGIN_PATHS の ${e}"
+        doc_e="$e"
+        break
+      fi
+    done
+    if [[ -z "$doc_elem" ]]; then
+      for e in ${CHANGED_DOC_REPO_PATHS[@]+"${CHANGED_DOC_REPO_PATHS[@]}"}; do
+        if ff_changed_surface_hit "$p" "$e"; then
+          doc_elem="CHANGED_DOC_REPO_PATHS の ${e}"
+          doc_e="$e"
+          break
+        fi
+      done
+    fi
+    if [[ -n "$doc_elem" ]]; then
+      if [[ "$doc_e" == */ ]] && ! ff_changed_is_doc_file "$p"; then
+        ff_changed_fallback "実行基盤の契約面に触れる変更: ${p}（${doc_elem} の配下だが、CHANGED_DOC_FILE_SUFFIXES の文書ではない）"
+        return 0
+      fi
+      [[ -n "$doc_hit" ]] || doc_hit="${p}（${doc_elem}）"
+    fi
   done < <(printf '%s\n' "$files")
+  # 文書契約面に触れたのに束が空なら、字面の交差だけで通すことになる。束の書式変更（配列を
+  # 読めない・全要素を消した）を「足すものが無い」へ倒さず、全件へ倒す。
+  if [[ -n "$doc_hit" && "${#CHANGED_DOC_SUITES[@]}" -eq 0 ]]; then
+    ff_changed_fallback "文書契約面に触れる変更だが、文書横断 suite の束（CHANGED_DOC_SUITES）が空: ${doc_hit}"
+    return 0
+  fi
 
   # multi-agent.sh の構成ファイル（scripts/lib/multi-agent-*.sh。入口が開始時に source する本体。
   # ADR-075）の変更は、入口 scripts/multi-agent.sh の変更としても交差させる。入口を名指して実走し
@@ -2712,13 +2937,55 @@ ff_changed_select() { # <FF_RUN_ALL_CHANGED の値>
       if [[ -n "$alias_from" && "$found" == "${alias_entry} ← "* ]]; then
         found="${alias_from}（multi-agent.sh の構成ファイル。入口の変更として交差） ← ${found#"${alias_entry} ← "}"
       fi
+      # 選択の条件に当たっても（字面の交差。走査対象が見つからない回の fail-safe も含む）、この
+      # ランナーからは常に skip する suite は選択に入れない（名簿の基準は CHANGED_NEVER_RUN_SUITES）。
+      # 束の照合より前に外す — 束の suite がここで外れた回は、下の件数照合が不一致になって全件へ
+      # 倒れる（束を欠いたまま通さない）。条件に当たらなかった束の suite はここを通らず、束として
+      # 選択に入る（その suite は回らないので、差分を覆った印は付かない）。
+      if [[ -n "$found" ]] && ff_changed_never_runs "$name"; then
+        CHANGED_NEVER_RUN_DROPPED+=("$name")
+        continue
+      fi
+      # 文書契約面の回は、束に名前のある suite を交差の有無に関係なく選ぶ。交差で既に選ばれた
+      # suite は根拠をそのまま残し、束として足した suite だけ根拠に束を名乗らせる。
+      if [[ -n "$doc_hit" ]]; then
+        for doc_name in "${CHANGED_DOC_SUITES[@]}"; do
+          if [[ "$doc_name" == "$name" ]]; then
+            doc_matched=$((doc_matched + 1))
+            if [[ -z "$found" ]]; then
+              found="${doc_hit} ← 文書横断 suite の束（CHANGED_DOC_SUITES）"
+              doc_added=$((doc_added + 1))
+            fi
+            break
+          fi
+        done
+      fi
       if [[ -n "$found" ]]; then
         selected+=("$script")
         CHANGED_EVIDENCE+=("${name} ← ${found}")
       fi
     done
+    # 束の全要素が登録一覧で見つかったことを件数で確かめる。1 つでも欠けた回（suite の改名・
+    # 削除・束の重複や誤記）は、見つかった分だけで通さず全件へ倒す。
+    if [[ -n "$doc_hit" && "$doc_matched" -ne "${#CHANGED_DOC_SUITES[@]}" ]]; then
+      for doc_name in "${CHANGED_DOC_SUITES[@]}"; do
+        found=0
+        for script in "${SCRIPTS[@]}"; do
+          name="${script%/*}"; name="${name##*/}"
+          if [[ "$name" == "$doc_name" ]]; then found=$((found + 1)); fi
+        done
+        if [[ "$found" -ne 1 ]]; then
+          doc_missing="${doc_missing:+${doc_missing} }${doc_name}"
+        fi
+      done
+      ff_changed_fallback "文書横断 suite の束（CHANGED_DOC_SUITES）が登録一覧と 1 対 1 に対応しない: ${doc_missing:-（件数の不一致）} — 文書契約面に触れる変更: ${doc_hit}"
+      return 0
+    fi
   fi
   CHANGED_MODE=1
+  CHANGED_BASE_SHA="$base_sha"
+  CHANGED_DOC_HIT="$doc_hit"
+  CHANGED_DOC_ADDED="$doc_added"
   SCRIPTS=(${selected[@]+"${selected[@]}"})
 }
 
@@ -3044,26 +3311,34 @@ if [[ "$FF_STARTUP_PRESSURE" == 1 ]]; then
 fi
 
 if [[ "$FAST_MODE" == "1" && ${#FAST_EXCLUDED[@]} -gt 0 ]]; then
-  echo "⚡ 高速モード: selftest ${#FAST_EXCLUDED[@]} 件を実行対象から除外します（内訳はサマリー。全件実行は FF_RUN_ALL_FULL=1）"
-  echo
+  ff_stdout_write "⚡ 高速モード: selftest ${#FAST_EXCLUDED[@]} 件を実行対象から除外します（内訳はサマリー。全件実行は FF_RUN_ALL_FULL=1）"
+  ff_stdout_write
 fi
 
 # 全件実行であることを肯定的に 1 行で出す。「⚡ が出ていない」ことでしか全件を判別できないと、
 # 公開同期の定期実行点（毎回全件。ADR-086）や手動起動の Linux CI で全件を回したという報告が目視頼みになる。
 # 明示引数の実行も FAST_MODE=0 だが「全件」ではないので、既定一覧に限って出す。
 if [[ "$USING_DEFAULT_SCRIPTS" == "1" && "$FAST_MODE" == "0" && "$CHANGED_MODE" != "1" ]]; then
-  echo "🔎 全件実行: 登録されている ${#SCRIPTS[@]} suite をすべて実行対象にします（高速モードの除外なし）"
+  ff_stdout_write "🔎 全件実行: 登録されている ${#SCRIPTS[@]} suite をすべて実行対象にします（高速モードの除外なし）"
   if [[ -n "$CHANGED_FALLBACK_REASON" ]]; then
-    echo "↪ 変更ベースの選択（FF_RUN_ALL_CHANGED）から全件実行へ倒しました: ${CHANGED_FALLBACK_REASON}"
+    ff_stdout_write "↪ 変更ベースの選択（FF_RUN_ALL_CHANGED）から全件実行へ倒しました: ${CHANGED_FALLBACK_REASON}"
   fi
-  echo
+  ff_stdout_write
 fi
 # 変更ベースの選択（ADR-062）は、何を根拠に何件へ絞ったかを実行前にも 1 行で出す（根拠の
 # 一覧はサマリー側）。「部分実行である」ことを実行の入口で肯定的に名乗る — 全件マーカーの
 # 不在でしか部分実行を判別できない形にしない。
 if [[ "$CHANGED_MODE" == "1" ]]; then
-  echo "🎯 変更ベースの選択: base=${CHANGED_BASE_LABEL} / 変更 ${CHANGED_FILE_COUNT} 件 → 登録 ${CHANGED_REGISTERED} suite 中 ${#SCRIPTS[@]} suite を実行対象にします（全件実行は FF_RUN_ALL_FULL=1）"
-  echo
+  ff_stdout_write "🎯 変更ベースの選択: base=${CHANGED_BASE_LABEL} / 変更 ${CHANGED_FILE_COUNT} 件 → 登録 ${CHANGED_REGISTERED} suite 中 ${#SCRIPTS[@]} suite を実行対象にします（全件実行は FF_RUN_ALL_FULL=1）"
+  # 文書契約面の回は「全件へ倒さなかった」ことと、その代わりに何を足したかを入口で名乗る。
+  if [[ -n "$CHANGED_DOC_HIT" ]]; then
+    ff_stdout_write "🎯 文書契約面に触れる変更: ${CHANGED_DOC_HIT} — 全件へは倒さず、文書横断 suite の束 ${#CHANGED_DOC_SUITES[@]} 件を選択へ含めます（うち ${CHANGED_DOC_ADDED} 件は字面の交差に無く、束として追加）"
+  fi
+  # 選択から外した suite は黙って消さない。「選択の条件に当たったが回さない」ことと理由を入口で名乗る。
+  if [[ "${#CHANGED_NEVER_RUN_DROPPED[@]}" -gt 0 ]]; then
+    ff_stdout_write "🎯 選択に入れない suite: ${CHANGED_NEVER_RUN_DROPPED[*]} — 選択の条件には当たるが、このランナーからは常に suite ごと skip する（CHANGED_NEVER_RUN_SUITES。全件ゲートでも回らず、公開同期の gate 段が明示起動で回す）"
+  fi
+  ff_stdout_write
 fi
 
 PASSED=()
@@ -3127,7 +3402,7 @@ ff_record_elapsed() { # <name> <seconds>
 ff_emit_elapsed() {
   local slowest
   [[ ${#ELAPSED_ENTRIES[@]} -gt 0 ]] || return 0
-  echo "elapsed-sec: ${ELAPSED_ENTRIES[*]}"
+  ff_stdout_retry_cmd echo "elapsed-sec: ${ELAPSED_ENTRIES[*]}"
   slowest="$(printf '%s\n' "${ELAPSED_ENTRIES[@]}" | awk -F= '
     $2+0 >= 1 {
       n++
@@ -3153,7 +3428,7 @@ ff_emit_elapsed() {
     }
   ')"
   [[ -n "$slowest" ]] || return 0
-  echo "slowest: ${slowest}"
+  ff_stdout_retry_cmd echo "slowest: ${slowest}"
 }
 
 # verify.sh case 45-F 専用。合成の name=sec を渡してソート・上限・0 秒除外を壁時計なしで
@@ -3176,20 +3451,20 @@ ff_consume() { # <name> <kind: run|missing|notexec|gone> <script> <rc>。本文�
   local name="$1" kind="$2" script="$3" suite_rc="$4"
   local checks_skipped
 
-  echo "== $name =="
+  ff_stdout_write "== $name =="
 
   # 起動できない suite は「未実行」として記録し、実行は続ける（ここで exit すると
   # 裏口から fail-fast が戻る）。最後に非 0 終了へ寄与させることで fail-closed を保つ。
   if [[ "$kind" == "missing" ]]; then
     echo "✗ verify script is missing: $script" >&2
     NOT_RUN+=("$name (missing)")
-    echo
+    ff_stdout_write
     return 0
   fi
   if [[ "$kind" == "notexec" ]]; then
     echo "✗ verify script is not executable: $script" >&2
     NOT_RUN+=("$name (not executable)")
-    echo
+    ff_stdout_write
     return 0
   fi
   # 並列実行の子が終了コードを残さずに消えた場合（kill -9・OOM など）。pass にも
@@ -3198,7 +3473,7 @@ ff_consume() { # <name> <kind: run|missing|notexec|gone> <script> <rc>。本文�
   if [[ "$kind" == "gone" ]]; then
     echo "✗ suite プロセスが終了コードを残さずに消えました: $script" >&2
     NOT_RUN+=("$name (process gone)")
-    echo
+    ff_stdout_write
     return 0
   fi
   # 並列実行の spool を読み出せなかった場合（一時領域の枯渇・削除など）。ここで
@@ -3207,11 +3482,11 @@ ff_consume() { # <name> <kind: run|missing|notexec|gone> <script> <rc>。本文�
   if [[ "$kind" == "unreadable" ]]; then
     echo "✗ suite の出力・終了コードを spool から読み出せませんでした: $script" >&2
     NOT_RUN+=("$name (spool unreadable)")
-    echo
+    ff_stdout_write
     return 0
   fi
 
-  printf '%s\n' "$FF_SUITE_OUTPUT"
+  ff_stdout_write "$FF_SUITE_OUTPUT"
 
   # インデント付き `○ skip` は、suite 内の一部検査だけを環境都合で飛ばしたマーカー。
   # 行頭マーカー（suite 全体の skip）とは別勘定にし、終了コードや REQUIRED_SUITES の
@@ -3265,19 +3540,61 @@ ff_consume() { # <name> <kind: run|missing|notexec|gone> <script> <rc>。本文�
     FAILED+=("$name")
     FAILED_SCRIPTS+=("$script")
   fi
-  echo
+  ff_stdout_write
 }
 
-# suite へ継承させない環境変数を外す。**必ず suite を起動するサブシェルの中で呼ぶ** — 本体の
-# 環境は変えない（終了時の ff_record_gate_head は本体に残した値で記録する）。どちらもこのランナーの
-# 最終記録だけを制御する値で、suite へ継承すると suite 内の fixture の記録まで動かす:
+# suite へ継承させない環境変数を外し、開発者のグローバル／システム git 設定と作者環境変数を
+# 隔離する。**必ず suite を起動するサブシェルの中で呼ぶ** — 本体の環境は変えない（終了時の
+# ff_record_gate_head や親の dirty 判定は本体に残した値で動く）。
 #   FF_GATE_RECORD_FILE … 最終記録の出力先。別 checkout の fixture が記録器を --record なしで呼ぶと、
 #                         自分の git dir ではなく親の指定先へ書いて偽赤になる（OBS-414。tests/finish の GR0〜GR2）
 #   FF_GATE_RECORD=0    … 最終記録を止める指定。suite が入れ子で回すランナーの記録まで止まり、記録を
 #                         実測する検査（tests/merge-freshness の抽出した記録ブロック・case 39-C）が赤になる
+#   GIT_CONFIG_GLOBAL / GIT_CONFIG_NOSYSTEM / GIT_AUTHOR_* / GIT_COMMITTER_* / EMAIL …
+#                         開発者の ~/.gitconfig（user.name / user.email / core.excludesFile 等）や
+#                         システム設定、既定の $XDG_CONFIG_HOME/git/ignore、OS アカウントからの自動推測を
+#                         断つ（ACE-2667-1）。隔離設定ファイル（user.useConfigOnly=true と
+#                         core.excludesFile=/dev/null）を使うことで、作者情報を持たない fixture の
+#                         git commit が手元でも WSL・CI と同じく赤になり、core.excludesFile（*~ 等）の
+#                         git check-ignore への漏れも防ぐ。tests/lib/git-fixture.sh は GIT_CONFIG_GLOBAL /
+#                         GIT_CONFIG_NOSYSTEM を保持するため衝突しない。本リポジトリの実 origin へ fetch
+#                         する live 検査が元の認証設定を復元できるよう、初回のみ元の値を FF_ORIG_GIT_CONFIG_SAVED 等
+#                         の内部変数へ控える。lib を持たない fixture 複製時のみ /dev/null へフォールバックする
+#                         （この複製経路では user.useConfigOnly / core.excludesFile=/dev/null は掛からない）。
 # suite が内部で明示した指定はそのまま効く。
 ff_suite_env_isolate() {
   unset FF_GATE_RECORD_FILE FF_GATE_RECORD FF_RUN_ALL_WAIT FF_RUN_ALL_WAIT_MAX_SECONDS FF_RUN_ALL_WAIT_DIR FF_RUN_ALL_WAIT_POLL_INTERVAL
+  if [[ "${FF_ORIG_GIT_CONFIG_SAVED:-0}" != "1" ]]; then
+    export FF_ORIG_GIT_CONFIG_SAVED=1
+    if [[ -n "${GIT_CONFIG_GLOBAL+x}" ]]; then
+      export FF_ORIG_GIT_CONFIG_GLOBAL_SET=1
+      export FF_ORIG_GIT_CONFIG_GLOBAL="$GIT_CONFIG_GLOBAL"
+    else
+      export FF_ORIG_GIT_CONFIG_GLOBAL_SET=0
+      unset FF_ORIG_GIT_CONFIG_GLOBAL
+    fi
+    if [[ -n "${GIT_CONFIG_NOSYSTEM+x}" ]]; then
+      export FF_ORIG_GIT_CONFIG_NOSYSTEM_SET=1
+      export FF_ORIG_GIT_CONFIG_NOSYSTEM="$GIT_CONFIG_NOSYSTEM"
+    else
+      export FF_ORIG_GIT_CONFIG_NOSYSTEM_SET=0
+      unset FF_ORIG_GIT_CONFIG_NOSYSTEM
+    fi
+  fi
+  unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL EMAIL
+  unset GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
+  local _v
+  for _v in $(compgen -v GIT_CONFIG_ 2>/dev/null || true); do
+    case "$_v" in
+      GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*) unset "$_v" ;;
+    esac
+  done
+  export GIT_CONFIG_NOSYSTEM=1
+  if [[ -r "$SCRIPT_DIR/lib/git-isolated.gitconfig" ]]; then
+    export GIT_CONFIG_GLOBAL="$SCRIPT_DIR/lib/git-isolated.gitconfig"
+  else
+    export GIT_CONFIG_GLOBAL=/dev/null
+  fi
 }
 
 # 逐次実行。一時領域を要求しない経路で、read-only 環境の退避先でもある。
@@ -3775,13 +4092,13 @@ if [[ ${#SCRIPTS[@]} -eq 0 ]]; then
   # 実行したのは登録照合（メタ検査）だけであることをサマリーで名乗る。
   :
 elif [[ -n "$SPOOL" ]]; then
-  echo "🧵 並列実行: 同時実行数 ${JOBS}（逐次に戻すには FF_RUN_ALL_JOBS=1）"
+  ff_stdout_write "🧵 並列実行: 同時実行数 ${JOBS}（逐次に戻すには FF_RUN_ALL_JOBS=1）"
   ff_resolve_elapsed_record
   ff_plan_launch_order
   if [[ -n "$LAUNCH_ORDER_NOTE" ]]; then
-    echo "🧵 起動順: ${LAUNCH_ORDER_NOTE}"
+    ff_stdout_write "🧵 起動順: ${LAUNCH_ORDER_NOTE}"
   fi
-  echo
+  ff_stdout_write
   ff_run_parallel
   ff_write_elapsed_record
 else
@@ -3798,20 +4115,26 @@ ff_emit_startup_load
 # `suites: selected=` は部分実行であることを機械が読む行で、交差 0 件の回も 0 を明示する
 # （空集合を「全部通った」と読ませない）。全件へ倒した回は理由を出す。
 if [[ "$CHANGED_MODE" == "1" ]]; then
-  echo "suites: selected=${#SCRIPTS[@]} registered=${CHANGED_REGISTERED}"
+  ff_stdout_write "suites: selected=${#SCRIPTS[@]} registered=${CHANGED_REGISTERED}"
   if [[ ${#SCRIPTS[@]} -eq 0 ]]; then
-    echo "🎯 変更ベースの選択: 変更 ${CHANGED_FILE_COUNT} 件と交差する suite は 0 件 — suite は 1 つも実行しておらず、実行したのは登録照合（メタ検査）だけ（base=${CHANGED_BASE_LABEL}）"
+    ff_stdout_write "🎯 変更ベースの選択: 変更 ${CHANGED_FILE_COUNT} 件と交差する suite は 0 件 — suite は 1 つも実行しておらず、実行したのは登録照合（メタ検査）だけ（base=${CHANGED_BASE_LABEL}）"
   else
-    echo "🎯 変更ベースの選択: base=${CHANGED_BASE_LABEL} / 変更 ${CHANGED_FILE_COUNT} 件 → ${#SCRIPTS[@]} / ${CHANGED_REGISTERED} suite（根拠: suite ← 変更パス ← 参照 token）"
+    ff_stdout_write "🎯 変更ベースの選択: base=${CHANGED_BASE_LABEL} / 変更 ${CHANGED_FILE_COUNT} 件 → ${#SCRIPTS[@]} / ${CHANGED_REGISTERED} suite（根拠: suite ← 変更パス ← 参照 token）"
     for _ce in "${CHANGED_EVIDENCE[@]}"; do
-      echo "🎯   ${_ce}"
+      ff_stdout_write "🎯   ${_ce}"
     done
   fi
+  if [[ -n "$CHANGED_DOC_HIT" ]]; then
+    ff_stdout_write "doc-contract: bundle=${#CHANGED_DOC_SUITES[@]} added=${CHANGED_DOC_ADDED}"
+  fi
+  if [[ "${#CHANGED_NEVER_RUN_DROPPED[@]}" -gt 0 ]]; then
+    ff_stdout_write "never-run: excluded=${#CHANGED_NEVER_RUN_DROPPED[@]} (${CHANGED_NEVER_RUN_DROPPED[*]})"
+  fi
 elif [[ -n "$CHANGED_FALLBACK_REASON" ]]; then
-  echo "🎯 変更ベースの選択は全件実行へ倒れた（理由: ${CHANGED_FALLBACK_REASON}）"
+  ff_stdout_write "🎯 変更ベースの選択は全件実行へ倒れた（理由: ${CHANGED_FALLBACK_REASON}）"
 fi
 if [[ ${#CHECKS_SKIPPED[@]} -gt 0 ]]; then
-  echo "○ checks skipped (suite内の部分skip。suite-level skippedとは別勘定): ${CHECKS_SKIPPED[*]}"
+  ff_stdout_write "○ checks skipped (suite内の部分skip。suite-level skippedとは別勘定): ${CHECKS_SKIPPED[*]}"
 fi
 
 # 高速モードの除外は「何を検証していないか」ごとサマリーへ明示する。除外は total にも
@@ -3831,19 +4154,19 @@ if [[ "$FAST_MODE" == "1" ]]; then
         fi
       done
     done
-    echo "⚡ 高速モードで selftest ${#FAST_EXCLUDED[@]} 件を除外した（うち REQUIRED_SUITES 掲載 ${_fast_excl_required} 件 — 既定では必須 skip の fail-closed 保護がこれらへ及ばない。これらが担う検査〔対の本体 suite に対するゲート検出力。対の実在を代理指標にしているため、除外側に live な照合が残ることもある〕は未実施。全件実行は FF_RUN_ALL_FULL=1）: ${FAST_EXCLUDED[*]}"
+    ff_stdout_write "⚡ 高速モードで selftest ${#FAST_EXCLUDED[@]} 件を除外した（うち REQUIRED_SUITES 掲載 ${_fast_excl_required} 件 — 既定では必須 skip の fail-closed 保護がこれらへ及ばない。これらが担う検査〔対の本体 suite に対するゲート検出力。対の実在を代理指標にしているため、除外側に live な照合が残ることもある〕は未実施。全件実行は FF_RUN_ALL_FULL=1）: ${FAST_EXCLUDED[*]}"
   else
-    echo "⚡ 高速モード: 除外対象の selftest は 0 件だった（除外は行っていない）"
+    ff_stdout_write "⚡ 高速モード: 除外対象の selftest は 0 件だった（除外は行っていない）"
   fi
   # 対を持たない selftest は除外しない。「-selftest なのに走っている」を読み手が
   # 例外や漏れと誤読しないよう、件数と理由を明示する（ADR-031）。
   if [[ ${#FAST_KEPT_SELFTEST[@]} -gt 0 ]]; then
-    echo "⚡ 対になる本体 suite を持たない selftest ${#FAST_KEPT_SELFTEST[@]} 件は除外しなかった（その検査対象を見る suite が他に無いため。必須 skip の許可時はこの中に skip も含まれうる）: ${FAST_KEPT_SELFTEST[*]}"
+    ff_stdout_write "⚡ 対になる本体 suite を持たない selftest ${#FAST_KEPT_SELFTEST[@]} 件は除外しなかった（その検査対象を見る suite が他に無いため。必須 skip の許可時はこの中に skip も含まれうる）: ${FAST_KEPT_SELFTEST[*]}"
   fi
 fi
 
 if [[ ${#SKIPPED[@]} -gt 0 ]]; then
-  echo "○ skipped (環境都合で検証本体が未実行): ${SKIPPED[*]}"
+  ff_stdout_write "○ skipped (環境都合で検証本体が未実行): ${SKIPPED[*]}"
 fi
 
 # 必須名簿の suite が skip したら失敗として扱う（既定）。環境都合で回せない場合は
@@ -3960,7 +4283,7 @@ fi
 # なるので消さない。判定対象は起動ガードで解決済み（末尾は esbuild の簡易案内だけを維持する。
 # 起動ガードは npm ls の診断で esbuild 以外の欠落も名指しする）。
 if [[ ! -x "$MCP_ESBUILD" && ( ${#SKIPPED[@]} -gt 0 || ${#FAILED[@]} -gt 0 ) ]]; then
-  echo "○ 案内: 同梱 MCP の依存が揃っていないため一部 suite が skip / fail した可能性があります（未検出: ${MCP_ESBUILD}）。全件ゲート前に次を実行してください: npm ci --prefix plugins/ff-dev-toolkit/mcp"
+  ff_stdout_write "○ 案内: 同梱 MCP の依存が揃っていないため一部 suite が skip / fail した可能性があります（未検出: ${MCP_ESBUILD}）。全件ゲート前に次を実行してください: npm ci --prefix plugins/ff-dev-toolkit/mcp"
 fi
 
 # ── 走行中に汚れなかったかを終了時に再評価する（fail-loud。終了コードは変えない）─────
@@ -4065,7 +4388,7 @@ ff_gate_mode() {
 }
 
 ff_record_gate_head() { # <pass|fail>
-  local status="$1" recorder mode suites stale_only=""
+  local status="$1" recorder mode suites stale_only="" covers_diff=""
   # 所要秒の記録（ff-effort のゲート分）は鮮度記録とは独立 — 鮮度記録の可否
   # （FF_GATE_RECORD=0 / 緑 0 件 / 記録器不在）に左右されないよう、その判定より先に呼ぶ
   ff_record_gate_minutes "$status" "$(ff_gate_mode)"
@@ -4093,6 +4416,14 @@ ff_record_gate_head() { # <pass|fail>
       # `${PASSED[*]}` が set -u で unbound になるので件数で囲む（上の PASSED > 0
       # ガードを通っているが、条件の一方が動いたときに黙って壊れないようにする）。
       [[ ${#PASSED[@]} -eq 0 ]] || suites="${PASSED[*]}"
+      # 変更ベース選択（ADR-094）で選択 suite が skip / 未実行 0 件のまま pass した回だけ、
+      # 解決済みの base SHA（40 桁小文字 16 進）を COVERS_DIFF として残す（fail-closed）。
+      if [[ "$mode" == "changed" && "${ALLOW_DIRTY:-0}" != "1" && "${#SKIPPED[@]}" -eq 0 && "${#NOT_RUN[@]}" -eq 0 && "${#PASSED[@]}" -gt 0 ]]; then
+        case "${CHANGED_BASE_SHA:-}" in
+          *[!0-9a-f]*) ;;
+          ????????????????????????????????????????) covers_diff="${CHANGED_BASE_SHA}" ;;
+        esac
+      fi
     fi
   fi
   [[ "$status" != "fail" ]] || stale_only="$(ff_stale_only_failed)"
@@ -4103,6 +4434,7 @@ ff_record_gate_head() { # <pass|fail>
       --status "$status" \
       --mode "$mode" \
       --suites "$suites" \
+      ${covers_diff:+--covers-diff "$covers_diff"} \
       ${stale_only:+--stale-only "$stale_only"} \
       --expect-head "${FF_GATE_START_HEAD:-}" \
       --result "passed=${#PASSED[@]} failed=${#FAILED[@]} skipped=${#SKIPPED[@]} not-run=${#NOT_RUN[@]} excluded=${#FAST_EXCLUDED[@]}" ) \
@@ -4226,9 +4558,9 @@ if [[ ${#SKIPPED[@]} -gt 0 ]]; then
   # 高速モードでは「書き込み可能な環境で回す」だけでは全件検証にならない
   # （FF_RUN_ALL_FULL=1 も要る）ので、最終行の案内を分ける。
   if [[ "$FAST_MODE" == "1" ]]; then
-    echo "実行した ${#PASSED[@]} suite は全て通過（${#SKIPPED[@]} suite は環境都合でスキップ、selftest ${#FAST_EXCLUDED[@]} 件は高速モードで未実行。全件検証は FF_RUN_ALL_FULL=1 を書き込み可能な環境で行うこと）"
+    ff_stdout_write "実行した ${#PASSED[@]} suite は全て通過（${#SKIPPED[@]} suite は環境都合でスキップ、selftest ${#FAST_EXCLUDED[@]} 件は高速モードで未実行。全件検証は FF_RUN_ALL_FULL=1 を書き込み可能な環境で行うこと）"
   else
-    echo "実行した ${#PASSED[@]} suite は全て通過（${#SKIPPED[@]} suite は環境都合でスキップ。全 suite の検証は書き込み可能な環境で行うこと）"
+    ff_stdout_write "実行した ${#PASSED[@]} suite は全て通過（${#SKIPPED[@]} suite は環境都合でスキップ。全 suite の検証は書き込み可能な環境で行うこと）"
   fi
   exit 0
 fi
@@ -4237,18 +4569,18 @@ fi
 # 登録照合（メタ検査）だけが通ったことをそのまま言う。
 if [[ "$CHANGED_MODE" == "1" ]]; then
   if [[ ${#SCRIPTS[@]} -eq 0 ]]; then
-    echo "変更ベースの選択: 交差する suite は 0 件（suites: selected=0）。登録照合（メタ検査）だけを実行して通過。suite の検証は行っていない（全件検証は FF_RUN_ALL_FULL=1）"
+    ff_stdout_write "変更ベースの選択: 交差する suite は 0 件（suites: selected=0）。登録照合（メタ検査）だけを実行して通過。suite の検証は行っていない（全件検証は FF_RUN_ALL_FULL=1）"
   else
-    echo "実行した ${#PASSED[@]} suite は全て通過（変更ベースの選択: 登録 ${CHANGED_REGISTERED} 件中 ${#SCRIPTS[@]} 件。全件検証は FF_RUN_ALL_FULL=1 で行うこと）"
+    ff_stdout_write "実行した ${#PASSED[@]} suite は全て通過（変更ベースの選択: 登録 ${CHANGED_REGISTERED} 件中 ${#SCRIPTS[@]} 件。全件検証は FF_RUN_ALL_FULL=1 で行うこと）"
   fi
   exit 0
 fi
 
 # 高速モード（既定）では selftest が未実行なので、全体 pass（All ... passed）を名乗らない。
 if [[ "$FAST_MODE" == "1" ]]; then
-  echo "実行した ${#PASSED[@]} suite は全て通過（高速モード: selftest ${#FAST_EXCLUDED[@]} 件は未実行。全件検証は FF_RUN_ALL_FULL=1 で行うこと）"
+  ff_stdout_write "実行した ${#PASSED[@]} suite は全て通過（高速モード: selftest ${#FAST_EXCLUDED[@]} 件は未実行。全件検証は FF_RUN_ALL_FULL=1 で行うこと）"
   exit 0
 fi
 
-echo "All ff-dev-toolkit fixture checks passed."
+ff_stdout_write "All ff-dev-toolkit fixture checks passed."
 exit 0

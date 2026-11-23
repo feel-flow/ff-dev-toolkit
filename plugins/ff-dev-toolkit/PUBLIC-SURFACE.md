@@ -72,6 +72,7 @@
 - `spec-driven`
 - `sweep-orphan-transcripts`
 - `validate-docs`
+- `verify-gate`
 - `workflow-doctor`
 
 ## 公開面 2: Hooks
@@ -90,6 +91,7 @@
 - `PreToolUse :: Bash :: hooks/guard-effort-actual.sh`
 - `PreToolUse :: Bash :: hooks/guard-merge-closing-keyword.sh`
 - `PreToolUse :: Bash :: hooks/guard-exit-code.sh`
+- `PreToolUse :: Bash :: hooks/guard-issue-assign.sh`
 - `PreToolUse :: Bash :: hooks/guard-issue-collision.sh`
 - `PreToolUse :: Bash :: hooks/guard-issue-labels.sh`
 - `PreToolUse :: Bash :: hooks/guard-literal-write.sh`
@@ -121,7 +123,7 @@
 
 `^mcp__` で始まる 4 本は、GitHub MCP の同じ操作（PR のマージ・Issue の起票・sub-issue の追加・PR の作成 / 更新）に Bash 経路と同じガードを当てる Claude Code 向けの登録で、ガードごとに 1 本ずつ別の matcher を持つ（PR の作成 / 更新の 2 ツールは 1 本を共有。Codex / grok では MCP 呼び出しの `tool_name` と発火が未実測のため保証しない）。
 
-Bash 専用の16実体は `hooks/run-bash-hooks.sh` が同一イベント内で並行実行する。`hooks.json` の command 引数へ各実体を明記し、上記のイベント・matcher・判定契約を維持する。ホストへの起動登録は1本になり、警告を全件結合し、拒否を確認・許可より優先する。
+Bash 専用の17実体は `hooks/run-bash-hooks.sh` が同一イベント内で並行実行する。`hooks.json` の command 引数へ各実体を明記し、上記のイベント・matcher・判定契約を維持する。ホストへの起動登録は1本になり、警告を全件結合し、拒否を確認・許可より優先する。
 
 子の処理枠は10秒（Windows の Git Bash＝MSYS / Cygwin ではプロセス起動が重いため25秒）、親の登録枠は集約の余裕を含め30秒とする。時間切れの子と不正な出力は診断して除外し、完了した他の判定を残す。時間切れの診断行は stderr に出し、終了コード2以外の回は同じ文面を集約 JSON の `systemMessage` と `hookSpecificOutput.additionalContext` へ1回ずつ足す（拒否時の未実行注記と同じく、ホストが届ける JSON に載せて黙って捨てない。終了コード2の回は stderr の診断行だけで届け、JSON へは重ねない）。時間切れだけでは新たな拒否にしない。集約自体の環境エラーは新たな拒否にせず、子の終了コード2だけをブロックとして伝播する。終了コード2と他の拒否が重なる場合は、他の拒否理由も stderr へ残す。
 
@@ -195,6 +197,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_CREDENTIAL_OUTPUT_ACK`
 - `FF_DEFAULT_BRANCH_COMMIT_ACK`（`hooks/guard-default-branch-commit.sh` で、既定ブランチ上の git commit の 1 回だけを通す区間先頭の環境代入。プロセス環境の値は通さない）
 - `FF_GATE_IN_FLIGHT_ACK`（`hooks/guard-gate-in-flight.sh` で、全件ゲート走行中ガードの deny の 1 回だけを通す。Bash では書き込みを含む区間の先頭の環境代入、Bash 以外のツールでは hook のプロセス環境で渡す）
+- `FF_ISSUE_ASSIGN_ACK`（`hooks/guard-issue-assign.sh` で、未アサインの open Issue に対するブランチ作成の 1 回だけを通す区間先頭の環境代入。プロセス環境の値は通さない）
 - `FF_ISSUE_COLLISION_ACK`（`hooks/guard-issue-collision.sh` で、同じ Issue のブランチ作成または PR 作成の 1 回だけを通す区間先頭の環境代入。プロセス環境の値は通さない）
 - `FF_ISSUE_LABEL_ACK`（`hooks/guard-issue-labels.sh` で、ラベルの欠けた `gh issue create` の 1 回だけを通すコマンド先頭の環境代入。セッションの間ずっと止めるときは鍵 `issue-label`）
 - `FF_LITERAL_WRITE_ACK`
@@ -225,6 +228,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 
 - `FF_ACE_TS_RUNNER`
 - `FF_DEV_TOOLKIT_SKIP`（上の節と同じ変数。鍵 `codex-auto-update` で `multi-agent.sh` が dispatch 前に古い codex-cli を自動更新するのを止め、鍵 `commit-identity` で定型コミット（knowledge など）を作るスクリプトが、検査用の合成 git identity のままのコミットを止める判定を外す）
+- `FF_GATE_RECORD_FILE`（`record-gate-head.sh` の記録先を指定する。既定は作業ツリーの Git ディレクトリ配下の `ff-dev-toolkit/gate-record`。`verify-gate` スキルは導入先の指定を引き継ぐ）
 - `FF_JEV_MODE`
 - `FF_JEV_POINTS`
 - `FF_PRINCIPLES_GLOB`
@@ -355,6 +359,11 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_PUBLIC_LAYOUT_SUITES`
 - `FF_RUN_ALL`
 - `FF_RUN_PUBLIC_LAYOUT`
+- `FF_ORIG_GIT_CONFIG_GLOBAL`（`run-all.sh` が git 設定隔離前の起動元 `GIT_CONFIG_GLOBAL` を live fetch 復元用に退避する内部変数）
+- `FF_ORIG_GIT_CONFIG_GLOBAL_SET`（起動元に `GIT_CONFIG_GLOBAL` が設定されていたかを保持する内部フラグ）
+- `FF_ORIG_GIT_CONFIG_NOSYSTEM`（`run-all.sh` が git 設定隔離前の起動元 `GIT_CONFIG_NOSYSTEM` を live fetch 復元用に退避する内部変数）
+- `FF_ORIG_GIT_CONFIG_NOSYSTEM_SET`（起動元に `GIT_CONFIG_NOSYSTEM` が設定されていたかを保持する内部フラグ）
+- `FF_ORIG_GIT_CONFIG_SAVED`（起動元の git 設定を初回のみ退避済みかを示す内部フラグ）
 - `FF_P`
 - `FF_REACHED_END`
 - `FF_REAL_CKSUM`
@@ -382,7 +391,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_RUN_ALL_NESTED`
 - `FF_RUN_ALL_PROBE_LOG`
 - `FF_RUN_ALL_PROBE_RENDEZVOUS`
-- `FF_RUN_ALL_VERIFY_STOP_AFTER_GUARD`（tests/run-all/verify.sh が並走判定の直後で走査を始めず終わる検査用注入口。`1` のときだけ）
+- `FF_RUN_ALL_VERIFY_STOP_AFTER_GUARD`（tests/run-all/verify.sh が観測の隔離の直後で走査を始めず終わる検査用注入口。`1` のときだけ）
 - `FF_RUN_ALL_WAIT_DIR`（全件ゲート自動待機モードの待機・開始排他マーカー領域の上書き先）
 - `FF_RUN_ALL_WAIT_POLL_INTERVAL`（全件ゲート自動待機モードのポーリング間隔秒数の検査用上書き。既定 `5`）
 - `FF_DEFER_STARTUP_LOAD_WARN`（起動負荷警告を並走早期停止後まで遅らせる内部フラグ）
@@ -449,7 +458,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_TO`
 - `FF_UTF8_LOCALE_CMD`
 - `FF_VERSION_FIXTURE`
-- `FF_VERIFY_GRAPH`（tests/run-all/verify.sh の並走判定 fixture が ps の成否を選ぶ注入口）
+- `FF_VERIFY_GRAPH`（tests/run-all/verify.sh の観測の隔離の fixture が ps の成否を選ぶ注入口）
 - `FF_VERIFY_REAL_PS`（同じ fixture が祖先の ps に使う実 ps のパス）
 - `FF_VERIFY_SLEEPER_PID`（同じ fixture が独立した run-all.sh として見せる PID）
 - `FF_WEEKLY_HEALTH_ACCEPT_DISPATCH`
@@ -483,7 +492,6 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_DEV_TOOLKIT_UPDATE_TTL_FAIL`
 - `FF_DEV_TOOLKIT_UPDATE_TTL_OK`
 - `FF_EFFORT_ACTUAL_GUARD_MAX_ISSUES`
-- `FF_GATE_RECORD_FILE`
 - `FF_JEV`
 - `FF_JEV_DECISION_LOG`
 - `FF_JEV_ENABLED`
@@ -527,7 +535,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 L4 宣言をまとめる前の個別の名前（旧名）は、内部の別名として読むのをやめました。旧名はこの節にも書きません。配布実行物は、環境にある FF_DEV_TOOLKIT_SKIP_ で始まる変数の名前から 4-3 の鍵を導いて旧名を見つけます（接頭辞と末尾の _GUARD を外し、小文字・`-` 区切りにしたもの）。旧名と新しい書き方の対応は「破壊的変更の記録」にあります。
 
 - **副作用のある 4 鍵**（`auto-update` / `codex-auto-update` / `effort-metrics` / `decision-tree`）: 旧名の値が空でなければ（`0` でも）、その処理を止めます。旧名で止めていた更新や記録が黙って動き出さないための扱いで、期限はありません
-- **ほかの 24 鍵**（ガードと通知）: 旧名では止めません。停止文に新しい書き方を添える hook（`hooks/guard-default-branch-commit.sh` / `hooks/guard-exit-code.sh` / `hooks/guard-gate-in-flight.sh` / `hooks/guard-issue-collision.sh` / `hooks/guard-literal-write.sh` / `hooks/guard-review-in-flight.sh` / `hooks/guard-wsl-shell.sh`）が止めたときは、`次の一手:` の行の末尾に、その旧名を読まなくなったことと `FF_DEV_TOOLKIT_SKIP=<鍵>` を添えます
+- **ほかの 25 鍵**（ガードと通知）: 旧名では止めません。停止文に新しい書き方を添える hook（`hooks/guard-default-branch-commit.sh` / `hooks/guard-exit-code.sh` / `hooks/guard-gate-in-flight.sh` / `hooks/guard-issue-assign.sh` / `hooks/guard-issue-collision.sh` / `hooks/guard-literal-write.sh` / `hooks/guard-review-in-flight.sh` / `hooks/guard-wsl-shell.sh`）が止めたときは、`次の一手:` の行の末尾に、その旧名を読まなくなったことと `FF_DEV_TOOLKIT_SKIP=<鍵>` を添えます
 - **通知**: hooks が発火するホストでは、旧名が環境にあるとセッション開始時（`hooks/check-update.sh`）に毎回、置き換えを通知します
 - **ACK の旧名**（4-1 の ACK のうち、L4 宣言をまとめるときに改名した 3 つの前の名前）は読みません。各 hook の deny 文が示す新しい名前で通します
 
@@ -553,6 +561,7 @@ L4 宣言をまとめる前の個別の名前（旧名）は、内部の別名�
 | `effort-metrics` | 記録 | `hooks/record-effort-wallclock.sh`・`hooks/record-instruction-bytes.sh`・`scripts/record-gate-minutes.sh` | - | `EFFORT_METRICS` |
 | `exit-code` | ガード | `hooks/guard-exit-code.sh` | `timeout`・`unbounded-wait`・`rg-stdin` | `EXIT_CODE_GUARD` |
 | `gate-in-flight` | ガード | `hooks/guard-gate-in-flight.sh` | - | - |
+| `issue-assign` | ガード | `hooks/guard-issue-assign.sh` | - | - |
 | `issue-collision` | ガード | `hooks/guard-issue-collision.sh` | - | - |
 | `issue-label` | ガード | `hooks/guard-issue-labels.sh` | - | `ISSUE_LABEL_GUARD` |
 | `literal-write` | ガード | `hooks/guard-literal-write.sh` | - | `LITERAL_WRITE_GUARD` |
@@ -601,7 +610,6 @@ ACK（1 回だけ通す承認）の名前は、鍵から `FF_<鍵を大文字・
 
 - `SPEC_DOCS_PROJECT_ROOT`
 - `SPEC_DOCS_ALLOWED_DOCS_ROOT`
-- `ACE_DEFER_TO_RETRO`
 - `CODEX_MODEL`
 - `MULTI_AGENT_BASE_BRANCH`
 - `MULTI_AGENT_CLAUDE_EFFORT`
@@ -635,6 +643,7 @@ ACK（1 回だけ通す承認）の名前は、鍵から `FF_<鍵を大文字・
 
 なお、**導入先がコピーして所有するスニペットの中だけで読む値**（`ACE_GARDEN_WALL_PATHS` は導入先の `scripts/ace/run-subagent.sh` が読む）も、「`FF_*` の判定規則」の「片方だけになるもの」と同じ理由で内部に分類されます。これは「設定してはいけない」ではなく、「コピーした時点で導入先の資産になり、こちらの改名がその導入先のコピーを壊さない」という意味です。設定の要否はそのスニペットの README に従ってください。この節（5-0〜5-2）の backtick 付きの大文字語は散文の中でも分類の宣言として抽出されるので、一覧に無い名前を例示に使わないでください。
 
+- `ACE_DEFER_TO_RETRO`
 - `ACE_GARDEN_WALL_PATHS`
 - `CODEX_DEFAULT_REVIEWERS`
 - `CODEX_REASONING_EFFORT`

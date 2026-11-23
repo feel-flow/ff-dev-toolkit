@@ -2,6 +2,7 @@
 #
 # アダプタが CLI へ実際に渡す argv の検証（Issue #239）。
 # 空振り検出: 組み込みread-onlyでもgrant配列の欠損・イベント0件を拒否し、明示したeventless probeはinert。通常対照223件PASS、同じadapterの起動前検査を外す変異はeffective-permissionsでred（2026-10-29 macOS実測）。grok read-onlyレーンのGROK_TOOL_ARGSを空にする変異は7件red（argv 6件とシェルを外したreviewのcomplete 1件、2026-10-30 macOS実測）。
+# 空振り検出: Grok の phase_changed から streaming_reasoning を読まない変異は、実行中の進捗表示とタイムアウト時の進捗検査がともに失敗する（2026-11-22 macOS 実測）。
 #
 # tests/no-hardcoded-model/ は「モデル slug が書かれていないこと」を静的に見るが、
 # 静的検査では次のような「機能が丸ごと届かない」変化を捕まえられない:
@@ -109,6 +110,9 @@ for cli in claude codex copilot grok agy; do
     echo 'if [ -n "${ENV_LOG:-}" ]; then'
     echo '  printf "RETROSPECTIVE_MODE=%s\n" "${RETROSPECTIVE_MODE-__unset__}" >> "$ENV_LOG"'
     echo 'fi'
+    echo 'if [ "$(basename "$0")" = grok ] && [ -n "${STUB_GROK_PROGRESS:-}" ]; then'
+    echo '  bash "$STUB_GROK_PROGRESS" "$@" || exit $?'
+    echo 'fi'
     echo 'echo "- Suggestion: stub review output"'
     echo 'echo "  - verdict: severity=suggestion failure_scenario=no confidence=50"'
   } > "$WORK/bin/$cli"
@@ -153,7 +157,7 @@ run_adapter() {
          PATH="$WORK/bin:$PATH" ARGV_LOG="$WORK/argv.log" HOME="$WORK/home" USERPROFILE="" CODEX_HOME="$WORK/codex" \
          GROK_HOME="${RUN_GROK_HOME:-$WORK/grok-home-empty}" "$@" \
          bash "$ADAPTERS_DIR/$adapter" "$PERSPECTIVE" "$WORK/out.md" \
-         --base HEAD --timeout 30 --task-type "${RUN_TASK_TYPE:-review}" \
+         --base HEAD --timeout "${RUN_TIMEOUT:-30}" --task-type "${RUN_TASK_TYPE:-review}" \
          ${task_args[@]+"${task_args[@]}"} \
          --description "stub task" >"$WORK/stdout.log" 2>"$WORK/stderr.log" ); then
     RUN_RC=0
@@ -288,6 +292,52 @@ expect_argv_lacks "grok-cli: env 未設定ならモデルフラグを渡さな�
 # read-only 保証はプロファイル名まで含めて固定する。`--sandbox` を渡していても
 # プロファイルが workspace なら CWD へ書けるので、フラグの有無だけでは足りない。
 expect_argv_has "grok-cli: review では --sandbox read-only を渡す" "<--sandbox><read-only>"
+
+# 完了をテスト本体が待つだけではライブ表示を検証できないため、stub が表示を待ってから終了する。
+run_grok_progress_fixture() {
+  run_adapter grok-cli-adapter.sh \
+    "STUB_GROK_PROGRESS=$SCRIPT_DIR/grok-progress-stub.sh" \
+    "STUB_GROK_PROGRESS_LOG=$WORK/stderr.log" "$@"
+}
+RUN_TIMEOUT=65 run_grok_progress_fixture
+expect_argv_has "grok-cli: review の起動に専用セッション ID を渡す" "<--session-id><"
+if [[ "$RUN_RC" -eq 0 ]] && grep -q -F 'Status: complete' "$WORK/out.md" &&
+   grep -q -F '推論中' "$WORK/stderr.log" &&
+   ! grep -q -E 'private-thought|other-session|stub-cli-stderr' "$WORK/stderr.log" "$WORK/out.md" &&
+   ! grep -q -F '推論中' "$WORK/out.md"; then
+  ok "grok-cli: 自分のセッションの進捗だけを実行中に stderr へ表示する"
+else
+  bad "grok-cli: 進捗表示と完了レポートの分離に失敗した (rc=$RUN_RC)"
+  tail -20 "$WORK/stderr.log" >&2
+fi
+
+RUN_TIMEOUT=25 run_grok_progress_fixture STUB_GROK_PROGRESS_STALL=true
+if [[ "$RUN_RC" -ne 0 ]] && grep -q -F 'timed out after 25s' "$WORK/out.md" &&
+   grep -q -F '推論中' "$WORK/stderr.log" &&
+   grep -q -F 'Status: incomplete' "$WORK/out.md"; then
+  ok "grok-cli: 進捗表示があっても既存のタイムアウト判定と未完了レポートを維持する"
+else
+  bad "grok-cli: 進捗監視付きレビューのタイムアウト判定が異なる (rc=$RUN_RC)"
+fi
+
+real_jq="$(command -v jq)"
+cat >"$WORK/bin/jq" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == -rRs ]]; then
+  printf '%s\n' 'started' >"$STUB_GROK_PARSE_MARKER"
+  exec sleep 60
+fi
+exec "$STUB_GROK_REAL_JQ" "$@"
+EOF
+chmod +x "$WORK/bin/jq"
+RUN_TIMEOUT=25 run_grok_progress_fixture \
+  "STUB_GROK_PARSE_MARKER=$WORK/grok-parse-started" "STUB_GROK_REAL_JQ=$real_jq"
+rm -f "$WORK/bin/jq"
+if [[ "$RUN_RC" -eq 0 && -s "$WORK/grok-parse-started" ]] && grep -q -F 'Status: complete' "$WORK/out.md"; then
+  ok "grok-cli: 進捗の解析が止まっていても成功したレビューは完了する"
+else
+  bad "grok-cli: 進捗の解析がレビューの完了を妨げた (rc=$RUN_RC)"
+fi
 
 run_adapter antigravity-cli-adapter.sh
 expect_launched "antigravity-cli: 既定ケースで CLI が起動している"
@@ -468,6 +518,7 @@ fi
 # 同じクラス）。向こうにも本 suite への相互参照がある。
 RUN_TASK_TYPE=explore run_adapter grok-cli-adapter.sh
 expect_argv_has "grok-cli: explore でも --sandbox read-only" "<--sandbox><read-only>"
+expect_argv_lacks "grok-cli: explore にレビュー用のセッション ID を渡さない" "<--session-id>"
 
 RUN_TASK_TYPE=implement run_adapter grok-cli-adapter.sh
 expect_argv_has "grok-cli: implement では --sandbox workspace（成果物の書き込みに必要）" "<--sandbox><workspace>"

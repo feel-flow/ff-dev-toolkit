@@ -36,6 +36,7 @@ GUARD_EXEMPT=(
   "multi-explore|正本のresolver + guard fenceが同じ停止（status 2）を担う"
   "multi-implement|正本のresolver + guard fenceが同じ停止（status 2）を担う"
   "setup-ai-config|review系の setup-multi-agent.sh を直接呼ぶ側で、rootは同節のresolverが解決する"
+  "verify-gate|skills/verify-gate/scripts/run.sh が読み込んだスキルと記録器を照合し、pnpmを起動する前に exit 2 で止める"
 )
 
 # 崩壊床（絶対下限）。母集団は「入力側の名簿の本数」なので、同じ入力から導いた量

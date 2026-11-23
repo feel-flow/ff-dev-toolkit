@@ -11,6 +11,7 @@
 #   report 分岐だけを旧 with --resume へ戻す変異と pending 案内を空にする変異は各 1 failure / 0 errors。
 #   test_continued_host_delegation_missing_response_is_not_complete を単独実行し、2 回目の明示
 #   --output-dir を無視する変異は新しい出力先での再委譲時に 1 failure / 0 errors（初回 handoff は通過）。
+# 空振り検出: Issue `#2882` の finish 走行中ベース前進許容を旧一致比較へ戻す変異と、multi-agent-delegation-state.sh の非 resume 採択を `RESUME == true` 限定へ戻す変異は、mutation-harness.sh でいずれも赤（各 FAILED failures=1、無変異は全 65 OK。2026-11-22 macOS 実測）。
 # 非 UTF-8 の既定 encoding（python3 -I -X utf8=0 かつ LC_ALL=C）で、1 行目に U+2014 を含む
 # 統合レポートの prior / parent を begin と verify できる。証跡 JSON に入れた U+2014 は
 # begin の書き込みと finish の読み戻しを通り、結果ファイル中の U+2014 は finish が読む。
@@ -41,7 +42,9 @@ for _mixin_case in test_continued_host_delegation_adopts_all_from_the_advertised
   test_prior_only_host_delegation_uses_the_same_safe_batch_advice \
   test_continued_host_delegation_does_not_waive_missing_boundary_prior \
   test_continued_host_delegation_missing_response_is_not_complete \
-  test_ordinary_host_delegation_report_keeps_resume_and_partial_adoption; do
+  test_ordinary_host_delegation_report_keeps_resume_and_partial_adoption \
+  test_prior_only_host_delegation_adopts_on_base_advance_without_resume \
+  test_prior_only_host_delegation_does_not_adopt_when_base_advance_changes_diff; do
   grep -F "    def ${_mixin_case}(self):" "$CASES_MIXIN" >/dev/null || {
     echo "ERROR: host delegation case missing: $_mixin_case" >&2
     exit 1

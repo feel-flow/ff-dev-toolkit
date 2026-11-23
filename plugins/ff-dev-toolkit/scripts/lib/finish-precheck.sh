@@ -124,6 +124,66 @@ ff_precheck_unchecked_lines() {
   ff_precheck_scan_lines unchecked
 }
 
+# hooks/guard-effort-actual.sh の is_effort_unfilled と同じ判定。変えるときは両方を同時に直す。
+# 終了 0 = 未記入（空・欠落・(未記入)）/ 1 = それ以外（ブロック不在・記入済み・書式不正）。
+# 未チェックが 0 件の回は、この結果だけでは precheck を止めない。
+ff_precheck_effort_actual_missing() {
+  LC_ALL=C awk '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    function as_hours(s, unit,   v) {
+      s = trim(s)
+      if (s == "" || s == "(未記入)") return -1
+      if (s ~ /^[0-9]+(\.[0-9]+)?h$/) {
+        if (unit != "h") return -3
+        sub(/h$/, "", s); v = s + 0
+        return (v <= 0) ? -2 : v
+      }
+      if (s ~ /^[0-9]+(\.[0-9]+)?d$/) {
+        if (unit == "h") return -3
+        sub(/d$/, "", s); v = s + 0
+        return (v <= 0) ? -2 : v * 8
+      }
+      return -2
+    }
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      if (line == "<!-- ff-effort:begin -->") {
+        if (hasblock) broken = 1
+        inblock = 1; hasblock = 1; next
+      }
+      if (line == "<!-- ff-effort:end -->") {
+        if (inblock != 1) broken = 1
+        inblock = 0; closed = 1; next
+      }
+      if (inblock != 1) next
+      if (line !~ /^-[ ]*[a-z_]+[ ]*:/) next
+      colon = index(line, ":")
+      key = substr(line, 1, colon - 1)
+      val = substr(line, colon + 1)
+      sub(/^-[ ]*/, "", key); key = trim(key)
+      val = trim(val)
+      if (key == "effort_human_planned") { if (hp_seen) broken = 1; hp_seen = 1; hp_raw = val }
+      else if (key == "effort_ai_planned") { if (ap_seen) broken = 1; ap_seen = 1; ap_raw = val }
+      else if (key == "effort_ai_actual") { if (aa_seen) broken = 1; aa_seen = 1; aa_raw = val }
+      else if (key == "effort_unit") { if (un_seen) broken = 1; un_seen = 1; unit = val }
+    }
+    END {
+      if (!hasblock) exit 1
+      if (!closed) broken = 1
+      if (broken) exit 1
+      if (un_seen && unit != "h") exit 1
+      hp = hp_seen ? as_hours(hp_raw, unit) : -1
+      ap = ap_seen ? as_hours(ap_raw, unit) : -1
+      aa = aa_seen ? as_hours(aa_raw, unit) : -1
+      if (hp == -2 || ap == -2 || aa == -2) exit 1
+      if (hp == -3 || ap == -3 || aa == -3) exit 1
+      if (aa < 0) exit 0
+      exit 1
+    }
+  '
+}
+
 # ack の表記を CLOSES= と同じ小文字の owner/repo#N へ揃える。#N は TARGET_REPO で修飾する。
 ff_precheck_normalize_ack() {
   local raw="$1" owner repo num
@@ -538,9 +598,9 @@ cmd_precheck() {
   fi
   echo "MERGE_MESSAGE_GATE=${message_gate}"
 
-  # Closes 対象の本文に未チェックの受け入れ条件が残る回は、後段の停止理由を上書きしない。
+  # Closes 対象の本文に未チェックの受け入れ条件が残る回は、先着の停止理由を上書きせず併記する。
   # 取得失敗は 0 件と読まず rc 2。ack は対象 Issue ごとに残り、未チェック行は隠さない。
-  local ack_norm="" raw ack_tok tok issue_body_file body line issue_unchecked=0 unacked=0 ac_count=0
+  local ack_norm="" raw ack_tok tok issue_body_file body line issue_unchecked=0 unacked=0 ac_count=0 effort_missing_toks="" effort_missing_count=0 effort_rc=0
   if [[ ${#ACK_RAW[@]} -gt 0 ]]; then
     for raw in "${ACK_RAW[@]}"; do
       ack_tok="$(ff_precheck_normalize_ack "$raw")" || die_env "--ack-unchecked の値が owner/repo#N ではありません: ${raw}" "owner/repo#N、#N、または Issue の URL を渡して再実行する"
@@ -557,6 +617,13 @@ cmd_precheck() {
         || die_env "Issue ${tok} の本文を取得できません。取得失敗を未チェック 0 件とは読まない" "gh issue view が通る状態で finish.sh precheck を再実行する"
       body="$(cat "$issue_body_file")"
       rm -f "$issue_body_file"
+      effort_rc=0
+      printf '%s\n' "$body" | ff_precheck_effort_actual_missing || effort_rc=$?
+      case "$effort_rc" in
+        0) effort_missing_toks="${effort_missing_toks}${tok}"$'\n' ;;
+        1) ;;
+        *) die_env "Issue ${tok} の effort_ai_actual 判定に失敗しました（rc=${effort_rc}）" "awk が通る状態で finish.sh precheck を再実行する" ;;
+      esac
       issue_unchecked=0
       while IFS= read -r line; do
         [[ -n "$line" ]] || continue
@@ -575,9 +642,28 @@ cmd_precheck() {
       fi
     done <<<"$CLOSES_UNION"
     echo "AC_UNCHECKED_COUNT=${ac_count}"
-    if [[ "$unacked" -eq 1 && -z "$blocked_reason" ]]; then
-      blocked_reason="Closes 対象の Issue 本文に未チェックの受け入れ条件が残っています（AC_UNCHECKED=）"
-      blocked_next="未チェックを確認してチェックしてから finish.sh precheck を再実行する。マージ後にしか測れない項目は本文を Refs に変えて手順 1 から再実行する。対象外として残す項目は理由を本文に書き、--ack-unchecked <owner/repo#N> を付けて再実行する"
+    while IFS= read -r tok; do
+      [[ -n "$tok" ]] || continue
+      printf 'EFFORT_ACTUAL_MISSING=%s\n' "$tok"
+      effort_missing_count=$((effort_missing_count + 1))
+    done <<<"${effort_missing_toks}"
+    echo "EFFORT_ACTUAL_MISSING_COUNT=${effort_missing_count}"
+    if [[ "$unacked" -eq 1 ]]; then
+      local ac_reason ac_next
+      if [[ "$effort_missing_count" -gt 0 ]]; then
+        ac_reason="Closes 対象の Issue 本文に未チェックの受け入れ条件が残っています（AC_UNCHECKED=）。あわせて effort_ai_actual が未記入です（EFFORT_ACTUAL_MISSING=）"
+        ac_next="各対象 Issue につき未チェックと effort_ai_actual を 1 回の本文編集でまとめ、全対象を直してから finish.sh precheck を再実行する。マージ後にしか測れない項目は本文を Refs に変えて手順 1 から再実行する。対象外として残す項目は理由を本文に書き、--ack-unchecked <owner/repo#N> を付けて再実行する"
+      else
+        ac_reason="Closes 対象の Issue 本文に未チェックの受け入れ条件が残っています（AC_UNCHECKED=）"
+        ac_next="未チェックを確認してチェックしてから finish.sh precheck を再実行する。マージ後にしか測れない項目は本文を Refs に変えて手順 1 から再実行する。対象外として残す項目は理由を本文に書き、--ack-unchecked <owner/repo#N> を付けて再実行する"
+      fi
+      if [[ -z "$blocked_reason" ]]; then
+        blocked_reason="$ac_reason"
+        blocked_next="$ac_next"
+      else
+        blocked_reason="${blocked_reason}／さらに${ac_reason}"
+        blocked_next="${blocked_next}。あわせて${ac_next}"
+      fi
     fi
   fi
   if [[ -n "$CLOSES_TEXT_ONLY_PROSE" ]]; then
@@ -595,6 +681,7 @@ cmd_precheck() {
   fi
   ff_precheck_post_merge_verdict
   ff_precheck_security_record "$PR_JSON" "$base_ref" "$head_oid" "$PR_BODY"
+  ff_precheck_cross_model_reprobe "$PR_JSON" "$base_ref" "$head_oid" "$PR_BODY" "$head_ref"
 
   # ── 3. 工数の実測（Closes 群の同一リポジトリ Issue） ──
   local change_class repo_l measured_on=""
@@ -901,9 +988,9 @@ cmd_precheck() {
           *$'\n'DIFF_COVERED=yes$'\n'*) diff_covered=1 ;;
         esac
         if [[ "$diff_covered" -eq 1 ]]; then
-          rerun="no"; rerun_reason="導入先の判定で差分を覆っている（リリース前・契約面の変更時は除く）"
+          rerun="no"; rerun_reason="導入先の判定で差分を覆っている（リリース前・実行基盤の契約面の変更時は除く）"
         elif [[ "$checks" == "passed" ]]; then
-          rerun="no"; rerun_reason="記録が部分実行で checks が全件成功（PR の checks がリモート先端を実測している。リリース前・契約面の変更時は除く）"
+          rerun="no"; rerun_reason="記録が部分実行で checks が全件成功（PR の checks がリモート先端を実測している。リリース前・実行基盤の契約面の変更時は除く）"
         else
           rerun="yes"; rerun_reason="記録が部分実行で checks による裏付けが無い"
         fi ;;

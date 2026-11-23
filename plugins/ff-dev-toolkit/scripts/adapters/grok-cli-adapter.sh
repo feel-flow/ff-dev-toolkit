@@ -44,6 +44,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/adapter-common.sh"
 source "${SCRIPT_DIR}/../lib/grok-cli-readonly-boundary.sh"
+source "${SCRIPT_DIR}/../lib/review-progress-grok.sh"
 
 readonly CLI_NAME="Grok CLI"
 readonly CLI_COMMAND="grok"
@@ -734,13 +735,36 @@ fi
 
 # MODEL_ARGS は空になりうる。bash 3.2 では set -u 下で空配列を "${a[@]}" と
 # 展開すると unbound variable で落ちるため ${a[@]+"${a[@]}"} を使う。
-result=$(run_with_timeout "$TIMEOUT" \
-  "$CLI_COMMAND" --prompt-file "$prompt_file" \
+grok_progress_event_file=""
+grok_progress_session=""
+if [[ "$TASK_TYPE" == review ]]; then
+  if command -v jq >/dev/null 2>&1 &&
+     grok_progress_session="$(grok_review_session_id 2>/dev/null)" &&
+     [[ "$grok_progress_session" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] &&
+     grok_progress_workspace="$(pwd -P | jq -Rnr 'input | @uri')" &&
+     [[ -n "$grok_progress_workspace" ]]; then
+    grok_progress_event_file="${grok_home_dir}/sessions/${grok_progress_workspace}/${grok_progress_session}/events.jsonl"
+  else
+    echo "   Grok CLI: 進捗イベントを取得できないため、レビューの終了を待機します。" >&2
+  fi
+fi
+
+run_grok_command() {
+  if [[ -z "$grok_progress_event_file" ]]; then
+    run_with_timeout "$TIMEOUT" "$CLI_COMMAND" "$@" 3>&-
+    return
+  fi
+  run_grok_review_with_progress "$grok_progress_event_file" "$TIMEOUT" \
+    "$CLI_COMMAND" --session-id "$grok_progress_session" "$@"
+}
+
+# FD 3 は CLI の stderr を格納する前に保存し、監視の進捗行だけを即時に出す。
+result=$(run_grok_command --prompt-file "$prompt_file" \
     --sandbox "$sandbox_profile" \
     --output-format plain \
     ${GROK_TOOL_ARGS[@]+"${GROK_TOOL_ARGS[@]}"} \
     ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
-  2>"$stderr_log") || {
+  3>&2 2>"$stderr_log") || {
     # Capture the status first: any command inside this block would overwrite $?.
     rc=$?
     fail_cli_task "$rc" "$stderr_log" "$perspective_name" "$result"

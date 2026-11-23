@@ -35,6 +35,7 @@
 # 空振り検出: tool_call_update を tool_call と同じ経路へ流す（kind のガードを外す）と「Grok の tool_call_update 本文はチェーン末尾にしない」が赤になる。fixture が title と rawInput を持つので、ガードが無いと継続側へ倒れる（2026-10-18）。
 # 空振り検出: 隣接 user chunk の連結を外すと「Grok で /retrospective が2つの user chunk に分かれていても継続を返す」が赤になる（新しい断片だけが境界になり no-tail。2026-10-18）。
 # 空振り検出: 未完成の連結を末尾コマンドの接頭辞として残す分岐（isTailCommandPrefix）を外すと「Grok で /retrospective が3つの user chunk に分かれていても継続を返す」が赤になる（2 分割は完成した連結だけで通り、3 分割の途中が落ちて no-tail。2026-10-19 実測。1 件失敗）。
+# 空振り検出: 事前注入へ ACE_DEFER_TO_RETRO=1 を復元する変異と optional /ace-curate を削る変異の全 2 件を mutation-harness.sh（--group context）で実測し全件 detected（rc=1）、無変異対照は 22 件 pass（2026-11-23 macOS 実測）。
 set -euo pipefail
 
 # Full runs remain the default. Mutation selftests select the owning group instead of
@@ -225,12 +226,13 @@ if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
   && [ -n "$CONTEXT" ] \
   && printf '%s' "$CONTEXT" | grep -F 'ff-dev-toolkit:retrospective' >/dev/null \
   && printf '%s' "$CONTEXT" | grep -F 'workflow chain tail' >/dev/null \
-  && printf '%s' "$CONTEXT" | grep -F '/ace-curate' >/dev/null \
+  && printf '%s' "$CONTEXT" | grep -F 'optional /ace-curate' >/dev/null \
+  && ! printf '%s' "$CONTEXT" | grep -F 'ACE_DEFER_TO_RETRO' >/dev/null \
   && ! printf '%s' "$CONTEXT" | grep -F "$INCOMPLETE_REPORT" >/dev/null \
   && printf '%s' "$OUT" | jq -e 'has("decision") | not' >/dev/null 2>&1 \
   && printf '%s' "$OUT" | jq -e 'has("reason") | not' >/dev/null 2>&1 \
   && printf '%s' "$OUT" | jq -e 'has("systemMessage") | not' >/dev/null 2>&1; then
-  ok "UserPromptSubmit の事前注入はチェーン末尾条件を渡し、定型行を要求しない"
+  ok "UserPromptSubmit の事前注入はチェーン末尾条件を渡し、毎 PR の /ace-curate や ACE_DEFER_TO_RETRO を前提にせず定型行を要求しない"
 else
   bad "UserPromptSubmit の事前注入契約が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
 fi
@@ -396,10 +398,12 @@ run_context_hook ask
 ASK_CONTEXT="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
 if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
   && printf '%s' "$ASK_CONTEXT" | grep -F 'RETROSPECTIVE_MODE=ask' >/dev/null \
+  && printf '%s' "$ASK_CONTEXT" | grep -F 'optional /ace-curate' >/dev/null \
+  && ! printf '%s' "$ASK_CONTEXT" | grep -F 'ACE_DEFER_TO_RETRO' >/dev/null \
   && printf '%s' "$OUT" | jq -e 'has("decision") | not' >/dev/null 2>&1 \
   && printf '%s' "$OUT" | jq -e 'has("reason") | not' >/dev/null 2>&1 \
   && printf '%s' "$OUT" | jq -e 'has("systemMessage") | not' >/dev/null 2>&1; then
-  ok "ask モードも表示用 Feedback なしで実施前確認を事前注入"
+  ok "ask モードも表示用 Feedback なしで実施前確認を事前注入（毎 PR の /ace-curate や ACE_DEFER_TO_RETRO を前提にしない）"
 else
   bad "ask モードの事前注入契約が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
 fi

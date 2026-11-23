@@ -195,7 +195,7 @@ bash plugins/ff-dev-toolkit/tests/adapter-env-isolation-selftest/verify.sh
 bash plugins/ff-dev-toolkit/tests/skip-line-contract/verify.sh
 ```
 
-判定順序は手順 7 と同じで、**実行できなかった**を先に切り分ける。suite ファイルが存在しない・依存コマンドが無い・suite 自身が「skip」と報告した場合は、終了コードが 0 でも**違反なしへ倒さない**。「実行できなかった」と「違反なし」を別の状態として報告し、緑扱いにせず commit へ進まない側の判定にする（fail-closed）。実行できた suite だけを終了コードで緑赤に分ける。`tests/run-all/verify.sh` が終了コード 2 で、別の `run-all.sh` / `public-layout` / リリースの並走や待機上限超過、またはプロセス一覧・状態マーカーを取得できないことを名指しした回は「実行できなかった」とする。製品の違反でも緑でもない。並走を名指した回の次の一手は、`FF_RUN_ALL_WAIT=1 bash plugins/ff-dev-toolkit/tests/run-all/verify.sh` で先行処理の終了を待って開始するか（待機上限は `FF_RUN_ALL_WAIT_MAX_SECONDS`、既定 3600 秒）、先行の全件ゲート／公開検査／リリースが終わってから同じ suite を回すこと。待機上限や取得不能を名指した回の次の一手は、先行処理が終わって一覧・待機領域が正常な状態で同じ suite を回すこと（上限の見直しには `FF_RUN_ALL_WAIT_MAX_SECONDS` を調整する）。
+判定順序は手順 7 と同じで、**実行できなかった**を先に切り分ける。suite ファイルが存在しない・依存コマンドが無い・suite 自身が「skip」と報告した場合は、終了コードが 0 でも**違反なしへ倒さない**。「実行できなかった」と「違反なし」を別の状態として報告し、緑扱いにせず commit へ進まない側の判定にする（fail-closed）。実行できた suite だけを終了コードで緑赤に分ける。`tests/run-all/verify.sh` の単体の起動は、別セッションの全件ゲート・`public-layout`・リリースが動いていても止まらず、待たない（観測を自分の系譜へ閉じ、ゲート間の排他へ参加しない）。終了コード 2 で観測を隔離できないこと（`ps` が無い・プロセス一覧を取得できない・隔離した後も系譜の外のゲートが見える）を名指しした回は「実行できなかった」とする。製品の違反でも緑でもない。次の一手は stderr の `復帰:` 行に従う。
 
 Windows の Git Bash（MSYS / Cygwin。判定は `scripts/lib/wsl-notice.sh` の `ff_host_is_msys`）では、固定表の suite が行頭の `○ skip` または字下げした `  ○ skip` を出したら、終了コードが 0 でも「実行できなかった」とし、違反なしへ倒さない。600 秒以内に戻らない回も同じ。次の一手は WSL である。(1) リポジトリを WSL のホームディレクトリ配下へ clone する（`/mnt/c` 配下では回さない）(2) `npm ci --prefix plugins/ff-dev-toolkit/mcp` (3) 同じ suite を `bash plugins/ff-dev-toolkit/tests/<suite>/verify.sh` で回す。Linux / macOS / WSL では、字下げした部分 skip は終了コードで緑赤を分け、行頭の suite 全体の skip だけを「実行できなかった」とする。
 
