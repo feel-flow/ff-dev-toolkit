@@ -2,7 +2,7 @@
 #
 # SKILL.md が参照する相対パス（references）の実在検査（Issue #889 候補1）。
 # GitHub 操作の隣接 MCP 案内は独立した Python pass で検査する（Issue `#2058`）。
-# 空振り検出: 独立 pass の自己検証40件（reference-only・consumer取り違え/発火条件消失・移動後リンク/配布境界逸脱の赤と正常なリンク/例示も含む）で、対象不在/不読/空/0一致、案内の別step移動、同名操作の引数変更、項目欠落、MCP/JSONだけの一般文、参照stub、契約節の実引数欠落、未知操作、未閉fenceを正しいfile/operation/reasonの赤として実測。CRLF/tilde/長fenceと禁止例の負荷担体は緑かつ実在を確認する。
+# 空振り検出: 独立 pass の自己検証51件（reference-only・consumer取り違え/発火条件消失・移動後リンク/配布境界逸脱の赤と正常なリンク/例示、および段落・表・フェンス・1文書複数unitの SOURCE_CHANGED expected=<16桁> 出力→マーカー置換緑化の往復確認を含む）で、対象不在/不読/空/0一致、案内の別step移動、同名操作の引数変更、項目欠落、MCP/JSONだけの一般文、参照stub、契約節の実引数欠落、未知操作、未閉fenceを正しいfile/operation/reasonの赤として実測。CRLF/tilde/長fenceと禁止例の負荷担体は緑かつ実在を確認する。旧実装（SOURCE_CHANGED に expected=<16桁> を出さない変異）は rc=1、無害なコメント追記は rc=0（2026-11-24 実測）。
 #
 # スキルは progressive disclosure のために本文から `references/xxx.md` や兄弟スキルの
 # `../<skill>/references/xxx.md` を相対パスで参照する。この参照はプラグイン配布後も

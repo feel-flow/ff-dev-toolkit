@@ -381,10 +381,11 @@ if jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[]
 else
   bad "hooks.json の PreToolUse（Bash matcher）に guard-pr-followup.sh が無い"
 fi
-case "$(jq -r '.description' "$HOOKS_JSON")" in
-  *create_pull_request*update_pull_request*) ok "hooks.json の description が GitHub MCP の create_pull_request / update_pull_request に言及する" ;;
-  *) bad "hooks.json の description に GitHub MCP 経路（create_pull_request / update_pull_request）の記述が無い" ;;
-esac
+if grep -q '^#.*create_pull_request' "$TARGET" && grep -q '^#.*update_pull_request' "$TARGET"; then
+  ok "guard-pr-followup.sh のヘッダが GitHub MCP の create_pull_request / update_pull_request に言及する"
+else
+  bad "guard-pr-followup.sh のヘッダに GitHub MCP 経路（create_pull_request / update_pull_request）の記述が無い"
+fi
 while IFS= read -r line; do
   case "$line" in
     OK\ *) ok "MCP matcher: ${line#OK }" ;;

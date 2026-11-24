@@ -1133,10 +1133,10 @@ for m in Edit Write MultiEdit NotebookEdit Bash Agent Task TaskStop; do
     bad "matcher に $m が無い"
   fi
 done
-if jq -e '.description | test("review-in-flight")' "$HOOKS_JSON" >/dev/null 2>&1; then
-  ok "hooks.json の description が走行中ロックに言及する"
+if grep -q '^#.*review-in-flight' "$TARGET"; then
+  ok "guard-review-in-flight.sh のヘッダが走行中ロックに言及する"
 else
-  bad "hooks.json の description に走行中ロックの記述が無い"
+  bad "guard-review-in-flight.sh のヘッダに走行中ロックの記述が無い"
 fi
 # レーンを閉じる入口が登録されていないと、取得だけが効いて凍結が寿命まで解けない。
 for ev in SubagentStart SubagentStop PermissionDenied; do

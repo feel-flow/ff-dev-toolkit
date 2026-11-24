@@ -143,7 +143,7 @@ git diff --name-only -- <1) で得た staged パス>
 
 ### 8. staged ファイル種別ごとの静的 suite プリフライト
 
-手順 7 と同じ「commit 前に安く落とす」枠で、staged ファイルの**種別**から**固定表**で決まる静的 suite を単体で回す。固定表で名指しする suite はいずれも単体なら 1 分未満で終わり、全件ゲート 1 周（約 10 分）が赤になってから初めて違反に気付く手戻りを先に潰せる。
+手順 7 と同じ「commit 前に安く落とす」枠で、staged ファイルの**種別**から**固定表**で決まる静的 suite を単体で回す。固定表の suite の所要は種別で異なる。種別 C の `run-all` と `shellcheck` は単体でも数分かかる（実測の範囲: `run-all` は 364〜593 秒、`shellcheck` は 140〜216 秒）。それ以外は多くの回で 1 分未満で、`plugin-root-contract` は 77 秒、`changelog-fragments` は 72 秒まで伸びた回がある。全件ゲート 1 周が赤になってから初めて違反に気付く手戻りを、この先行検査で先に潰す。
 
 **全件ゲートを置き換えない。** 全件ゲート（`plugins/ff-dev-toolkit/tests/run-all.sh`）は従来どおり全 suite を全件で回す。本手順はその**前に追加で**回す安い先行検査であり、全件ゲートで回す suite を絞り込む仕組みではない。プリフライトが緑でも全件ゲートは省略しない。
 
@@ -157,7 +157,7 @@ git diff --name-only -- <1) で得た staged パス>
 
 | 種別 | staged パスの条件 | 単体で回す suite |
 |---|---|---|
-| A. 配布 Markdown | `plugins/ff-dev-toolkit/docs-template/**/*.md` または `plugins/ff-dev-toolkit/skills/**/*.md` | `docs-gates` / `plugin-root-contract` |
+| A. 配布 Markdown | `plugins/ff-dev-toolkit/docs-template/**/*.md` または `plugins/ff-dev-toolkit/skills/**/*.md` | `docs-gates` / `plugin-root-contract` / `skill-references-existence` |
 | B. 公開同期対象 | `plugins/ff-dev-toolkit/**`（種別 A も含む公開同期対象の全体）または `changelog.d/*.md` | `sync-forbidden-patterns` / `skill-count-consistency` |
 | C. shell | `*.sh`（リポジトリ内の位置は問わない） | `run-all` / `shellcheck` |
 | D. docs 仕様文書 | リポジトリ直下の `docs/**/*.md`（`plugins/ff-dev-toolkit/docs-template/` は含まない）または `.version-claims/**` | `docs-version-changelog` / `docs-frontmatter-repo` |
@@ -166,6 +166,7 @@ git diff --name-only -- <1) で得た staged パス>
 | G. 新規 suite の追加（Cへの条件付き追加） | `plugins/ff-dev-toolkit/tests/<名>/verify.sh` が新規追加（`--no-renames --diff-filter=A`、1 階層のみ。既存の `M` や削除の `D` は含まない） | `docs-fact-drift` / `adapter-env-isolation-selftest` |
 | H. skip 理由行・許容表（判定器で決まる条件付き追加。削除だけの回も判定する） | staged（ACDMRT）の `plugins/*/tests/**`（`*.sh` / `*.bash` / `*.py` / `*.mjs`）のうち index か HEAD の skip 理由・書式判定が変化したもの、または許容表（`tests/lib/release-skip-profile.tsv`）と skip 検査自身。判定は下の「skip 理由行の判定」 | `skip-line-contract` |
 
+- 種別 A の `skill-references-existence` は、`SKILL.md` の参照実在と、`ff-dev-toolkit` のスキル本文・参照文書（`references/**/*.md`）にある GitHub 操作の隣接 MCP 案内の署名一致を単体（数秒以内）で検査し、署名ずれ（`SOURCE_CHANGED`）を commit 前に拾う（OBS-406 / OBS-483）
 - 種別 B の `skill-count-consistency` は、公開面の正本 `PUBLIC-SURFACE.md` が列挙する skills / hooks / `FF_*` 環境変数と実体の一致を見る。新しい `FF_*` 名を足して公開面へ分類し忘れた状態を commit 前に拾う
 - 種別 D は frontmatter の `version` を bump したときの随伴漏れ（Changelog 節の `### [x.y.z]` 欠落 = `docs-version-changelog`、bump 幅と `changeImpact` の不一致 = `docs-frontmatter-repo`）を拾う（OBS-259 / OBS-142）。version claim の再生成漏れは suite ではなく下の「version claim と changelog 断片」で見る
 - 種別 G は、新規 suite を追加した回に発生する docs の登録 suite 数記載のずれ（`docs-fact-drift`）と試験隔離ヘルパーの callsite 名簿漏れ（`adapter-env-isolation-selftest`）を commit 前に拾う（OBS-041）。既存 suite の修正（`M`）や削除（`D`）だけの回はこの 2 本を追加せず、A〜F の判定も変えない
@@ -178,6 +179,7 @@ git diff --name-only -- <1) で得た staged パス>
 ```bash
 bash plugins/ff-dev-toolkit/tests/docs-gates/verify.sh
 bash plugins/ff-dev-toolkit/tests/plugin-root-contract/verify.sh
+bash plugins/ff-dev-toolkit/tests/skill-references-existence/verify.sh
 bash plugins/ff-dev-toolkit/tests/sync-forbidden-patterns/verify.sh
 bash plugins/ff-dev-toolkit/tests/skill-count-consistency/verify.sh
 bash plugins/ff-dev-toolkit/tests/run-all/verify.sh
@@ -194,6 +196,20 @@ bash plugins/ff-dev-toolkit/tests/adapter-env-isolation-selftest/verify.sh
 # H が当たった回だけ（判定器が skip-line-contract: none の回は C に追加しない）
 bash plugins/ff-dev-toolkit/tests/skip-line-contract/verify.sh
 ```
+
+上の一覧は、当たった suite を 1 回ずつ単体で実行するコマンドである。1 回の呼び出しにループや代入を連ねない。複数の suite を回すときは、スクリプトをファイルに書いてから、次の 1 行だけで呼ぶ。`<script>` と `<log>` は、手順 6 を実行した worktree の外の絶対パスにする。path を変数に入れない。置き場の正本は `plugins/ff-dev-toolkit/docs-template/05-operations/deployment/multi-cli-agent-orchestration.md` の「委譲先の作業ファイルを scratchpad の固有の置き場へ分ける」節で、規定はここへ複製しない。スクリプトに書く suite コマンドは、手順 6 を実行した worktree のルート（`git rev-parse --show-toplevel` の絶対パス）を基準にした絶対パスにする。相対パスのままにすると、起動元の作業ディレクトリが別の checkout やリポジトリのサブディレクトリのとき、別の木を検査するか、コマンドが見つからず終了コード 127 になる。呼び出し側は保存した終了コードを `exit` で返す。
+
+```bash
+bash "<script>" > "<log>" 2>&1; rc=$?; echo "EXIT=$rc"; exit $rc
+```
+
+`<script>` と `<log>` は引用符で囲む。空白を含む絶対パスを素のまま置くと、ログの途中までが出力先になり、残りがスクリプトの引数になる。呼び出し側は、終了コードで緑赤を分ける前に `<log>` を読む。suite が名指しした違反箇所はログ側に残る。
+
+種別 C は他の suite と分けて回す。`run-all` と `shellcheck` は、それぞれ別のスクリプトにする。種別 C のスクリプトは、その suite の終了コードをそのまま `exit` する（実行できなかったときの 2 を 1 に丸めない）。種別 C 以外は 1 本のスクリプトにまとめてよい。まとめたスクリプトは各終了コードを残し、1 つでも非 0 なら非 0 で終わる。まとめた実測の合計が Bash ツールの既定 timeout（実測の環境では 120 秒）を超えうるときは、その 1 行に合計を超える timeout を明示するか、呼び出しを分ける。timeout を書かないと、完了前に自動で background へ移る。同じ検証回の `plugin-root-contract`（77 秒）と `changelog-fragments`（72 秒）を直列にすると 149 秒になる。種別 C を他の suite と同じスクリプトへ連結しない。
+
+`run-all` は負荷下で 593 秒まで伸びる。foreground の上限 600 秒を安全な上限にはできない。親が、手順 6 を実行した worktree で、最初から background で起動し、完了を待つ。明示 background を止める hook はサブエージェントの Bash が対象で、親の起動は対象外である。正本は `plugins/ff-dev-toolkit/docs-template/05-operations/deployment/multi-cli-agent-orchestration.md` の「委譲先に長時間コマンドを foreground で待たせる契約」節。`run-all` はサブエージェントへ委譲しない。
+
+`shellcheck` の実測は 140〜216 秒で、foreground の上限には収まる。サブエージェントが回すときは、実測の数分を超える timeout をその呼び出しに明示する。foreground で完了を待つ。親が回すときは `run-all` と同じく最初から background で起動し、完了を待つ。
 
 判定順序は手順 7 と同じで、**実行できなかった**を先に切り分ける。suite ファイルが存在しない・依存コマンドが無い・suite 自身が「skip」と報告した場合は、終了コードが 0 でも**違反なしへ倒さない**。「実行できなかった」と「違反なし」を別の状態として報告し、緑扱いにせず commit へ進まない側の判定にする（fail-closed）。実行できた suite だけを終了コードで緑赤に分ける。`tests/run-all/verify.sh` の単体の起動は、別セッションの全件ゲート・`public-layout`・リリースが動いていても止まらず、待たない（観測を自分の系譜へ閉じ、ゲート間の排他へ参加しない）。終了コード 2 で観測を隔離できないこと（`ps` が無い・プロセス一覧を取得できない・隔離した後も系譜の外のゲートが見える）を名指しした回は「実行できなかった」とする。製品の違反でも緑でもない。次の一手は stderr の `復帰:` 行に従う。
 
@@ -313,7 +329,7 @@ bash -c 'r="$(git rev-parse --show-toplevel)" || exit 2; f="$r/plugins/ff-dev-to
 
 staged（ACMRT）の `plugins/ff-dev-toolkit/tests/<名>/verify.sh` に対し、同じ階層の `<名>-selftest/verify.sh` が実在すれば単体で実行する。対の判定は `run-all.sh` の高速モードと同じ接尾辞と consumer の実在確認から導出し、名簿を持たない。`tests/lib` や fixture からの依存推測は行わない。selftest 自身の変更も、その先の対が実在すれば同じ規約で扱う。
 
-手順 6 の一致確認を先に済ませる。helper はコマンドを shell 引用付きで名指しし、各 selftest を foreground で回して結果を残す。対自身も index と一致していることを確かめ、未 stage の修正や未追跡の対を成功にしない。固定表の安い suite と異なり、1 分を超える selftest も完了を待つ。tool の timeout を明示し、途中で待機が切れた場合は「未検査」として完了を追う。
+手順 6 の一致確認を先に済ませる。helper はコマンドを shell 引用付きで名指しし、各 selftest を foreground で回して結果を残す。対自身も index と一致していることを確かめ、未 stage の修正や未追跡の対を成功にしない。1 分を超える selftest も foreground で完了を待つ。tool の timeout を明示し、途中で待機が切れた場合は「未検査」として完了を追う。種別 C の suite を background で分ける手順は上の実行手順に書き、ここでは selftest を foreground のまま待つ。
 
 ```bash
 bash -c 'r="$(git rev-parse --show-toplevel)" || exit 2; f="$r/plugins/ff-dev-toolkit/tests/lib/precommit-selftest-pairs.sh"; if [ ! -d "$r/plugins/ff-dev-toolkit/tests" ]; then echo "selftest-pairs: none"; exit 0; fi; [ -s "$f" ] || { echo "selftest 未検査: $f がありません/空です" >&2; exit 2; }; . "$f" || exit 2; declare -F selftest_pairs_scan >/dev/null || exit 2; selftest_pairs_scan "$r"'

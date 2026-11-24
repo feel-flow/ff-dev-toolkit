@@ -1542,26 +1542,51 @@ else
   bad "55-E: 上限超過後にマーカーが残存"
 fi
 
-# 55-E2: 待機期限経過後に空きになってもゲートを開始しない（期限判定を枠取得より先に行う）
-_c55_sync_ok="$_c55_fx/e2-synced"
-rm -f "$_c55_sync_ok"
-printf '4194306|1|bash /x/run-all.sh\n' > "$_c55_fake_ps"
-_c55_prepare_log
-(
-  if _c55_wait_for_log "4194306:/x/run-all.sh" 160 "$_c55_run_log"; then
-    : > "$_c55_fake_ps"
-    : > "$_c55_sync_ok"
+# 55-E2: 待機の sleep に入った時点でブロッカーを外し、次の走査までに時計を期限へ進める。
+# 実時計の秒境界や、解除を担う別プロセスのスケジュールに依存させない。
+_c55_e2_bin="$_c55_fx/e2-bin"
+_c55_e2_slept="$_c55_fx/e2-slept"
+mkdir -p "$_c55_e2_bin"
+cat > "$_c55_e2_bin/date" <<'STUB'
+#!/usr/bin/env bash
+if [ "$#" -eq 1 ] && [ "$1" = '+%s' ]; then
+  if [ -e "$C55_E2_SLEPT" ]; then
+    printf '%s\n' "$((C55_E2_START + 1))"
+  else
+    # sleep へ到達しない退行でも、止めた時計で待ち続けない。
+    real_now="$("$C55_REAL_DATE" +%s)" || exit 1
+    [ "$real_now" -lt "$((C55_E2_START + 30))" ] || exit 1
+    printf '%s\n' "$C55_E2_START"
   fi
-) &
-_c55_bg_pids="$!"
+  exit 0
+fi
+exec "$C55_REAL_DATE" "$@"
+STUB
+cat > "$_c55_e2_bin/sleep" <<'STUB'
+#!/usr/bin/env bash
+if [ "$#" -eq 1 ] && [ "$1" = 1 ] && [ -s "$C55_FAKE_PS_FILE" ]; then
+  : > "$C55_FAKE_PS_FILE" && : > "$C55_E2_SLEPT"
+  exit $?
+fi
+exec "$C55_REAL_SLEEP" "$@"
+STUB
+chmod +x "$_c55_e2_bin/date" "$_c55_e2_bin/sleep"
+printf '4194306|1|bash /x/run-all.sh\n' > "$_c55_fake_ps"
 _c55_run env FF_RUN_ALL_WAIT=1 FF_RUN_ALL_WAIT_MAX_SECONDS=1 FF_RUN_ALL_WAIT_POLL_INTERVAL=5 \
+  C55_E2_START="$(date +%s)" C55_E2_SLEPT="$_c55_e2_slept" \
+  C55_REAL_DATE="$(command -v date)" C55_REAL_SLEEP="$(command -v sleep)" \
+  PATH="$_c55_e2_bin:$_c55_fx/bin:$PATH" \
   bash "$_c55_runner" "$_c55_fx/repo/tests/ok-probe/verify.sh"
-_c55_kill_bg
+expect_has '完了を待っています' "55-E2: ブロッカーを検出して待機に入った"
+if [ -f "$_c55_e2_slept" ] && [ ! -s "$_c55_fake_ps" ]; then
+  ok "55-E2: 待機中にブロッカーを解除して時計を進めた"
+else
+  bad "55-E2: 待機中のブロッカー解除と時計の更新が成立しなかった"
+fi
 : > "$_c55_fake_ps"
 expect_rc 2 "55-E2: 期限到達後にブロッカーが消えても開始せず rc=2 で停止"
+expect_has '待機上限（1 秒）に達したため停止しました' "55-E2: 停止理由が待機上限の到達"
 expect_lacks 'FIXTURE-C55-OK' "55-E2: 期限到達後の空きでは suite を実行しない"
-[ -e "$_c55_sync_ok" ] && ok "55-E2: 待機ログ出力後にブロッカー解除が実際に実行された" || bad "55-E2: ブロッカー解除の同期が成立しなかった"
-rm -f "$_c55_sync_ok"
 
 # 55-F: 同時に 2 本の FF_RUN_ALL_WAIT=1 を起動しても ps 経由の相手・子孫を相互除外して直列完走する
 _c55_ov="$_c55_fx/overlap.log"
@@ -2555,7 +2580,8 @@ _dg_git -C "$_c56_fx/repo" add -A >/dev/null 2>&1 || true
 _dg_git -C "$_c56_fx/repo" commit -qm "c56-init" >/dev/null 2>&1 || true
 _c56_head="$(git -C "$_c56_fx/repo" rev-parse HEAD)"
 
-# 56-B: 実カーネルの標準出力クローズ（1>&-）下で逐次・並列とも全 suite 完走し gate-record が書かれる
+# 56-B: fd 1 を読み取り専用に開き、ランナー起動後の書き込みをカーネルに拒否させる。
+# fd 1 を閉じて渡すと、起動時に再利用されて書き込みが成功する環境がある。
 for _c56_jobs in 1 2; do
   _c56_rec="$_c56_fx/rec-j${_c56_jobs}.env"
   _c56_err="$_c56_fx/err-j${_c56_jobs}.log"
@@ -2567,7 +2593,7 @@ for _c56_jobs in 1 2; do
     C56_SENTINEL_DIR="$_c56_fx" \
     bash "$_c56_fx/repo/tests/run-all.sh" \
       "$_c56_fx/repo/tests/s1/verify.sh" \
-      "$_c56_fx/repo/tests/s2/verify.sh" 1>&- 2>"$_c56_err"; then
+      "$_c56_fx/repo/tests/s2/verify.sh" 1</dev/null 2>"$_c56_err"; then
     _c56_rc=0
   else
     _c56_rc=$?
@@ -2581,13 +2607,13 @@ for _c56_jobs in 1 2; do
       && grep -qF 'STATUS=partial' "$_c56_rec" \
       && grep -qxF 'SUITES=s1 s2' "$_c56_rec" \
       && grep -qF 'RESULT=passed=2 failed=0 skipped=0 not-run=0' "$_c56_rec"; then
-    ok "56-B(jobs=${_c56_jobs}): 閉じた stdout（1>&-）下でも全 suite 完走し rc=0・警告 1 回・gate-record 書込み完了"
+    ok "56-B(jobs=${_c56_jobs}): 読み取り専用 stdout 下でも全 suite 完走し rc=0・警告 1 回・gate-record 書込み完了"
   else
-    bad "56-B(jobs=${_c56_jobs}): 閉じた stdout 下の完走に失敗（rc=${_c56_rc} s1=$([ -e "$_c56_fx/s1.ran" ] && echo y || echo n) s2=$([ -e "$_c56_fx/s2.ran" ] && echo y || echo n) wcnt=${_c56_wcnt} rec=$(cat "$_c56_rec" 2>/dev/null || echo MISSING)）"
+    bad "56-B(jobs=${_c56_jobs}): 読み取り専用 stdout 下の完走に失敗（rc=${_c56_rc} s1=$([ -e "$_c56_fx/s1.ran" ] && echo y || echo n) s2=$([ -e "$_c56_fx/s2.ran" ] && echo y || echo n) wcnt=${_c56_wcnt} rec=$(cat "$_c56_rec" 2>/dev/null || echo MISSING)）"
   fi
 done
 
-# 56-C1: 陰性ケース — 閉じた stdout 下でも赤の suite は rc=1 と STATUS=fail で fail-closed（後続 suite も実行）
+# 56-C1: 失敗 suite は stdout への書き込みに失敗しても rc=1 と STATUS=fail で fail-closed（後続 suite も実行）
 _c56_rec="$_c56_fx/rec-fail.env"
 _c56_err="$_c56_fx/err-fail.log"
 rm -f "$_c56_fx/f1.ran" "$_c56_fx/s2.ran" "$_c56_rec" "$_c56_err"
@@ -2598,7 +2624,7 @@ if env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_
   C56_SENTINEL_DIR="$_c56_fx" \
   bash "$_c56_fx/repo/tests/run-all.sh" \
     "$_c56_fx/repo/tests/f1/verify.sh" \
-    "$_c56_fx/repo/tests/s2/verify.sh" 1>&- 2>"$_c56_err"; then
+    "$_c56_fx/repo/tests/s2/verify.sh" 1</dev/null 2>"$_c56_err"; then
   _c56_rc=0
 else
   _c56_rc=$?
@@ -2608,12 +2634,12 @@ if [ "$_c56_rc" -eq 1 ] \
     && [ -s "$_c56_rec" ] \
     && grep -qF 'STATUS=fail' "$_c56_rec" \
     && grep -qF 'RESULT=passed=1 failed=1 skipped=0 not-run=0' "$_c56_rec"; then
-  ok "56-C1: 閉じた stdout 下で失敗 suite を含むと後続も完走しつつ rc=1・STATUS=fail で fail-closed"
+  ok "56-C1: 読み取り専用 stdout 下で失敗 suite を含むと後続も完走しつつ rc=1・STATUS=fail で fail-closed"
 else
   bad "56-C1: 失敗 suite の fail-closed が崩れた（rc=${_c56_rc} f1=$([ -e "$_c56_fx/f1.ran" ] && echo y || echo n) s2=$([ -e "$_c56_fx/s2.ran" ] && echo y || echo n) rec=$(cat "$_c56_rec" 2>/dev/null || echo MISSING)）"
 fi
 
-# 56-C2: 陰性ケース — 閉じた stdout 下でも不在 suite（not-run）は rc=1 と STATUS=fail で fail-closed
+# 56-C2: 不在 suite（not-run）は stdout への書き込みに失敗しても rc=1 と STATUS=fail で fail-closed
 _c56_rec="$_c56_fx/rec-notrun.env"
 _c56_err="$_c56_fx/err-notrun.log"
 rm -f "$_c56_fx/s1.ran" "$_c56_rec" "$_c56_err"
@@ -2624,7 +2650,7 @@ if env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_
   C56_SENTINEL_DIR="$_c56_fx" \
   bash "$_c56_fx/repo/tests/run-all.sh" \
     "$_c56_fx/repo/tests/s1/verify.sh" \
-    "$_c56_fx/repo/tests/missing/verify.sh" 1>&- 2>"$_c56_err"; then
+    "$_c56_fx/repo/tests/missing/verify.sh" 1</dev/null 2>"$_c56_err"; then
   _c56_rc=0
 else
   _c56_rc=$?
@@ -2634,12 +2660,12 @@ if [ "$_c56_rc" -eq 1 ] \
     && [ -s "$_c56_rec" ] \
     && grep -qF 'STATUS=fail' "$_c56_rec" \
     && grep -qF 'not-run=1' "$_c56_rec"; then
-  ok "56-C2: 閉じた stdout 下で不在 suite を含むと rc=1・STATUS=fail・not-run=1 で fail-closed"
+  ok "56-C2: 読み取り専用 stdout 下で不在 suite を含むと rc=1・STATUS=fail・not-run=1 で fail-closed"
 else
   bad "56-C2: 不在 suite の fail-closed が崩れた（rc=${_c56_rc} rec=$(cat "$_c56_rec" 2>/dev/null || echo MISSING)）"
 fi
 
-# 56-D: 変異対照 — ff_stdout_write "$FF_SUITE_OUTPUT" を素の printf へ戻すと閉じた stdout 下で途中終了し gate-record が失われる
+# 56-D: ff_stdout_write "$FF_SUITE_OUTPUT" を素の printf へ戻すと書き込み失敗で途中終了し gate-record が失われる
 _c56_mut="$_c56_fx/repo/tests/run-all.mut.sh"
 awk '
   /^  ff_stdout_write "\$FF_SUITE_OUTPUT"$/ {
@@ -2661,13 +2687,13 @@ else
     C56_SENTINEL_DIR="$_c56_fx" \
     bash "$_c56_mut" \
       "$_c56_fx/repo/tests/s1/verify.sh" \
-      "$_c56_fx/repo/tests/s2/verify.sh" 1>&- 2>"$_c56_err"; then
+      "$_c56_fx/repo/tests/s2/verify.sh" 1</dev/null 2>"$_c56_err"; then
     _c56_rc=0
   else
     _c56_rc=$?
   fi
   if [ "$_c56_rc" -ne 0 ] && [ -e "$_c56_fx/s1.ran" ] && [ ! -e "$_c56_fx/s2.ran" ] && [ ! -e "$_c56_rec" ]; then
-    ok "56-D: 素の printf へ戻した変異は s1 実行後に閉じた stdout 下で rc=${_c56_rc} 途中終了し後続 suite と gate-record が欠落（56-B の対照）"
+    ok "56-D: 素の printf へ戻した変異は s1 実行後の書き込み失敗で rc=${_c56_rc} 途中終了し後続 suite と gate-record が欠落（56-B の対照）"
   else
     bad "56-D: 変異対照が障害を再現しなかった（rc=${_c56_rc} s1=$([ -e "$_c56_fx/s1.ran" ] && echo y || echo n) s2=$([ -e "$_c56_fx/s2.ran" ] && echo y || echo n) rec=$([ -e "$_c56_rec" ] && echo y || echo n)）"
   fi

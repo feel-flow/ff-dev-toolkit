@@ -1100,11 +1100,11 @@ if jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[]
 else
   bad "hooks.json の guard-exit-code.sh に timeout: 30 が無い"
 fi
-DESC="$(jq -r '.description' "$HOOKS_JSON")"
-case "$DESC" in
-  *終了コード*) ok "hooks.json の description が終了コードガードに言及する" ;;
-  *) bad "hooks.json の description に終了コードガードの記述が無い" ;;
-esac
+if grep -q '^#.*終了コード' "$TARGET"; then
+  ok "guard-exit-code.sh のヘッダが終了コードガードに言及する"
+else
+  bad "guard-exit-code.sh のヘッダに終了コードガードの記述が無い"
+fi
 
 echo "guard-exit-code: 変異検出（コピーへ当て、本番検査と同形の針が赤になること）"
 MUT_DIR="$TEST_TMP/mut"

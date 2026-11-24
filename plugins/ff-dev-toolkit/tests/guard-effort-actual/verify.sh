@@ -1132,10 +1132,11 @@ if [ -n "$REGISTERED_TIMEOUT" ] && [ "$REGISTERED_TIMEOUT" = "$PEER_TIMEOUT" ]; 
 else
   bad "timeout が既存ガードと揃っていない: 本ガード=[$REGISTERED_TIMEOUT] guard-pr-followup=[$PEER_TIMEOUT]"
 fi
-case "$(jq -r '.description' "$HOOKS_JSON")" in
-  *merge_pull_request*) ok "hooks.json の description が GitHub MCP の merge_pull_request に言及する" ;;
-  *) bad "hooks.json の description に GitHub MCP 経路（merge_pull_request）の記述が無い" ;;
-esac
+if grep -q '^#.*merge_pull_request' "$TARGET"; then
+  ok "guard-effort-actual.sh のヘッダが GitHub MCP の merge_pull_request に言及する"
+else
+  bad "guard-effort-actual.sh のヘッダに GitHub MCP 経路（merge_pull_request）の記述が無い"
+fi
 while IFS= read -r line; do
   case "$line" in
     OK\ *) ok "MCP matcher: ${line#OK }" ;;

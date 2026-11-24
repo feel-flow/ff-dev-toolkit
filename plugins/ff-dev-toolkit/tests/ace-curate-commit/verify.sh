@@ -22,7 +22,10 @@
 # 空振り検出: 17 の fixture で `## Changelog` を落とす・`#### 追加` / `#### カウンター更新` の見出しを別綴りにすると、書き込み口は契約形の行 0 件を緑へ倒さず exit 2（判定不能）で止まり stage も保留記録も作らない（2026-10-11 実測。lib の END で no-rows を ok へ倒すと 17 の判定不能ケースが赤）。
 # 変異検出: knowledge-commit.sh の add から Changelog 判定の呼び出しを外すと 17 の束ね形ケース（直接・finish.sh 経由）が赤、lib の Helpful 正規表現から `×N` の選択肢を外すと 17 の契約形ケースが赤、節の判定を外して全見出しの配下を読むと 17 の `#### 変更` ケースが赤（2026-10-11 実測）。
 
-# 空振り検出: 18 は PR 問い合わせ失敗・空・不正値で branch #N のみを採り、解決元無しは version claim・ID・要約の数字を推測せず rc4 / stage・保留無しを確認する（2026-10-17 実測）。
+# 空振り検出: 18 は PR を照会できて番号が無い（空・不正値・参照なし。ace-from-pr-N と明示の --pr）ときだけ branch #N を採り、照会の失敗（gh の非 0・gh 実行不能・github-input のライブラリ欠落）は branch #N を使わず rc2（subject-query-failed）で stage・保留無し・別の PR を照会しないこと、commit 時の照会の失敗は保留を残すことを確認する。解決元無しは version claim・ID・要約の数字を推測せず rc4 / stage・保留無し（2026-10-17 実測。照会の失敗は 2026-11-24 に追加）。
+# 変異検出: resolve_subject_issue が照会の失敗を branch #N へ落とす（`)" || return 3` → `)" || true`）と 18 が赤（2026-11-24 WSL 実測。mutation-harness で detected、対照は 226 件 pass）。
+# 空振り検出: 5d の hook は件名と本文の各行を文字数（UTF-8 の継続バイトを除く）で測り、100 字ちょうど・100 バイト超の 1 件をバイト同一の期待に置くので、バイト数で測る実装は赤になる（2026-11-24 実測）。
+# 変異検出: 1 件の件名を短縮しない・件名をバイト数で測る・本文の行を折り返さない・commit が dry-run の選んだ本文を使わない・候補の短縮で本文を差し替えない・curate.md から照会失敗の規定を落とす、の 6 変異は各 rc=1（2026-11-24 WSL 実測。mutation-harness で detected）。
 # 変異検出: 説明文つき誘導スタブの判定から固定候補リンクの条件を外す・履歴らしい行の条件を外す・版見出しで始まる分割側の読み取りを外す・レベル 2 見出しでの遮断を外す・選択後の判定を本体と同じ読み方へ戻す、の 5 変異は stub ケースで各 rc=1（2026-11-11 WSL 実測。無変異は 201 件 pass）。
 # 変異検出: 件名の Issue 解決から本文 Refs を外す・別リポジトリ参照の除外を外す・closing Issue の優先を外す・title の解決を外す、の 4 変異は 18 の Refs ケースで各 rc=1（2026-11-11 WSL 実測）。
 # 変異検出: PR 問い合わせを常に失敗へ変える・候補から chore/docs を外す・解決した Issue の保留保存を外すと、それぞれ 18 が赤（2026-10-17 実測）。
@@ -197,12 +200,16 @@ expect_contains_in "$RULES_FILE" \
   "カテゴリを件名へ列挙しない明示"
 
 expect_contains_in "$RULES_FILE" \
-  '複数の知見を 1 件へ畳む件名が 100 字を超えるときだけ、先頭の ID と残り件数（ほか N 件）に短縮し、全 ID は body に残す。100 字以内の件名は ID を並べたままにする' \
+  '複数の知見を 1 件へ畳む件名は、先頭の ID と残り件数（ほか N 件）に短縮し、全 ID は body に残す。100 字以内の件名は要約・ID を並べたまま（バイト同一）にする' \
   "100 字を超える畳み込み件名だけを短縮し、上限内は ID を並べたままにする"
 
 expect_contains_in "$RULES_FILE" \
-  '要約を短くするかコミットを分割する' \
-  "要約だけで上限を超える場合の是正案"
+  '1 件の知見は ID だけの件名にして要約を body の `- <ID> <要約>` 行へ移し' \
+  "1 件の件名が上限を超える場合は要約を body へ移す（Issue 2812）"
+
+expect_contains_in "$RULES_FILE" \
+  'ブランチ自身の `#N` へ進むのは PR を照会できて番号が返らなかったときだけで' \
+  "PR 照会の失敗ではブランチの番号へ落とさない（Issue 2911）"
 
 expect_fixed_count_routes \
   '--title "${commit_type}: ${ACE_ID} ${ACE_SUMMARY}"' \
@@ -824,6 +831,107 @@ else
     fi
     rm -f "$hooks_dir/commit-msg"
 
+    # 5d. 1 件の件名も 100 字（commitlint と同じく文字で数える。日本語 1 文字は 3 バイト）を超えるときだけ短縮する
+    #     （Issue `#2812`）。収まる件名はバイト同一。超えたら ID だけにして要約は本文の `- ID 要約` 行へ残し、
+    #     本文の行も 100 字を超えるときだけ折り返す。hook は件名と本文の各行を文字数で測る（UTF-8 の継続バイトを除く）。
+    {
+      printf '%s\n' '#!/bin/sh'
+      printf '%s\n' 'chars() { printf "%s" "$1" | LC_ALL=C tr -d "\200-\277" | wc -c | tr -d " "; }'
+      printf '%s\n' '[ "$(chars "$(sed -n 1p "$1")")" -le 100 ] || { echo header-max-length; exit 1; }'
+      printf '%s\n' 'over="$(sed 1,2d "$1" | while IFS= read -r l; do [ "$(chars "$l")" -le 100 ] || echo x; done)"'
+      printf '%s\n' '[ -z "$over" ] || { echo body-max-line-length; exit 1; }'
+      printf '%s\n' 'if [ -n "${KC_TEST_REQUIRE_ISSUE:-}" ] && ! grep -qE "^chore: #[0-9]+ " "$1"; then echo issue-required; exit 1; fi'
+      printf '%s\n' 'exit 0'
+    } >"$hooks_dir/commit-msg"
+    chmod +x "$hooks_dir/commit-msg"
+    jp() { # <文字数> → 日本語の要約（1 文字 3 バイト）
+      local i=0 s=""
+      while [ "$i" -lt "$1" ]; do s="${s}あ"; i=$((i + 1)); done
+      printf '%s' "$s"
+    }
+    body_items() { git log -1 --format=%b | sed '/^$/d' | grep -v '^Categories:'; }
+    # 継続行（2 文字下げ）を元の 1 行へ戻す
+    joined_items() { body_items | awk 'NR == 1 { printf "%s", $0; next } { sub(/^  /, ""); printf "%s", $0 } END { print "" }'; }
+    over_lines() { git log -1 --format=%B | while IFS= read -r l; do [ "$(printf '%s' "$l" | LC_ALL=C tr -d '\200-\277' | wc -c | tr -d ' ')" -le 100 ] || echo x; done; }
+    # 100 字以内（ただし 100 バイト超）の 1 件はバイト同一、本文も従来どおり Categories だけ
+    fit_summary="$(jp 78)"
+    printf '%s\n' '- fit' >>docs/08-knowledge/PLAYBOOK.md
+    out="$(kc add --source ace --id ACE-2812-1 --summary "$fit_summary" --category process -- docs/08-knowledge/PLAYBOOK.md)"
+    kc commit >/dev/null
+    if [ "$(git log -1 --format=%s)" != "knowledge: ACE-2812-1 ${fit_summary}" ] \
+      || [ "$(git log -1 --format=%b | sed '/^$/d')" != 'Categories: process' ] \
+      || ! grep -qx "KNOWLEDGE_SUBJECT=knowledge: ACE-2812-1 ${fit_summary}" <<<"$out"; then
+      echo "  ✗ 100 字以内（100 バイト超）の 1 件の件名・本文を変えた（件名=$(git log -1 --format=%s) body=$(git log -1 --format=%b)）" >&2; exit 1
+    fi
+    # 100 字を超える 1 件（境界の 101 字）は ID だけの件名にし、要約は本文の `- ID 要約` 行へ残す
+    long_summary="$(jp 79)"
+    printf '%s\n' '- long' >>docs/08-knowledge/PLAYBOOK.md
+    rc=0; out="$(kc add --source ace --id ACE-2812-2 --summary "$long_summary" --category process -- docs/08-knowledge/PLAYBOOK.md 2>&1)" || rc=$?
+    [ "$rc" -eq 0 ] && kc commit >/dev/null || rc=1
+    long_body="$(git log -1 --format=%b)"
+    if [ "$rc" -ne 0 ] || [ "$(git log -1 --format=%s)" != 'knowledge: ACE-2812-2' ] \
+      || [ "$(body_items)" != "- ACE-2812-2 ${long_summary}" ] \
+      || ! grep -qx 'Categories: process' <<<"$long_body" \
+      || ! grep -qx 'KNOWLEDGE_SUBJECT=knowledge: ACE-2812-2' <<<"$out"; then
+      echo "  ✗ 100 字超の 1 件を ID だけの件名にして要約を本文へ残せない（rc=${rc} 件名=$(git log -1 --format=%s) body=$(git log -1 --format=%b) out=${out}）" >&2; exit 1
+    fi
+    # 本文の行も 100 字を超えるなら文字の境目で折り返し、つなげると要約の全文に戻る
+    wrap_summary="$(jp 120)"
+    printf '%s\n' '- wrap' >>docs/08-knowledge/PLAYBOOK.md
+    rc=0; kc add --source ace --id ACE-2812-3 --summary "$wrap_summary" --category process -- docs/08-knowledge/PLAYBOOK.md >/dev/null 2>&1 || rc=$?
+    [ "$rc" -eq 0 ] && kc commit >/dev/null || rc=1
+    if [ "$rc" -ne 0 ] || [ "$(git log -1 --format=%s)" != 'knowledge: ACE-2812-3' ] \
+      || [ "$(joined_items)" != "- ACE-2812-3 ${wrap_summary}" ] || [ "$(body_items | wc -l | tr -d ' ')" -ne 2 ] \
+      || [ -n "$(over_lines)" ]; then
+      echo "  ✗ 100 字超の本文の行を折り返せない・要約を欠いた（rc=${rc} body=$(git log -1 --format=%b)）" >&2; exit 1
+    fi
+    # ID を並べた 1 件が ID だけでも超えるなら、先頭の ID ほか N 件。全 ID と要約は本文に残る
+    printf '%s\n' '- many ids' >>docs/08-knowledge/PLAYBOOK.md
+    many_args=()
+    n=1
+    while [ "$n" -le 8 ]; do many_args+=(--id "$(printf 'ACE-2812-LONG-%04d' "$n")"); n=$((n + 1)); done
+    rc=0; kc add --source ace "${many_args[@]}" --summary '複数 ID の要約' --category process -- docs/08-knowledge/PLAYBOOK.md >/dev/null 2>&1 || rc=$?
+    [ "$rc" -eq 0 ] && kc commit >/dev/null || rc=1
+    many_joined="$(joined_items)"
+    missing=0
+    n=1
+    while [ "$n" -le 8 ]; do
+      case "$many_joined" in *"$(printf 'ACE-2812-LONG-%04d' "$n")"*) ;; *) missing=1 ;; esac
+      n=$((n + 1))
+    done
+    if [ "$rc" -ne 0 ] || [ "$(git log -1 --format=%s)" != 'knowledge: ACE-2812-LONG-0001 ほか 7 件' ] \
+      || [ "$missing" -ne 0 ] || [[ "$many_joined" != *' 複数 ID の要約' ]] || [ -n "$(over_lines)" ]; then
+      echo "  ✗ ID を並べた 1 件の短縮が期待と違う（rc=${rc} 件名=$(git log -1 --format=%s) body=$(git log -1 --format=%b)）" >&2; exit 1
+    fi
+    # Issue の前置で初めて 100 字を超える 1 件も、add のドライランと commit が同じ短縮件名と要約入りの本文を作る
+    prefix_issue=2812
+    git switch -q -c "chore/#${prefix_issue}-prefix"
+    export KC_TEST_REQUIRE_ISSUE=1
+    prefix_summary="$(jp 78)"
+    printf '%s\n' '- prefix' >>docs/08-knowledge/PLAYBOOK.md
+    rc=0; out="$(kc add --source ace --id ACE-2812-5 --summary "$prefix_summary" --category process -- docs/08-knowledge/PLAYBOOK.md 2>&1)" || rc=$?
+    [ "$rc" -eq 0 ] && kc commit >/dev/null || rc=1
+    unset KC_TEST_REQUIRE_ISSUE
+    if [ "$rc" -ne 0 ] || [ "$(git log -1 --format=%s)" != "chore: #${prefix_issue} ACE-2812-5" ] \
+      || ! grep -qx "KNOWLEDGE_SUBJECT=chore: #${prefix_issue} ACE-2812-5" <<<"$out" \
+      || [ "$(body_items)" != "- ACE-2812-5 ${prefix_summary}" ]; then
+      echo "  ✗ Issue の前置で初めて超える 1 件の短縮が add と commit で揃わない・要約を落とした（rc=${rc} 件名=$(git log -1 --format=%s) body=$(git log -1 --format=%b) out=${out}）" >&2; exit 1
+    fi
+    # add の時点では Issue が要らず、commit で初めて Issue を前置して超える 1 件も、commit の本文に要約を残す
+    late_summary="$(jp 78)"
+    printf '%s\n' '- late prefix' >>docs/08-knowledge/PLAYBOOK.md
+    kc add --source ace --id ACE-2812-6 --summary "$late_summary" --category process -- docs/08-knowledge/PLAYBOOK.md >/dev/null
+    export KC_TEST_REQUIRE_ISSUE=1
+    rc=0; kc commit >/dev/null 2>&1 || rc=$?
+    unset KC_TEST_REQUIRE_ISSUE
+    if [ "$rc" -ne 0 ] || [ "$(git log -1 --format=%s)" != "chore: #${prefix_issue} ACE-2812-6" ] \
+      || [ "$(body_items)" != "- ACE-2812-6 ${late_summary}" ]; then
+      echo "  ✗ commit で初めて Issue を前置して超える 1 件が要約を本文に残さない（rc=${rc} 件名=$(git log -1 --format=%s) body=$(git log -1 --format=%b)）" >&2; exit 1
+    fi
+    git switch -q -
+    rm -f "$hooks_dir/commit-msg"
+    echo "  ✓ 1 件の件名は 100 字（文字数）以内ならバイト同一、超えたら ID だけ（ID が多ければ先頭 ほか N 件）にして要約を本文へ残し、本文の行は 100 字で折り返す（Issue の前置で初めて超える回も add と commit で同じ）"
+
     # 6. 使い方の誤り・リポジトリ外のパスは exit 2
     rc=0; kc add --source ace --id OBS-1 --summary s -- docs/08-knowledge/PLAYBOOK.md >/dev/null 2>&1 || rc=$?
     rc2=0; kc add --source obs --id OBS-1 --summary s -- "$KC_TMP" >/dev/null 2>&1 || rc2=$?
@@ -1143,7 +1251,8 @@ else
     fi
 
     # 18. 元の件名が hook を通る回だけはバイト同一。拒否時は branch の出典 PR → closing Issue →
-    #     同じ PR の本文 Refs → title の番号、次に branch の #N を使う。ACE-ID と version claim には PR の根拠を求めない。
+    #     同じ PR の本文 Refs → title の番号、その PR を照会できて番号が無いときだけ branch の #N を使う
+    #     （照会の失敗では止まる）。ACE-ID と version claim には PR の根拠を求めない。
     S="$KC_TMP/subject-resolution"
     new_repo "$S" "Knowledge Test" "knowledge-test@example.com"
     cd "$S" || exit 1
@@ -1169,7 +1278,8 @@ case "$SUBJECT_GH_MODE" in
   cross) pr_json '{"closingIssuesReferences":[],"title":"docs: 記録","body":"Refs other/repo\u002377"}' ;;
   cross-title) pr_json '{"closingIssuesReferences":[],"title":"docs: \u00235150 を記録","body":"Refs other/repo\u002377"}' ;;
   title) pr_json '{"closingIssuesReferences":[],"title":"fix: repo\u002312 と x_\u002313 の後の \u00235150 を直す","body":"本文に参照なし"}' ;;
-  fail) exit 1 ;;
+  none) pr_json '{"closingIssuesReferences":[],"title":"docs: 記録","body":"本文に参照なし"}' ;;
+  fail) echo 'HTTP 502: Bad Gateway' >&2; exit 1 ;;
   unavailable) exit 127 ;;
 esac
 GH
@@ -1203,18 +1313,107 @@ HOOK
     fi
     echo '  ✓ 出典 PR → closing Issue と hook の許容 type を解決し、合流 commit まで保存する'
 
-    # claim が無い OBS 単独経路も branch #N で解決する。PR 問い合わせ失敗/空/不正値も同じ fallback。
-    for mode in fail empty malformed; do
+    # claim が無い OBS 単独経路も、PR を照会できて番号が返らなかったときだけ branch #N で解決する
+    # （空の応答・番号でない値・参照の無い PR）。ace-from-pr-N の PR でも明示の --pr でも同じ。
+    for mode in empty malformed none; do
       git switch -q -c "chore/ace-from-pr-${subject_pr}-#${branch_issue}-$mode"
       export SUBJECT_GH_MODE="$mode"
       printf '%s\n' "- $mode" >>docs/08-knowledge/OBSERVATIONS.md
       kc add --source obs --id "OBS-$mode" --summary 'branch 解決' --type chore -- docs/08-knowledge/OBSERVATIONS.md >/dev/null
       kc commit >/dev/null
       if [ "$(git log -1 --format=%s)" != "chore: #${branch_issue} OBS-$mode branch 解決" ]; then
-        echo "  ✗ PR 問い合わせ $mode 時に branch #N へ fallback しない" >&2; exit 1
+        echo "  ✗ PR 照会が成功して番号が無い（${mode}）のに branch #N へ進まない" >&2; exit 1
       fi
     done
-    echo '  ✓ claim 無しの OBS も branch #N を解決する（gh 失敗・空・不正値は番号を採らない）'
+    git switch -q -c "chore/#${branch_issue}-explicit-none"
+    export SUBJECT_GH_MODE=none
+    printf '%s\n' '- explicit none' >>docs/08-knowledge/OBSERVATIONS.md
+    kc add --pr 5343 --source obs --id OBS-explicit-none --summary '番号なし' --type chore -- docs/08-knowledge/OBSERVATIONS.md >/dev/null
+    kc commit >/dev/null
+    if [ "$(git log -1 --format=%s)" != "chore: #${branch_issue} OBS-explicit-none 番号なし" ]; then
+      echo "  ✗ 明示の --pr の照会が成功して番号が無いのに branch #N へ進まない（$(git log -1 --format=%s)）" >&2; exit 1
+    fi
+    echo '  ✓ PR を照会できて番号が無い（空・不正値・参照なし）ときだけ branch #N を使う（ace-from-pr-N・明示の --pr）'
+
+    # Issue 2911: 照会の失敗（ace-from-pr-N の PR / 明示の --pr）は branch #N を件名に使わず rc2 で止め、
+    # stage も保留も作らない。別の PR も照会しない。
+    export SUBJECT_GH_MODE=fail
+    query_fail_case() { # <ラベル> <照会されるべき PR> [add の追加引数...]
+      local label="$1" want="$2" before_head rc=0 out
+      shift 2
+      before_head="$(git rev-parse HEAD)"
+      : >"$SUBJECT_GH_LOG"
+      printf '%s\n' "- fail $label" >>docs/08-knowledge/OBSERVATIONS.md
+      out="$(kc add "$@" --source obs --id "OBS-fail-$label" --summary '照会失敗' --type chore -- docs/08-knowledge/OBSERVATIONS.md 2>"$KC_TMP/query-fail.err")" || rc=$?
+      if [ "$rc" -ne 2 ] || ! grep -qx KNOWLEDGE_COMMIT=subject-query-failed <<<"$out" \
+        || ! grep -q "出典 PR #${want} の照会に失敗しました（gh pr view rc=1: HTTP 502" "$KC_TMP/query-fail.err" \
+        || ! grep -q '照会へ進んだきっかけ: commit-msg hook が元の件名を拒否しました' "$KC_TMP/query-fail.err" \
+        || ! grep -q 'Required format: chore:' "$KC_TMP/query-fail.err" \
+        || [[ "$(kc status)" != *KNOWLEDGE_PENDING=0* ]] || [ -n "$(git diff --cached --name-only)" ] \
+        || [ "$(git rev-parse HEAD)" != "$before_head" ] \
+        || [ "$(grep -c '^pr ' "$SUBJECT_GH_LOG")" -ne 1 ] || ! grep -q "^pr view ${want} " "$SUBJECT_GH_LOG"; then
+        echo "  ✗ PR 照会の失敗（${label}）で止まらない・branch #N を使った・痕跡を残した（rc=${rc} out=${out} err=$(cat "$KC_TMP/query-fail.err") log=$(cat "$SUBJECT_GH_LOG")）" >&2; exit 1
+      fi
+      git checkout -q -- docs/08-knowledge/OBSERVATIONS.md
+    }
+    git switch -q -c "chore/ace-from-pr-${subject_pr}-#${branch_issue}-fail"
+    # ace-from-pr-N の PR の照会に失敗したら、併せて渡した --pr の PR も照会しない（別の PR へ進まない）
+    query_fail_case ace-from-pr "$subject_pr" --pr 5343
+    git switch -q -c "chore/#${branch_issue}-explicit-fail"
+    query_fail_case explicit-pr 5343 --pr 5343
+    echo '  ✓ PR 照会の失敗は branch #N を使わず rc2（subject-query-failed）、stage/保留無し、別の PR も照会しない'
+
+    # commit で初めて Issue が要る回も、照会の失敗では保留を残して止める。--issue で出典を明示すれば commit できる
+    git switch -q -c "chore/ace-from-pr-${subject_pr}-#${branch_issue}-late-fail"
+    printf '%s\n' '#!/bin/sh' 'exit 0' >.githooks/commit-msg
+    printf '%s\n' '- late fail' >>docs/08-knowledge/OBSERVATIONS.md
+    kc add --source obs --id OBS-late-fail --summary '後から照会' --type chore -- docs/08-knowledge/OBSERVATIONS.md >/dev/null
+    cat >.githooks/commit-msg <<'HOOK'
+#!/bin/sh
+grep -qE '^chore: #[0-9]+ ' "$1" && exit 0
+echo 'Required format: chore: #<issue> <subject>'; exit 1
+HOOK
+    before_head="$(git rev-parse HEAD)"
+    rc=0; out="$(kc commit 2>"$KC_TMP/query-fail.err")" || rc=$?
+    if [ "$rc" -ne 2 ] || ! grep -qx KNOWLEDGE_COMMIT=subject-query-failed <<<"$out" \
+      || [[ "$(kc status)" != *KNOWLEDGE_PENDING=1* ]] || [ "$(git rev-parse HEAD)" != "$before_head" ]; then
+      echo "  ✗ commit 時の PR 照会の失敗で止まらない・保留を消した（rc=${rc} out=${out} err=$(cat "$KC_TMP/query-fail.err")）" >&2; exit 1
+    fi
+    kc commit --issue "$branch_issue" >/dev/null
+    if [ "$(git log -1 --format=%s)" != "chore: #${branch_issue} OBS-late-fail 後から照会" ]; then
+      echo "  ✗ 照会の失敗の後、--issue の明示で commit できない（$(git log -1 --format=%s)）" >&2; exit 1
+    fi
+    echo '  ✓ commit で初めて照会が要る回の失敗は保留を残して rc2、--issue の明示で commit できる'
+
+    # --github-input の照会でライブラリを読めない回も照会の失敗として止める（branch #N へ落とさない）
+    nolib="$KC_TMP/nolib-root/scripts"
+    mkdir -p "$nolib"
+    cp "$KC" "$nolib/knowledge-commit.sh" && cp -R "$PLUGIN_ROOT/scripts/lib" "$nolib/lib" && rm -f "$nolib/lib/github-input.sh" || exit 1
+    git switch -q -c "chore/ace-from-pr-${subject_pr}-#${branch_issue}-nolib"
+    printf '%s\n' '- no lib' >>docs/08-knowledge/OBSERVATIONS.md
+    # index にはこの PR の応答がある（応答の無い index は照会していないので、ライブラリが無くても branch #N へ進む。下で確かめる）
+    printf '{"version":1,"responses":[{"operation":"knowledge.subject-issue","scope":{"repository":"https://github.com/example/repo","pr":%s},"phase":"subject","body":"absent-subject.json"}]}\n' \
+      "$subject_pr" >"$KC_TMP/subject-index.json"
+    printf '{"version":1,"responses":[]}\n' >"$KC_TMP/subject-index-empty.json"
+    rc=0
+    out="$(env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT bash "$nolib/knowledge-commit.sh" add --github-input "$KC_TMP/subject-index.json" \
+      --source obs --id OBS-nolib --summary 'lib 不在' --type chore -- docs/08-knowledge/OBSERVATIONS.md 2>"$KC_TMP/nolib.err")" || rc=$?
+    if [ "$rc" -ne 2 ] || ! grep -qx KNOWLEDGE_COMMIT=subject-query-failed <<<"$out" \
+      || ! grep -q 'github-input のライブラリを読めません' "$KC_TMP/nolib.err" \
+      || [[ "$(kc status)" != *KNOWLEDGE_PENDING=0* ]] || [ -n "$(git diff --cached --name-only)" ]; then
+      echo "  ✗ github-input のライブラリが無いのに branch #N へ落ちた・痕跡を残した（rc=${rc} out=${out} err=$(cat "$KC_TMP/nolib.err")）" >&2; exit 1
+    fi
+    git checkout -q -- docs/08-knowledge/OBSERVATIONS.md
+    # 同じくライブラリが無くても、index にこの PR の応答が無い回は照会していないので branch #N で commit できる
+    printf '%s\n' '- no lib, no response' >>docs/08-knowledge/OBSERVATIONS.md
+    rc=0
+    env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT bash "$nolib/knowledge-commit.sh" add --github-input "$KC_TMP/subject-index-empty.json" \
+      --source obs --id OBS-nolib-absent --summary '応答なし' --type chore -- docs/08-knowledge/OBSERVATIONS.md >/dev/null 2>"$KC_TMP/nolib.err" || rc=$?
+    [ "$rc" -ne 0 ] || kc commit >/dev/null || rc=$?
+    if [ "$rc" -ne 0 ] || [ "$(git log -1 --format=%s)" != "chore: #${branch_issue} OBS-nolib-absent 応答なし" ]; then
+      echo "  ✗ 応答の無い index でライブラリの欠落を照会の失敗にした（rc=${rc} 件名=$(git log -1 --format=%s) err=$(cat "$KC_TMP/nolib.err")）" >&2; exit 1
+    fi
+    echo '  ✓ --github-input の応答がある照会でライブラリが無ければ rc2 で止まり stage/保留無し、応答の無い index は branch #N で進む'
 
     # Issue 2681: closing Issue が無い PR は、同じ PR の本文 Refs → title の最初の #N の順で補う。
     # ブランチは既定名（#N 無し）のまま。別リポジトリの参照と、API が返さなかった本文の Closes は採らない。
@@ -1257,16 +1456,17 @@ HOOK
     git checkout -q -- docs/08-knowledge/OBSERVATIONS.md
     echo '  ✓ 解決元無しは version claim・ID・要約の番号を推測せず rc4、stage/保留無し'
 
-    # gh 実行不能かつ #N 無しは PR 番号を Issue として流用せず停止する。
+    # gh 実行不能（exit 127）も照会の失敗。PR 番号を Issue として流用せず rc2 で止める。
     git switch -q -c chore/ace-from-pr-9999
     printf '%s\n' '- missing gh' >>docs/08-knowledge/OBSERVATIONS.md
     export SUBJECT_GH_MODE=unavailable
     rc=0; kc add --source obs --id OBS-no-gh --summary '不在' -- docs/08-knowledge/OBSERVATIONS.md >"$KC_TMP/no-gh.out" 2>/dev/null || rc=$?
-    [ "$rc" -eq 4 ] && [[ "$(kc status)" == *KNOWLEDGE_PENDING=0* ]] && [ -z "$(git diff --cached --name-only)" ] || {
-      echo '  ✗ gh 実行不能時に PR 番号を Issue へ流用した・保留を残した' >&2; exit 1;
+    [ "$rc" -eq 2 ] && grep -qx KNOWLEDGE_COMMIT=subject-query-failed "$KC_TMP/no-gh.out" \
+      && [[ "$(kc status)" == *KNOWLEDGE_PENDING=0* ]] && [ -z "$(git diff --cached --name-only)" ] || {
+      echo "  ✗ gh 実行不能時に PR 番号を Issue へ流用した・止まらない・保留を残した（rc=${rc} out=$(cat "$KC_TMP/no-gh.out")）" >&2; exit 1;
     }
     git checkout -q -- docs/08-knowledge/OBSERVATIONS.md
-    echo '  ✓ gh 実行不能で解決元が無ければ PR 番号を流用せず rc4'
+    echo '  ✓ gh 実行不能は照会の失敗として rc2（PR 番号を流用しない・stage/保留無し）'
 
     # Issue を要求しない hook は既存の stdout と件名を維持し、不要な gh も呼ばない。
     printf '%s\n' '#!/bin/sh' 'exit 0' >.githooks/commit-msg

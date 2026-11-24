@@ -447,11 +447,11 @@ if jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[]
 else
   bad "hooks.json の PreToolUse（Bash matcher）の集約入口に guard-zsh-glob.sh が無い"
 fi
-DESC="$(jq -r '.description' "$HOOKS_JSON")"
-case "$DESC" in
-  *guard-zsh-glob.sh*FF_ZSH_GLOB_ACK*) ok "hooks.json の description が zsh glob ガードと抜け道に言及する" ;;
-  *) bad "hooks.json の description に guard-zsh-glob.sh / FF_ZSH_GLOB_ACK の記述が無い" ;;
-esac
+if grep -q '^#.*FF_ZSH_GLOB_ACK' "$TARGET" && grep -q '^#.*FF_ZSH_EXPANSION_ACK' "$TARGET"; then
+  ok "guard-zsh-glob.sh のヘッダが zsh glob / expansion ガードと抜け道に言及する"
+else
+  bad "guard-zsh-glob.sh のヘッダに FF_ZSH_GLOB_ACK / FF_ZSH_EXPANSION_ACK の記述が無い"
+fi
 
 echo "guard-zsh-glob: Z zsh 固有（述語の性質を実際の zsh で確かめる）"
 if ZSH_BIN="$(command -v zsh 2>/dev/null)" && [ -n "$ZSH_BIN" ]; then

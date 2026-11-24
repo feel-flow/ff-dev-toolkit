@@ -246,6 +246,23 @@ describe("computeReuseStats", () => {
     expect(statsFor(PLAYBOOK_FIXTURE, prefixed).get("ACE-005")).toMatchObject({ gitRefCount: 0, lastGitRefDate: null });
   });
 
+  it("1 件を ID だけへ短縮した件名（要約は本文の折り返した行）も除外する", () => {
+    const issueNo = 2812;
+    const idOnly = `${RS}2026-11-24${FS}knowledge: ACE-449-2${FS}- ACE-449-2 ACE-005 を参照した長い要約\n  の続きの行\nCategories: process`;
+    const prefixed = `${RS}2026-11-24${FS}chore: #${issueNo} ACE-449-2 ほか 2 件${FS}- ACE-449-2 / ACE-449-1 / ACE-i425-1 ACE-005 を参照した要約\nCategories: process`;
+    expect(statsFor(PLAYBOOK_FIXTURE, idOnly).get("ACE-005")).toMatchObject({ gitRefCount: 0, lastGitRefDate: null });
+    expect(statsFor(PLAYBOOK_FIXTURE, prefixed).get("ACE-005")).toMatchObject({ gitRefCount: 0, lastGitRefDate: null });
+  });
+
+  it.each([
+    `chore: #${2812} ACE-449-2`,
+    `chore: ACE-449-2 (#${2812})`,
+    `chore: ACE-449-2 (Refs #${2812})`,
+  ])("knowledge 以外の type で ID だけに短縮した件名 %s も Categories 行で除外する", (subject) => {
+    const log = `${RS}2026-11-24${FS}${subject}${FS}- ACE-449-2 ACE-005 を参照した長い要約\nCategories: process`;
+    expect(statsFor(PLAYBOOK_FIXTURE, log).get("ACE-005")).toMatchObject({ gitRefCount: 0, lastGitRefDate: null });
+  });
+
   it("Issue 番号付きの通常修正は Categories 行があっても除外しない", () => {
     const issueNo = 2516;
     const log = `${RS}2026-11-05${FS}fix: #${issueNo} 認証を直す${FS}ACE-005 の教訓を適用\nCategories: process`;

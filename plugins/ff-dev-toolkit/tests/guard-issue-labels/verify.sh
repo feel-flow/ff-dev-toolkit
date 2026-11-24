@@ -738,10 +738,11 @@ if [ "$guard_timeout" = 30 ]; then
 else
   bad "集約親の timeout が30秒ではありません（${guard_timeout:-なし}）"
 fi
-case "$(jq -r '.description' "$HOOKS_JSON")" in
-  *issue_write*) ok "hooks.json の description が GitHub MCP の issue_write に言及する" ;;
-  *) bad "hooks.json の description に GitHub MCP 経路（issue_write）の記述が無い" ;;
-esac
+if grep -q '^#.*issue_write' "$TARGET"; then
+  ok "guard-issue-labels.sh のヘッダが GitHub MCP の issue_write に言及する"
+else
+  bad "guard-issue-labels.sh のヘッダに GitHub MCP 経路（issue_write）の記述が無い"
+fi
 while IFS= read -r line; do
   case "$line" in
     OK\ *) ok "MCP matcher: ${line#OK }" ;;

@@ -134,6 +134,26 @@ fixture
   root,g=repo(n,'ace-from-pr-7-#9');hook=root/'.git/hooks/commit-msg';hook.write_text('#!/bin/bash\ngrep -qE \'#[0-9]+\' \"$1\"\n');hook.chmod(0o755);doc=root/'docs/08-knowledge/OBSERVATIONS.md';doc.parent.mkdir(parents=True);doc.write_text('observation\n')
   run('knowledge-commit.sh',['add','--github-input',index(entries),'--source','obs','--id','OBS-001','--summary','fixture','--',doc],cwd=root)
   pending=(root/'.git/ff-knowledge-pending').read_text();check(('I\t'+str(expected)+'\n') in pending,n+' optional closing reference/fallback')
+ # A recorded subject response that failed (HTTP non-200, unreadable body) or a missing jq is a failed lookup, not a
+ # missing one: stop rc2 before stage instead of falling back to the branch issue (an absent response above still falls back).
+ # The explicit --pr cases use a plain branch that still carries an issue number, so a fallback would pass the hook.
+ for n,entries,drop_jq,branch,extra in [('subject-http-404',[entry('knowledge.subject-issue',{'pr':7},f/'subject.json','subject',http_status=404)],False,'ace-from-pr-7-#9',[]),
+   ('subject-missing-body',[entry('knowledge.subject-issue',{'pr':7},t/'absent-subject.json','subject')],False,'ace-from-pr-7-#9',[]),
+   ('subject-no-jq',[entry('knowledge.subject-issue',{'pr':7},f/'subject.json','subject')],True,'ace-from-pr-7-#9',[]),
+   ('subject-http-404-explicit-pr',[entry('knowledge.subject-issue',{'pr':7},f/'subject.json','subject',http_status=404)],False,'knowledge-plain-#9',['--pr','7']),
+   ('subject-no-jq-explicit-pr',[entry('knowledge.subject-issue',{'pr':7},f/'subject.json','subject')],True,'knowledge-plain-#9',['--pr','7'])]:
+  root,g=repo(n,branch);hook=root/'.git/hooks/commit-msg';hook.write_text('#!/bin/bash\ngrep -qE \'#[0-9]+\' "$1"\n');hook.chmod(0o755);doc=root/'docs/08-knowledge/OBSERVATIONS.md';doc.parent.mkdir(parents=True);doc.write_text('observation\n')
+  ix=index(entries);jq_link=b/'jq';jq_target=None
+  if drop_jq and jq_link.is_symlink():jq_target=os.readlink(jq_link);jq_link.unlink()
+  try:out=run('knowledge-commit.sh',['add','--github-input',ix,*extra,'--source','obs','--id','OBS-001','--summary','fixture','--',doc],cwd=root,expected=2,diagnostic='KNOWLEDGE_COMMIT=subject-query-failed')
+  finally:
+   if jq_target is not None:jq_link.symlink_to(jq_target)
+  check(not (root/'.git/ff-knowledge-pending').exists() and g('diff','--cached','--name-only')=='' and not leak.exists(),n+' failed lookup stops before stage without branch fallback')
+ # A JSON index that is not a version 1 index (empty object, misspelled responses) is unreadable, not "no response".
+ for n,obj in [('subject-index-empty-object',{}),('subject-index-misspelled',{'version':1,'response':[entry('knowledge.subject-issue',{'pr':7},f/'subject.json','subject')]})]:
+  root,g=repo(n,'ace-from-pr-7-#9');hook=root/'.git/hooks/commit-msg';hook.write_text('#!/bin/bash\ngrep -qE \'#[0-9]+\' "$1"\n');hook.chmod(0o755);doc=root/'docs/08-knowledge/OBSERVATIONS.md';doc.parent.mkdir(parents=True);doc.write_text('observation\n')
+  run('knowledge-commit.sh',['add','--github-input',put(n+'.json',obj),'--source','obs','--id','OBS-001','--summary','fixture','--',doc],cwd=root,expected=2,diagnostic='KNOWLEDGE_COMMIT=subject-query-failed')
+  check(not (root/'.git/ff-knowledge-pending').exists() and g('diff','--cached','--name-only')=='' and not leak.exists(),n+' malformed index stops before stage without branch fallback')
  # Explicit --pr on a branch with neither ace-from-pr nor a branch issue uses the same subject file.
  paren_root,_paren_git=repo('subject-paren','chore/plain')
  hook=paren_root/'.git/hooks/commit-msg'

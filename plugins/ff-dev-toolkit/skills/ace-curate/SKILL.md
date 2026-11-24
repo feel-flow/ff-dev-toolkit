@@ -9,13 +9,9 @@ GitHub MCP の raw-file 入力は[共通契約](references/curate.md#github-file
 
 ## ASDD 2.0 設定がある場合
 
-最初に[共通設定契約](../asdd-init/references/configuration.md)を読み、`scripts/asdd/config.mjs` の `loadConfig(root)` で対象プロジェクトの `.asdd/config.json` を検証する。以下の従来手順より、合意済みの文書構成・機能スイッチ・ワークフローを優先する。設定なしは従来互換、不正設定は自動処理を止めて診断する。
+最初に[共通設定契約](../asdd-init/references/configuration.md)を読み、`scripts/asdd/config.mjs` の `loadConfig(root)` で `.asdd/config.json` を検証し、合意済みの構成・機能スイッチを優先する（設定なしは従来互換、不正設定は停止して診断）。`features.ace=false` では自動実行・Playbook 作成・収集を行わない（明示依頼は永続設定を変えず単発実行。振り返りは `features.retrospective` 有効時のみ）。
 
-`features.ace=false` のとき、ワークフローからの自動実行・Playbook作成・収集・整理を行わない。ユーザーがACEを明示依頼した場合は依頼範囲で実行するが、永続設定を勝手に変更しない。完了後の振り返りも `features.retrospective` が有効な場合だけ自動実行する。
-
-原則から推論で導けない知見（A〜D の B/C）がある PR のみ実行（既定チェーンは `/merge-cleanup` → `/retrospective`）。固定手順は `scripts/finish.sh knowledge-commit`、全文は [references/curate.md](references/curate.md)。
-
-**domainは通常curateの標準収集対象です。** 引数なし・PR番号のみでも他の知見と同時に評価し、opt-inを要求しません。根拠がある未確認知識もunverifiedで収集し、確認済みになるまで収集自体を待たせません。
+原則から推論で導けない知見（A〜D の B/C）がある PR のみ実行（既定チェーンは `/merge-cleanup` → `/retrospective`）。固定手順は `scripts/finish.sh knowledge-commit`、詳細は [references/curate.md](references/curate.md)。**domainは通常curateの標準収集対象です。** 根拠がある未確認知識も unverified で収集し、確認済みになるまで収集自体を待たせません。
 
 ## プラグインルートの固定（必須）
 
@@ -50,19 +46,16 @@ fi
 
 ## 配置先の解決（最初に実施）
 
-`/knowledge-lookup` と同じ resolver で解く（規則: [curate.md](references/curate.md)）:
-
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/knowledge-lookup.sh" --resolve-playbook --with-index-mode
 ```
 
-`ACE_PLAYBOOK_STATE=ok` と [索引方式](references/curate.md#索引方式) を確認。非 0・repo 外は変更前に停止。既定例は `ACE_PLAYBOOK_REL` に合わせる。
+`ACE_PLAYBOOK_STATE=ok` と [索引方式](references/curate.md#索引方式) を確認し、非 0・repo 外は変更前に停止する。
 
 ## 前提と引数
 
-- PRはマージ済み、資料単独は `--source` と `--issue` の両方。`docs/08-knowledge/PLAYBOOK.md` が存在し、ブランチは `<default-branch>` / `chore/ace-from-*` または最新origin/defaultのdetached（[手順](references/curate.md#worktreeセッションからの知見記録)）。保護・判定不能なら手順 1 で編集前に移る。cleanup後に実行
-- `$ARGUMENTS` — `[PR番号] [--source <資料パスまたはURL>]... [--issue <番号>]`。資料単独はsourceとissue必須。不正入力は変更前に拒否。資料は指定範囲のみ、取得失敗は未確認。domain正本: [ACE ドメイン知識契約](../../docs-template/05-operations/deployment/ace-domain.md)
-- sourceはACE_ARGSの1要素にし `$ARGUMENTS` をevalしない。検証: `ace-curate-input.ts`（ACE_MODE / PR_NUMBER / ISSUE_NUMBER を出す。exit 2なら変更しない）:
+- マージ済み PR または資料単独（`--source` と `--issue` 必須）。cleanup 後に `<default-branch>` / `chore/ace-from-*` または最新 origin/default の detached HEAD で実行する（[手順](references/curate.md#worktreeセッションからの知見記録)、domain 正本: [ACE ドメイン知識契約](../../docs-template/05-operations/deployment/ace-domain.md)）
+- `$ARGUMENTS` は `eval` せず `ACE_ARGS` 配列で `ace-curate-input.ts` へ渡して検証する（exit 2 は変更せず停止）:
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/ace-curate-input.ts" "${ACE_ARGS[@]}"
@@ -72,12 +65,12 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ### 1. 対象PRの特定
 
-資料単独は `gh issue view <Issue番号>` で存在確認し PR 取得を省く。無指定なら `gh pr list --state merged --limit 20 --json number,title,url,mergedAt --jq 'sort_by(.mergedAt) | last'`、指定があれば `gh pr view "$PR_NUMBER" --json number,state,mergedAt` で state=MERGED を確認する。以降の値を一度だけ固定する: `ACE_ID_PREFIX="ACE-${PR_NUMBER}"` / `ACE_BRANCH="chore/ace-from-pr-${PR_NUMBER}"` / `ACE_ORIGIN="PR #${PR_NUMBER}"`（資料単独は `ACE-i${ISSUE_NUMBER}` / `chore/ace-from-issue-${ISSUE_NUMBER}` / `Issue #${ISSUE_NUMBER}`）。
+資料単独は `gh issue view <Issue番号>`、PR は無指定なら `gh pr list --state merged --limit 20 --json number,title,url,mergedAt --jq 'sort_by(.mergedAt) | last'`、指定ありなら `gh pr view "$PR_NUMBER" --json number,state,mergedAt` で `state=MERGED` を確認し、`ACE_ID_PREFIX` / `ACE_BRANCH` / `ACE_ORIGIN` を固定する（PR: `ACE-${PR_NUMBER}` / `chore/ace-from-pr-${PR_NUMBER}` / `PR #${PR_NUMBER}`、資料単独: `ACE-i${ISSUE_NUMBER}` / `chore/ace-from-issue-${ISSUE_NUMBER}` / `Issue #${ISSUE_NUMBER}`）。
 
-<!--1b0bbdaa3ef899b7-->
+<!--fc654007eb9eb55f-->
 MCP: 取得値: MCP の Issue number/url、merged PR number/title/url/mergedAt/state。形式: repo固定JSON、mergedAt順。渡し先: PR_NUMBER/ISSUE_NUMBER と ACE_ID_PREFIX/ACE_BRANCH/ACE_ORIGIN。不足時: MCP必須不足は停止。
 
-**編集前の保護判定（必須）**: Playbook への最初の編集より前に `probe` を実行し、protected なら `ACE_BRANCH`、判定不能なら detached HEAD へ移ってから書く（unprotected と既存知見ブランチはそのまま）。MCP raw は手順 5 と同じ `--github-input` を付ける。
+**編集前の保護判定（必須）**: Playbook 編集前に `probe` を実行し、protected は `ACE_BRANCH`、判定不能は detached HEAD へ移る（MCP raw は `--github-input` を付与）:
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-shebang-cr.sh" || exit $?
@@ -93,30 +86,29 @@ if [[ "$start_branch" != chore/ace-from-* ]]; then
 fi
 ```
 
-### 2. Phase 1: Generate（知見抽出 — サブエージェント委譲が既定）
+### 2. Phase 1: Generate（知見抽出）
 
-read-only の抽出用 subagent があれば [references/extract-prompt.md](references/extract-prompt.md) のテンプレートで委譲し、**知見候補の要約だけを親へ返す**（探索型は使わず、無ければ fallback へ）。応答が空・途中終了、5 項目や必須 3 欄を欠く場合は、その応答を成功として扱わず、下の fallback（メイン収集）で抽出をやり直します。domain確認の欠落・未実施もfallback対象です。domainが評価済みで必須欄が揃っている場合だけ「候補: 0 件」の明示報告は成功です。subagent が無いホストでは、従来どおりメインで対象PRの以下の情報を収集し、同じ 7 観点で知見候補を抽出します: `gh pr diff $PR_NUMBER` / `gh pr view $PR_NUMBER --json body,comments,reviews` / 関連 Issue と資料。fallbackでもdomain確認を必ず記録する。
+read-only の抽出用 subagent があれば [references/extract-prompt.md](references/extract-prompt.md) で委譲し要約のみ受ける（探索型は不使用）。応答が空・途中終了・必須欄欠落の場合はその応答を成功として扱わず、下の fallback（メイン収集）で抽出をやり直します。domain確認の欠落・未実施もfallback対象です。domainが評価済みで必須欄が揃っている場合だけ「候補: 0 件」の明示報告は成功です。subagent が無いホストでは、従来どおりメインで対象PRの以下の情報を収集し、同じ 7 観点で抽出する: `gh pr diff $PR_NUMBER` / `gh pr view $PR_NUMBER --json body,comments,reviews` / 関連 Issue・資料（fallbackでもdomain確認を必ず記録する）。
 
-<!--680ad0bced68c632-->
+<!--d90c1de375daed24-->
 MCP: 取得値: MCP の PR diff/body/全comments/reviews と関連Issue本文。形式: diff text/JSON を scratch保存。渡し先: read-only 抽出者へ原文（write禁止、domain確認必須）。不足時: MCP必須不足は停止。
 
 ### 3. Phase 2: Reflect（評価・分類）
 
-[保留候補の再評価](references/pending.md)を読む。解決済みPLAYBOOKと同階層の `PENDING_CANDIDATES.md` を確認し、新規PRの候補が0件でも保留を同じ新規性ゲートへ掛け直す。保留は採用済みACEとして扱わない。
-
-**domainの判定を先行する**: コード/テストだけならunverified、正式資料か承認があればconfirmed、矛盾はconflictingと両側根拠を記録し、既存仕様や既存ACEを自動deprecatedにしない。Distilled-Toは収集時には付けない。評価ゲート: **A〜D 判定**（[curate.md](references/curate.md#a-d-判定) — A/D は破棄理由つきで落とす、B は記録、C は仕組み強制＋1 行記録）/ 再現性・影響度が中以上（低→スキップ）/ **新規性**（読者の行動が既存と同一なら `Helpful` +1 のみ。domainは主体・条件・例外・確認状態が違えば別）/ **抽象度下限**（固有名なしで1段上げ再判定、上げすぎ棄却）/ **一回性のインシデント叙述は Playbook に書かない**（TROUBLESHOOTING/runbookへ）。
-
-`FF_JEV_MODE=on` の候補は [triage](references/curate.md#triage) で先に選別する。`off` は従来経路・出力とバイト同一。[索引方式別の照合](references/curate.md#索引方式)で他カテゴリも確認する。**重複** → `Helpful` +1 / **矛盾（非domain）** → 既存を `deprecated` にして新エントリ / **新規** → Phase 3。**Reuse 記録の反映**: PR body の「参照して役立った」既存 ACE ID があれば `Helpful` を +1（候補 0 件でも行う）。
+- [保留候補の再評価](references/pending.md): 同階層の `PENDING_CANDIDATES.md` を確認し、新規PRの候補が0件でも保留を同じ新規性ゲートへ掛け直す（保留は採用済み ACE 扱いしない）。
+- **domain 先行判定**: コード/テストのみは `unverified`、正式資料/承認は `confirmed`、矛盾は `conflicting`（両側根拠を記録、既存仕様や既存ACEを自動deprecatedにしない、Distilled-Toは収集時には付けない）。
+- **評価ゲート**: **A〜D 判定**（[curate.md](references/curate.md#a-d-判定) — A/D は破棄理由つきで落とす、B は記録、C は仕組み強制＋1 行記録）／再現性・影響度中以上／新規性（読者の行動が同一なら `Helpful` +1 のみ）／抽象度下限／**一回性のインシデント叙述は Playbook に書かない**（TROUBLESHOOTING/runbookへ）。
+- `FF_JEV_MODE=on` は [triage](references/curate.md#triage) を先行実行（`off` は従来同一）。[索引方式別の照合](references/curate.md#索引方式)で重複（`Helpful` +1）・非 domain 矛盾（既存 `deprecated`＋新規）・新規（Phase 3）に分け、PR 本文の Reuse 記録があれば候補 0 件でも `Helpful` +1 する。
 
 ### 4. Phase 3: Curate（増分更新）
 
 #### 4-a. エントリIDの採番
 
-**PRスコープ式** `ACE-<PR番号>-<連番>`（資料は `ACE-i<Issue番号>-<連番>`）。[採番規則](references/curate.md#エントリidの採番)を読む。
+`ACE-<PR番号>-<連番>`（資料単独は `ACE-i<Issue番号>-<連番>`、[採番規則](references/curate.md#エントリidの採番)）。
 
 #### 4-b-0. 追記前にブロック上限の超過を予測する（必須・停止点）
 
-`/ace-curate` は追加のみ（整理は `/ace-refine` の役割で承認必須は正しく、変えない）。超える前に止める。
+`/ace-curate` は追加のみ（整理は `/ace-refine` の役割で承認必須は正しく、変えない）。超える前に止める:
 
 ```bash
 # 閾値も件数の数え方も二重に持たない（正本は check-category-size）
@@ -138,39 +130,25 @@ case "${SIZE_RC}" in
 esac
 ```
 
-**rc を `|| true` で捨てない**。読むのは `<カテゴリ>: <件数>` と `ブロック上限: <N> 件/カテゴリ` の 2 行だけ（警告行を上限の取得元にしない — 読めなかった回が「超過なし」に化ける。`ブロック上限:` 行が無ければ停止）。追記先ごとに `現在の件数 + 今回の追記数` を求め、**ブロック上限を超えるなら追記せず、その時点で停止する**。停止時は超過するカテゴリと件数・**先に必要な refine の範囲**・承認後に `/ace-refine` → `/ace-curate` の順で実行することを提示する。**「フォローアップとして記録した」で完了にしない**。
+**rc を `|| true` で捨てない**。読むのは `<カテゴリ>: <件数>` と `ブロック上限: <N> 件/カテゴリ` の 2 行のみ（警告行を上限の取得元にしない — 読めなかった回が「超過なし」に化ける。`ブロック上限:` 不在なら停止）。`現在の件数 + 今回の追記数` が**ブロック上限を超えるなら追記せず、その時点で停止する**（超過カテゴリ・件数・**先に必要な refine の範囲**・`/ace-refine` → `/ace-curate` の順を提示。**「フォローアップとして記録した」で完了にしない**）。
 
-通常の追記を止めたまま[保留候補の保存](references/pending.md)で全未処理候補を同じcommitへ含める。停止カテゴリ・予定総数・report実パス・rcをtool本文へ渡す。検査不成立では保存せず、全カテゴリ容量内は書かない。
+通常の追記を止めたまま[保留候補の保存](references/pending.md)で全未処理候補を同じ commit へ含める（検査不成立では保存せず、全カテゴリ容量内は書かない）。
 
 #### 4-b. playbook/category.md への追記 + PLAYBOOK.md 索引の更新
 
-[Changelog規則](references/curate.md#changelog-layout)に従う。
-
-**共有値の確定前ガード**: [curate.md](references/curate.md) の clean tree → fetch → 祖先検査を通す（失敗は停止）。
-
-[エントリの正準フォーマット](references/curate.md#エントリの正準フォーマット)に従う。メタ4行は各行の行頭に置く。
-
-domainでは同梱契約の4行形式でEvidence / Verification / Distill-Toを必ず追記する。`inline` のみヘッダの列順で追記し、索引行はタイトルのみ。[索引方式](references/curate.md#索引方式) に従う。
-
-#### 4-c / 4-d / 4-e. Frontmatter・Changelog・行数バジェット
-
-[更新規則](references/curate.md#history-update-rules)に従う。`ace_entry_count` は merged tree の live エントリ実数から再計算。Helpful は 1 行 1 ID。行数例外は `ace-line-budget-exception`。frontmatter は保存後に導出する。
+確定前ガード（clean tree → fetch → 祖先検査）、[Changelog規則](references/curate.md#changelog-layout)、[正準フォーマット](references/curate.md#エントリの正準フォーマット)（メタ 4 行は行頭、domain は Evidence / Verification / Distill-To 必須）、[索引方式](references/curate.md#索引方式)（索引行はタイトルのみ）、[更新規則](references/curate.md#history-update-rules)（`ace_entry_count` は merged tree の live エントリ実数から再計算、Helpful は 1 行 1 ID、行数例外は `ace-line-budget-exception`、frontmatter は保存後導出）に従う。
 
 #### 4-f. 同期検証（必須）
 
-プロジェクトのACE運用文書を優先し、無ければ[同期検証のfallback](references/curate.md#同期検証のfallback)を実行する。Frontmatter同期と `check-entry-format` を各1本、exit 0になるまで直す。同梱runnerは `ace-run-ts.sh`（不在はexit 3）、allowlistへ新規IDを足して通さない。
+プロジェクトの ACE 運用文書または[同期検証のfallback](references/curate.md#同期検証のfallback)で Frontmatter 同期と `check-entry-format` を各 1 本実行し exit 0 まで直す（同梱 runner は `ace-run-ts.sh`・不在は exit 3、allowlist への新規 ID 追加禁止）。
 
 #### 4-g. 完了報告の契約（機械的検証が非 0 なら「停止」）
 
-4-b-0 / 4-f の機械的検証が**非 0 を返したまま「完了」と報告しない**（4-e（行数バジェット）はこの列挙に入れない — 警告だけで終了コードを動かさない）。非 0 が残るなら報告は**停止**であり、どの検証が非 0 か・解消に必要な操作を名指しする（放置すると `live-ace-gates` が赤）。
-
-容量停止と保存成功を分け、保存成功時は「保留 N 件（置き場の実パス）」を出す。追記が止まったまま通常curateの完了とは呼ばない。
+4-b-0 / 4-f の機械的検証が**非 0 を返したまま「完了」と報告しない**（4-e（行数バジェット）はこの列挙に入れない）。非 0 が残るなら報告は**停止**であり、該当検証と解消手順を名指しする（放置すると `live-ace-gates` が赤）。容量停止と保留保存成功（「保留 N 件（置き場の実パス）」）は分け、追記停止を通常 curate 完了と呼ばない。
 
 ### 5. コミット
 
-**既定（推奨）— デフォルトブランチ直マージ**: 保護されていない default branch にのみ適用。**保護判定（必須・直 push を試す前に行う）**は手順 1 の `probe`（編集前）で済ませ、ここでは現在のブランチで分岐する。既存知見ブランチは PR 経由へ。判定・commitlint・保留合流は [references/curate.md](references/curate.md)。script での追記は [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う。
-
-MCP raw 利用時は各呼出しに同じ `--github-input /absolute/index.json` を付ける（[手順](references/curate.md#github-file-input)）。
+**既定（推奨）— デフォルトブランチ直マージ**: 保護されていない default branch にのみ適用。**保護判定（必須・直 push を試す前に行う）**は手順 1 の `probe` で済ませ、現在ブランチで分岐する（MCP raw は `--github-input /absolute/index.json`、script 追記は [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)）。
 
 ```bash
 commit_type="knowledge"
@@ -191,12 +169,9 @@ case "$push_rc" in
 esac
 ```
 
-`KNOWLEDGE_CI=` が未完了なら待ち、`failure` なら revert ではなく ACE コミットを前進で直して push し直す。**任意エスカレーション — chore PR**（**default branch が保護されている場合はこの経路が必須**）の新規ブランチは references/curate.md の fence で即 commit する。既存知見ブランチの保留は同じブランチで `/retrospective` へ渡す。`knowledge:` 付き PLAYBOOK 単独コミットの `<default-branch>` 直 push は意図的フローであり、直 push 禁止とは別物。
+`KNOWLEDGE_CI=` が未完了なら待ち、`failure` なら revert ではなく ACE コミットを前進で直して push し直す。**任意エスカレーション — chore PR**（**default branch が保護されている場合はこの経路が必須**）は [references/curate.md](references/curate.md) に従う。`knowledge:` 付き PLAYBOOK 単独コミットの `<default-branch>` 直 push は意図的フローであり、直 push 禁止とは別物。
 
-### 6. 結果レポートと次のステップ
+### 6. 結果レポートと注意事項
 
-[結果レポート](references/curate.md#結果レポート)に従い、domain は評価済み（候補N件）/ 未実施（理由）、A/D 破棄理由、source・登録/push/CI を報告。既定チェーンは `/merge-cleanup` → `/retrospective`（B/C 候補がある PR だけ挟む）。実行後は `/retrospective` へ進む。メタ知見は ACE Playbook ではなく `/retrospective` の提案経路で扱う。
-
-## 注意事項
-
-追記は**末尾のみ**（既存書換え禁止、整理は `/ace-refine`）。Helpful/Harmful は増分のみ。候補 0 でも Reuse 反映し「知見なし」と報告。
+- [結果レポート](references/curate.md#結果レポート)に従い、domain は評価済み（候補N件）/ 未実施（理由）、A/D 破棄理由、source・push・CI を報告する。既定チェーンは `/merge-cleanup` → `/retrospective`（B/C 候補がある PR だけ挟む）。実行後は `/retrospective` へ進む。
+- 追記は**末尾のみ**（既存書換え禁止、整理は `/ace-refine`）。Helpful / Harmful は増分のみ。候補 0 でも Reuse 反映し「知見なし」と報告。メタ知見は ACE Playbook ではなく `/retrospective` の提案経路で扱う。

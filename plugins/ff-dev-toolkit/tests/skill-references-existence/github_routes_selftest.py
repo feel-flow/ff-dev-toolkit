@@ -38,12 +38,80 @@ def red(label, text, reason, op='gh issue view'):
     check(label, any(e.startswith(path + ':') and op + ':' in e and e.endswith(reason) for e in errors))
 
 
+def red_source_changed(label, text, changed_unit, op='gh issue view'):
+    expected = routes.signature(changed_unit)
+    errors, _ = routes.audit_document(path, text)
+    matched = [
+        e for e in errors
+        if e.startswith(path + ':') and op + ':' in e
+        and e.endswith('SOURCE_CHANGED expected=' + expected)
+    ]
+    check(label, len(matched) == 1)
+    return matched[0] if matched else ''
+
+
 red('alternative missing', clean.replace(route, ''), 'MISSING_ADJACENT_ROUTE')
 red('alternative moved to a different step', clean.replace(route, '') + '\n' + route + '\n', 'MISSING_ADJACENT_ROUTE')
-red('same command name but arguments/body changed', clean.replace('number,body,state', 'number,title'), 'SOURCE_CHANGED')
+changed_arg_unit = unit.replace('number,body,state', 'number,title')
+red_source_changed('same command name but arguments/body changed emits expected signature', clean.replace('number,body,state', 'number,title'), changed_arg_unit)
 quoted = unit.replace('--json number,body,state', '--json number,body,state --jq \'"a  b"\'')
 quoted_note = route.replace(routes.signature(unit), routes.signature(quoted))
-red('spaces inside a quoted argument change source identity', clean.replace(unit, quoted).replace(route, quoted_note).replace('a  b', 'a b'), 'SOURCE_CHANGED')
+quoted_changed_unit = quoted.replace('a  b', 'a b')
+red_source_changed('spaces inside a quoted argument change source identity with expected signature', clean.replace(unit, quoted).replace(route, quoted_note).replace('a  b', 'a b'), quoted_changed_unit)
+
+# Round-trip check: updating marker with expected=<16-hex> from SOURCE_CHANGED turns paragraph, table, and fence green.
+sample_units = [
+    ('paragraph', '対象は `gh issue view 42 --json number,body,state` で取得する。', '対象は `gh issue view 42 --json number,body,state,title` で取得する。'),
+    ('table', '| 手順 | コマンド |\n| --- | --- |\n| 確認 | `gh issue view 42 --json number,body,state` |', '| 手順 | コマンド |\n| --- | --- |\n| 確認 | `gh issue view 42 --json number,body,state,labels` |'),
+    ('fence', unit, changed_arg_unit),
+]
+for unit_kind, before_unit, after_unit in sample_units:
+    old_sig = routes.signature(before_unit)
+    doc_before = (
+        f'# {unit_kind} sample\n\n{before_unit}\n\n<!--{old_sig}-->\n'
+        'MCP: 取得値: MCP の Issue number/body/state。形式: 全文 JSON を保存。'
+        '渡し先: AC の照合へ渡す。不足時: 必須の MCP field 不足は停止。\n'
+    )
+    doc_after = doc_before.replace(before_unit, after_unit, 1)
+    err_line = red_source_changed(
+        f'SOURCE_CHANGED emits expected=<16-hex> for {unit_kind}',
+        doc_after,
+        after_unit,
+    )
+    m = re.search(r'SOURCE_CHANGED expected=([0-9a-f]{16})$', err_line)
+    check(f'expected signature format is 16-hex for {unit_kind}', bool(m))
+    fixed_doc = doc_after.replace(f'<!--{old_sig}-->', f'<!--{m[1]}-->', 1)
+    fixed_errors, fixed_count = routes.audit_document(path, fixed_doc)
+    check(f'replacing marker with reported expected signature turns {unit_kind} green', fixed_count == 1 and not fixed_errors)
+
+# Multiple SOURCE_CHANGED units in a single document emit distinct expected signatures per unit.
+multi_u1_before = '最初は `gh issue view 10 --json number,body` で確認する。'
+multi_u1_after = '最初は `gh issue view 10 --json number,body,state` で確認する。'
+multi_u2_before = '次は `gh pr view 20 --json number,title` で確認する。'
+multi_u2_after = '次は `gh pr view 20 --json number,title,state` で確認する。'
+multi_sig1_old, multi_sig2_old = routes.signature(multi_u1_before), routes.signature(multi_u2_before)
+multi_sig1_new, multi_sig2_new = routes.signature(multi_u1_after), routes.signature(multi_u2_after)
+multi_doc = (
+    f'# multi sample\n\n{multi_u1_after}\n\n<!--{multi_sig1_old}-->\n'
+    'MCP: 取得値: MCP の Issue number/body/state。形式: 全文 JSON を保存。'
+    '渡し先: AC の照合へ渡す。不足時: 必須の MCP field 不足は停止。\n\n'
+    f'{multi_u2_after}\n\n<!--{multi_sig2_old}-->\n'
+    'MCP: 取得値: MCP の PR number/title/state。形式: 全文 JSON を保存。'
+    '渡し先: PR の照合へ渡す。不足時: 必須の MCP field 不足は停止。\n'
+)
+multi_errors, multi_count = routes.audit_document(path, multi_doc)
+check(
+    'multiple SOURCE_CHANGED units emit each unit own expected signature',
+    multi_count == 2 and len(multi_errors) == 2
+    and multi_sig1_new != multi_sig2_new
+    and any('gh issue view:SOURCE_CHANGED expected=' + multi_sig1_new in e for e in multi_errors)
+    and any('gh pr view:SOURCE_CHANGED expected=' + multi_sig2_new in e for e in multi_errors),
+)
+multi_fixed = multi_doc.replace(f'<!--{multi_sig1_old}-->', f'<!--{multi_sig1_new}-->', 1).replace(
+    f'<!--{multi_sig2_old}-->', f'<!--{multi_sig2_new}-->', 1
+)
+multi_fixed_errors, multi_fixed_count = routes.audit_document(path, multi_fixed)
+check('replacing both markers with reported expected signatures turns multi-unit doc green', multi_fixed_count == 2 and not multi_fixed_errors)
 for field in ['取得値', '形式', '渡し先', '不足時']:
     red('missing ' + field, clean.replace(field + ': ', field + '-gone: '), 'MISSING_' + field)
 generic = ('<!--' + routes.signature(unit) + '-->\nMCP: 取得値: MCPで同等操作を実施。'
@@ -73,7 +141,7 @@ excluded = decoy + '\n\n<!--' + routes.signature(decoy) + '-->\n分類: 禁止�
 errors, count = routes.audit_document(path, excluded)
 check('forbidden decoy exists and is correctly classified', count == 1 and 'gh auth token' in excluded and not errors)
 active = decoy.replace('prohibited secret example:', 'command:').replace(' (実行しない)', '')
-red('classification cannot survive changed operation context', excluded.replace(decoy, active), 'SOURCE_CHANGED', 'gh auth token')
+red_source_changed('classification cannot survive changed operation context', excluded.replace(decoy, active), active, 'gh auth token')
 
 root = Path(sys.argv[1]).resolve()
 with tempfile.TemporaryDirectory(prefix='ff-github-routes-') as directory:

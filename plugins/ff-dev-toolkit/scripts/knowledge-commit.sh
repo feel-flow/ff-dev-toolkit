@@ -18,7 +18,10 @@
 #   commit  保留記録を 1 コミットへまとめる（`--force` で上の鮮度検査を省く）。件名はエントリ 1 件なら
 #           `<type>: <ID> <要約>`（従来形）、2 件以上なら `<type>: <ID> / <ID> …` で、
 #           要約は本文へ 1 行ずつ置く。カテゴリは本文の `Categories:` 行へ置く（件名には並べない。
-#           重複を除き、100 字を超えるときは次の行へ折り返す）。
+#           重複を除き、100 字を超えるときは次の行へ折り返す）。件名が 100 字（commitlint と同じく UTF-16 の
+#           コード単位で数える）を超えるときだけ短縮する: 1 件は ID だけにして要約を本文の `- <ID> <要約>` 行へ
+#           移し、それでも超えて ID が複数なら先頭の ID ほか N 件。複数件は先頭の ID ほか N 件。本文の
+#           `- <ID> <要約>` 行は 100 字を超えるときだけ折り返す（続きの行は 2 文字下げ）。
 #           commit は保留記録のパスへ固定する（`git commit -- <path>…`。索引に載った無関係な
 #           変更を巻き込まない）。できたコミットを読み戻し、記録外のパスが入っていたら（commit 前
 #           フックが一時索引へ足した場合など）`KNOWLEDGE_COMMIT=scope-mismatch` を出し、そのコミットを
@@ -55,9 +58,14 @@
 # chore → docs も同じ hook で検証する（type だけの制約なら Issue を足さない）。Issue が必要なら
 # ace-from-pr-N の PR、そうでなければ --pr、どちらも無く default branch または detached HEAD で
 # --github-input が無いときだけ、updatedAt が新しいマージ済み PR から mergedAt が最大の 1 件、
-# その後に branch 自身の #N を解決する。
+# その後に branch 自身の #N を解決する。出典の PR を照会した回は、照会できて番号が返らなかったときだけ branch の
+# #N へ進み、照会に失敗した回（gh の非 0・gh が無い・--github-input の index や応答を読めない / 形が壊れている・
+# HTTP status が 200 でない・jq が無い、など）は `KNOWLEDGE_COMMIT=subject-query-failed` を出して exit 2 で止まる。
+# --github-input の index にその PR の応答が無い回は照会していないので branch の #N へ進む（ライブラリが無くても
+# 同じ）。default / detached で直近マージ PR の一覧を取れない回は、従来どおり出典の PR が無いものとして扱う。
 # PR の番号は closing Issue → 本文の Ref / Refs → title の最初の番号。候補は type を内側に、
 # 裸の `<type>: #<issue> <残り>`、末尾の `(#<issue>)`、末尾の `(Refs #<issue>)` の順。
+# 候補ごとに上の上限で測り、超えれば形を保って短縮する（Issue の前置で初めて超える 1 件も要約を本文へ残す）。
 # エラー文や commitlint 設定は独自解釈しない。解決した type/Issue は保留へ保存する。
 # 解決元が無い・どの候補も拒否された回は従来どおり hook の出力を示して exit 4。
 # `add` は stage も保留記録も作らない（finish.sh の `--claim` 経由では文書と claim の stage は残る）。
@@ -75,6 +83,7 @@
 #   add:    KNOWLEDGE_PENDING=<件数>（hook でドライランした回は KNOWLEDGE_SUBJECT=<hook 通過後の件名> も）
 #   commit: KNOWLEDGE_COMMIT=<sha>|none|scope-mismatch / KNOWLEDGE_SUBJECT=<commit された件名> / KNOWLEDGE_ENTRIES=<件数>
 #   add / commit の hook 拒否: KNOWLEDGE_COMMIT=hook-rejected / KNOWLEDGE_SUBJECT=<件名> / KNOWLEDGE_HOOK=<hook のパス>
+#   add / commit の出典 PR 照会の失敗: KNOWLEDGE_COMMIT=subject-query-failed
 #   status: KNOWLEDGE_PENDING=<件数> / KNOWLEDGE_PENDING_BRANCH= / KNOWLEDGE_PENDING_BASE= と `  <source> <ID> <要約>` 行
 #   discard: KNOWLEDGE_DISCARDED=<件数>
 #
@@ -83,7 +92,8 @@
 #   1  止めるべき状態（合成 identity・commit の失敗・保留記録の破損・default branch が origin より遅れて
 #      いる add・記録した Markdown の markdownlint 違反）。保留記録は残す
 #   2  使い方の誤り・環境不備（git 管理外・パスがリポジトリ外 / 不在・lib 不在・origin/<default> を
-#      fetch / 解決できない add・記録した Markdown を markdownlint で検査できない commit）
+#      fetch / 解決できない add・記録した Markdown を markdownlint で検査できない commit・件名に要る Issue を
+#      出典 PR から照会できない add / commit。add は stage も保留記録も作らず、commit は保留記録を残す）
 #   4  commit-msg hook が組み立てた件名を拒否した（add は stage も保留記録も作らない。commit は保留記録を残す）
 #
 # 実装上の制約: macOS 標準の bash 3.2 で動くこと（連想配列・readarray を使わない）。
@@ -420,43 +430,85 @@ assert_default_branch_fresh() {
   assert_not_batch_mode "$default"
 }
 
-# commitlint の header-max-length 既定。複数エントリの件名だけを、超えたとき短縮する。
+# commitlint の header-max-length 既定。件名（1 件も複数件も）がこれを超えるときだけ短縮する。
 KC_SUBJECT_MAX=100
-# 件名の長さ。awk -v はバックスラッシュを壊すので、件名は標準入力で渡す。
-# LC_ALL=C の length はバイト数。この経路の ID は ASCII なので文字数と一致する。
-subject_byte_len() {
-  printf '%s' "$1" | LC_ALL=C awk '{ print length($0); exit }'
+# commitlint の body-max-line-length 既定。本文の `- ID 要約` 行がこれを超えるときだけ折り返す。
+KC_BODY_MAX_LINE=100
+# 長さは commitlint と同じ単位（JavaScript の文字列長 = UTF-16 のコード単位）で数える。日本語は 1 文字
+# 3 バイトなので、バイト数で測ると 100 字以内の件名まで短縮してしまう（Issue `#2812`）。awk は LC_ALL=C で
+# 1 バイトずつ読み、UTF-8 の継続バイト（0x80〜0xBF）を数えず、4 バイト文字の先頭（0xF0〜0xF7）を 2 と数える。
+# awk -v はバックスラッシュを壊すので、文字列は標準入力で渡す。
+KC_UTF8_AWK='BEGIN { for (i = 128; i < 192; i++) cont = cont sprintf("%c", i); for (i = 240; i < 248; i++) four = four sprintf("%c", i) }
+function units(s,   n, i, c, u) { n = length(s); u = 0; for (i = 1; i <= n; i++) { c = substr(s, i, 1); if (index(cont, c)) continue; u += index(four, c) ? 2 : 1 } return u }'
+subject_len() {
+  printf '%s' "$1" | LC_ALL=C awk "$KC_UTF8_AWK"'
+    { u += units($0) } END { print u + 0 }'
 }
-# 複数エントリを畳んだ短い件名。全 ID は本文の `- ID 要約` 行に残る。
-short_multi_subject() { # <type> <issue or empty>
-  local t="$1" issue="$2" rest_n
-  rest_n=$((msg_count - 1))
-  if [[ -z "$issue" ]]; then
-    printf '%s' "${t}: ${msg_first_id} ほか ${rest_n} 件"
-  else
-    printf '%s' "${t}: #${issue} ${msg_first_id} ほか ${rest_n} 件"
-  fi
+# 標準入力の各行を KC_BODY_MAX_LINE 以内へ折り返す。収まる行はバイトを変えない。空白で切れる所は空白で、
+# 1 行に収まらない語（空白の無い日本語の要約）は文字の境目で切る。続きの行は 2 文字下げる。行の途中の
+# 連続した空白はそのまま残す（split を 1 文字の空白で区切るので、連続した空白は空の語として数え、つなぐ
+# ときに空白へ戻る）。切った位置にかかる空白は改行に替わり、連続していた分も行末に残るか消える（語は欠けない。
+# 行末の空白は commit の stripspace でも消える）。
+wrap_body_lines() {
+  LC_ALL=C awk -v max="$KC_BODY_MAX_LINE" "$KC_UTF8_AWK"'
+    function put_long(s,   n, i, j, cw) {
+      n = length(s); i = 1
+      while (i <= n) {
+        j = i + 1
+        while (j <= n && index(cont, substr(s, j, 1))) j++
+        cw = index(four, substr(s, i, 1)) ? 2 : 1
+        if (lw + cw > max) { print line; line = "  "; lw = 2 }
+        line = line substr(s, i, j - i); lw += cw; i = j
+      }
+    }
+    {
+      if (units($0) <= max) { print; next }
+      n = split($0, tok, / /); line = ""; lw = 0
+      for (k = 1; k <= n; k++) {
+        tw = units(tok[k])
+        sep = (line == "" || line == "  ") ? 0 : 1
+        if (lw + sep + tw <= max) { line = line (sep ? " " : "") tok[k]; lw += sep + tw; continue }
+        if (tw > max - 2) {
+          # 続けて置くと空白の後に 1 文字も入らない行は、空白を残さずに折り返す
+          fw = index(four, substr(tok[k], 1, 1)) ? 2 : 1
+          if (sep && lw + 1 + fw <= max) { line = line " "; lw += 1 } else if (sep) { print line; line = "  "; lw = 2 }
+          put_long(tok[k]); continue
+        }
+        print line; line = "  " tok[k]; lw = 2 + tw
+      }
+      if (line != "" && line != "  ") print line
+    }'
 }
-# 100 字以内の件名はバイトを変えない。超える複数エントリだけ短い形へ替える。
-fit_multi_subject() { # <candidate> <type> <issue or empty>
-  local candidate="$1" t="$2" issue="$3" len
-  if [[ "${msg_count:-0}" -le 1 || -z "${msg_first_id:-}" ]]; then
+# 件名の候補を KC_SUBJECT_MAX 以内へ収める。収まる候補はバイトを変えない。選んだ形（裸 / 末尾の括弧）は保つ。
+# 1 件: ID だけ（要約は本文の `- ID 要約` 行へ移る）→ ID が複数（` / ` か `,` 区切り）なら先頭の ID ほか N 件。
+# 複数件: 先頭エントリの ID ほか N 件（全 ID は本文の `- ID 要約` 行に残る）。
+fit_subject() { # <candidate> <form> <type> <issue or empty>
+  local candidate="$1" form="$2" t="$3" issue="$4" short
+  if [[ "$(subject_len "$candidate")" -le "$KC_SUBJECT_MAX" ]]; then
     printf '%s' "$candidate"
     return 0
   fi
-  len="$(subject_byte_len "$candidate")"
-  if [[ "$len" -gt "$KC_SUBJECT_MAX" ]]; then
-    short_multi_subject "$t" "$issue"
-    return 0
+  if [[ "${msg_count:-0}" -eq 1 && -n "${msg_ids:-}" ]]; then
+    short="$(issue_form_subject "$form" "$t" "$issue" "$msg_ids")"
+    if [[ "${msg_ids_n:-1}" -le 1 || "$(subject_len "$short")" -le "$KC_SUBJECT_MAX" ]]; then
+      printf '%s' "$short"
+      return 0
+    fi
+    issue_form_subject "$form" "$t" "$issue" "${msg_ids_first} ほか $((msg_ids_n - 1)) 件"
+  elif [[ "${msg_count:-0}" -gt 1 && -n "${msg_first_id:-}" ]]; then
+    issue_form_subject "$form" "$t" "$issue" "${msg_first_id} ほか $((msg_count - 1)) 件"
+  else
+    printf '%s' "$candidate"
   fi
-  printf '%s' "$candidate"
 }
 
 # 件名と本文を E 行（`E<TAB>source<TAB>id<TAB>summary<TAB>categories`）から組み立てる。add のドライランと
 # commit が同じ関数を通るので、ドライランで確かめた件名と commit する件名がずれない。
-# 引数: <E 行（改行区切り）> <commit type> [解決した Issue]。結果は msg_subject / msg_body / msg_count へ入れる
+# 引数: <E 行（改行区切り）> <commit type> [解決した Issue]。結果は msg_subject / msg_body / msg_count へ入れる。
+# 候補を組み直す commit_msg_dry_run のために、短縮前の残り文（msg_rest）と、件名が短縮されないときの本文
+# （msg_body_full）・短縮されたときの本文（msg_body_short。1 件の要約を `- ID 要約` 行で本文へ残す）も入れる
 compose_message() {
-  local lines="$1" t="$2" issue="${3:-}" ordered categories
+  local lines="$1" t="$2" issue="${3:-}" ordered categories items unfitted
   # ace → obs の順、同じ source の中は与えた順
   ordered="$(printf '%s\n' "$lines" | awk -F '\t' '$1=="E" && $2=="ace"'; printf '%s\n' "$lines" | awk -F '\t' '$1=="E" && $2=="obs"')"
   msg_count="$(printf '%s\n' "$ordered" | awk -F '\t' '$1=="E" {n++} END {print n+0}')"
@@ -479,20 +531,34 @@ compose_message() {
       }
       if (k) print line
     }')"
+  # 要約の行は 1 件でも複数件でも同じ形。commitlint の body-max-line-length を超える行だけ折り返す
+  items="$(printf '%s\n' "$ordered" | awk -F '\t' '{print "- " $3 " " $4}' | wrap_body_lines)"
+  msg_ids="" msg_ids_n=0 msg_ids_first=""
   if [[ "$msg_count" -eq 1 ]]; then
-    msg_subject="$(printf '%s\n' "$ordered" | awk -F '\t' -v t="$t" '{print t ": " $3 " " $4}')"
-    msg_body=""
+    msg_rest="$(printf '%s\n' "$ordered" | awk -F '\t' '{print $3 " " $4}')"
+    msg_ids="$(printf '%s\n' "$ordered" | awk -F '\t' '{print $3}')"
+    # `--id` の繰り返し（` / ` 区切り）と 1 つの `--id` に並べた ID（`,` 区切り）の両方を数える
+    IFS=$'\t' read -r msg_ids_n msg_ids_first <<<"$(printf '%s\n' "$msg_ids" | awk '{ gsub(/ \/ /, ","); n = split($0, a, / *, */); print n "\t" a[1] }')"
+    msg_body_full=""
   else
-    msg_subject="$(printf '%s\n' "$ordered" | awk -F '\t' -v t="$t" '{ s = s (NR > 1 ? " / " : "") $3 } END { print t ": " s }')"
-    msg_body="$(printf '%s\n' "$ordered" | awk -F '\t' '{print "- " $3 " " $4}')"
+    msg_rest="$(printf '%s\n' "$ordered" | awk -F '\t' '{ s = s (NR > 1 ? " / " : "") $3 } END { print s }')"
+    msg_body_full="$items"
   fi
+  msg_body_short="$items"
   msg_first_id="$(printf '%s\n' "$ordered" | awk -F '\t' 'NR==1 { print $3; exit }')"
-  [[ -z "$issue" ]] || msg_subject="${t}: #${issue} ${msg_subject#*: }"
-  # 長さは Issue 前置の後に測る。収まる件名（1 件を含む）はここで文字列を触らない。
-  if [[ "$msg_count" -gt 1 ]]; then
-    msg_subject="$(fit_multi_subject "$msg_subject" "$t" "$issue")"
+  if [[ -n "$categories" ]]; then
+    msg_body_full="${msg_body_full:+$msg_body_full$'\n\n'}${categories}"
+    msg_body_short="${msg_body_short}"$'\n\n'"${categories}"
   fi
-  [[ -z "$categories" ]] || msg_body="${msg_body:+$msg_body$'\n\n'}${categories}"
+  # 長さは Issue 前置の後に測る。収まる件名はここで文字列を触らない
+  unfitted="$(issue_form_subject bare "$t" "$issue" "$msg_rest")"
+  msg_subject="$(fit_subject "$unfitted" bare "$t" "$issue")"
+  msg_body="$(subject_body "$unfitted" "$msg_subject")"
+}
+
+# 件名の候補と、上限へ収めた後の件名から、その件名に合う本文を返す。短縮した 1 件だけが要約を本文へ移す
+subject_body() { # <短縮前の件名> <収めた件名>
+  if [[ "$1" != "$2" ]]; then printf '%s' "$msg_body_short"; else printf '%s' "$msg_body_full"; fi
 }
 
 HOOK_REJECTED_RC=4
@@ -547,32 +613,66 @@ default_branch_name() {
 }
 
 # PR 番号 1 件から Issue を 1 件返す。github-input があれば knowledge.subject-issue、無ければ gh pr view。
-# 解決できなければ何も出さない。失敗でも 0 で戻る（呼び出し側が次の出典へ進む）。
+# 戻り値 0: 照会できた。番号が無ければ何も出さない（呼び出し側が branch の #N へ進む）。github-input の index に
+#   その PR の応答が無い回も、照会していない（任意の取得が無い）として番号無しの 0 にする。
+# 戻り値 3: 照会に失敗した（gh の非 0・gh が無い・index や応答を読めない・形が壊れている・HTTP status が 200 で
+#   ない・jq が無い・応答があるのに github-input のライブラリが無い、など）。理由を stderr へ出す。呼び出し側は
+#   branch の #N へ落とさず止める（Issue `#2911`）。
 issue_from_pr_number() {
-  local pr="$1" issue="" gi_tmp="" gi_repository="" lib="$self_dir/lib/github-input.sh"
+  local pr="$1" issue="" raw="" n="" rc=0 err="" err_file="" gi_tmp="" gi_repository="" lib="$self_dir/lib/github-input.sh"
   [[ "$pr" =~ ^[1-9][0-9]*$ ]] || return 0
   if [[ -n "$github_input" ]]; then
-    if [[ -r "$lib" ]] && command -v jq >/dev/null 2>&1; then
-      # shellcheck source=lib/github-input.sh
-      . "$lib"
-      gi_tmp="$(mktemp -d)" || gi_tmp=""
-      if [[ -n "$gi_tmp" ]]; then
-        # The private helper reads Git's configured origin, preserving the host.
-        gi_repository="$( (cd "$repo_root" && _github_input_repository) 2>/dev/null)" || gi_repository=""
-        if [[ -n "$gi_repository" ]]; then
-          jq -n --arg repository "$gi_repository" --argjson pr "$pr" '{repository:$repository,pr:$pr}' >"$gi_tmp/scope"
-          printf '{}\n' >"$gi_tmp/position"
-          if github_file_read "$github_input" knowledge.subject-issue "$gi_tmp/scope" subject "$gi_tmp/position" >"$gi_tmp/raw" 2>/dev/null &&
-             { [[ -z "${GITHUB_INPUT_HTTP_STATUS:-}" || "$GITHUB_INPUT_HTTP_STATUS" == 200 ]]; }; then
-            issue="$(jq -r "$SUBJECT_ISSUE_FILTER" "$gi_tmp/raw" 2>/dev/null | subject_issue_from_pr)" || issue=""
-          fi
-        fi
-        rm -rf "$gi_tmp"
-      fi
+    command -v jq >/dev/null 2>&1 || { echo "✗ 出典 PR #${pr} を照会できません: --github-input の応答を読むには jq が要ります" >&2; return 3; }
+    # index にこの PR の応答が無い回は照会していない（任意の取得が無い）。origin の解決とライブラリより前に、
+    # index の形と PR 番号だけで確かめる。形が壊れた index（`{}`・responses が配列でない等）を「応答なし」と
+    # 読まない — 読めない・合わない回は失敗にする
+    n="$(jq -r --argjson pr "$pr" \
+      'if type == "object" and .version == 1 and (.responses | type) == "array"
+       then [.responses[] | select(type == "object" and .operation == "knowledge.subject-issue" and .phase == "subject" and .scope.pr == $pr)] | length
+       else "invalid" end' \
+      "$github_input" 2>/dev/null)" || n=""
+    n="${n%$'\r'}"
+    [[ "$n" =~ ^[0-9]+$ ]] || { echo "✗ 出典 PR #${pr} を照会できません: --github-input の index を読めないか、形が version 1 の index ではありません（${github_input}）" >&2; return 3; }
+    [[ "$n" != 0 ]] || return 0
+    [[ -r "$lib" ]] || { echo "✗ 出典 PR #${pr} を照会できません: github-input のライブラリを読めません（${lib}）" >&2; return 3; }
+    # shellcheck source=lib/github-input.sh
+    . "$lib"
+    # The private helper reads Git's configured origin, preserving the host.
+    gi_repository="$( (cd "$repo_root" && _github_input_repository) 2>/dev/null)" || gi_repository=""
+    [[ -n "$gi_repository" ]] || { echo "✗ 出典 PR #${pr} を照会できません: origin から GitHub のリポジトリを解決できません" >&2; return 3; }
+    gi_tmp="$(mktemp -d)" || { echo "✗ 出典 PR #${pr} を照会できません: 一時ディレクトリを作れません" >&2; return 3; }
+    if ! jq -n --arg repository "$gi_repository" --argjson pr "$pr" '{repository:$repository,pr:$pr}' >"$gi_tmp/scope" \
+      || ! printf '{}\n' >"$gi_tmp/position"; then
+      rm -rf "$gi_tmp"; echo "✗ 出典 PR #${pr} を照会できません: 照会条件を書けません" >&2; return 3
     fi
-  elif command -v gh >/dev/null 2>&1; then
-    issue="$( (cd "$repo_root" && gh pr view "$pr" --json closingIssuesReferences,title,body --jq "$SUBJECT_ISSUE_FILTER" 2>/dev/null) | subject_issue_from_pr)" || issue=""
+    rc=0
+    github_file_read "$github_input" knowledge.subject-issue "$gi_tmp/scope" subject "$gi_tmp/position" >"$gi_tmp/raw" 2>"$gi_tmp/err" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      err="$(cat "$gi_tmp/err" 2>/dev/null)"; rm -rf "$gi_tmp"
+      err="${err%%$'\n'*}"
+      echo "✗ 出典 PR #${pr} の応答を --github-input から読めません（${err:-index を読めません}）" >&2
+      return 3
+    fi
+    if [[ -n "${GITHUB_INPUT_HTTP_STATUS:-}" && "$GITHUB_INPUT_HTTP_STATUS" != 200 ]]; then
+      rm -rf "$gi_tmp"
+      echo "✗ 出典 PR #${pr} の照会が HTTP ${GITHUB_INPUT_HTTP_STATUS} で失敗しています（--github-input の応答）" >&2
+      return 3
+    fi
+    raw="$(jq -r "$SUBJECT_ISSUE_FILTER" "$gi_tmp/raw" 2>/dev/null)" || rc=$?
+    rm -rf "$gi_tmp"
+    [[ "$rc" -eq 0 ]] || { echo "✗ 出典 PR #${pr} の応答を解釈できません（--github-input の応答が PR の形でない）" >&2; return 3; }
+  else
+    command -v gh >/dev/null 2>&1 || { echo "✗ 出典 PR #${pr} を照会できません: gh が見つかりません" >&2; return 3; }
+    err_file="$(mktemp "${git_dir}/ff-knowledge-gh.XXXXXX")" || { echo "✗ 出典 PR #${pr} を照会できません: gh の出力を受ける一時ファイルを作れません" >&2; return 3; }
+    rc=0
+    raw="$(cd "$repo_root" && gh pr view "$pr" --json closingIssuesReferences,title,body --jq "$SUBJECT_ISSUE_FILTER" 2>"$err_file")" || rc=$?
+    err="$(cat "$err_file" 2>/dev/null)"; rm -f "$err_file"
+    if [[ "$rc" -ne 0 ]]; then
+      echo "✗ 出典 PR #${pr} の照会に失敗しました（gh pr view rc=${rc}: $(redact_first_line "${err:-出力なし}")）" >&2
+      return 3
+    fi
   fi
+  issue="$(printf '%s\n' "$raw" | subject_issue_from_pr)"
   [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 0
   printf '%s\n' "$issue"
   return 0
@@ -603,7 +703,8 @@ subject_pr_from_head() {
 
 # 出典は明示の --issue、そうでなければ ace-from-pr-N の PR（失敗しても別の PR へ進まない）、明示の --pr、
 # どちらも無く default / detached なら updatedAt が新しいマージ済みから mergedAt 最大の PR、
-# その後に branch 自身の #N。
+# その後に branch 自身の #N。branch の #N へ進むのは、PR を照会できて番号が返らなかったときだけ。
+# PR の照会に失敗したら 3 を返す（branch の #N を出さない。呼び出し側が止める）。
 # version claim は blob/version の記録で PR origin を持たない。ACE-ID・summary の数字は使わない。
 resolve_subject_issue() {
   local branch pr="" issue=""
@@ -613,15 +714,15 @@ resolve_subject_issue() {
   fi
   branch="$(current_branch)"
   if [[ "$branch" =~ (^|/)ace-from-pr-([1-9][0-9]*)(-|$) ]]; then
-    issue="$(issue_from_pr_number "${BASH_REMATCH[2]}")"
+    issue="$(issue_from_pr_number "${BASH_REMATCH[2]}")" || return 3
     [[ ! "$issue" =~ ^[1-9][0-9]*$ ]] || { printf '%s\n' "$issue"; return 0; }
   elif [[ -n "$origin_pr" ]]; then
-    issue="$(issue_from_pr_number "$origin_pr")"
+    issue="$(issue_from_pr_number "$origin_pr")" || return 3
     [[ ! "$issue" =~ ^[1-9][0-9]*$ ]] || { printf '%s\n' "$issue"; return 0; }
   else
     pr="$(subject_pr_from_head)"
     if [[ -n "$pr" ]]; then
-      issue="$(issue_from_pr_number "$pr")"
+      issue="$(issue_from_pr_number "$pr")" || return 3
       [[ ! "$issue" =~ ^[1-9][0-9]*$ ]] || { printf '%s\n' "$issue"; return 0; }
     fi
   fi
@@ -631,32 +732,48 @@ resolve_subject_issue() {
   return 0
 }
 
-# 件名の `: ` より後ろ。compose が前置した `#<issue> ` は 1 回だけ外し、括弧付き候補で二重にしない。
-subject_body_rest() { # <subject> <issue>
-  local rest="${1#*: }" issue="$2"
-  [[ "$rest" == "#${issue} "* ]] || { printf '%s' "$rest"; return 0; }
-  printf '%s' "${rest#"#${issue} "}"
-}
-
-# 同じ残り文に対する 3 形。裸が先、次に末尾の括弧、その次に Refs の括弧。
-issue_form_subject() { # <form> <type> <issue> <rest>
+# 同じ残り文に対する 3 形。裸が先、次に末尾の括弧、その次に Refs の括弧。裸の形は Issue が空なら番号を付けない
+# （括弧の形は Issue があるときだけ組み立てる）。
+issue_form_subject() { # <form> <type> <issue or empty> <rest>
   local form="$1" t="$2" issue="$3" rest="$4"
   case "$form" in
     paren) printf '%s' "${t}: ${rest} (#${issue})" ;;
     refs) printf '%s' "${t}: ${rest} (Refs #${issue})" ;;
-    *) printf '%s' "${t}: #${issue} ${rest}" ;;
+    *) if [[ -z "$issue" ]]; then printf '%s' "${t}: ${rest}"; else printf '%s' "${t}: #${issue} ${rest}"; fi ;;
   esac
 }
 
-# 括弧付きの複数件名を、括弧を残したまま 100 字以内へ畳む。1 件は短縮しない。
-short_form_subject() { # <form> <type> <issue>
-  local form="$1" t="$2" issue="$3" rest_n
-  rest_n=$((msg_count - 1))
-  case "$form" in
-    paren) printf '%s' "${t}: ${msg_first_id} ほか ${rest_n} 件 (#${issue})" ;;
-    refs) printf '%s' "${t}: ${msg_first_id} ほか ${rest_n} 件 (Refs #${issue})" ;;
-    *) short_multi_subject "$t" "$issue" ;;
-  esac
+# 1 つの候補（形・type・Issue）を短縮前の残り文から組み立て、上限へ収めて、その件名に合う本文と一緒に hook へ通す。
+# 通れば msg_subject / msg_body をその組へ替える。Issue の前置や括弧で初めて上限を超える 1 件も、要約を本文へ残す
+try_subject_candidate() { # <form> <type> <issue or empty>
+  local unfitted candidate body
+  unfitted="$(issue_form_subject "$1" "$2" "$3" "$msg_rest")"
+  candidate="$(fit_subject "$unfitted" "$1" "$2" "$3")"
+  body="$(subject_body "$unfitted" "$candidate")"
+  try_subject_hook "$candidate" "$body" || return 1
+  msg_subject="$candidate" msg_body="$body"
+}
+
+# 件名に要る Issue を出典 PR から照会できなかった。branch 名の番号へ落とさず止める（Issue `#2911`）。
+# 照会の失敗の理由は issue_from_pr_number が stderr へ出している。照会へ進んだきっかけ（元の件名を hook が
+# 拒否した理由）も併せて出す — Issue 以外の規則で拒否されていると、照会を直しても次は rc 4 で止まるため
+# 引数: <元の件名を拒否した hook> <その出力>
+subject_query_failed() {
+  local hook="${1:-}" hook_out="${2:-}" kept
+  if [[ "$cmd" == add ]]; then
+    kept="stage も保留記録も作っていません（finish.sh の --claim 経由では文書と claim の stage は残る）"
+  else
+    kept="保留記録は残してあります"
+  fi
+  echo "KNOWLEDGE_COMMIT=subject-query-failed"
+  if [[ -n "$hook" ]]; then
+    {
+      echo "  照会へ進んだきっかけ: ${hook##*/} hook が元の件名を拒否しました（hook: ${hook}）"
+      echo "  hook の出力:"
+      printf '%s\n' "$hook_out" | sed 's/^/    /'
+    } >&2
+  fi
+  die_env "件名の Issue を出典 PR から照会できなかったため、branch 名の番号を使わずに止めました（${kept}）。通信・認証を直して再実行するか、出典の Issue を --issue <番号> で明示してください"
 }
 
 # hook そのものを許容判定として使う。自由形式のエラーメッセージや JS 設定を解釈しない。
@@ -688,10 +805,11 @@ try_subject_hook() {
   return 1
 }
 
-# 引数: <件名> <本文> <止まった後の案内> [記録済み Issue]。
-# 通過した候補の raw 件名を msg_subject へ返す（prepare の書換えを commit に二重適用しない）。
+# 引数: <件名> <本文> <止まった後の案内> [記録済み Issue]。件名と本文は直前の compose_message の結果。
+# 通過した候補の raw 件名と本文を msg_subject / msg_body へ返す（prepare の書換えを commit に二重適用しない）。
+# 候補は compose_message が残した短縮前の残り文（msg_rest）から組み立て、形ごとに上限へ収める。
 commit_msg_dry_run() {
-  local subject="$1" body="$2" hint="$3" issue="${4:-}" t candidate rest form len
+  local subject="$1" body="$2" hint="$3" issue="${4:-}" t form
   local original_subject original_hook original_out original_rc
   local types=()
   subject_type="${subject%%:*}" subject_issue="$issue"
@@ -704,34 +822,23 @@ commit_msg_dry_run() {
     # type だけの制約なら Issue を足さない。明示された非 knowledge type は置換しない。
     for t in "${types[@]}"; do
       [[ "$t" != "$subject_type" ]] || continue
-      candidate="${t}:${subject#*:}"
-      candidate="$(fit_multi_subject "$candidate" "$t" "$issue")"
-      if try_subject_hook "$candidate" "$body"; then
-        msg_subject="$candidate" subject_type="$t"
+      if try_subject_candidate bare "$t" "$issue"; then
+        subject_type="$t"
         return 0
       fi
       [[ "$hook_prepare_failed" -eq 0 ]] || break
     done
+    # 出典 PR の照会に失敗した回は、branch の #N へ落とさずここで止める（照会の成功で番号が無い回だけが #N へ進む）
     if [[ "$hook_prepare_failed" -eq 0 && -z "$issue" ]]; then
-      issue="$(resolve_subject_issue)"
+      issue="$(resolve_subject_issue)" || subject_query_failed "$original_hook" "$original_out"
     fi
     # 形は外側、type は内側。裸の #N が通るリポジトリは括弧付きへ進まない。
-    # 括弧付きは fit_multi_subject に掛けない（短縮形が括弧を落とす）。
+    # 上限を超える候補は形を保って短縮する（括弧付きの短縮形も括弧を残す）。
     if [[ "$hook_prepare_failed" -eq 0 && -n "$issue" ]]; then
-      rest="$(subject_body_rest "$subject" "$issue")"
       for form in bare paren refs; do
         for t in "${types[@]}"; do
-          candidate="$(issue_form_subject "$form" "$t" "$issue" "$rest")"
-          if [[ "$form" == bare ]]; then
-            candidate="$(fit_multi_subject "$candidate" "$t" "$issue")"
-          elif [[ "${msg_count:-0}" -gt 1 && -n "${msg_first_id:-}" ]]; then
-            len="$(subject_byte_len "$candidate")"
-            if [[ "$len" -gt "$KC_SUBJECT_MAX" ]]; then
-              candidate="$(short_form_subject "$form" "$t" "$issue")"
-            fi
-          fi
-          if try_subject_hook "$candidate" "$body"; then
-            msg_subject="$candidate" subject_type="$t" subject_issue="$issue"
+          if try_subject_candidate "$form" "$t" "$issue"; then
+            subject_type="$t" subject_issue="$issue"
             return 0
           fi
           [[ "$hook_prepare_failed" -eq 0 ]] || break 2
@@ -1057,7 +1164,8 @@ case "$cmd" in
     subject="$msg_subject" body="$msg_body"
     commit_msg_dry_run "$subject" "$body" \
       "件名の Issue/type を解決できないか、候補を hook が拒否しました。保留記録は残してあります。規約を確認し commit --type <type> で再実行するか、discard してから記録したパスへ固定した git commit -m <規約どおりの件名> -- <記録したパス> で手でコミットしてください" "$issue"
-    subject="$msg_subject"
+    # 候補の件名を短縮した回は、要約を残した本文も一緒に替わる
+    subject="$msg_subject" body="$msg_body"
     ff_commit_identity_check "$repo_root" || exit 1
     msg_args=(-m "$subject")
     [[ -z "$body" ]] || msg_args+=(-m "$body")

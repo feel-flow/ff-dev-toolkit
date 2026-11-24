@@ -3,6 +3,12 @@
 # 空振り検出: 読み直しWARNの規定だけ/最終報告だけを別内容へ変える各変異もrc1で検出（2026-10-24実測、正常210件pass）。
 # 空振り検出: 種別 G の固定表行削除（3 件失敗）・docs-fact-drift 除去（1 件）・adapter-env-isolation-selftest 除去（1 件）・非実在 suite 名置換（2 件、実在照合含む）・既存 M/D 非追加規定削除（1 件）・diff-filter=A を ACMR へ弱める変異（1 件）・実行手順 G コメント削除（1 件）の 7 変異がすべて rc=1、無害追記 1 件のみ rc=0（SURVIVED=0 / FALSE-POSITIVE=0 / NOT-APPLIED=0、正常 227 件 pass、2026-11-14 mutation-harness 実測）。
 # 空振り検出: 種別 H の固定表行削除（3 件失敗）・skip-line-contract の非実在 suite 名置換（2 件、実在照合含む）・既存仕様への非追加規定削除（1 件）・実行手順 H コメント削除（1 件）・手順 6 の削除対象規定除去（1 件）・判定器呼出除去（1 件）・対象なし規定行削除（1 件）・未検査規定行削除（1 件）・出力テンプレート節削除（1 件）の 9 変異がすべて rc=1、無害追記 1 件のみ rc=0（10 件 / detected 9 / green-ok 1 / SURVIVED 0 / FALSE-POSITIVE 0 / NOT-APPLIED 0、正常 238 件 pass、2026-11-18 mutation-harness 実測）。
+# 空振り検出: 一律に 1 分未満とする文を戻す・複数 suite の起動 1 行を消す・種別 C が数分かかる文を消す、の 3 変異がすべて rc=1（各 1 件失敗）。無害なコメント追記 1 件は rc=0（245 件 pass、2026-11-21 実測）。
+# 空振り検出: suite コマンドの worktree 絶対パス文を相対パスへ戻す・600 秒を安全な上限にできない文を「600 秒で十分」へ変える、の 2 変異がすべて rc=1（各 1 件失敗）。無害なコメント追記 1 件は rc=0（249 件 pass、2026-11-21 実測）。
+# 空振り検出: run-all を親が background で起動する文だけを foreground へ変える・起動 1 行の引用符を外す、の 2 変異がすべて rc=1（各 1 件失敗）。無害なコメント追記 1 件は rc=0（250 件 pass、2026-11-22 実測）。
+# 空振り検出: shellcheck の「foreground で完了を待つ」を「background で起動する」へ変える変異が rc=1（1 件失敗）。無変異は 251 件 pass（2026-11-23 実測）。
+# 空振り検出: shellcheck の実行主体を親とサブエージェントで入れ替える・まとめスクリプトの「1 つでも非 0 なら非 0」を「最後の終了コード」へ変える・既定 timeout を超えるときの timeout 明示を消す、の 3 変異がすべて rc=1（各 1 件失敗）。無変異は 253 件 pass（2026-11-23 実測）。
+# 空振り検出: 種別 A 固定表から skill-references-existence を外す旧版・実行手順から skill-references-existence の起動行を消す旧版・実行手順の起動行を `# ` でコメントアウトする変異・種別 A を非実在 suite 名へ置換する変異（針＋実在照合の 2 件失敗）、の 4 変異がすべて rc=1。無害なコメント追記は rc=0（正常 256 件 pass、2026-11-24 実測）。
 #
 # Skill frontmatter と単一正本のポリシー検査（Issue #141 / #145 / #996 / ACE-147-1）。
 #
@@ -190,6 +196,52 @@ check_pre_commit_shell_step "$PRE_COMMIT_PREFLIGHT_HEADING" '全件ゲートを�
   'プリフライトが全件ゲートを置き換えない規定'
 check_pre_commit_shell_step "$PRE_COMMIT_PREFLIGHT_HEADING" '監視 glob ではなく固定表' \
   '監視 glob を持たず固定表で名指しする規定'
+check_pre_commit_shell_step "$PRE_COMMIT_TABLE_HEADING" '| A. 配布 Markdown | `plugins/ff-dev-toolkit/docs-template/**/*.md` または `plugins/ff-dev-toolkit/skills/**/*.md` | `docs-gates` / `plugin-root-contract` / `skill-references-existence` |' \
+  '種別 A が skill-references-existence（GitHub 操作案内の署名ずれ検査）を名指しする'
+if pre_commit_steps_body="$(section_scope_extract "$PRE_COMMIT_SKILL" "$PRE_COMMIT_STEPS_HEADING")"; then
+  case $'\n'"$pre_commit_steps_body"$'\n' in
+    *$'\n''bash plugins/ff-dev-toolkit/tests/skill-references-existence/verify.sh'$'\n'*)
+      ok "pre-commit-check — 実行手順に skill-references-existence の単体実行コマンドがある（行完全一致）"
+      ;;
+    *)
+      bad "pre-commit-check — 実行手順に skill-references-existence の単体実行コマンドがありません（コメントアウトや改変を検出）"
+      ;;
+  esac
+else
+  bad "pre-commit-check — プリフライトの実行手順節を切り出せません（${pre_commit_steps_body}）"
+fi
+check_pre_commit_shell_step "$PRE_COMMIT_PREFLIGHT_HEADING" '種別 C の `run-all` と `shellcheck` は単体でも数分かかる' \
+  '種別 C の run-all と shellcheck は単体でも数分かかる実測'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" '種別 C は他の suite と分けて回す' \
+  '種別 C を他の suite と分けて回す起動'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" '1 つでも非 0 なら非 0 で終わる' \
+  '種別 C 以外をまとめたスクリプトは 1 つでも非 0 なら非 0 で終わる'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" '既定 timeout（実測の環境では 120 秒）を超えうるときは、その 1 行に合計を超える timeout を明示するか、呼び出しを分ける' \
+  '種別 C 以外の合計が既定 timeout を超えるときは timeout を明示するか分ける'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" '親が、手順 6 を実行した worktree で、最初から background で起動し' \
+  '親が run-all を手順 6 の worktree で最初から background で起動する'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" 'サブエージェントが回すときは、実測の数分を超える timeout をその呼び出しに明示する。foreground で完了を待つ' \
+  'shellcheck はサブエージェントが timeout を明示して foreground で待つ'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" 'bash "<script>" > "<log>" 2>&1; rc=$?; echo "EXIT=$rc"; exit $rc' \
+  '複数 suite を終了コードガードに止められない 1 行で呼ぶ'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" 'path を変数に入れない' \
+  '起動 1 行の path を変数に入れない'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" 'worktree のルート（`git rev-parse --show-toplevel` の絶対パス）' \
+  'スクリプト内の suite コマンドを手順 6 の worktree ルートからの絶対パスにする'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" '終了コードをそのまま `exit` する' \
+  '種別 C のスクリプトは suite の終了コードを丸めずに返す'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" 'foreground の上限 600 秒を安全な上限にはできない' \
+  'run-all は foreground の上限 600 秒を安全な上限にできない'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" '`run-all` はサブエージェントへ委譲しない' \
+  '上限を超えうる run-all は親が回しサブエージェントへ委譲しない'
+pre_commit_old_claim="$(awk 'index($0, "いずれも単体なら 1 分未満") { c++ } END { print c + 0 }' "$PRE_COMMIT_SKILL")"
+case "$pre_commit_old_claim" in
+  0) ok "pre-commit-check — 固定表の suite を一律に 1 分未満とする文が無い" ;;
+  *) bad "pre-commit-check — 固定表の suite を一律に 1 分未満とする文が ${pre_commit_old_claim} 件残っている" ;;
+esac
+PRE_COMMIT_SELFTEST_HEADING='#### 変更 suite の対の selftest'
+check_pre_commit_shell_step "$PRE_COMMIT_SELFTEST_HEADING" '1 分を超える selftest も foreground で完了を待つ' \
+  'selftest は 1 分を超えても foreground で待つ'
 check_pre_commit_shell_step "$PRE_COMMIT_PREFLIGHT_HEADING" '対象なし' \
   '該当種別が無いときは「対象なし」として 1 行で報告する規定'
 check_pre_commit_shell_step "$PRE_COMMIT_PREFLIGHT_HEADING" '手順 6 の一致確認' \

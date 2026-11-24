@@ -6,6 +6,8 @@
 # 空振り検出: 2026-10-23 R1でuserinfo/local-bare originのadd/commitは旧wrapper4件rc2・direct4件rc0を実測。修正後default73件rc0、consumer-only38件はPARTIAL。必須identity停止・明示空/相対path拒否も維持。
 # 空振り検出: 2026-10-28 WSLで、空白・単引用・$(...)・;を含むディレクトリのfixtureと一時領域を旧verify.py（パスをgh stubのbash本文へ連結）へ渡すと、stubがsentinelを作りconsumer-onlyもrc1になることを実測。修正後はsentinel無しでconsumer-onlyがrc0。
 # 空振り検出: 2026-11-11 WSLで、knowledge.subject-issue の解決から本文Refs・別リポジトリ除外・closing優先・title解決を1つずつ外す4変異は各rc=1、無変異はrc0（subject 7ケース）。
+# 空振り検出: 2026-11-24 WSLで、knowledge.subject-issue の HTTP status 判定を外す・index に応答が無い回も止める、の2変異は各rc=1、無変異はrc0（HTTP 404・本文欠落・jq欠落の3ケースはrc2で止まり、応答の無い回はbranchの番号のまま）。
+# 空振り検出: 2026-11-24 WSLで、index の形（object・version 1・responses が配列）の検査を外す変異はrc=1（`{}` と responses の綴り違いの index を「応答なし」と読んで branch の番号へ落ちる）、無変異はrc0（pass=88）。
 set -euo pipefail
 suite_dir="$(CDPATH='' cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # 引数付きの呼び出し（--consumer-only / --fixtures など）は従来どおりその1回だけを回す

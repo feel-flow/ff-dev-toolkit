@@ -29,6 +29,10 @@ BASH = shutil.which('bash') or 'bash'
 root = Path(sys.argv[1])
 runner = root / 'hooks/run-bash-hooks.sh'
 config = json.loads((root / 'hooks/hooks.json').read_text(encoding='utf-8'))  # Windows の既定は cp932
+desc = config.get('description', '')
+assert isinstance(desc, str) and 0 < len(desc.encode('utf-8')) <= 1024, (
+    f'hooks.json の description は要約 1KB 以内にする（実測 {len(desc.encode("utf-8"))} B）'
+)
 group = next(g for g in config['hooks']['PreToolUse'] if g['matcher'] == 'Bash')
 assert len(group['hooks']) == 1, 'ホスト入口が1本ではない'
 entry = group['hooks'][0]
@@ -354,7 +358,8 @@ with tempfile.TemporaryDirectory(prefix='ff-batch-test-') as temp:
     payload['tool_input']['command'] = 'gh api repos/o/r/issues/1/sub_issues -f sub_issue_id=123'
     result = run(args[2:], json.dumps(payload))
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout)['hookSpecificOutput']['permissionDecision'] == 'deny'
+    sub_out = json.loads(result.stdout)
+    assert 'systemMessage' in sub_out and 'permissionDecision' not in sub_out.get('hookSpecificOutput', {}), sub_out
     # 実登録を再検査へ全部通しても、単純な候補は通常の権限判定まで届く。
     env['CLAUDECODE'] = '1'
     env['CLAUDE_PROJECT_DIR'] = temp.as_posix()

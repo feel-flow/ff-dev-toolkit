@@ -105,8 +105,9 @@ def audit_document(path, text):
             errors.append(prefix + 'MISSING_ADJACENT_ROUTE')
             continue
         used.update((j, j + 1))
-        if marker[1] != signature(unit):
-            errors.append(prefix + 'SOURCE_CHANGED')
+        expected = signature(unit)
+        if marker[1] != expected:
+            errors.append(f'{prefix}SOURCE_CHANGED expected={expected}')
             continue
         kind, note = match[1], match[2]
         if kind == '分類':

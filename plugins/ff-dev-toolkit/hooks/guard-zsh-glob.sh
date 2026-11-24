@@ -96,8 +96,10 @@
 # `bash <<'EOF'` へ包み直す案（Issue `#2491` の案 B）は採らない — 包んだ本文はホストの権限判定・安全確認が中身を
 # 読めない形になり、同じ集約入口の終了コードガードの bash -c 書き換えがホストの安全確認で拒否された実測がある。
 # 止めない通知（未引用 scalar の警告の systemMessage・PostToolUse の additionalContext・書き換えの通知）は、
-# 種類ごとに同じセッション・同じエージェントで最初の 1 回だけ出す（Issue `#2616`。deny と updatedInput は毎回同じ）。
-#   - この呼び出しだけ通す: Bash ツールへ渡すコマンドの**先頭の語**を環境代入 `FF_ZSH_GLOB_ACK=1`
+# 種類ごとに同じセッション（hook 入力の session_id）・同じエージェント（agent_id、親は main）で最初の 1 回だけ出し、
+# 記録を ${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/notices/<session_id>/<agent_id|main>/ に置く（Issue `#2616`。deny と updatedInput は毎回同じ）。
+# permission_mode=bypassPermissions の Claude Code 環境では、未引用 scalar の警告の代わりに先頭へ `setopt SH_WORD_SPLIT; ` を付けた updatedInput を返す（別ガードの ACK が先頭にある呼び出しは除く）。
+#   - この呼び出しだけ通す: Bash ツールへ渡すコマンドの**先頭の語**を環境代入 `FF_ZSH_GLOB_ACK=1`（equals / scalar のみは `FF_ZSH_EXPANSION_ACK=1`）
 #     にする（前に別の環境代入・文があると無効。引用値の中や途中の文に現れるだけでも無効）。
 #     効く単位は Bash ツールの 1 呼び出しで、先頭に置けば改行で続く文にも効く（guard-exit-code.sh
 #     の ACK と同じ単位。意図の表明であって文単位の許可ではない）。

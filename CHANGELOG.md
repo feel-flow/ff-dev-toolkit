@@ -20,6 +20,29 @@
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-11-24
+
+### 修正
+
+- 知見の書き込み口（`finish.sh knowledge-commit` / `knowledge-commit.sh`）で、件名に要る Issue を出典 PR から照会して失敗したとき（gh の失敗、`--github-input` の index や応答を読めない・形が壊れている・HTTP status が 200 でない、jq の欠落など）に、ブランチ名の番号へ黙って落とさず `KNOWLEDGE_COMMIT=subject-query-failed` を出して rc 2 で止まるようにした。`add` は stage も保留記録も作らず、`commit` は保留記録を残す。止まるときは、元の件名を hook が拒否した理由も併せて表示する。照会できて番号が無かった応答と、`--github-input` の index にその PR の応答が無い回は、従来どおりブランチ名の番号を使う
+- 知見 1 件のコミット件名も、100 字（commitlint と同じ数え方で、日本語 1 文字も 1 字）を超えるときだけ短縮するようにした。ID だけの件名にして要約は本文の箇条行へ移し、ID だけでも超えて ID が複数なら先頭の ID と残り件数にする。100 字以内の件名は従来とバイト同一。本文の箇条行も 100 字を超えるときだけ折り返し、commitlint の本文の行長制限で拒否されないようにした
+- 振り返りの自動発火契約を検証するテストで、説明文の言い回しによらず本物の判定行とフェンス内の例示を区別できるようにしました。
+
+## [2.1.0] - 2026-11-24
+
+### 変更
+
+- `hooks/hooks.json` の `description` を約 21KB から 1KB 以内の要約へ圧縮し、各 hook の詳細記述を各 `hooks/*.sh` のヘッダと README へ移設した
+- 主要 5 スキル（`ace-curate`・`retrospective`・`multi-review`・`close-issue`・`merge-cleanup`）の `SKILL.md` を A〜D 基準（原則から推論で導ける説明・手続きのための手続きを削除）で棚卸しして圧縮した
+- 過去セッションの実測で発火実例が無かった `guard-sub-issue-id.sh` を、コマンドを止めない警告のみ（`systemMessage` と `additionalContext` 出力）へ移行した
+
+### 修正
+
+- `/pre-commit-check` の手順 8 で、種別 A（配布 Markdown）の固定表と実行手順に `skill-references-existence` を追加し、GitHub 操作の隣接 MCP 案内の署名ずれをコミット前に検出できるようにした。あわせて `github_routes.py` の `SOURCE_CHANGED` 失敗行に現在の内容から計算した期待署名（`expected=` の 16 桁）を併記し、手動再計算の工程を無くした
+- `/pre-commit-check` の手順 8 で、固定表の suite の所要は種別で異なると書き、種別 C の run-all と shellcheck は単体で数分かかることを実測の範囲付きで書いた。run-all は foreground の上限 600 秒を安全な上限にできないので、親が他の suite と分けて最初から background で起動し、完了を待つ。run-all はサブエージェントへ委譲しない。shellcheck は上限内なので、サブエージェントは実測の数分を超える timeout を明示して foreground で待つ
+- 複数の suite を 1 回で回すときは、スクリプトをファイルに書き、bash の 1 行（ログへリダイレクトし、終了コードを exit で返す）だけで呼ぶ。script と log の絶対パスは引用符で囲む。スクリプト内の suite コマンドは、手順 6 を実行した worktree のルートからの絶対パスにする。種別 C のスクリプトはその suite の終了コードをそのまま返す。種別 C 以外を 1 本にまとめても、実測の合計が Bash ツールの既定 timeout（実測の環境では 120 秒）を超えうるときは、その 1 行に合計を超える timeout を明示するか、呼び出しを分ける
+- 公開 CI の `run-all` 自己検証で待機期限をテスト用の時計で再現し、標準出力を書き込めない状態を読み取り専用のファイル記述子で作るようにしました。
+
 ## [2.0.0] - 2026-11-23
 
 ### 破壊的変更

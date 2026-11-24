@@ -384,7 +384,7 @@ grep -n "return " src/render.ts
 **`git add` の後・`git commit` の前に staged 由来の単体チェックを通す**: 下のステップ6「セルフレビュー」の `/pr-review-toolkit:review-pr` や Codex CLI クロスレビューは commit 済みの diff を対象にするため、commit 前の staged 状態でしか見えない違反（例: 日本語コメント中の `$VAR` 直付けマルチバイト展開）を検出する経路がステップ6には無い。ここで `/pre-commit-check`（ff-dev-toolkit スキル。**AI エージェントへのスラッシュコマンドで、シェルコマンドではない点に注意**。または同等の staged 単体チェック）を実行してから commit する。対象は 3 系統ある:
 
 1. staged された `*.sh` に対する mbcs-guard / exit-code-guard の単体チェック
-2. staged ファイルの**種別**（配布 Markdown / 公開同期対象 / shell / docs 仕様文書）から**固定表**で決まる静的 suite のプリフライト。本テンプレートのソースリポジトリでは `docs-gates` / `plugin-root-contract` / `sync-forbidden-patterns` / `skill-count-consistency` / `run-all` / `shellcheck` / `docs-version-changelog` / `docs-frontmatter-repo` を単体で回す。断片をstageした回だけ `changelog-fragments` も回す。名簿のSKILL本線は既存suiteの上限/名簿定義を読む軽量検査でindexのバイト数を測り、上限超過・判定不能ではcommitへ進まない。あわせて version claim の再生成漏れと、公開対象を変えたのに `changelog.d/` 断片が無い状態を見る
+2. staged ファイルの**種別**（配布 Markdown / 公開同期対象 / shell / docs 仕様文書）から**固定表**で決まる静的 suite のプリフライト。本テンプレートのソースリポジトリでは `docs-gates` / `plugin-root-contract` / `skill-references-existence` / `sync-forbidden-patterns` / `skill-count-consistency` / `run-all` / `shellcheck` / `docs-version-changelog` / `docs-frontmatter-repo` を単体で回す。断片をstageした回だけ `changelog-fragments` も回す。名簿のSKILL本線は既存suiteの上限/名簿定義を読む軽量検査でindexのバイト数を測り、上限超過・判定不能ではcommitへ進まない。あわせて version claim の再生成漏れと、公開対象を変えたのに `changelog.d/` 断片が無い状態を見る
 
 3. staged の `tests/<名>/verify.sh` に対する `<名>-selftest/verify.sh` の単体実行。高速モードと同じ接尾辞・consumer の実在から導出し、名簿や `tests/lib` の依存推測は持たない。selftest 名・単体コマンド・緑/赤の結果を報告に残すまで違反なしとしない。対が無い回は対象なし、未実行・SKIP・取得失敗・内容不一致は未検査として commit へ進まない。実行手順は `/pre-commit-check` の「変更 suite の対の selftest」を参照する。
 
@@ -1359,4 +1359,4 @@ tracking Issue / Epic 配下に多数の sub-issue がぶら下がっていて 1
 
 ### Epic と子 Issue の sub-issues 紐付け
 
-棚卸しで GitHub の sub-issues API に親子を載せるときは、`gh api` をその場で組み立てない。`-f sub_issue_id=` は値を常に文字列で送り、integer スキーマで全件 422 になる（本テンプレートのソースリポジトリの観測台帳 OBS-052）。同梱の `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/link-sub-issues.sh" --repo OWNER/REPO <parent> <child>...` を使う。ヘルパは Issue 番号から database ID を解決して `-F` で送り、失敗時は HTTP 本文を出し、1 件目の失敗で止まる。Claude Code では PreToolUse ガード `hooks/guard-sub-issue-id.sh` が `-f sub_issue_id=` / `-f after_id=` / `-f before_id=` を実行前に止める。
+棚卸しで GitHub の sub-issues API に親子を載せるときは、`gh api` をその場で組み立てない。`-f sub_issue_id=` は値を常に文字列で送り、integer スキーマで全件 422 になる（本テンプレートのソースリポジトリの観測台帳 OBS-052）。同梱の `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/link-sub-issues.sh" --repo OWNER/REPO <parent> <child>...` を使う。ヘルパは Issue 番号から database ID を解決して `-F` で送り、失敗時は HTTP 本文を出し、1 件目の失敗で止まる。Claude Code では PreToolUse ガード `hooks/guard-sub-issue-id.sh` が `-f sub_issue_id=` / `-f after_id=` / `-f before_id=` に対して実行前に警告（非ブロック）で `-F` とヘルパを案内する。

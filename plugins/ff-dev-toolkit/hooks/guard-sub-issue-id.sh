@@ -15,17 +15,15 @@
 # 見て止めると正当な呼び出しまで deny する。観測 3 回が全部 `sub_issue_id` なので、
 # フィールド名で絞り、別の integer フィールドで再発したら名簿へ足す。
 #
-# 警告は抜け道付きの deny（`permissionDecision: "deny"` の `permissionDecisionReason`）として
-# 実装する。PreToolUse の `additionalContext` はエージェントへ届くが、Claude Code の CLI と
-# Remote Control の画面にも表示される（2026-11-04 実測。Issue `#2614`）ので、止めない警告の
-# 出口にはしない。
-# 抜け道:
+# 警告のみ（非ブロック）: 実測で発火実例が無いためコマンドを止めず、systemMessage と
+# hookSpecificOutput.additionalContext で `-F` / ヘルパを案内して exit 0 で通す。
+# 抜け道（警告抑止）:
 #   - `-F sub_issue_id=`（型付き）に直す
 #   - 同梱の `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/link-sub-issues.sh" --repo OWNER/REPO <parent> <child>...`
 #     を使う（綴りが 1 箇所に固定され、失敗時は HTTP 本文を出す）
 #   - 対象コマンドの先頭に環境代入 `FF_SUB_ISSUE_ID_ACK=1` を付ける
 #     （文字列としてコマンド中に現れるだけでは無効。コマンド位置の `gh api`
-#     の直前に置いた場合だけ素通しする）
+#     の直前に置いた場合だけ警告を抑止する）
 #   - ガードごと止めるなら環境変数 `FF_DEV_TOOLKIT_SKIP=sub-issue-id`
 #
 # 既知の限界（判定できず素通しする形）:
@@ -38,8 +36,8 @@
 # GitHub MCP 経路（PreToolUse / `sub_issue_write`）:
 #   hooks.json は MCP のツール名を matcher に持つエントリからも本ガードを起動する。
 #   tool_input は JSON なので型がそのまま見える。`-f` と同じ「integer を文字列で送る」形は
-#   `sub_issue_id` / `after_id` / `before_id` の型が string であることとして判定し、同じ理由の
-#   deny で止める（案内は数値で渡す・`link-sub-issues.sh`・抜け道）。gh は使わない。振り分けは
+#   `sub_issue_id` / `after_id` / `before_id` の型が string であることとして判定し、コマンドを止めない
+#   警告のみ（systemMessage + additionalContext）で案内する（案内は数値で渡す・`link-sub-issues.sh`・抜け道）。gh は使わない。振り分けは
 #   共有ヘルパ tests/lib/github-mcp-route.sh の ff_github_mcp_route_input。
 #   抜け道は hook の環境変数 `FF_SUB_ISSUE_ID_ACK=1`（MCP の呼び出しにはコマンド先頭の
 #   環境代入を付けられないため）。hook の環境は Claude Code の起動時に決まるので、その 1 回では
@@ -110,16 +108,16 @@ guard_mcp_route() {
       ;;
   esac
   if [ "${FF_SUB_ISSUE_ID_ACK:-0}" = "1" ]; then
-    ff_github_mcp_note "sub-issue の integer フィールド" "hook の環境変数 FF_SUB_ISSUE_ID_ACK=1 により、${MCP_TOOL_NAME} へ文字列で渡した \`${verdict}\` を止めずに通しました。この設定は Claude Code のセッション全体（GitHub MCP の呼び出しすべて）に効くので、済んだら外して再起動してください。"
+    ff_github_mcp_note "sub-issue の integer フィールド" "hook の環境変数 FF_SUB_ISSUE_ID_ACK=1 により、${MCP_TOOL_NAME} へ文字列で渡した \`${verdict}\` の警告を抑止しました。この設定は Claude Code のセッション全体（GitHub MCP の呼び出しすべて）に効くので、済んだら外して再起動してください。"
     exit 0
   fi
-  reason="⚠️ ff-dev-toolkit guard（sub-issues API の integer フィールドを文字列で送る）: GitHub MCP の sub_issue_write へ \`${verdict}\` を文字列で渡しています。GitHub の sub-issues API は integer を要求するため 422 で落ちます（\`gh api -f ${verdict}=\` と同じ失敗です）。次のいずれかで再実行してください:
+  reason="⚠️ ff-dev-toolkit guard（sub-issues API の integer フィールドを文字列で送る・警告のみ）: GitHub MCP の sub_issue_write へ \`${verdict}\` を文字列で渡しています。GitHub の sub-issues API は integer を要求するため 422 で落ちます（\`gh api -f ${verdict}=\` と同じ失敗です）。次のいずれかを推奨します:
   1) \`${verdict}\` を JSON の数値（引用符なし）で渡す（MCP の整数型指定。sub_issue_id は Issue 番号ではなく Issue の ID）
   2) gh が使える環境なら、同梱の \`FF_DEV_TOOLKIT_ROOT=\"\${FF_DEV_TOOLKIT_ROOT}\" bash \"\${FF_DEV_TOOLKIT_ROOT}/scripts/link-sub-issues.sh\" --repo OWNER/REPO <parent> <child>...\` を使う（綴りが 1 箇所に固定され、失敗時は HTTP 本文を出す）
-  3) 意図的に文字列で送る場合は、hook の環境変数 FF_SUB_ISSUE_ID_ACK=1 を設定してから再実行する（GitHub MCP の呼び出しにはコマンド先頭の環境代入を付けられないため。Claude Code を起動するシェルで export し、再起動する。その 1 回ではなくセッション全体の GitHub MCP 呼び出しに効くので、済んだら外して再起動する）
+  3) 警告を抑止する場合は、hook の環境変数 FF_SUB_ISSUE_ID_ACK=1 を設定する（GitHub MCP の呼び出しにはコマンド先頭の環境代入を付けられないため。Claude Code を起動するシェルで export し、再起動する。その 1 回ではなくセッション全体の GitHub MCP 呼び出しに効くので、済んだら外して再起動する）
 このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=sub-issue-id を設定します（ほかの鍵と並べるときはカンマ区切り）。"
   jq -n --arg reason "$reason" \
-    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null
+    '{systemMessage: $reason, hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: $reason}}' 2>/dev/null
   exit 0
 }
 
@@ -302,13 +300,13 @@ EOF
 
 [ -n "$FIRE_KEY" ] || exit 0
 
-reason="⚠️ ff-dev-toolkit guard（gh api の -f は integer フィールドを文字列で送る）: \`-f ${FIRE_KEY}=\` は値を常に文字列で送り、GitHub の sub-issues API は integer を要求するため 422 で全件落ちます。次のいずれかで再実行してください:
+reason="⚠️ ff-dev-toolkit guard（gh api の -f は integer フィールドを文字列で送る・警告のみ）: \`-f ${FIRE_KEY}=\` は値を常に文字列で送り、GitHub の sub-issues API は integer を要求するため 422 で全件落ちます。次のいずれかを推奨します:
   1) \`-F ${FIRE_KEY}=\` に直す（型付き。integer / boolean / null を正しく送る）
   2) 同梱の \`FF_DEV_TOOLKIT_ROOT=\"\${FF_DEV_TOOLKIT_ROOT}\" bash \"\${FF_DEV_TOOLKIT_ROOT}/scripts/link-sub-issues.sh\" --repo OWNER/REPO <parent> <child>...\` を使う（綴りが 1 箇所に固定され、失敗時は HTTP 本文を出す）
-  3) 意図的に文字列で送る場合は、対象コマンドの先頭へ環境代入を付けて再実行する: FF_SUB_ISSUE_ID_ACK=1 gh api ...
+  3) 意図的に文字列で送る場合は、対象コマンドの先頭へ環境代入を付けて警告を抑止する: FF_SUB_ISSUE_ID_ACK=1 gh api ...
 このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=sub-issue-id を設定します（ほかの鍵と並べるときはカンマ区切り）。"
 
 jq -n --arg reason "$reason" \
-  '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null
+  '{systemMessage: $reason, hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: $reason}}' 2>/dev/null
 
 exit 0

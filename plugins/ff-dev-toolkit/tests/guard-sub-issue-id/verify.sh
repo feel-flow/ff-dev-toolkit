@@ -2,26 +2,26 @@
 # Runtime contract for the sub-issue integer-field guard hook (OBS-052).
 #
 # 配布物 hooks/guard-sub-issue-id.sh を stdin JSON で直接駆動し、受け入れ条件の
-# 各分岐を固定する:
-#   1. コマンド位置の `gh api ... -f sub_issue_id=` は実行前に deny
+# 各分岐を固定する（発火実例 0 件のため警告のみ・非ブロック）:
+#   1. コマンド位置の `gh api ... -f sub_issue_id=` は実行前に警告（systemMessage + additionalContext、非 deny）
 #   2. `-F sub_issue_id=`（型付き）は素通し
-#   3. 同じ API の `-f after_id=` / `-f before_id=` も deny
+#   3. 同じ API の `-f after_id=` / `-f before_id=` も警告
 #   4. 案内された抜け道（FF_SUB_ISSUE_ID_ACK=1 の前置 / skip env）で通る
 #   5. GraphQL の `-f query=` や REST の `-f base=<branch>` は数字でもキーが
 #      違うので素通し（対象を -f 全般へ広げない判断の固定）
 #   6. コマンド位置に無い gh（echo の文字列）は素通し
-#   7. deny 文面自体が `-F` / ヘルパ / ACK 抜け道を案内する（ACE-1076-1）
+#   7. 警告文自体が `-F` / ヘルパ / ACK 抜け道を案内する（ACE-1076-1）
 #
 # あわせて hooks.json の PreToolUse（Bash matcher）登録を静的照合する。
 #
 # 変異検出（2026-09-15 実測。赤転しなかった変異は無し）:
-#   `is_integer_id_key` の sub_issue_id 分岐を外したコピーは、AC1 の deny が
-#   消え、本番と同じ「-f sub_issue_id= は deny」検査を赤にする。
-#   deny 理由文から `scripts/link-sub-issues.sh` を消したコピーは、抜け道案内
+#   `is_integer_id_key` の sub_issue_id 分岐を外したコピーは、AC1 の警告が
+#   消え、本番と同じ「-f sub_issue_id= は警告」検査を赤にする。
+#   警告理由文から `scripts/link-sub-issues.sh` を消したコピーは、抜け道案内
 #   の検査を赤にする。
 #
 # GitHub MCP 経路（sub_issue_write）も同じ suite で固定する: 実測したツール名を 2 つのサーバー名の形
-# （mcp__github__ / mcp__plugin_github_github__）で駆動し、文字列で渡した sub_issue_id / after_id の deny と数値の素通し・hook の環境変数で読む抜け道・
+# （mcp__github__ / mcp__plugin_github_github__）で駆動し、文字列で渡した sub_issue_id / after_id の警告と数値の素通し・hook の環境変数で読む抜け道・
 # gh が PATH に無くても判定すること（型は tool_input だけで決まる）・針が当たらない入力（判定表にないツール名・名簿にないサーバー・
 # tool_input の欠落 / 型違い）を素通しではなく理由付きの systemMessage にすること・hooks.json の MCP matcher を
 # Claude Code と同じアンカー無し正規表現として照合すること（tests/lib/github-mcp-fixture.sh）。
@@ -80,6 +80,8 @@ OUT=""
 RC=0
 DECISION=""
 REASON=""
+MESSAGE=""
+CONTEXT=""
 
 run_hook() { # <command> [cwd] [env NAME=VALUE]
   local cmd="$1" cwd="${2:-$TEST_TMP}" extra_env="${3:-}"
@@ -93,7 +95,9 @@ run_hook() { # <command> [cwd] [env NAME=VALUE]
     OUT="$(printf '%s' "$json" | bash "$TARGET" 2>/dev/null)" || RC=$?
   fi
   DECISION="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)"
-  REASON="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null || true)"
+  MESSAGE="$(printf '%s' "$OUT" | jq -r '.systemMessage // empty' 2>/dev/null || true)"
+  CONTEXT="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
+  REASON="$MESSAGE"
 }
 
 run_hook_on() { # <hook-file> <command>
@@ -103,14 +107,16 @@ run_hook_on() { # <hook-file> <command>
   RC=0
   OUT="$(printf '%s' "$json" | bash "$hook" 2>/dev/null)" || RC=$?
   DECISION="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)"
-  REASON="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null || true)"
+  MESSAGE="$(printf '%s' "$OUT" | jq -r '.systemMessage // empty' 2>/dev/null || true)"
+  CONTEXT="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
+  REASON="$MESSAGE"
 }
 
 assert_fire() { # <label>
-  if [ "$RC" -eq 0 ] && [ "$DECISION" = "deny" ]; then
+  if [ "$RC" -eq 0 ] && [ -z "$DECISION" ] && [ -n "$MESSAGE" ] && [ "$CONTEXT" = "$MESSAGE" ]; then
     ok "$1"
   else
-    bad "$1: exit=$RC decision=[$DECISION] out=[$OUT]"
+    bad "$1: 警告のみ（非 deny + systemMessage + additionalContext）のはず: exit=$RC decision=[$DECISION] out=[$OUT]"
   fi
 }
 
@@ -122,38 +128,38 @@ assert_pass() { # <label>
   fi
 }
 
-echo "guard-sub-issue-id: AC ケース（発火側）"
+echo "guard-sub-issue-id: AC ケース（発火側・警告のみ）"
 run_hook 'gh api --method POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=5307014088'
-assert_fire "AC1: -f sub_issue_id= の gh api は実行前に deny"
+assert_fire "AC1: -f sub_issue_id= の gh api は実行前に警告"
 run_hook 'gh api -X POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=$id'
-assert_fire "値が変数でも -f sub_issue_id= なら deny（フラグの型が問題）"
+assert_fire "値が変数でも -f sub_issue_id= なら警告（フラグの型が問題）"
 run_hook 'gh api repos/acme/widgets/issues/10/sub_issues/priority -f after_id=1'
-assert_fire "同じ API の -f after_id= も deny"
+assert_fire "同じ API の -f after_id= も警告"
 run_hook 'gh api repos/acme/widgets/issues/10/sub_issues/priority -f before_id=2'
-assert_fire "同じ API の -f before_id= も deny"
+assert_fire "同じ API の -f before_id= も警告"
 run_hook 'gh api --method POST repos/acme/widgets/issues/10/sub_issues --raw-field sub_issue_id=5307014088'
 assert_fire "--raw-field sub_issue_id= も -f と同じ（文字列送信）"
 
 echo "guard-sub-issue-id: OBS-052 の実形（ループ / コマンド置換 / && の 2 本目）"
 run_hook 'for c in 21 22; do gh api --method POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=$c; done'
-assert_fire "ループ本体の do gh api -f sub_issue_id= は deny"
+assert_fire "ループ本体の do gh api -f sub_issue_id= は警告"
 run_hook 'out=$(gh api --method POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=1 2>&1)'
-assert_fire 'コマンド置換 out=$(gh api -f sub_issue_id=) は deny'
+assert_fire 'コマンド置換 out=$(gh api -f sub_issue_id=) は警告'
 run_hook 'gh api repos/acme/widgets/issues -f per_page=30 && gh api --method POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=1'
-assert_fire "先行 gh api があっても 2 本目の -f sub_issue_id= は deny"
+assert_fire "先行 gh api があっても 2 本目の -f sub_issue_id= は警告"
 run_hook 'FF_SUB_ISSUE_ID_ACK=1 gh api repos/acme/widgets/issues -f per_page=30 && gh api --method POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=1'
-assert_fire "先行セグメントの ACK は 2 本目の -f sub_issue_id= を許可しない"
+assert_fire "先行セグメントの ACK は 2 本目の -f sub_issue_id= を抑止しない"
 run_hook 'if gh api --method POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=1; then :; fi'
-assert_fire "if gh api -f sub_issue_id= は deny"
+assert_fire "if gh api -f sub_issue_id= は警告"
 run_hook 'while gh api --method POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=1; do break; done'
-assert_fire "while gh api -f sub_issue_id= は deny"
+assert_fire "while gh api -f sub_issue_id= は警告"
 run_hook 'gh api --method POST repos/acme/widgets/issues/10/sub_issues \
   -f sub_issue_id=1'
-assert_fire '行末 \ 継続の次行 -f sub_issue_id= は deny'
+assert_fire '行末 \ 継続の次行 -f sub_issue_id= は警告'
 run_hook 'gh api --method POST repos/acme/widgets/issues/10/sub_issues --raw-field="sub_issue_id=1"'
-assert_fire '--raw-field="sub_issue_id=" 連結引用も deny'
+assert_fire '--raw-field="sub_issue_id=" 連結引用も警告'
 run_hook 'gh api --method POST repos/acme/widgets/issues/10/sub_issues -f"sub_issue_id=1"'
-assert_fire '-f"sub_issue_id=" 連結引用も deny'
+assert_fire '-f"sub_issue_id=" 連結引用も警告'
 
 echo "guard-sub-issue-id: 警告文の契約（対処と抜け道を出力自体に案内する）"
 run_hook 'gh api --method POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=1'
@@ -199,19 +205,19 @@ assert_fire "ACK が別コマンドに居るだけでは無効（gh api の直�
 echo "guard-sub-issue-id: GitHub MCP 経路（sub_issue_write）"
 # 実測したツール名（GitHub 公式リモート MCP の tools/list）を 2 つのサーバー名の形で駆動する。
 # fixture の cwd は /tmp（`gh` / `-f` を含まない）なので、MCP 分岐を Bash 用の前置フィルタより
-# 後ろへ動かすと、下の deny 検査はすべて素通しへ倒れて赤になる。
+# 後ろへ動かすと、下の警告検査はすべて素通しへ倒れて赤になる。
 MESSAGE=""
-run_mcp() { ff_mcp_run "$TARGET" "$@"; }
+run_mcp() { ff_mcp_run "$TARGET" "$@"; REASON="$MESSAGE"; }
 MCP_ADD='{"method":"add","owner":"acme","repo":"widgets","issue_number":10,"sub_issue_id":"5307014088"}'
 run_mcp mcp__plugin_github_github__sub_issue_write "$MCP_ADD"
-assert_fire "AC3: プラグイン同梱サーバーの sub_issue_write へ sub_issue_id を文字列で渡すと deny"
+assert_fire "AC3: プラグイン同梱サーバーの sub_issue_write へ sub_issue_id を文字列で渡すと警告"
 MCP_REASON="$REASON"
 case "$REASON" in
-  *'`sub_issue_id`'*'JSON の数値'*) ok "AC3: deny 文がフィールド名と「JSON の数値で渡す（MCP の整数型指定）」を案内する" ;;
+  *'`sub_issue_id`'*'JSON の数値'*) ok "AC3: 警告文がフィールド名と「JSON の数値で渡す（MCP の整数型指定）」を案内する" ;;
   *) bad "AC3: 数値で渡す案内が無い: [$REASON]" ;;
 esac
 case "$REASON" in
-  *'scripts/link-sub-issues.sh'*) ok "AC3: deny 文が link-sub-issues.sh を案内する" ;;
+  *'scripts/link-sub-issues.sh'*) ok "AC3: 警告文が link-sub-issues.sh を案内する" ;;
   *) bad "AC3: link-sub-issues.sh の案内が無い: [$REASON]" ;;
 esac
 case "$REASON" in
@@ -220,24 +226,24 @@ case "$REASON" in
 esac
 run_hook 'gh api --method POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=1'
 if [ "${MCP_REASON##*$'\n'}" = "${REASON##*$'\n'}" ] && [ -n "${REASON##*$'\n'}" ]; then
-  ok "AC3: ガード無効化の案内行は Bash 経路の deny と同じ文言"
+  ok "AC3: ガード無効化の案内行は Bash 経路の警告と同じ文言"
 else
   bad "AC3: 末尾の案内行が Bash 経路とずれている: mcp=[${MCP_REASON##*$'\n'}] bash=[${REASON##*$'\n'}]"
 fi
 run_mcp mcp__github__sub_issue_write "$MCP_ADD"
-assert_fire "AC3: 利用者が server キー github で設定したサーバーでも deny"
+assert_fire "AC3: 利用者が server キー github で設定したサーバーでも警告"
 run_mcp mcp__github__sub_issue_write '{"method":"reprioritize","owner":"acme","repo":"widgets","issue_number":10,"sub_issue_id":5307014088,"after_id":"1"}'
-assert_fire "AC3: 同じ API の after_id を文字列で渡しても deny"
+assert_fire "AC3: 同じ API の after_id を文字列で渡しても警告"
 case "$REASON" in
-  *'`after_id`'*) ok "AC3: deny 文が文字列だったフィールド（after_id）を名指しする" ;;
+  *'`after_id`'*) ok "AC3: 警告文が文字列だったフィールド（after_id）を名指しする" ;;
   *) bad "AC3: after_id を名指ししていない: [$REASON]" ;;
 esac
 run_mcp mcp__github__sub_issue_write '{"method":"add","owner":"acme","repo":"widgets","issue_number":10,"sub_issue_id":5307014088}'
 assert_pass "数値で渡した sub_issue_id は素通し"
 run_mcp mcp__github__sub_issue_write '{"method":"reprioritize","owner":"acme","repo":"widgets","issue_number":10,"sub_issue_id":5307014088,"before_id":"2"}'
-assert_fire "AC3: 同じ API の before_id を文字列で渡しても deny"
+assert_fire "AC3: 同じ API の before_id を文字列で渡しても警告"
 case "$REASON" in
-  *'`before_id`'*) ok "AC3: deny 文が文字列だったフィールド（before_id）を名指しする" ;;
+  *'`before_id`'*) ok "AC3: 警告文が文字列だったフィールド（before_id）を名指しする" ;;
   *) bad "AC3: before_id を名指ししていない: [$REASON]" ;;
 esac
 run_mcp mcp__github__sub_issue_write "$MCP_ADD" FF_SUB_ISSUE_ID_ACK=1
@@ -285,7 +291,7 @@ ff_mcp_assert_message "オブジェクトでない tool_input は理由を出し
 run_hook 'gh api --method POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=1 # mcp__github__sub_issue_write'
 assert_fire "Bash の呼び出しは文字列に mcp__ を含んでも Bash 経路で判定する"
 case "$REASON" in
-  *'-F '*) ok "Bash 経路の deny 文（-F の案内）のまま" ;;
+  *'-F '*) ok "Bash 経路の警告文（-F の案内）のまま" ;;
   *) bad "Bash の呼び出しが MCP 経路の文言になっている: [$REASON]" ;;
 esac
 
@@ -322,15 +328,16 @@ if jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[]
 else
   bad "hooks.json の PreToolUse（Bash matcher）に guard-sub-issue-id.sh が無い"
 fi
-DESC="$(jq -r '.description' "$HOOKS_JSON")"
-case "$DESC" in
-  *sub_issue_id*) ok "hooks.json の description が sub_issue_id ガードに言及する" ;;
-  *) bad "hooks.json の description に sub_issue_id の記述が無い" ;;
-esac
-case "$DESC" in
-  *sub_issue_write*) ok "hooks.json の description が GitHub MCP の sub_issue_write に言及する" ;;
-  *) bad "hooks.json の description に GitHub MCP 経路（sub_issue_write）の記述が無い" ;;
-esac
+if grep -q '^#.*sub_issue_id' "$TARGET"; then
+  ok "guard-sub-issue-id.sh のヘッダが sub_issue_id ガードに言及する"
+else
+  bad "guard-sub-issue-id.sh のヘッダに sub_issue_id の記述が無い"
+fi
+if grep -q '^#.*sub_issue_write' "$TARGET"; then
+  ok "guard-sub-issue-id.sh のヘッダが GitHub MCP の sub_issue_write に言及する"
+else
+  bad "guard-sub-issue-id.sh のヘッダに GitHub MCP 経路（sub_issue_write）の記述が無い"
+fi
 while IFS= read -r line; do
   case "$line" in
     OK\ *) ok "MCP matcher: ${line#OK }" ;;
@@ -374,16 +381,16 @@ MUT="$TEST_TMP/guard-sub-issue-id.sh"
 sed 's/sub_issue_id|after_id|before_id/after_id|before_id/' "$TARGET" > "$MUT"
 run_hook_on "$MUT" 'gh api --method POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=1'
 if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
-  ok "変異検出: is_integer_id_key から sub_issue_id を外すと AC1 が素通しになり、deny 検査は赤になる"
+  ok "変異検出: is_integer_id_key から sub_issue_id を外すと AC1 が素通しになり、警告検査は赤になる"
 else
-  bad "sub_issue_id 除外の変異が deny のまま: decision=[$DECISION] out=[$OUT]"
+  bad "sub_issue_id 除外の変異が警告のまま: decision=[$DECISION] out=[$OUT]"
 fi
-# after_id は残しているので、そちらはまだ deny する
+# after_id は残しているので、そちらはまだ警告する
 run_hook_on "$MUT" 'gh api repos/acme/widgets/issues/10/sub_issues/priority -f after_id=1'
-if [ "$RC" -eq 0 ] && [ "$DECISION" = "deny" ]; then
+if [ "$RC" -eq 0 ] && [ -z "$DECISION" ] && [ -n "$MESSAGE" ] && [ "$CONTEXT" = "$MESSAGE" ]; then
   ok "変異検出: after_id 分岐は残る（1 キーだけの欠落であり全面無効化ではない）"
 else
-  bad "after_id まで消えている: decision=[$DECISION]"
+  bad "after_id まで消えている: decision=[$DECISION] out=[$OUT]"
 fi
 
 # 変異 2: ヘルパ案内を理由文から消す
@@ -394,10 +401,10 @@ case "$REASON" in
     bad "ヘルパ案内削除の変異が効いていない: [$REASON]"
     ;;
   *)
-    if [ "$DECISION" = "deny" ]; then
-      ok "変異検出: 理由文からヘルパ案内を消すと抜け道案内の検査は赤になる（deny 自体は残る）"
+    if [ -z "$DECISION" ] && [ -n "$MESSAGE" ]; then
+      ok "変異検出: 理由文からヘルパ案内を消すと抜け道案内の検査は赤になる（警告自体は残る）"
     else
-      bad "ヘルパ案内削除で deny まで消えた: decision=[$DECISION]"
+      bad "ヘルパ案内削除で警告まで消えた: decision=[$DECISION] out=[$OUT]"
     fi
     ;;
 esac

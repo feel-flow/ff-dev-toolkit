@@ -576,25 +576,16 @@ if jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[]
 else
   bad "hooks.json の PreToolUse（Bash matcher）に guard-background-cwd.sh が無い"
 fi
-if jq -e '.description | test("linked worktree があるリポジトリで先頭が相対パスの cd")' "$HOOKS_JSON" >/dev/null 2>&1; then
-  ok "hooks.json の description が現行の発火条件（linked worktree + 相対 cd）を述べる"
+if grep -q '^#.*linked worktree のあるリポジトリで、先頭が\*\*相対パスの `cd`\*\*' "$TARGET"; then
+  ok "guard-background-cwd.sh のヘッダが現行の発火条件（linked worktree + 相対 cd）を述べる"
 else
-  bad "hooks.json の description に現行の発火条件（linked worktree + 相対 cd）の記述が無い"
+  bad "guard-background-cwd.sh のヘッダに現行の発火条件（linked worktree + 相対 cd）の記述が無い"
 fi
-# 廃止した警告面を述べないこと: cwd ガードの文（発火条件の語を含む「。」までの 1 文）に「警告」が
-# 現れず、旧文の特徴語（絶対パスの cd でない background 実行）も description 全体に残っていないこと。
-CWD_CLAUSE="$(jq -r '.description' "$HOOKS_JSON" 2>/dev/null | awk '{
-  i = index($0, "linked worktree があるリポジトリで先頭が相対パスの cd")
-  if (i == 0) exit
-  s = substr($0, i); j = index(s, "。"); if (j > 0) s = substr(s, 1, j)
-  print s; exit
-}')"
-case "$CWD_CLAUSE" in
-  "") bad "hooks.json の description から cwd ガードの文を切り出せない" ;;
-  *"警告"*) bad "hooks.json の cwd ガードの文が警告を述べている（廃止した面）: [$CWD_CLAUSE]" ;;
-  *"deny"*) ok "hooks.json の cwd ガードの文は deny だけを述べ、警告を述べない" ;;
-  *) bad "hooks.json の cwd ガードの文に deny の記述が無い: [$CWD_CLAUSE]" ;;
-esac
+if grep -q '^#.*止めない警告は出さない' "$TARGET" && grep -q '^#.*deny で止める' "$TARGET"; then
+  ok "guard-background-cwd.sh のヘッダは deny と警告廃止を明記する"
+else
+  bad "guard-background-cwd.sh のヘッダに deny / 警告廃止の記述が無い"
+fi
 if jq -e '.description | test("絶対パスの cd でない background 実行")' "$HOOKS_JSON" >/dev/null 2>&1; then
   bad "hooks.json の description が廃止した警告面の旧文（絶対パスの cd でない background 実行）を残している"
 else

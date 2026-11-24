@@ -623,14 +623,15 @@ perl -0pi -e 's/^(\d+\. [^\n]*?)振り返り: 今回は作業完了前のため�
   "$ROOT/skills/retrospective/SKILL.md"
 check_mutation "節内の散文を残して判定リスト側を壊す" "hook / SKILL.md の自動発火契約が drift" "$ROOT" contracts
 
-# フェンス内へ番号付きの例示を置いたうえで本物の判定リスト側を壊すと、フェンスを除外しない実装、
+# 本物の判定リストを先に壊し、その後フェンス内へ同じ定型文の番号付き例示を置く。フェンスを除外しない実装、
 # あるいはフェンスの開閉を文字種・長さで区別しない簡易な除外では、例示側で照合が成立して緑になる。
 # 例示は「4 連の中の 3 連」と「バッククォートの中の ~~~」の内側に置く（簡易版が閉じと誤判定する形）。
 ROOT="$(make_fixture fenced-numbered-example-then-drift)"
 FF_AUTOFIRE_HEADING="$AUTOFIRE_HEADING" perl -0pi \
-  -e 's/(^\Q$ENV{FF_AUTOFIRE_HEADING}\E\n)/${1}\n````text\n```\n2. 振り返り: 今回は作業完了前のため対象外\n```\n````\n\n```text\n~~~\n2. 振り返り: 今回は作業完了前のため対象外\n~~~\n```\n/m or die "変異が対象へ届いていない: fenced-numbered-example-then-drift stage 1\n"' \
+  -e 's/(^\Q$ENV{FF_AUTOFIRE_HEADING}\E(?:(?!\n## ).)*?\n\d+\. [^\n]*?)振り返り: 今回は作業完了前のため対象外/${1}振り返り: 未完了/ms or die "変異が対象へ届いていない: fenced-numbered-example-then-drift stage 1\n"' \
   "$ROOT/skills/retrospective/SKILL.md"
-perl -0pi -e 's/^(\d+\. [^\n]*?)振り返り: 今回は作業完了前のため対象外(?=[^\n]*報告する)/${1}振り返り: 未完了/m or die "変異が対象へ届いていない: fenced-numbered-example-then-drift stage 2\n"' \
+FF_AUTOFIRE_HEADING="$AUTOFIRE_HEADING" perl -0pi \
+  -e 's/(^\Q$ENV{FF_AUTOFIRE_HEADING}\E\n)/${1}\n````text\n```\n2. 振り返り: 今回は作業完了前のため対象外\n```\n````\n\n```text\n~~~\n2. 振り返り: 今回は作業完了前のため対象外\n~~~\n```\n/m or die "変異が対象へ届いていない: fenced-numbered-example-then-drift stage 2\n"' \
   "$ROOT/skills/retrospective/SKILL.md"
 check_mutation "フェンス内の番号付き例示を残して判定リスト側を壊す" "hook / SKILL.md の自動発火契約が drift" "$ROOT" contracts
 

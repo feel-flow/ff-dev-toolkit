@@ -410,11 +410,11 @@ if jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[]
 else
   bad "hooks.json の PreToolUse（Bash matcher）の集約入口に guard-literal-write.sh が無い"
 fi
-DESC="$(jq -r '.description' "$HOOKS_JSON")"
-case "$DESC" in
-  *guard-literal-write.sh*FF_LITERAL_WRITE_ACK*) ok "hooks.json の description が literal-write ガードと抜け道に言及する" ;;
-  *) bad "hooks.json の description に guard-literal-write.sh / FF_LITERAL_WRITE_ACK の記述が無い" ;;
-esac
+if grep -q '^#.*FF_LITERAL_WRITE_ACK' "$TARGET" && grep -q '^#.*FF_DEV_TOOLKIT_SKIP=literal-write' "$TARGET"; then
+  ok "guard-literal-write.sh のヘッダが抜け道（FF_LITERAL_WRITE_ACK）と無効化に言及する"
+else
+  bad "guard-literal-write.sh のヘッダに FF_LITERAL_WRITE_ACK / FF_DEV_TOOLKIT_SKIP=literal-write の記述が無い"
+fi
 
 echo "guard-literal-write: P 述語の性質を実際に走らせて確かめる（本文が意図と違う値になる）"
 PDIR="$TEST_TMP/probe"

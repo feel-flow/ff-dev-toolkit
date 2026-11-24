@@ -566,11 +566,11 @@ if jq -e '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[]
 else
   bad "R2: guard-shell-save.sh が Bash matcher に登録されている"
 fi
-DESC="$(jq -r '.description' "$HOOKS_JSON")"
-case "$DESC" in
-  *guard-shell-save.sh*FF_SHELL_SAVE_ACK*) ok "R3: hooks.json の description が保存時ガードと抜け道に言及する" ;;
-  *) bad "R3: hooks.json の description に guard-shell-save.sh / FF_SHELL_SAVE_ACK の記述が無い" ;;
-esac
+if grep -q '^#.*FF_SHELL_SAVE_ACK' "$HOOK"; then
+  ok "R3: guard-shell-save.sh のヘッダが保存時ガードと抜け道に言及する"
+else
+  bad "R3: guard-shell-save.sh のヘッダに FF_SHELL_SAVE_ACK の記述が無い"
+fi
 # R4: Windows の Git Bash で 21 万字の .sh への Edit が約 7 秒かかる（高速化後）。timeout は負荷時の
 # 伸びを見込んで 30 秒以上にする（10 秒では deny が捨てられて違反が保存されていた。Issue `#2357`）。
 # onFailure: block は付けない — 走査はファイルの長さに比例するので、30 秒を超える巨大な .sh では Edit 自体が
