@@ -1040,6 +1040,7 @@ _mc_dir="${BASH_SOURCE[0]%/*}/lib"
 # shell-quote.sh は復旧コマンドの案内を組み立てる共有 helper（各 Step が使うので最初に読む）
 MC_PARTS=(
   "${_mc_dir}/shell-quote.sh"
+  "${_mc_dir}/gh-rest-fallback.sh"
   "${_mc_dir}/merge-cleanup-pre.sh"
   "${_mc_dir}/merge-cleanup-remote.sh"
   "${_mc_dir}/merge-cleanup-local.sh"

@@ -99,6 +99,11 @@ OUT
   printf 'suites: selected=3 registered=4\n' >>"$STATE/partial-stale.out"
   output="$(. "$SSOT/scripts/lib/release-gate-advance-functions.sh"; stale_only_suites "$STATE/partial-stale.out"; printf '%s|%s' "$STALE_SUITES" "$STALE_SUMMARY")"
   if [[ "$output" == '|' ]]; then ok 'freshness classifier clears suites and summary for partial accounting'; else bad 'freshness classifier promoted partial accounting'; fi
+  # 時間予算の赤を含む出力は鮮度赤だけではない（名指しの再検査は予算を判定しない。Issue `#3005`）
+  grep -v '^suites: selected=' "$STATE/partial-stale.out" >"$STATE/budget-stale.out"
+  printf '✗ 時間予算: shellcheck が上限 10 秒（基線）を超えました: 実測 20.0 秒（正規化後。生の CPU 20.0 秒 × 較正 150 / 150 ms）\n' >>"$STATE/budget-stale.out"
+  output="$(. "$SSOT/scripts/lib/release-gate-advance-functions.sh"; stale_only_suites "$STATE/budget-stale.out"; printf '%s|%s' "$STALE_SUITES" "$STALE_SUMMARY")"
+  if [[ "$output" == '|' ]]; then ok 'freshness classifier refuses a run that also failed the time budget'; else bad 'freshness classifier treated a time-budget red as stale only'; fi
   # 実際のneutral前進と名指し再検査も親のCHANGED/FASTから分離する。
   : >"$STATE/runall-env.log"; rm -f "$STATE/recheck.log"
   printf 'neutral\n' >"$STATE/runall.advance"

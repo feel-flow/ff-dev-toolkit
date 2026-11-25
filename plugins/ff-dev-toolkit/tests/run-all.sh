@@ -37,7 +37,11 @@
 #     するが、名簿は縮める方向にしか動かさない（規定の正本は docs/04-quality/TESTING.md
 #     「針が当たらない入力の既定」節。Issue `#1665`）
 #   - 終了コード: 失敗 or 未実行が 1 件でもあれば 1、それ以外は 0。ただし passed が
-#     0 で skipped だけの場合も 1（検証が 1 件も成立していない状態を緑にしない）
+#     0 で skipped だけの場合も 1（検証が 1 件も成立していない状態を緑にしない）。
+#     既定一覧の実行では、通過した suite の CPU 時間が時間予算（tests/time-budget/baseline.tsv）を
+#     超えた・判定できない回も 1（末尾の ff_time_budget。規定は docs/04-quality/TESTING.md
+#     「suite の時間予算」。Issue `#3005`）。FF_RUN_ALL_TIME_BUDGET=off で判定を外した回は
+#     終了コードを変えないが、鮮度記録を partial にする（マージ前の照合の証拠にしない）
 #     起動ガードで suite を 1 件も実行せずに終わる回は、dirty tree 検査は 1、root handoff
 #     の混入・MCP 依存不足は 3 を返す（サマリー行は出ない。未実行を合格と読まないこと）
 #
@@ -106,16 +110,22 @@
 #
 # ── 変更ベースの部分ゲート: FF_RUN_ALL_CHANGED（ADR-062）───────────────────────
 # `FF_RUN_ALL_CHANGED=<base>`（`1` は origin/HEAD を base にする略記。`0` と空値は無効）を
-# 与えると、既定一覧を「base との差分に関係する suite」だけへ絞る。関係の判定は**手書きの
-# 対応表を持たず**、各 suite のディレクトリにあるスクリプト（fixtures/ を除く）の字面から
-# パス様の token を拾い、変更ファイルとパス成分の境界で交差させて導出する（導出規則は
-# 実装箇所 ff_changed_derive のコメント）。対応を宣言として持つと、suite が参照先を変えた
-# ときに宣言だけが古いまま残り、選択から黙って漏れる — 字面から導けば参照を消した側が
-# 選択からも消える。
+# 与えると、既定一覧を「base との差分に関係する suite」だけへ絞る。関係の判定は、各 suite の
+# ディレクトリにあるスクリプト（fixtures/ を除く）の字面からパス様の token を拾い、変更ファイルと
+# パス成分の境界で交差させて導出する — 字面から導けば参照を消した側が選択からも消える。suite は
+# 自分の依存を `# run-all-depends:` で宣言でき、宣言した suite は字面の照合をやめて宣言のパターンで
+# だけ選ばれる（汎用の token で重い suite が選ばれるのを suite 側で止める口。ADR-096）。宣言だけが
+# 古いまま残って選択から黙って漏れないよう、宣言と実際の参照の食い違いは changed-select suite が
+# 毎回赤にする。導出・宣言・照合・共有 lib の利用側の逆引きの規則の正本は
+# tests/changed-select/select.sh のヘッダ（ランナーは呼ぶだけで、名簿と別名・強制選択・束はここ）。
 #
 # 倒れる向きはすべて「多く回す」側に置く:
-#   - 実行基盤の契約面（CHANGED_FULL_PLUGIN_PATHS / CHANGED_FULL_REPO_PATHS。名簿の正本は実装箇所）に
-#     触れた変更、base / merge-base / 差分一覧を解決できない回は全件実行へ倒し、理由を出す
+#   - 実行基盤の契約面（CHANGED_FULL_PLUGIN_PATHS / CHANGED_FULL_PLUGIN_NONSHELL_DIRS /
+#     CHANGED_FULL_REPO_PATHS。名簿の正本は実装箇所）に触れた変更、base / merge-base / 差分一覧を
+#     解決できない回は全件実行へ倒し、理由を出す
+#   - ランナー自身と共有 lib（tests/lib のシェル）の変更は全件へ倒さない（ADR-096）。ランナーの変更では
+#     ランナー自身の suite（run-all）を必ず選び、lib の変更ではその名前に触れるファイルへ推移的に広げてから
+#     導出する（利用側をすべて選ぶ）
 #   - 文書契約面（CHANGED_DOC_PLUGIN_PATHS / CHANGED_DOC_REPO_PATHS。配布テンプレートの文書と root の
 #     2 入口）だけに触れた変更は全件へ倒さず、字面の交差に文書横断 suite の束（CHANGED_DOC_SUITES）を
 #     必ず足す。束は手書きの名簿で、文書の集合そのものを入力に取る検査（節参照・入口のパリティ・
@@ -126,10 +136,13 @@
 #     suite は常に選ぶ
 #   - 交差が 0 件なら「何も回さない緑」にせず、登録照合（メタ検査）だけを実行したことを
 #     `suites: selected=0 registered=N` として明示する
-# 「多く回す」の例外は 1 つだけ: このランナーからは環境に関係なく常に suite ごと skip する suite
-# （CHANGED_NEVER_RUN_SUITES。公開同期の直前にだけ明示起動する公開検査）は、選択の条件に当たっても
-# 選択に入れず、外したことを 1 行で名乗る。選んでも検査は 1 件も走らず、skip の混入で下の COVERS_DIFF が
-# 永久に付かなくなるため（全件ゲートでも回らないので、覆う範囲は減らない。ADR-095）。
+# 「多く回す」の例外は 2 つ:
+#   - 依存を宣言した suite は、字面に出ていても宣言に当たらない変更では選ばない（宣言と実際の参照の照合を
+#     条件にする。ADR-096）
+#   - このランナーからは環境に関係なく常に suite ごと skip する suite（CHANGED_NEVER_RUN_SUITES。公開同期の
+#     直前にだけ明示起動する公開検査）は、選択の条件に当たっても選択に入れず、外したことを 1 行で名乗る。
+#     選んでも検査は 1 件も走らず、skip の混入で下の COVERS_DIFF が永久に付かなくなるため（全件ゲートでも
+#     回らないので、覆う範囲は減らない。ADR-095）
 # 部分実行なので鮮度記録は `STATUS=partial` / `MODE=changed` で書く（全件緑へ昇格しない）。
 # 実行基盤の契約面に非該当で選択 suite が 1 件以上あり、skip / 未実行 0 件で pass した回だけ、
 # 解決済みの base SHA（40 桁小文字 16 進）を `COVERS_DIFF` として記録する（ADR-094。文書契約面
@@ -1593,6 +1606,12 @@ else
     # ff-media-toolkit プラグインの suite（plugins/ff-media-toolkit/tests/run-all.sh）を
     # ラッパー経由で回す（ff-media-toolkit 導入時に追加）。node 20 以上が無い環境では丸ごと ○ skip。
     "$SCRIPT_DIR/ff-media-toolkit/verify.sh"
+    # suite ごとの時間予算（Issue `#3005`）。基線の形式・merge-base からの引き上げの検出と、
+    # 判定 CLI（tests/time-budget/budget.sh）・本ランナーへの配線を fixture で検査する。
+    "$SCRIPT_DIR/time-budget/verify.sh"
+    # 部分ゲートの選択 CLI（tests/changed-select/select.sh。Issue `#3006`）の導出・source の逆引き・
+    # 依存の宣言の照合を fixture で検査し、実体の宣言が照合を通ることを確かめる。
+    "$SCRIPT_DIR/changed-select/verify.sh"
     # 公開リポジトリ単体の checkout を合成して公開 suite セットを回す（ADR-068）。
     # 全件ゲートと同規模（macOS 実測で単体約 19 分・全件ゲート内の並列実行で約 36 分）なので run-all からは
     # 常に ○ skip し、公開同期の直前に scripts/release-dev-toolkit.sh の gate 段が FF_RUN_PUBLIC_LAYOUT=1 で明示起動する。
@@ -2512,18 +2531,35 @@ fi
 # 共通の前提は「ここを変えると、字面の交差だけでは影響先を言い切れない」こと。言い切れない
 # 理由が違うので、倒す先を分ける（ADR-095）。
 #
-# 1) 実行基盤の契約面 → 全件へ倒す。ランナー自身・共有 lib・hook 登録は多数の suite が間接的に
-#    読み、CI 定義と共有依存は全 suite の実行条件になる。影響先は suite の集合全体で、絞れない。
+# 1) 実行基盤の契約面 → 全件へ倒す。hook 登録は多数の suite が間接的に読み、CI 定義と共有依存は
+#    全 suite の実行条件になる。影響先は suite の集合全体で、絞れない。
+#    ランナー（この run-all.sh）と共有 lib（tests/lib のシェル）はここに載せない（Issue `#3006`。ADR-096）:
+#    - ランナーはブラックボックスとして扱う。変更ではランナー自身の suite（run-all。1,000 件超の自己検証）と、
+#      run-all.sh を参照する suite を選ぶ。ランナーが名指す lib の変更も同じ扱い。ここにある名簿と選択の
+#      規則の変更も、ランナー自身の変更として自己検証（case 47）が名簿の中身と規則を固定する
+#    - 共有 lib の変更は、その lib の名前に触れるファイルへ（推移的に）広げてから字面の照合・依存の宣言に
+#      当てる（tests/changed-select/select.sh の users）。利用側をすべて選び、公開関数の指紋では絞らない
+#    - tests/lib のシェル以外の共有ファイル（git-isolated.gitconfig は全 suite の GIT_CONFIG_GLOBAL。awk・tsv は
+#      lib が読む）は名前の辺で利用側をたどれないので、CHANGED_FULL_PLUGIN_NONSHELL_DIRS で全件へ倒す
+#    選択の仕組み自身（tests/changed-select/）の変更は全件で測る（選択の誤りを、その変更を含む PR の
+#    部分ゲートでは観測できない）。
 #
 # プラグインルート（tests/ の親）からの相対パス:
 # 要素は引用符で囲む（行頭の素の `tests/run-all.sh` はゲート起動の静的検査〔tests/lib/exit-code-guard.sh〕
 # から起動行に見える）。
 CHANGED_FULL_PLUGIN_PATHS=(
-  "tests/run-all.sh"
-  "tests/lib/"
+  "tests/changed-select/"
   "hooks/hooks.json"
   "mcp/package.json"
   "mcp/package-lock.json"
+  # 時間予算（Issue `#3005`）の基線と判定 CLI は、全 suite の判定に効く。基線だけを縮める変更を
+  # 部分ゲートで通すと、縮めた suite を測らないまま通り、後の全件ゲートで初めて赤になる
+  "tests/time-budget/"
+)
+# 配下の .sh / .bash 以外を全件へ倒すディレクトリ（プラグインルートからの相対パス。末尾 `/`）。配下のシェルは
+# 利用側の逆引きで選ぶ:
+CHANGED_FULL_PLUGIN_NONSHELL_DIRS=(
+  "tests/lib/"
 )
 # リポジトリルートからの相対パス:
 CHANGED_FULL_REPO_PATHS=(
@@ -2588,6 +2624,7 @@ CHANGED_NEVER_RUN_SUITES=(
 )
 
 CHANGED_MODE=0              # 1 = 変更ベースの選択で SCRIPTS を絞った
+CHANGED_REQUESTED=0         # 1 = 変更ベースの選択を試みた（全件へ倒した回も含む）。回し直しの案内の前置に使う
 CHANGED_FALLBACK_REASON=""  # 空でなければ全件へ倒した理由
 CHANGED_BASE_LABEL=""
 CHANGED_BASE_SHA=""         # 解決済みの base コミット SHA（40 桁小文字 16 進。全件フォールバック時は空）
@@ -2597,6 +2634,7 @@ CHANGED_EVIDENCE=()
 CHANGED_DOC_HIT=""          # 文書契約面に触れた最初の変更パス（空なら非該当。全件フォールバック時も空）
 CHANGED_DOC_ADDED=0         # 字面の交差では選ばれず、束として足した suite の件数
 CHANGED_NEVER_RUN_DROPPED=() # 字面の交差では選ばれたが、CHANGED_NEVER_RUN_SUITES により選択から外した suite
+CHANGED_USERS=()            # source の逆引きで足したパス（`<利用側のパス>\t<元の変更パス>`。Issue `#3006`）
 
 ff_changed_fallback() { # <理由>
   CHANGED_FALLBACK_REASON="$1"
@@ -2604,6 +2642,7 @@ ff_changed_fallback() { # <理由>
   CHANGED_DOC_HIT=""
   CHANGED_DOC_ADDED=0
   CHANGED_NEVER_RUN_DROPPED=()
+  CHANGED_USERS=()
   FULL_RUN_REQUESTED=1
 }
 
@@ -2629,114 +2668,15 @@ ff_changed_never_runs() { # <suite 名>
   return 1
 }
 
-# 参照パスの導出。suite のディレクトリにあるスクリプトの各行から、パス様の token を拾って
-# 変更ファイルと交差させる。出力は交差した suite ごとに 1 行 `S<TAB>名前<TAB>根拠`。
-#
-#   token: `/` を含む `[A-Za-z0-9_.*+-]` の連なり（`skills/*/SKILL.md`・`../../docs/x.md`）と、
-#          拡張子付きのファイル名（`hooks.json`・`*.sh`）。シェル変数（`$X` / `${X}` /
-#          `${X:-y}`）は `*` へ置き換えてから拾う — `"$PLUGIN_ROOT/skills/$name/SKILL.md"` は
-#          `skills/*/SKILL.md` として残る。先頭の `./` `../` `/` と変数由来の `*/` は根の
-#          接頭辞なので剥がし、字面（英数字）を持たない token（`*/*` など）とシステムの絶対パス
-#          （`/usr/bin/env`・`/dev/null`・`/tmp/…`）は捨てる。ルートの祖先ディレクトリそのもの
-#          （`plugins/ff-dev-toolkit` など）は**捨てない** — ツリー全体を走査する suite
-#          （公開対象全体の禁止パターン検査など）はその token しか持たないことがあり、捨てると
-#          配下の変更で選ばれなくなる。祖先 token はその配下の全変更と交差する（多く回す側）
-#   交差: `/変更パス/` が `/token/` をパス成分の境界で含むこと（`*` は成分内の任意文字列）。
-#         完全一致・末尾一致（`SKILL.md`）・先頭一致（ディレクトリ token）・途中一致を 1 つの
-#         規則で扱う。コメント行も拾う — 参照の言及は関係の手掛かりで、拾い過ぎは多く回す側
-#   suite 自身のディレクトリ配下の変更はその suite を選ぶ。token を 1 つも導出できない
-#   suite は常に選ぶ（導出の空振りを「関係なし」へ倒さない）
-#
-# 環境変数で入力を渡す（`awk -v` は改行を保持しない実装がある）: FF_CHG_FILES（改行区切り
-# の変更パス。リポジトリルート相対）/ FF_CHG_TESTS_PREFIX（tests/ のリポジトリルート相対
-# 接頭辞）/ FF_CHG_TESTS_DIR（tests/ の実パス）。
+# 参照パスの導出は tests/changed-select/select.sh の derive が受け持つ（Issue `#3006`。導出規則・依存の宣言の
+# 書式の正本は同ファイルのヘッダ）。出力は走査した suite ごとに 1 行 `S<TAB>名前<TAB>根拠` / `R<TAB>名前`。
+# 環境変数で入力を渡す: FF_CHG_FILES（改行区切りの変更パス。リポジトリルート相対）/ FF_CHG_TESTS_PREFIX
+# （tests/ のリポジトリルート相対接頭辞）/ FF_CHG_TESTS_DIR（tests/ の実パス）/ FF_CHG_PLUGIN_PREFIX
+# （プラグインルートのリポジトリルート相対接頭辞）。CLI が無い・読めない回は非 0 で返り、呼び出し側が
+# 全件へ倒す（少なく回す側へ倒さない）。
 ff_changed_derive() { # <走査するファイル>...
-  awk '
-    function longest_literal(t,   parts, n, i, best) {
-      n = split(t, parts, "*")
-      best = ""
-      for (i = 1; i <= n; i++) if (length(parts[i]) > length(best)) best = parts[i]
-      return best
-    }
-    function consider(s, tok,   t, key, lit, re, i, bare) {
-      # システムの絶対パス（shebang の /usr/bin/env・/dev/null・/tmp/…）はリポジトリを指さない
-      if (tok ~ /^\/(usr|bin|sbin|dev|tmp|etc|proc|opt|var|private|System|Library|Users|home)(\/|$)/) return
-      t = tok
-      while (1) {
-        if (substr(t, 1, 2) == "./") { t = substr(t, 3); continue }
-        if (substr(t, 1, 3) == "../") { t = substr(t, 4); continue }
-        if (substr(t, 1, 1) == "/") { t = substr(t, 2); continue }
-        if (substr(t, 1, 2) == "*/") { t = substr(t, 3); continue }
-        break
-      }
-      sub(/\/+$/, "", t)
-      if (t !~ /[A-Za-z0-9]/) return
-      key = s SUBSEP t
-      if (key in SEEN) return
-      SEEN[key] = 1
-      NTOK[s]++
-      if (s in EV) return
-      lit = longest_literal(t)
-      bare = (index(t, "/") == 0 && index(t, "*") == 0)
-      re = ""
-      for (i = 1; i <= NC; i++) {
-        if (C[i] == "" || index(C[i], lit) == 0) continue
-        # 他の suite のディレクトリ配下は、ファイル名だけの token（`verify.sh`）では選ばない。
-        # suite のディレクトリはその suite の私有物で、他の suite からの依存は名前を含む参照
-        # （`tests/X/verify.sh`・`X/verify.sh`）か全体走査の glob（`*.sh`）として字面に出る
-        if (bare && substr(C[i], 1, length(pre)) == pre) continue
-        if (re == "") {
-          re = t
-          gsub(/\./, "\\.", re)
-          gsub(/\+/, "\\+", re)
-          gsub(/\*/, "[^/]*", re)
-          re = "/" re "/"
-        }
-        if (("/" C[i] "/") ~ re) { EV[s] = C[i] " ← " tok; return }
-      }
-    }
-    BEGIN {
-      NC = split(ENVIRON["FF_CHG_FILES"], C, "\n")
-      pre = ENVIRON["FF_CHG_TESTS_PREFIX"]
-      dir = ENVIRON["FF_CHG_TESTS_DIR"] "/"
-      for (i = 1; i <= NC; i++) {
-        if (C[i] == "" || substr(C[i], 1, length(pre)) != pre) continue
-        rest = substr(C[i], length(pre) + 1)
-        j = index(rest, "/")
-        if (j > 1) { n = substr(rest, 1, j - 1); if (!(n in OWN)) OWN[n] = C[i] }
-      }
-    }
-    FNR == 1 {
-      s = FILENAME
-      if (substr(s, 1, length(dir)) == dir) s = substr(s, length(dir) + 1); else s = ""
-      j = index(s, "/")
-      s = (j > 1) ? substr(s, 1, j - 1) : ""
-      if (s != "") SUITES[s] = 1
-    }
-    s == "" { next }
-    {
-      line = $0
-      gsub(/\$\{[^}]*\}/, "*", line)
-      gsub(/\$[A-Za-z_][A-Za-z0-9_]*/, "*", line)
-      gsub(/\$[0-9@#?*]/, "*", line)
-      while (match(line, /[A-Za-z0-9_.*+-]*\/[A-Za-z0-9_.*+\/-]*/)) {
-        consider(s, substr(line, RSTART, RLENGTH))
-        line = substr(line, 1, RSTART - 1) " " substr(line, RSTART + RLENGTH)
-      }
-      while (match(line, /[A-Za-z0-9_*+-]+\.[A-Za-z][A-Za-z0-9]*/)) {
-        consider(s, substr(line, RSTART, RLENGTH))
-        line = substr(line, RSTART + RLENGTH)
-      }
-    }
-    END {
-      for (s in SUITES) {
-        if (s in OWN) print "S\t" s "\t" OWN[s] " ← suite 自身のディレクトリ"
-        else if (s in EV) print "S\t" s "\t" EV[s]
-        else if (!(s in NTOK)) print "S\t" s "\t参照パスを 1 つも導出できない（fail-safe で常に選ぶ）"
-        else print "R\t" s
-      }
-    }
-  ' "$@"
+  [[ -r "$SCRIPT_DIR/changed-select/select.sh" ]] || return 2
+  bash "$SCRIPT_DIR/changed-select/select.sh" derive "$@"
 }
 
 # 文書契約面のディレクトリ要素の配下で、文書として扱うファイルか（拡張子の名簿との後方一致）。
@@ -2762,7 +2702,7 @@ ff_changed_surface_hit() { # <変更パス> <名簿の要素（リポジトリ�
 # ff_changed_fallback で全件実行へ倒す（理由付き）。
 ff_changed_select() { # <FF_RUN_ALL_CHANGED の値>
   local req="$1" top top_abs plugin_abs plugin_rel base_ref base_sha mb files extra p e
-  local derive_files alias_entry alias_from="" entry_changed=0
+  local derive_files alias_entry alias_from="" entry_changed=0 users_out runner_rel runner_hit
   local script name found line derive_out
   local doc_hit="" doc_elem="" doc_e="" doc_name doc_matched=0 doc_added=0 doc_missing=""
   local -a scan_files=() selected=() derived_names=() derived_evs=()
@@ -2784,40 +2724,57 @@ ff_changed_select() { # <FF_RUN_ALL_CHANGED の値>
     ff_changed_fallback "プラグインルートがリポジトリの外にある: ${plugin_abs}"
     return 0
   fi
-  if [[ "$req" == "1" ]]; then
-    base_ref="$(git -C "$top_abs" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" || base_ref=""
-    if [[ -z "$base_ref" ]]; then
-      ff_changed_fallback "base の略記 1 が指す origin/HEAD が未設定（git remote set-head origin --auto で置ける。base を直接渡してもよい）"
+  # 試算モード（FF_RUN_ALL_SELECT_ONLY=1 と FF_RUN_ALL_CHANGED_FILES_FROM=<ファイル>。Issue `#3006`）は、変更一覧を
+  # git の差分ではなくファイルから読む。過去の PR の変更一覧へ今の選択を当てて、回す秒数を見積もるための口
+  # （tests/changed-select/simulate.sh が使う）。base は解決せず、印（COVERS_DIFF）も残らない。ゲートの選択には
+  # 使わない — 試算モードでない回に指定されたら、注入を無視せず全件へ倒す（少なく回す側へ倒さない）。
+  if [[ -n "${FF_RUN_ALL_CHANGED_FILES_FROM:-}" ]]; then
+    if [[ "${FF_RUN_ALL_SELECT_ONLY:-}" != "1" ]]; then
+      ff_changed_fallback "FF_RUN_ALL_CHANGED_FILES_FROM は試算モード（FF_RUN_ALL_SELECT_ONLY=1）でだけ使える"
       return 0
     fi
+    if ! files="$(cat -- "$FF_RUN_ALL_CHANGED_FILES_FROM" 2>/dev/null)"; then
+      ff_changed_fallback "注入した変更一覧を読めない: ${FF_RUN_ALL_CHANGED_FILES_FROM}"
+      return 0
+    fi
+    CHANGED_BASE_LABEL="注入した変更一覧（試算モード）"
+    base_sha=""
   else
-    base_ref="$req"
-  fi
-  base_sha="$(git -C "$top_abs" rev-parse --verify --quiet "${base_ref}^{commit}" 2>/dev/null)" || base_sha=""
-  if [[ -z "$base_sha" ]]; then
-    ff_changed_fallback "base をコミットへ解決できない: ${base_ref}"
-    return 0
-  fi
-  mb="$(git -C "$top_abs" merge-base "$base_sha" HEAD 2>/dev/null)" || mb=""
-  if [[ -z "$mb" ]]; then
-    ff_changed_fallback "base と HEAD の merge-base を取れない（浅い clone では履歴が要る）: ${base_ref}"
-    return 0
-  fi
-  CHANGED_BASE_LABEL="${base_ref}（merge-base ${mb:0:12}）"
-  # 作業ツリーとの差分（未コミットの追跡済み変更も含む）+ 未追跡ファイル。既定一覧は dirty
-  # ガードで clean を要求するので通常は committed 差分に等しいが、FF_RUN_ALL_ALLOW_DIRTY=1 の
-  # 回に未コミット分を選択から落とさないため作業ツリーと比べる。改名は旧パスも選択に効くよう
-  # 削除 + 追加に分ける（--no-renames）。
-  if ! files="$(git -C "$top_abs" -c core.quotePath=false diff --name-only --no-renames "$mb" -- 2>/dev/null)"; then
-    ff_changed_fallback "変更ファイル一覧を取得できない（git diff が失敗）"
-    return 0
-  fi
-  if ! extra="$(git -C "$top_abs" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null)"; then
-    ff_changed_fallback "未追跡ファイル一覧を取得できない（git ls-files が失敗）"
-    return 0
-  fi
-  if [[ -n "$extra" ]]; then
-    files="${files:+${files}$'\n'}${extra}"
+    if [[ "$req" == "1" ]]; then
+      base_ref="$(git -C "$top_abs" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" || base_ref=""
+      if [[ -z "$base_ref" ]]; then
+        ff_changed_fallback "base の略記 1 が指す origin/HEAD が未設定（git remote set-head origin --auto で置ける。base を直接渡してもよい）"
+        return 0
+      fi
+    else
+      base_ref="$req"
+    fi
+    base_sha="$(git -C "$top_abs" rev-parse --verify --quiet "${base_ref}^{commit}" 2>/dev/null)" || base_sha=""
+    if [[ -z "$base_sha" ]]; then
+      ff_changed_fallback "base をコミットへ解決できない: ${base_ref}"
+      return 0
+    fi
+    mb="$(git -C "$top_abs" merge-base "$base_sha" HEAD 2>/dev/null)" || mb=""
+    if [[ -z "$mb" ]]; then
+      ff_changed_fallback "base と HEAD の merge-base を取れない（浅い clone では履歴が要る）: ${base_ref}"
+      return 0
+    fi
+    CHANGED_BASE_LABEL="${base_ref}（merge-base ${mb:0:12}）"
+    # 作業ツリーとの差分（未コミットの追跡済み変更も含む）+ 未追跡ファイル。既定一覧は dirty
+    # ガードで clean を要求するので通常は committed 差分に等しいが、FF_RUN_ALL_ALLOW_DIRTY=1 の
+    # 回に未コミット分を選択から落とさないため作業ツリーと比べる。改名は旧パスも選択に効くよう
+    # 削除 + 追加に分ける（--no-renames）。
+    if ! files="$(git -C "$top_abs" -c core.quotePath=false diff --name-only --no-renames "$mb" -- 2>/dev/null)"; then
+      ff_changed_fallback "変更ファイル一覧を取得できない（git diff が失敗）"
+      return 0
+    fi
+    if ! extra="$(git -C "$top_abs" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null)"; then
+      ff_changed_fallback "未追跡ファイル一覧を取得できない（git ls-files が失敗）"
+      return 0
+    fi
+    if [[ -n "$extra" ]]; then
+      files="${files:+${files}$'\n'}${extra}"
+    fi
   fi
   CHANGED_FILE_COUNT=0
   while IFS= read -r p; do
@@ -2826,6 +2783,12 @@ ff_changed_select() { # <FF_RUN_ALL_CHANGED の値>
     for e in "${CHANGED_FULL_PLUGIN_PATHS[@]}"; do
       if ff_changed_surface_hit "$p" "${plugin_rel}${e}"; then
         ff_changed_fallback "実行基盤の契約面に触れる変更: ${p}（CHANGED_FULL_PLUGIN_PATHS の ${e}）"
+        return 0
+      fi
+    done
+    for e in ${CHANGED_FULL_PLUGIN_NONSHELL_DIRS[@]+"${CHANGED_FULL_PLUGIN_NONSHELL_DIRS[@]}"}; do
+      if ff_changed_surface_hit "$p" "${plugin_rel}${e}" && [[ "$p" != *.sh && "$p" != *.bash ]]; then
+        ff_changed_fallback "実行基盤の契約面に触れる変更: ${p}（CHANGED_FULL_PLUGIN_NONSHELL_DIRS の ${e}。シェル以外の共有ファイルは利用側をたどれない）"
         return 0
       fi
     done
@@ -2890,18 +2853,41 @@ ff_changed_select() { # <FF_RUN_ALL_CHANGED の値>
     alias_from=""
   fi
 
+  # 共有 lib・hook・スクリプト（.sh / .bash）の変更は、その名前に（推移的に）触れるファイルへ広げてから
+  # 導出へ渡す（Issue `#3006`。select.sh の users）。全件へ倒すかの判定（上の名簿）には広げた分を使わない。
+  # ランナーが名指す lib の変更では run-all.sh が利用側に入り、下のランナーの規則へつながる。
+  # 根拠の行には、広げた先のパスに「<元の変更> を名指す」を添える。
+  if [[ "$CHANGED_FILE_COUNT" -gt 0 ]]; then
+    if ! users_out="$(printf '%s\n' "$files" | bash "$SCRIPT_DIR/changed-select/select.sh" users --root "$top_abs" --plugin-prefix "$plugin_rel")"; then
+      ff_changed_fallback "利用側の逆引き（tests/changed-select/select.sh users）に失敗した"
+      return 0
+    fi
+    while IFS=$'\t' read -r p e; do
+      [[ -n "$p" && -n "$e" ]] || continue
+      derive_files="${derive_files}"$'\n'"${p}"
+      CHANGED_USERS+=("${p}"$'\t'"${e}")
+    done < <(printf '%s\n' "$users_out")
+  fi
+  # ランナー（この run-all.sh）はブラックボックスとして扱う。直接の変更か、ランナーが source する lib の
+  # 変更で利用側に run-all.sh が入った回は、ランナー自身の suite（run-all）を必ず選ぶ。
+  runner_rel="${plugin_rel}tests/run-all.sh"
+  runner_hit=""
+  while IFS= read -r p; do
+    [[ "$p" == "$runner_rel" ]] && { runner_hit="$p"; break; }
+  done < <(printf '%s\n' "$derive_files")
+
   CHANGED_REGISTERED="${#SCRIPTS[@]}"
   if [[ "$CHANGED_FILE_COUNT" -gt 0 ]]; then
     while IFS= read -r p; do
       [[ -n "$p" ]] && scan_files+=("$p")
-    done < <(find "$SCRIPT_DIR" \( -path "$SCRIPT_DIR/lib" -o -name fixtures -o -name node_modules \) -prune \
-      -o -type f -path "$SCRIPT_DIR/*/*" \( -name '*.sh' -o -name '*.bash' -o -name '*.mjs' -o -name '*.cjs' -o -name '*.js' -o -name '*.ts' -o -name '*.py' \) -print 2>/dev/null)
+    done < <(bash "$SCRIPT_DIR/changed-select/select.sh" scan "$SCRIPT_DIR" 2>/dev/null)
+    # 走査する集合は select.sh の scan が決める（宣言の照合 check と同じ集合を読む）
     if [[ "${#scan_files[@]}" -eq 0 ]]; then
-      ff_changed_fallback "参照パスを導出する走査対象が 0 件（tests/ を読めない）"
+      ff_changed_fallback "参照パスを導出する走査対象が 0 件（tests/ か選択の CLI を読めない）"
       return 0
     fi
     if ! derive_out="$(FF_CHG_FILES="$derive_files" FF_CHG_TESTS_PREFIX="${plugin_rel}tests/" FF_CHG_TESTS_DIR="$SCRIPT_DIR" \
-      ff_changed_derive "${scan_files[@]}")"; then
+      FF_CHG_PLUGIN_PREFIX="$plugin_rel" ff_changed_derive "${scan_files[@]}")"; then
       ff_changed_fallback "参照パスの導出に失敗した（読めないファイルがある可能性）"
       return 0
     fi
@@ -2936,6 +2922,19 @@ ff_changed_select() { # <FF_RUN_ALL_CHANGED の値>
       done
       if [[ -n "$alias_from" && "$found" == "${alias_entry} ← "* ]]; then
         found="${alias_from}（multi-agent.sh の構成ファイル。入口の変更として交差） ← ${found#"${alias_entry} ← "}"
+      fi
+      # 利用側の逆引きで足したパスで選ばれた回は、元の変更を根拠に添える
+      if [[ -n "$found" && "${#CHANGED_USERS[@]}" -gt 0 ]]; then
+        for line in "${CHANGED_USERS[@]}"; do
+          if [[ "$found" == "${line%%$'\t'*} ← "* ]]; then
+            found="${line#*$'\t'} を名指す ${found}"
+            break
+          fi
+        done
+      fi
+      # ランナーはブラックボックス: ランナーの変更ではランナー自身の suite を必ず選ぶ
+      if [[ -n "$runner_hit" && "$name" == "run-all" && -z "$found" ]]; then
+        found="${runner_hit} ← ランナー自身の suite（ランナーはブラックボックスとして扱う）"
       fi
       # 選択の条件に当たっても（字面の交差。走査対象が見つからない回の fail-safe も含む）、この
       # ランナーからは常に skip する suite は選択に入れない（名簿の基準は CHANGED_NEVER_RUN_SUITES）。
@@ -3003,6 +3002,7 @@ if [[ -n "${FF_RUN_ALL_CHANGED:-}" && "${FF_RUN_ALL_CHANGED}" != "0" ]]; then
   elif [[ "$FAST_EXPLICIT" == "1" ]]; then
     echo "⚠️  FF_RUN_ALL_FAST=1 と FF_RUN_ALL_CHANGED が同時に指定されています（矛盾）。除外の少ない側の高速モードを採ります" >&2
   else
+    CHANGED_REQUESTED=1
     ff_changed_select "$FF_RUN_ALL_CHANGED"
   fi
 fi
@@ -3012,6 +3012,31 @@ fi
 # 内側の既定一覧へ漏れて、測りたいモードが別物になる（全件ゲートを FF_RUN_ALL_CHANGED 経由で
 # 回した回に実測）。
 unset FF_RUN_ALL_CHANGED
+
+# 試算モード（FF_RUN_ALL_SELECT_ONLY=1。Issue `#3006`）: 変更ベースの選択の結果だけを出して終わる。suite は
+# 回さず、記録（gate-record・経過秒・走行中の印）も書かない。tests/changed-select/simulate.sh が、過去の PR の
+# 変更一覧（FF_RUN_ALL_CHANGED_FILES_FROM）へ今の選択を当てて回す秒数を見積もるのに使う。
+if [[ "${FF_RUN_ALL_SELECT_ONLY:-}" == "1" ]]; then
+  if [[ "$USING_DEFAULT_SCRIPTS" != "1" || "$CHANGED_REQUESTED" != "1" ]]; then
+    echo "✗ FF_RUN_ALL_SELECT_ONLY=1 は、既定一覧を FF_RUN_ALL_CHANGED で選ぶ回でだけ使える（明示引数・全件の指定・矛盾する指定とは併用しない）" >&2
+    ff_wait_cleanup_state
+    exit 2
+  fi
+  if [[ "$CHANGED_MODE" == "1" ]]; then
+    echo "select-only: mode=changed selected=${#SCRIPTS[@]} registered=${CHANGED_REGISTERED}"
+    for _so_script in ${SCRIPTS[@]+"${SCRIPTS[@]}"}; do
+      _so_name="${_so_script%/*}"
+      echo "select-only: suite=${_so_name##*/}"
+    done
+    for _so_ev in ${CHANGED_EVIDENCE[@]+"${CHANGED_EVIDENCE[@]}"}; do
+      echo "select-only: why=${_so_ev}"
+    done
+  else
+    echo "select-only: mode=full reason=${CHANGED_FALLBACK_REASON:-（理由なし）}"
+  fi
+  ff_wait_cleanup_state
+  exit 0
+fi
 
 if [[ "$FULL_RUN_REQUESTED" == "1" || "$CHANGED_MODE" == "1" ]]; then
   FAST_MODE=0
@@ -3315,6 +3340,16 @@ if [[ "$FAST_MODE" == "1" && ${#FAST_EXCLUDED[@]} -gt 0 ]]; then
   ff_stdout_write
 fi
 
+# 全件モードの用途の注意（Issue `#3004`）。FF_RUN_ALL_FULL=1 はリリース・公開同期の前に回すもの（ADR-086 の
+# gate 段が毎回回す）。通常 PR は変更ベースの部分ゲート（ADR-094）で足りるので、明示の FULL=1 で既定一覧を
+# 回した回だけ 1 行で知らせ、実行は止めない（手動起動の Linux 全件 CI でも出るが、害はない）。gate 段は FF_RELEASE_GATE_HEAD を渡して起動するので、それが
+# 空でない回は出さない（黙らせる目的でこの変数を設定させない — 鮮度系 suite の判定基準も変わる）。
+# FULL_EXPLICIT だけを見る: FAST=0・不正値・契約面に触れた変更ベースの自動全件は、通常 PR の正当な経路。
+if [[ "$FULL_EXPLICIT" == "1" && "$USING_DEFAULT_SCRIPTS" == "1" && -z "${FF_RELEASE_GATE_HEAD:-}" ]]; then
+  _full_notice_cmd="FF_RUN_ALL_CHANGED=1 bash $(printf '%q' "$SELF_PATH")"
+  echo "ℹ️  FF_RUN_ALL_FULL=1 の全件実行はリリース・公開同期の前に回すものです（ADR-086 / ADR-094）。通常 PR のマージ前ゲートは ${_full_notice_cmd} で足ります。このまま全件で続行します" >&2
+fi
+
 # 全件実行であることを肯定的に 1 行で出す。「⚡ が出ていない」ことでしか全件を判別できないと、
 # 公開同期の定期実行点（毎回全件。ADR-086）や手動起動の Linux CI で全件を回したという報告が目視頼みになる。
 # 明示引数の実行も FAST_MODE=0 だが「全件」ではないので、既定一覧に限って出す。
@@ -3355,6 +3390,12 @@ CHECKS_SKIPPED=()
 # 実行した suite の経過秒。要素は `名前=整数秒`。未実行と時計不能は載せない。
 # bash 3.2 に連想配列が無いので登録順の 1 配列に畳む。
 ELAPSED_ENTRIES=()
+# 実行した suite の CPU 時間（Issue `#3005`）。要素は `名前<TAB>times の子プロセス行`
+# （例 `0m1.234s 0m0.567s` = 回収した子孫すべての user / sys）。読み方と時間予算の判定は
+# tests/time-budget/budget.sh に閉じ、ここは集めて渡すだけ（末尾の ff_time_budget）。
+CPU_TIMES=()
+# 逐次実行の経路で、suite の出力の後ろへ `times` を足すときの区切り（一時ファイルを使わないため）
+RUN_ALL_CPU_SENTINEL="__ff_run_all_cpu_times_$$__"
 
 # ── 実行経路の共有部（Issue #595）────────────────────────────────────────────
 # 「何を走らせ、どう数えるか」は逐次・並列で 1 か所へ集約する。並列化で変わるのは
@@ -3597,9 +3638,18 @@ ff_suite_env_isolate() {
   fi
 }
 
+# 逐次実行の suite を走らせたコマンド置換のサブシェルの中で呼ぶ（Issue `#3005`）。区切り行と、
+# そのサブシェルの `times`（2 行目 = 回収した子 = suite のプロセス木の CPU）を出力の後ろへ足し、
+# suite の終了コードをそのまま返す。関数は同じサブシェルで走るので `times` の対象は変わらない。
+ff_seq_cpu_trailer() { # <suite の終了コード>
+  printf '\n%s\n' "$RUN_ALL_CPU_SENTINEL"
+  times
+  return "$1"
+}
+
 # 逐次実行。一時領域を要求しない経路で、read-only 環境の退避先でもある。
 ff_run_sequential() {
-  local script name kind suite_rc _t0 _t1 _elapsed
+  local script name kind suite_rc _t0 _t1 _elapsed _cpu_raw
   for script in "${SCRIPTS[@]}"; do
     if [[ "$USING_DEFAULT_SCRIPTS" == "1" ]]; then
       name="${script%/*}"; name="${name##*/}"
@@ -3614,10 +3664,21 @@ ff_run_sequential() {
       # パイプで完結し一時ファイルを作らないので read-only 環境でも動く。判定後に
       # そのまま全量を出力するので、診断情報は失敗時も成功時も欠けない。
       _t0="$(ff_epoch)" || _t0=""
-      if FF_SUITE_OUTPUT="$(ff_suite_env_isolate; bash "$script" 2>&1)"; then
+      # suite の出力の後ろへ区切り行とこのサブシェルの `times`（2 行目 = suite のプロセス木の
+      # CPU）を足し、受け取った後で外す（Issue `#3005`。ff_seq_cpu_trailer）。
+      if FF_SUITE_OUTPUT="$(ff_suite_env_isolate; bash "$script" 2>&1; ff_seq_cpu_trailer "$?")"; then
         suite_rc=0
       else
         suite_rc=$?
+      fi
+      _cpu_raw="$FF_SUITE_OUTPUT"
+      FF_SUITE_OUTPUT="${_cpu_raw%$'\n'"$RUN_ALL_CPU_SENTINEL"*}"
+      if [[ "$FF_SUITE_OUTPUT" != "$_cpu_raw" ]]; then
+        CPU_TIMES+=("${name}"$'\t'"${_cpu_raw##*$'\n'}")
+        # コマンド置換が落としていた末尾の改行を、区切りを足す前と同じく落とす
+        while [[ "$FF_SUITE_OUTPUT" == *$'\n' ]]; do
+          FF_SUITE_OUTPUT="${FF_SUITE_OUTPUT%$'\n'}"
+        done
       fi
       _t1="$(ff_epoch)" || _t1=""
       if _elapsed="$(ff_elapsed_between "$_t0" "$_t1")"; then
@@ -3817,7 +3878,7 @@ ff_write_elapsed_record() {
 # 並列実行。${SPOOL}（mktemp -d 済み）を要求する。起動順は LAUNCH_ORDER、出力は登録順。
 ff_run_parallel() {
   local total="${#SCRIPTS[@]}"
-  local i k=0 next_print=0 running=0 suite_rc _elapsed name
+  local i k=0 next_print=0 running=0 suite_rc _elapsed name _cpu_line
   # 配列名の DONE / PIDS を避けるのは shellcheck 対策。`DONE[$i]=1` が文頭に来ると
   # `done` キーワードの大文字違い（SC1081）+ `[` の前のスペース欠落（SC1069）と読まれる。
   local -a SUITE_KIND SUITE_PID SUITE_DONE SUITE_LAUNCHED
@@ -3859,6 +3920,9 @@ ff_run_parallel() {
         _t0="$(ff_epoch)"
         bash "${SCRIPTS[$i]}" >"$SPOOL/$i.out" 2>&1
         _rc=$?
+        # このサブシェルの `times` の 2 行目 = 回収した子（suite のプロセス木）の CPU（Issue `#3005`）。
+        # rc より先に置くので「rc の実在 ⟹ times も書き終えている」が成り立つ
+        times >"$SPOOL/$i.times" 2>/dev/null || :
         _t1="$(ff_epoch)"
         if _elapsed="$(ff_elapsed_between "$_t0" "$_t1")"; then
           printf '%s\n' "$_elapsed" >"$SPOOL/$i.elapsed.part"
@@ -3912,7 +3976,12 @@ ff_run_parallel() {
               *) ff_record_elapsed "$name" "$_elapsed" ;;
             esac
           fi
-          rm -f "$SPOOL/$i.out" "$SPOOL/$i.rc" "$SPOOL/$i.elapsed" 2>/dev/null || true
+          _cpu_line=""
+          if [[ -f "$SPOOL/$i.times" ]] && { read -r _ && read -r _cpu_line; } <"$SPOOL/$i.times" 2>/dev/null \
+            && [[ -n "$_cpu_line" ]]; then
+            CPU_TIMES+=("${name}"$'\t'"${_cpu_line}")
+          fi
+          rm -f "$SPOOL/$i.out" "$SPOOL/$i.rc" "$SPOOL/$i.elapsed" "$SPOOL/$i.times" 2>/dev/null || true
         else
           SUITE_KIND[$i]=unreadable
           suite_rc=0
@@ -4203,6 +4272,9 @@ if [[ ${#REQUIRED_SKIPPED[@]} -gt 0 ]]; then
   # すると起動ガードに止められて、案内どおりに再実行できない（案内が自分で自分を無効化する）。
   MODE_PREFIX=""
   [[ "$FAST_MODE" == "1" ]] || MODE_PREFIX="FF_RUN_ALL_FULL=1 "
+  # 変更ベースの部分ゲートの回は、同じ指定（FF_RUN_ALL_CHANGED）を写す。全件の前置へ化けさせると、
+  # 通常 PR の再実行が全件モードへ上がる（Issue `#3004`。全件へ倒れた回も同じ指定で再び倒れる）。
+  [[ "$CHANGED_REQUESTED" != "1" ]] || MODE_PREFIX="FF_RUN_ALL_CHANGED=$(printf '%q' "$_ff_orig_changed") "
   [[ "$ALLOW_MISSING_MCP_DEPS" != "1" ]] || MODE_PREFIX="${MODE_PREFIX}FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1 "
   REQUIRED_SKIP_RERUN="${MODE_PREFIX}FF_RUN_ALL_ALLOW_SKIP=\"${REQUIRED_SKIPPED[*]}\" bash tests/run-all.sh"
   echo "    ${REQUIRED_SKIP_RERUN}" >&2
@@ -4225,8 +4297,10 @@ if [[ ${#FAILED[@]} -gt 0 ]]; then
   # マージ直前の照合で合格の証拠にはならない — 通しの 1 回は省かない。
   # 実行モードの前置は保つ（全件モードでだけ赤になる suite が、前置を落とした再実行で緑に化けない
   # ように。上の必須 skip の再現コマンドと同じ理由）。明示引数の実行は FF_RUN_ALL_FULL=1 だけを写す。
+  # 変更ベースの部分ゲートの回（CHANGED_REQUESTED）は FAST_MODE=0 でも全件の前置を付けない。suite は
+  # FF_RUN_ALL_FULL 無しの環境で走っており、前置を付けると回し直しの環境が元の実行と変わる（Issue `#3004`）。
   _rerun_prefix=""
-  if [[ "${FF_RUN_ALL_FULL:-}" == "1" ]] || [[ "$USING_DEFAULT_SCRIPTS" == "1" && "$FAST_MODE" != "1" ]]; then
+  if [[ "${FF_RUN_ALL_FULL:-}" == "1" ]] || [[ "$USING_DEFAULT_SCRIPTS" == "1" && "$FAST_MODE" != "1" && "$CHANGED_REQUESTED" != "1" ]]; then
     _rerun_prefix="FF_RUN_ALL_FULL=1 "
   fi
   _rerun_cmd="${_rerun_prefix}bash $(printf '%q' "$SELF_PATH")"
@@ -4250,7 +4324,20 @@ if [[ ${#FAILED[@]} -gt 0 ]]; then
   fi
   if [[ "$_stale_only" -eq 1 ]]; then
     ff_emit_stale_guidance
-    _full_rerun_cmd="${_rerun_prefix}bash $(printf '%q' "$SELF_PATH")"
+    # 通しの前置は実行モードを保つ。変更ベースの部分ゲートの回は同じ FF_RUN_ALL_CHANGED の指定で
+    # 回し直す（全件モードへ上げない。Issue `#3004`）。ただし base をコミット SHA で固定した指定は、
+    # 取り込んだ後も古い base を測り、印（COVERS_DIFF）が PR の base と一致しない。上の案内が取り込む先
+    # （origin/HEAD）と同じ `1` へ戻す。ref 名の指定（origin/develop など）は実行時に解決し直すので写す。
+    _full_rerun_prefix="$_rerun_prefix"
+    if [[ "$CHANGED_REQUESTED" == "1" ]]; then
+      _full_rerun_changed="$_ff_orig_changed"
+      _full_rerun_sha_re='^[0-9a-fA-F]{7,64}$'
+      if [[ "$_full_rerun_changed" =~ $_full_rerun_sha_re ]]; then
+        _full_rerun_changed=1
+      fi
+      _full_rerun_prefix="FF_RUN_ALL_CHANGED=$(printf '%q' "$_full_rerun_changed") "
+    fi
+    _full_rerun_cmd="${_full_rerun_prefix}bash $(printf '%q' "$SELF_PATH")"
     echo "  base を取り込んで通しで 1 回回し直す（マージの根拠になる）:" >&2
     echo "    ${_full_rerun_cmd}" >&2
     echo "  落ちた suite だけを回し直す（確認用・部分実行。マージの根拠にならない）:" >&2
@@ -4365,6 +4452,10 @@ ff_stale_only_failed() {
   # bash 3.2 の set -u 下では空配列の "${arr[@]}" が unbound になるので、`:-` で要素の有無を見て
   # から展開する
   [[ -z "${REQUIRED_SKIPPED[*]:-}" ]] || return 0
+  # 時間予算の赤（Issue `#3005`）を含む回は鮮度赤だけではない。名指しの再実行は予算を判定しない
+  # ので、ここで鮮度赤だけと記録すると予算の赤が案内ごと素通りになる。`:-0` は記録ブロックを単独で
+  # 抽出して走らせる検査（tests/merge-freshness）のため
+  [[ "${TIME_BUDGET_FAILED:-0}" != "1" ]] || return 0
   [[ -n "${STALE[*]:-}" ]] || return 0
   for f in "${FAILED[@]}"; do
     hit=0
@@ -4408,7 +4499,9 @@ ff_record_gate_head() { # <pass|fail>
   # 変更ベースの選択（ADR-062）は既定一覧から絞った部分実行なので、明示引数と同じく partial へ
   # 写す（MODE=changed）。`:-0` は記録ブロックを単独で抽出して走らせる検査のため。
   mode="$(ff_gate_mode)"
-  if [[ "$mode" != "fast" && "$mode" != "full" ]]; then
+  # 時間予算の判定を FF_RUN_ALL_TIME_BUDGET=off で外した既定一覧の回（Issue `#3005`）も、検証が
+  # 欠けているので partial へ写す。`:-0` は記録ブロックを単独で抽出して走らせる検査のため
+  if [[ "$mode" != "fast" && "$mode" != "full" ]] || [[ "${TIME_BUDGET_OPTED_OUT:-0}" == "1" ]]; then
     if [[ "$status" == "pass" ]]; then
       status="partial"
       # suite 名は**実際に緑で通ったものだけ**を挙げる。skip した suite を混ぜると
@@ -4494,6 +4587,95 @@ ff_gate_marker_nested() {
 }
 # <<< ff-gate-record-block
 
+# ── 時間予算（Issue `#3005`。判定の正本は tests/time-budget/budget.sh の先頭コメント）──────
+# 既定一覧を利用者が起動した回（入れ子でない）だけを判定する。通過した suite の CPU 時間を
+# 較正で正規化し、基線 tests/time-budget/baseline.tsv の上限（基線に無い suite は
+# @default-limit）と比べる。超過・判定不能（基線が読めない・計測値が無い suite がある等）は
+# ゲートを赤にする。明示引数の実行・入れ子の実行は判定の対象外で、CPU 秒の観測行だけを出す。
+# 対象かどうかは判定 CLI tests/time-budget/budget.sh の実在でも決める（runner を写した fixture の木、
+# suite の雛形だけを並べた木は対象外）。本物の木で CLI が消えたときは、CLI を使う time-budget suite が
+# 赤になるので、ここで緑へ倒れても素通りにはならない。
+# 走行中マーカーを外す前に回す（較正は数秒かかる。その間も作業ツリー編集ガードを効かせておく）。
+# FF_RUN_ALL_TIME_BUDGET=off は判定を外す明示の宣言（基線を測っていない環境で回す CI 用。値が off の
+# ときだけ有効、空と on は無効、それ以外は 1 行警告して判定する）。外した回は警告を出し、鮮度記録を
+# partial にする（マージ前の照合の証拠にしない。手元のゲートで予算を素通りさせない）。
+TIME_BUDGET_FAILED=0
+TIME_BUDGET_OPTED_OUT=0
+ff_time_budget() {
+  local dir="$SCRIPT_DIR/time-budget" cli entry n p found out rc judge=1
+  local -a lines=()
+  cli="$dir/budget.sh"
+  if [[ "$USING_DEFAULT_SCRIPTS" != "1" || "${FF_ENTERED_NESTED:-0}" != "0" || ! -f "$cli" ]] \
+    || ff_gate_marker_nested; then
+    judge=0
+  fi
+  case "${FF_RUN_ALL_TIME_BUDGET:-}" in
+    ''|on) ;;
+    off)
+      if [[ "$judge" == "1" ]]; then
+        judge=0
+        TIME_BUDGET_OPTED_OUT=1
+        echo "⚠️  FF_RUN_ALL_TIME_BUDGET=off — 時間予算の判定を外しています（この回の記録は partial になり、マージ前の照合の証拠になりません）" >&2
+      fi
+      ;;
+    *) echo "⚠️  FF_RUN_ALL_TIME_BUDGET の値を解釈できません（off だけが有効）: ${FF_RUN_ALL_TIME_BUDGET} — 判定は外しません" >&2 ;;
+  esac
+  if [[ "$judge" == "1" && ${#PASSED[@]} -eq 0 ]]; then
+    ff_stdout_write "time-budget: judged=0（通過した suite が無いので判定の対象なし）"
+    return 0
+  fi
+  # 判定するのは通過した suite だけ（3 列目 pass。落ちた suite は途中で止まって安く見えるので判定に
+  # 使わない）。それ以外の計測値は 3 列目 other で渡し、観測行 cpu-sec-other にだけ載せる。
+  # 計測値の無い通過 suite は計測値を `-` で渡し、budget.sh が判定不能（赤）にする（空欄にしない —
+  # 読み手が TAB で列を切るとき、空の列は畳まれて列がずれる）。
+  # bash 3.2 の set -u では空配列の "${a[@]}" が unbound になるので `${a[@]+…}` で展開する
+  for n in ${PASSED[@]+"${PASSED[@]}"}; do
+    found=""
+    for entry in ${CPU_TIMES[@]+"${CPU_TIMES[@]}"}; do
+      p="${entry%%$'\t'*}"
+      if [[ "$p" == "$n" ]]; then
+        found="$entry"
+        break
+      fi
+    done
+    if [[ -n "$found" ]]; then
+      lines+=("${found}"$'\tpass')
+    else
+      lines+=("${n}"$'\t-\tpass')
+    fi
+  done
+  for entry in ${CPU_TIMES[@]+"${CPU_TIMES[@]}"}; do
+    p="${entry%%$'\t'*}"
+    found=""
+    for n in ${PASSED[@]+"${PASSED[@]}"}; do
+      if [[ "$p" == "$n" ]]; then
+        found=1
+        break
+      fi
+    done
+    [[ -n "$found" ]] || lines+=("${entry}"$'\tother')
+  done
+  if [[ "$judge" != "1" ]]; then
+    [[ ${#lines[@]} -gt 0 && -f "$cli" ]] || return 0
+    out="$(bash "$cli" report < <(printf '%s\n' "${lines[@]}"))" || out=""
+    [[ -z "$out" ]] || ff_stdout_write "$out"
+    return 0
+  fi
+  # 較正値の差し込み口（fixture 用）は落としてから呼ぶ。export したままのシェルで、ゲートの
+  # 判定が測っていない較正値で正規化され、予算を素通りするのを防ぐ。
+  rc=0
+  out="$(env -u FF_TIME_BUDGET_CALIBRATION_MS bash "$cli" judge --baseline "$dir/baseline.tsv" \
+    < <(printf '%s\n' "${lines[@]}"))" || rc=$?
+  [[ -z "$out" ]] || ff_stdout_write "$out"
+  if [[ "$rc" -ne 0 ]]; then
+    TIME_BUDGET_FAILED=1
+    # CLI が想定外の形（使い方の誤り・awk の異常終了など）で落ちても、`✗ 時間予算:` の行を必ず残す。
+    # リリースの鮮度回復（scripts/lib/release-gate-advance-functions.sh）はこの行で予算の赤を見分ける
+    echo "✗ 時間予算: 判定が赤でした（tests/time-budget/budget.sh judge rc=${rc}）" >&2
+  fi
+}
+ff_time_budget
+
 # 走行中マーカーの後片付け（置いた回だけ）。祖先判定は自分のマーカーを見ないので、
 # 自分の記録より先に消してよい — 下の 2 つの exit 経路の両方を 1 箇所で覆える
 if [[ -n "$GATE_MARKER_FILE" ]]; then
@@ -4508,7 +4690,7 @@ if [[ -n "$GATE_MARKER_FILE" ]]; then
   fi
 fi
 
-if [[ ${#FAILED[@]} -gt 0 || ${#NOT_RUN[@]} -gt 0 || ${#REQUIRED_SKIPPED[@]} -gt 0 ]]; then
+if [[ ${#FAILED[@]} -gt 0 || ${#NOT_RUN[@]} -gt 0 || ${#REQUIRED_SKIPPED[@]} -gt 0 || "$TIME_BUDGET_FAILED" == "1" ]]; then
   ff_record_gate_head fail
   ff_wait_cleanup_state
   # 必須 suite の skip で止まる回は、出力の最後を停止文の共通形の 3 行で終える（方針 / required-suite-skipped。

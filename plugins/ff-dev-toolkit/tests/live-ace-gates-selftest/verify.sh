@@ -3,6 +3,17 @@
 # 空振り検出: 隔離fixtureへのchangelog-layoutのコピー行を除く変異はrc=1、通常対照17件はrc=0（2026-10-26 mutation-harness・esbuild依存を配置して実測）。
 #
 # live-ace-gates の検出力を隔離 fixture への mutation で実測する（Issue #441）。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: tests/live-ace-gates/verify.sh /scripts/ace/*.ts docs-template/scripts/ace/*.ts
+# run-all-not-depends: /docs/08-knowledge/playbook/process.md fixture の Playbook に書くリンクとファイルの名前（実物は読まない）
+# run-all-not-depends: /docs/08-knowledge/playbook/testing.md fixture の Playbook に書くリンクとファイルの名前（実物は読まない）
+# run-all-not-depends: docs-template/08-knowledge/playbook/testing.md fixture のリンク（playbook/testing.md）と同名の見本（読まない）
+# run-all-not-depends: /docs/08-knowledge/playbook/archive/process.md fixture に書く archive の名前（実物は読まない）
+# run-all-not-depends: /docs/08-knowledge/playbook/archive/testing.md fixture に書く archive の名前（実物は読まない）
+# run-all-not-depends: /docs/03-implementation/PATTERNS.md fixture に書く PATTERNS の名前（実物は読まない）
+# run-all-not-depends: /docs/08-knowledge/playbook/tooling.md fixture の PATTERNS に書く出典リンク（読まない）
+# run-all-not-depends: docs-template/08-knowledge/PLAYBOOK.md fixture の PLAYBOOK と同名の見本（読まない）
 
 set -euo pipefail
 

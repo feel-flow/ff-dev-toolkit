@@ -785,6 +785,26 @@ warn_if_stale_local_base() {
 # （undetermined）は黙らない — どちらも黙ると「毎回 INCOMPLETE」が起動前に見えなくなる。
 readonly SANDBOX_PROBE_REFUSED_STATUS=3
 
+# 判定だけ（表示しない）。報告すべきことがあるときだけ rc0 でアダプタの出力（1 行目 = 種別、
+# 2 行目 = 理由）をそのまま返す。何も返さないときは rc で分ける:
+#   rc1 = probe を走らせて黙った（適用の記録が増えた・sandbox と無関係な失敗・timeout）。
+#         「適用できる」の断定ではない
+#   rc2 = probe を走らせていない（この CLI は probe 非対応、またはアダプタが無い）
+# dry-run の警告（warn_unappliable_sandbox）と --print-reviewers の起動前確認
+# （multi-agent-precheck.sh の print_lane_precheck_lines）が同じ判定を共有する — 判定を書き写さない。
+# grok の probe（`grok --sandbox <profile> inspect`）はモデルを呼ばないが、sandbox のイベントログへ
+# 1 行足す副作用がある（ACE-1311-1）。呼ぶたびに利用者のログが伸びる。
+probe_cli_sandbox() { # <cli>
+  local cli="$1" adapter probe_out probe_rc
+  cli_sandbox_probe_supported "$cli" || return 2
+  adapter="$(get_cli_adapter "$cli")"
+  [[ -n "$adapter" && -f "$adapter" ]] || return 2
+  probe_rc=0
+  probe_out="$(bash "$adapter" --probe-sandbox "$TASK_TYPE" 2>/dev/null)" || probe_rc=$?
+  [[ "$probe_rc" -eq "$SANDBOX_PROBE_REFUSED_STATUS" ]] || return 1
+  printf '%s\n' "$probe_out"
+}
+
 # 表示位置は**その CLI の項目の直下**（プラン一覧の後ろへまとめない）。CLI が 3 つ
 # 並ぶプランで末尾にまとめると、どの行の話かを読み手が数え直すことになる。呼び出し側
 # （show_plan のループ）は 1 CLI 分を出し終えた時点でこれを呼ぶ。
@@ -794,13 +814,8 @@ warn_unappliable_sandbox() {
   # 検査もある）。本スキルの手順は dry-run でプランを確認してから実行する形なので、
   # 「起動前に分かる」という目的はこちらだけで満たせる。
   [[ "$DRY_RUN" == "true" ]] || return 0
-  local cli="$1" adapter probe_out probe_rc kind reason
-  cli_sandbox_probe_supported "$cli" || return 0
-  adapter="$(get_cli_adapter "$cli")"
-  [[ -n "$adapter" && -f "$adapter" ]] || return 0
-  probe_rc=0
-  probe_out="$(bash "$adapter" --probe-sandbox "$TASK_TYPE" 2>/dev/null)" || probe_rc=$?
-  [[ "$probe_rc" -eq "$SANDBOX_PROBE_REFUSED_STATUS" ]] || return 0
+  local cli="$1" probe_out kind reason
+  probe_out="$(probe_cli_sandbox "$cli")" || return 0
   # アダプタの出力契約: 1 行目 = 種別、2 行目 = CLI 自身が出した理由。
   kind="$(printf '%s\n' "$probe_out" | sed -n '1p')"
   reason="$(printf '%s\n' "$probe_out" | sed -n '2p')"

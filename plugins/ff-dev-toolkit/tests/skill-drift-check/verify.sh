@@ -36,6 +36,12 @@
 #   赤にする（要約は列挙のコピーを通らずに版を出すので、出力全体の版ではなく additionalContext のパスで測る）。
 # 変異検出: 印の判定（.orphaned_at で continue する行）を外した写しは、2b 節の無出力と印付きスキルの 2 件が赤になり、
 #   8 節の不要の印の変異対照が rc=1 で止まる（2026-11-20 実測。正常対照は /bin/bash 3.2 で 103 件成功）。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: hooks/check-skill-drift.sh hooks/asdd-hook-gate.sh hooks/hooks.json
+# run-all-depends: scripts/lib/l4-declarations.*
+# run-all-not-depends: .claude-plugin/plugin.json fixture に書く plugin.json だけ（hook を fixture の木へ写して起動し、リポジトリの root も差し替えるので実物は読まない）
+# run-all-not-depends: hooks/check-update.sh hooks.json の command に名前が残るかを見るだけで、ファイルは読まない
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

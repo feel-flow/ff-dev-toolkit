@@ -132,6 +132,16 @@
 #   成功する。**起きない形を測っていた**ので、原因を 2 つに畳んで案内は両方を名乗る形にした。
 #
 # run-all-required: no — 一時領域が無い環境の skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。必須へ昇格するなら REQUIRED_SUITES へ移す）
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/multi-agent.sh scripts/lib/multi-agent-*.sh
+# run-all-depends: scripts/adapters/ scripts/lib/adapter-common-*.sh scripts/lib/knowledge-read-acl.ps1
+# run-all-depends: scripts/agent-config.yaml scripts/perspectives/review/
+# run-all-depends: skills/multi-review/SKILL.md docs-template/05-operations/deployment/multi-cli-review-orchestration.md
+# run-all-depends: tests/lib/git-fixture.sh tests/lib/adapter-env-isolation.sh tests/lib/multi-agent-sources.sh
+# run-all-not-depends: /docs/04-quality/TESTING.md ヘッダの案内（git 障害時の切り分け手順の参照先）。中身は読まない
+# run-all-not-depends: scripts/templates/codex-review.sh orchestrator の出力に出る案内文の中の名前を照合するだけ。読まない
+# run-all-not-depends: mcp/.gitignore fixture リポジトリに作る .gitignore の名前。プラグインの .gitignore は読まない
 
 set -euo pipefail
 

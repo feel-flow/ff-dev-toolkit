@@ -43,6 +43,17 @@
 # 変異検出: Issue `#2138` のクエリ文字列の判定（check_query）を無効化すると、F 系・Q 系のクエリ形の検査が計 13 件赤になる（Z 系は実 zsh の性質なので緑のまま）。hook の前置フィルタからクエリ形（`?` の後ろの `=`）を外しても同じ 13 件が赤になり、直後の `&` の除外を外すと Q2 が赤になる（2026-10-26 実測）。
 # 変異検出: typeset 系（export / typeset / local …）の `NAME=value` 引数の除外を外すと N22・N23 が、`builtin` / `command` 前置での除外の解除を外すと F26・F27 が、引用したコマンド名での解除を外すと F28・F29 が、左辺（`=` まで）を引用・エスケープした代入引数での解除を外すと F30〜F32 が、空の引用を含む語の書き換え案の除外を外すと Q2 が赤になる。hook の前置フィルタを `?` の後ろのどこかの `=` へ広げると C1q' が赤になる（2026-10-26 実測）。
 # 空振り検出: クエリ形の素通し（引用済み・`ls a?.md`・エスケープ・代入値・`$?`・case パターン）は ZP 系が実際の zsh で NOMATCH にならないことを測り、`a?.md` が一致するファイル（ab.md）を置いた cwd で一般の ? glob を止めないことを固定する（2026-10-26 実測）。
+# 空振り検出: RF（rm -f の未引用 glob。公開 https://github.com/feel-flow/ff-dev-toolkit/issues/165）は、走査の awk が失敗する（RF-C1）・ヘルパに ff_zsh_rm_force_scan が無い（RF-C2。名前だけ残って中身が変わる形）・引用が閉じないまま終わる（RF-C3。走査の rc 4）のどれでも rm の候補を判定不能の deny にし、glob 文字の無い rm -f はヘルパが壊れていても素通しにする（RF-C1'）。生の入力の "permission_mode" の綴りでは候補にせず、jq が壊れていても rm を含まない呼び出しは素通しにする（RF-C4。2026-11-25 Windows Git Bash 実測）。
+# 変異検出: RF の判定ヘルパの -f の条件を外す（RF-M1）・glob 修飾子 (N) の読み取りを外す（RF-M2）・setopt null_glob の読み取りを外す（RF-M3）・-i の除外を外す（RF-M4）と、それぞれ RFP15 / RFP6 / RFP7 / RFP5 と同形の呼び出しが rm の検出の deny（判定不能ではない）になり、N を含む修飾子だけを数えない条件を外す（RF-M7）・サブシェル / 置換を閉じたら setopt の効き目を戻す行を外す（RF-M8 / RF-M9）・--interactive=never を対話と読む（RF-M10）・並べ替えの oN を NULL_GLOB と読む（RF-M11）・語の終わりの条件を外す（RF-M12）と RF の x*(.) / 閉じた後の rm / --interactive=never / x*(oN) / 語の途中の (N) の呼び出しが素通しになり、生の入力（JSON）の改行 \n の直後の rm を数えない（RF-M13）と行頭に rm がある複数行の呼び出しが素通しになり、hook の rm の deny を外す（RF-M5）・rm の前置フィルタを閉じる（RF-M6）と RF1 と同形の呼び出しが素通しになる（2026-11-25 Windows Git Bash 実測。RZ 系の実 zsh の測定は zsh 5.9 / WSL）。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: hooks/guard-zsh-glob.sh hooks/run-bash-hooks.sh hooks/guard-exit-code.sh hooks/guard-background-cwd.sh
+# run-all-depends: hooks/asdd-hook-gate.sh hooks/asdd-feature.mjs scripts/asdd/config.mjs hooks/hooks.json
+# run-all-depends: tests/lib/zsh-*.sh tests/lib/heredoc-strip*.sh scripts/lib/l4-declarations.*
+# run-all-depends: tests/lib/adapter-env-isolation.sh tests/lib/asdd-gate-drain.sh
+# run-all-not-depends: /.claude/settings.json 説明の言及（利用者のホームの設定ファイルの env の話で、リポジトリの設定は読まない）
+# run-all-not-depends: tests/guard-background-cwd/verify.sh 説明の言及（別 suite が固定する範囲の案内）
+# run-all-not-depends: tests/run-all.sh hook に判定させるコマンド文字列の中の名前（ランナーは実行しない）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -453,6 +464,139 @@ else
   bad "guard-zsh-glob.sh のヘッダに FF_ZSH_GLOB_ACK / FF_ZSH_EXPANSION_ACK の記述が無い"
 fi
 
+# RF: `rm -f` のオペランドの未引用 glob（公開 https://github.com/feel-flow/ff-dev-toolkit/issues/165）。`=` を含まない形なので
+# glob の前置フィルタとは別の候補で入り、書き換え案は語の引用ではなく zsh の glob 修飾子 (N) にする。
+echo "guard-zsh-glob: RF rm -f の未引用 glob"
+RF_FIRE_CASES=(
+  'rm -f dir/x-*.json && echo ok'
+  'rm -rf build/* tmp/a?.log'
+  'rm dir/*.json -f'
+  'rm --force x*'
+  '/bin/rm -f x*'
+  '"rm" -f x*'
+  'echo "$(rm -f x*)"'
+  'rm -f -- -x*'
+  'rm -f x[0-9].log; echo after'
+  'rm -f build/*.o(.) && make'
+  'rm -f a(b)*.log'
+  'rm -f *.(js|ts)'
+  'rm -rf --interactive=never nomatch-*.x'
+  '(setopt null_glob; rm -f a*); rm -f b* && echo ok'
+  'echo "$(setopt null_glob; rm -f a*)"; rm -f b*'
+  'rm -f zz*(oN)'
+  'rm -f zz*(^N)'
+  'rm -f a(N)b*.log'
+  $'cd /tmp\nrm -f d/x-*.json && echo ok'
+  $'mkdir -p d\n\trm -f d/x-*.json && echo ok'
+)
+RF_PASS_CASES=(
+  "rm -f 'dir/x-*.json' && echo ok"
+  'noglob rm -f dir/x-*.json'
+  'rm dir/x-*.json'
+  'ls *.md'
+  'rm -fi x*'
+  'rm -f dir/x-*.json(N) && echo ok'
+  '(setopt null_glob; rm -f dir/x-*.json) && echo ok'
+  'unsetopt nomatch; rm -f dir/x-*.json'
+  "find dir -maxdepth 1 -name 'x-*.json' -delete"
+  'git rm -f x*'
+  'sudo rm -f x*'
+  'rm -f x\*.json'
+  'perform -f x*'
+  'rm -f build.log'
+  'rm -v dir/x-*.conf'
+  'rm -f x*(.N) && echo ok'
+  'rm -f --interactive=always x*'
+)
+rf_i=0
+for c in "${RF_FIRE_CASES[@]}"; do
+  rf_i=$((rf_i + 1))
+  run_hook "$c"
+  assert_fire "RF${rf_i}: zsh ホストで rm -f の未引用 glob は実行前に deny [$c]"
+done
+rfp_i=0
+for c in "${RF_PASS_CASES[@]}"; do
+  rfp_i=$((rfp_i + 1))
+  run_hook "$c"
+  assert_pass "RFP${rfp_i}: 止めない形は素通し [$c]"
+done
+run_hook 'rm -f dir/x-*.json && echo ok'
+case "$REASON" in
+  *'rm -f の未引用 glob'*'dir/x-*.json  →  dir/x-*.json(N)'*'setopt null_glob'*'find '*'FF_ZSH_GLOB_ACK=1'*) ok "RF-R1: 停止文は書き換え案 (N)・サブシェル・find・ACK を案内する" ;;
+  *) bad "RF-R1: 停止文に書き換え案・抜け道が揃っていない: [$REASON]" ;;
+esac
+case "$REASON" in
+  *'"dir/x-*.json"'*|*"'dir/x-*.json'"*) bad "RF-R2: rm の glob を引用する案を出している（引用すると何も消さずに成功する）: [$REASON]" ;;
+  *) ok "RF-R2: rm の glob を引用する案は出さない" ;;
+esac
+run_hook 'rm -f "$d"/*.json'
+case "$REASON" in
+  *'修飾子を付けた案は出していません'*) ok "RF-R3: 展開を含む語には (N) の案を出さない" ;;
+  *) bad "RF-R3: 展開を含む語の案の扱いが違う: decision=[$DECISION] reason=[$REASON]" ;;
+esac
+# 語に続く (…)（交替・修飾子）には (N) を足す案を出さない（`*.(N)(js|ts)` は zsh でも 0 件で失敗する）
+run_hook 'rm -f *.(js|ts)'
+case "$REASON" in
+  *'(N)(js|ts)'*|*'*.(N)'*) bad "RF-R4: 語に続く ( の語へ (N) の案を出した: [$REASON]" ;;
+  *'修飾子を付けた案は出していません'*) ok "RF-R4: 語に続けて ( を書いた語には (N) の案を出さない" ;;
+  *) bad "RF-R4: 交替の語の扱いが違う: decision=[$DECISION] reason=[$REASON]" ;;
+esac
+run_hook 'rm -f x* && gh api repos/o/r/contents/a.md?ref=main'
+case "$REASON" in
+  *'rm -f の未引用 glob'*'URL のクエリ文字列の形'*'repos/o/r/contents/a.md?ref=main'*) ok "RF-R5: 併記するクエリ文字列の形の語も、その形の説明と案で併記する" ;;
+  *) bad "RF-R5: 併記の説明がクエリ文字列の形に合わない: [$REASON]" ;;
+esac
+# 入力の書き換えができる環境（Claude Code）でも、rm の検出がある呼び出しは書き換えずに deny する
+# （書き換えは --include= の右側を引用する形で、rm の検出を素通しにしてしまう）
+run_hook 'rm -f x* && grep -rn x docs --include=*.md' CLAUDECODE=1 CLAUDE_PROJECT_DIR="$TEST_TMP"
+rf_updated="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.updatedInput.command // empty' 2>/dev/null || true)"
+if [ "$DECISION" = "deny" ] && [ -z "$rf_updated" ]; then
+  case "$REASON" in
+    *'rm -f の未引用 glob'*'--include=*.md'*) ok "RF-W1: 書き換え環境でも rm の検出は deny し、同じ呼び出しの = の右側の glob も併記する" ;;
+    *) bad "RF-W1: deny の理由に rm と --include の両方が無い: [$REASON]" ;;
+  esac
+else
+  bad "RF-W1: rm の検出がある呼び出しを書き換えた / 通した: decision=[$DECISION] updated=[$rf_updated]"
+fi
+run_hook 'FF_ZSH_GLOB_ACK=1 rm -f dir/x-*.json && echo ok'
+assert_pass "RF-A1: 先頭の FF_ZSH_GLOB_ACK=1 で通る"
+run_hook 'rm -f dir/x-*.json && echo ok' FF_DEV_TOOLKIT_SKIP=zsh-glob
+assert_pass "RF-A2: FF_DEV_TOOLKIT_SKIP=zsh-glob で通る"
+run_hook 'rm -f dir/x-*.json && echo ok' SHELL=/bin/bash
+assert_pass "RF-H1: bash ホストでは発火しない"
+run_hook "cat <<'EOF'
+rm -f x*
+EOF"
+assert_pass "RF-N1: heredoc 本文の rm -f はデータとして素通し"
+run_hook 'rm -f dir/x-*.json' FF_ZSH_GLOB_AWK=false
+assert_unavailable "RF-C1: 走査の awk が失敗したら rm の候補も判定不能の deny にする"
+run_hook 'rm -f build.log' FF_ZSH_GLOB_AWK=false
+assert_pass "RF-C1': glob 文字の無い rm -f はヘルパが壊れていても素通し（候補に限る）"
+run_hook 'rm -f x* "unterminated'
+assert_unavailable "RF-C3: 引用が閉じないまま終わる rm の候補は判定不能の deny にする（走査の rc 4）"
+# 生の入力（JSON）の "permission_mode" などの綴りの rm を候補に数えない。jq が壊れた回に、rm を含まない
+# glob の呼び出し（glob の候補でもない形）を判定不能で止めない
+mkdir -p "$TEST_TMP/rf-badjq"
+printf '#!/bin/sh\nexit 3\n' > "$TEST_TMP/rf-badjq/jq"
+chmod +x "$TEST_TMP/rf-badjq/jq"
+rf_json="$(jq -n --arg d "$TEST_TMP" '{tool_name: "Bash", tool_input: {command: "ls *.md"}, cwd: $d, hook_event_name: "PreToolUse", permission_mode: "default"}')"
+RC=0
+OUT="$(printf '%s' "$rf_json" | env SHELL=/bin/zsh PATH="$TEST_TMP/rf-badjq:$PATH" bash "$TARGET" 2>/dev/null)" || RC=$?
+if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
+  ok "RF-C4: 入力の permission_mode の綴りでは rm の候補にせず、jq が壊れていても rm を含まない呼び出しは素通し"
+else
+  bad "RF-C4: rm を含まない呼び出しが候補になった: exit=$RC out=[$OUT]"
+fi
+RFNOFN="$TEST_TMP/rf-nofn"
+make_tree "$RFNOFN"
+sed '/^ff_zsh_rm_force_scan() {/,/^}/d' "$SCAN_LIB" > "$RFNOFN/tests/lib/zsh-glob-nomatch.sh"
+if grep -q 'ff_zsh_rm_force_scan()' "$RFNOFN/tests/lib/zsh-glob-nomatch.sh"; then
+  bad "RF-C2: 関数を除いた写しを作れていない"
+else
+  run_on "$RFNOFN/hooks/guard-zsh-glob.sh" 'rm -f dir/x-*.json'
+  assert_unavailable "RF-C2: ヘルパに ff_zsh_rm_force_scan が無いときは rm の候補を判定不能の deny にする"
+fi
+
 echo "guard-zsh-glob: Z zsh 固有（述語の性質を実際の zsh で確かめる）"
 if ZSH_BIN="$(command -v zsh 2>/dev/null)" && [ -n "$ZSH_BIN" ]; then
   ZDIR="$TEST_TMP/zsh-cwd"
@@ -490,6 +634,33 @@ if ZSH_BIN="$(command -v zsh 2>/dev/null)" && [ -n "$ZSH_BIN" ]; then
   zrc=0
   (cd "$ZDIR" && bash -c 'grep -rn x docs --include=*.md' >/dev/null 2>&1) || zrc=$?
   if [ "$zrc" -eq 0 ]; then ok "同じ未引用の形は bash では通る（bash ホストで発火させない根拠）"; else bad "bash でも失敗した: rc=$zrc"; fi
+  # RF: 0 件の未引用 glob を渡した rm -f は、zsh では rm を実行せず && の後段を止める。書き換え案は通る
+  RZ="$TEST_TMP/rf-zsh"
+  mkdir -p "$RZ/dir"
+  zout="$(cd "$RZ" && "$ZSH_BIN" -f -c 'rm -f dir/x-*.json && echo ok' 2>&1)" || true
+  case "$zout" in
+    *'no matches found'*ok* | ok) bad "RZ1: rm -f の 0 件の glob で && の後段が走った: [$zout]" ;;
+    *'no matches found'*) ok "RZ1: rm -f の 0 件の未引用 glob は zsh で NOMATCH になり && の後段が走らない" ;;
+    *) bad "RZ1: zsh で NOMATCH にならない: [$zout]" ;;
+  esac
+  rz_i=1
+  for c in 'rm -f dir/x-*.json(N) && echo ok' '(setopt null_glob; rm -f dir/x-*.json) && echo ok' "find dir -maxdepth 1 -name 'x-*.json' -delete && echo ok"; do
+    rz_i=$((rz_i + 1))
+    zout="$(cd "$RZ" && "$ZSH_BIN" -f -c "$c" 2>&1)" || true
+    if [ "$zout" = ok ]; then ok "RZ${rz_i}: 書き換え案は 0 件でも zsh で成功する [$c]"; else bad "RZ${rz_i}: 書き換え案が zsh で成功しない: [$zout] [$c]"; fi
+  done
+  printf 'x\n' > "$RZ/dir/x-1.json"
+  zout="$(cd "$RZ" && "$ZSH_BIN" -f -c 'rm -f dir/x-*.json(N) && ls dir && echo ok' 2>&1)" || true
+  if [ "$zout" = ok ] && [ ! -e "$RZ/dir/x-1.json" ]; then ok "RZ5: 一致がある回は (N) 付きでも消す"; else bad "RZ5: (N) 付きで一致を消せない: [$zout]"; fi
+  zout="$(cd "$RZ" && bash -c 'rm -f dir/x-*.json && echo ok' 2>&1)" || true
+  if [ "$zout" = ok ]; then ok "RZ6: 同じ rm -f の形は bash では通る（bash ホストで発火させない根拠）"; else bad "RZ6: bash でも失敗した: [$zout]"; fi
+  # N を含まない修飾子は 0 件で NOMATCH になる（修飾子付きでも数える根拠。RF の x*(.) の形）
+  zout="$(cd "$RZ" && "$ZSH_BIN" -f -c 'rm -f dir/y-*.json(.) && echo ok' 2>&1)" || true
+  case "$zout" in
+    *'no matches found'*ok* | ok) bad "RZ7: N を含まない修飾子で 0 件なのに && の後段が走った: [$zout]" ;;
+    *'no matches found'*) ok "RZ7: N を含まない修飾子（(.)）は 0 件で NOMATCH になる" ;;
+    *) bad "RZ7: zsh で NOMATCH にならない: [$zout]" ;;
+  esac
 else
   echo "  ○ skip: zsh が無いため Z 系（実際の zsh での NOMATCH 実測）は未検査"
 fi
@@ -530,6 +701,80 @@ if [ "$m4_pass" -eq "${#FIRE_CASES[@]}" ]; then
 else
   bad "M4: 0 件ヘルパで素通しになったのは ${m4_pass}/${#FIRE_CASES[@]} 件"
 fi
+# RF の変異（公開 165）。写しの各行が実際に変わったことを確かめてから、本番検査と同形の針で見る
+rf_mutate() { # <label> <sed 式> <src> <dst>
+  sed "$2" "$3" > "$4"
+  if cmp -s "$3" "$4"; then bad "$1: 変異注入が空振りした（sed が当たっていない）"; return 1; fi
+  return 0
+}
+cp "$TARGET" "$MUT/hooks/guard-zsh-glob.sh"
+# 判定ヘルパの変異は、rm の検出の deny（判定不能の deny ではない）になったことまで見る — sed が awk の構文を
+# 壊した写しは判定不能の deny になるので、deny だけでは変異した判定を測ったことにならない
+rf_caught() { # <label> <説明>
+  case "$DECISION:$REASON" in
+    deny:*'rm -f の未引用 glob'*) ok "$1: $2" ;;
+    *) bad "$1: 変異が生き残った（または判定不能の deny）: decision=[$DECISION] reason=[$REASON]" ;;
+  esac
+}
+rf_survive_pass() { # <label> <説明>
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "$1: $2"; else bad "$1: 変異が生き残った decision=[$DECISION] reason=[$REASON]"; fi
+}
+if rf_mutate "RF-M1" 's/if (rmc\[d\] \&\& rmf\[d\] \&\& !rmi\[d\] \&\& !rm_off) {/if (rmc[d] \&\& !rmi[d] \&\& !rm_off) {/' "$SCAN_LIB" "$MUT/tests/lib/zsh-glob-nomatch.sh"; then
+  # hook の前置フィルタ（`-` の後ろの `f`）を通る形で、判定ヘルパの -f の条件だけを見る
+  run_on "$MUT/hooks/guard-zsh-glob.sh" 'rm -v dir/x-*.conf'
+  rf_caught RF-M1 "-f の条件を外した変異は -f の無い rm を deny し、RFP の検査が赤になる"
+fi
+if rf_mutate "RF-M2" 's/if (match(substr(src, i), /if (0 \&\& match(substr(src, i), /' "$SCAN_LIB" "$MUT/tests/lib/zsh-glob-nomatch.sh"; then
+  run_on "$MUT/hooks/guard-zsh-glob.sh" 'rm -f dir/x-*.json(N) && echo ok'
+  rf_caught RF-M2 "glob 修飾子の読み取りを外した変異は書き換え案 (N) の形を deny し、RFP の検査が赤になる"
+fi
+if rf_mutate "RF-M3" 's/if (rms\[d\]) rm_opt(w, rms\[d\], d)/if (0) rm_opt(w, rms[d], d)/' "$SCAN_LIB" "$MUT/tests/lib/zsh-glob-nomatch.sh"; then
+  run_on "$MUT/hooks/guard-zsh-glob.sh" '(setopt null_glob; rm -f dir/x-*.json) && echo ok'
+  rf_caught RF-M3 "setopt null_glob の読み取りを外した変異はサブシェルの書き換え案を deny し、RFP の検査が赤になる"
+fi
+if rf_mutate "RF-M4" 's/if (rmc\[d\] \&\& rmf\[d\] \&\& !rmi\[d\] \&\& !rm_off) {/if (rmc[d] \&\& rmf[d] \&\& !rm_off) {/' "$SCAN_LIB" "$MUT/tests/lib/zsh-glob-nomatch.sh"; then
+  run_on "$MUT/hooks/guard-zsh-glob.sh" 'rm -fi x*'
+  rf_caught RF-M4 "-i の除外を外した変異は rm -fi を deny し、RFP の検査が赤になる"
+fi
+if rf_mutate "RF-M7" 's/    if (c == "N" \&\& prev != "o" \&\& prev != "O" \&\& prev != "^") return 1/    return 1/' "$SCAN_LIB" "$MUT/tests/lib/zsh-glob-nomatch.sh"; then
+  run_on "$MUT/hooks/guard-zsh-glob.sh" 'rm -f build/*.o(.) && make'
+  rf_survive_pass RF-M7 "N を含む修飾子だけを数えない条件を外した変異は x*(.) の形を素通しにし、RF の検査が赤になる"
+fi
+if rf_mutate "RF-M11" 's/if (c == "N" \&\& prev != "o" \&\& prev != "O" \&\& prev != "^") return 1/if (c == "N") return 1/' "$SCAN_LIB" "$MUT/tests/lib/zsh-glob-nomatch.sh"; then
+  run_on "$MUT/hooks/guard-zsh-glob.sh" 'rm -f zz*(oN)'
+  rf_survive_pass RF-M11 "並べ替えの oN を NULL_GLOB と読む変異は x*(oN) の形を素通しにし、RF の検査が赤になる"
+fi
+if rf_mutate "RF-M12" 's/if ((rm_qn == "" || index(/if ((1 || index(/' "$SCAN_LIB" "$MUT/tests/lib/zsh-glob-nomatch.sh"; then
+  run_on "$MUT/hooks/guard-zsh-glob.sh" 'rm -f a(N)b*.log'
+  rf_survive_pass RF-M12 "語の終わりの条件を外した変異は語の途中の (N)（グループ）を素通しにし、RF の検査が赤になる"
+fi
+if rf_mutate "RF-M8" '/if (rm_off \&\& rm_off_d == D \&\& par\[D\] < rm_off_par) rm_off = 0/d' "$SCAN_LIB" "$MUT/tests/lib/zsh-glob-nomatch.sh"; then
+  run_on "$MUT/hooks/guard-zsh-glob.sh" '(setopt null_glob; rm -f a*); rm -f b* && echo ok'
+  rf_survive_pass RF-M8 "サブシェルを閉じたら setopt の効き目を戻す行を外した変異は、閉じた後の rm を素通しにし、RF の検査が赤になる"
+fi
+if rf_mutate "RF-M9" '/if (rm_off \&\& rm_off_d > D) rm_off = 0/d' "$SCAN_LIB" "$MUT/tests/lib/zsh-glob-nomatch.sh"; then
+  run_on "$MUT/hooks/guard-zsh-glob.sh" 'echo "$(setopt null_glob; rm -f a*)"; rm -f b*'
+  rf_survive_pass RF-M9 "置換を閉じたら setopt の効き目を戻す行を外した変異は、置換の後の rm を素通しにし、RF の検査が赤になる"
+fi
+if rf_mutate "RF-M10" 's/w ~ \/\^--interactive(=(always|once|yes))?\$\//w ~ \/^--interactive\//' "$SCAN_LIB" "$MUT/tests/lib/zsh-glob-nomatch.sh"; then
+  run_on "$MUT/hooks/guard-zsh-glob.sh" 'rm -rf --interactive=never nomatch-*.x'
+  rf_survive_pass RF-M10 "--interactive=never を対話と読む変異は、その rm を素通しにし、RF の検査が赤になる"
+fi
+cp "$SCAN_LIB" "$MUT/tests/lib/zsh-glob-nomatch.sh"
+if rf_mutate "RF-M5" 's/^if \[ -n "\$rm_hits" \]; then$/if false; then/' "$TARGET" "$MUT/hooks/guard-zsh-glob.sh"; then
+  run_on "$MUT/hooks/guard-zsh-glob.sh" 'rm -f dir/x-*.json && echo ok'
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "RF-M5: rm の deny を外した変異は RF の検査を素通しにして赤にする"; else bad "RF-M5: 変異が生き残った decision=[$DECISION]"; fi
+fi
+if rf_mutate "RF-M6" 's/^  \[\[ \$cmd =~ \$rm_word_re \]\] || rm_candidate=0$/  rm_candidate=0/' "$TARGET" "$MUT/hooks/guard-zsh-glob.sh"; then
+  run_on "$MUT/hooks/guard-zsh-glob.sh" 'rm -f dir/x-*.json && echo ok'
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "RF-M6: rm の前置フィルタを閉じた変異は RF の検査を素通しにして赤にする"; else bad "RF-M6: 変異が生き残った decision=[$DECISION]"; fi
+fi
+# RF-M13: 生の入力（JSON）の前置フィルタから \n / \t / \r の直後の rm を外す（行頭の rm を持つ複数行の呼び出しが落ちる）
+if rf_mutate "RF-M13" 's/^rm_raw_re=.*$/rm_raw_re="$rm_word_re"/' "$TARGET" "$MUT/hooks/guard-zsh-glob.sh"; then
+  run_on "$MUT/hooks/guard-zsh-glob.sh" $'cd /tmp\nrm -f d/x-*.json && echo ok'
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "RF-M13: JSON の改行の直後の rm を数えない変異は複数行の RF を素通しにして赤にする"; else bad "RF-M13: 変異が生き残った decision=[$DECISION]"; fi
+fi
+cp "$TARGET" "$MUT/hooks/guard-zsh-glob.sh"
 
 unset FF_DEV_TOOLKIT_SKIP
 echo "guard-zsh-glob: X equals / scalar expansion"

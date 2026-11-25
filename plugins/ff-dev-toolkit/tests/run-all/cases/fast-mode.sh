@@ -104,6 +104,7 @@ RUN_FULL=1 run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/pass-selftest/verify
 expect_has '^FIXTURE-PASS-SELFTEST-EXECUTED$' "FF_RUN_ALL_FULL=1 でも名指しした -selftest が実行される"
 expect_lacks '^⚡' "FF_RUN_ALL_FULL=1 で高速モードの文言を出さない"
 expect_lacks '解釈できない値です' "FF_RUN_ALL_FULL=1 は正当な値なので警告しない"
+expect_lacks "^${FULL_NOTICE_HEAD}" "明示引数の FF_RUN_ALL_FULL=1 では全件モードの用途の注意を出さない（既定一覧に限る）"
 
 echo ""
 echo "== case 19: 高速モードの除外で実行対象が 0 件なら非 0 =="
@@ -244,7 +245,9 @@ _fast_all=$((_fast_run + _fast_excl))
 run_tree() {
   # 代入は "$@"（-u オプション列）の**後ろ**へ置く。env は最初の非オプション語より後を
   # コマンド引数として扱うため、代入を先頭に置くと以降の -u が env へ届かない。
-  if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_ALLOW_SKIP "$@" FF_RUN_ALL_ALLOW_DIRTY=1 FF_RUN_ALL_JOBS=1 \
+  # FF_RELEASE_GATE_HEAD も落とす: 公開同期の gate 段の中でこの suite が回ると外側から継承され、
+  # 全件モードの用途の注意（26-B）を黙らせてしまう。黙る側は 26-B2 が代入で明示する。
+  if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_ALLOW_SKIP -u FF_RELEASE_GATE_HEAD "$@" FF_RUN_ALL_ALLOW_DIRTY=1 FF_RUN_ALL_JOBS=1 \
     bash "$_fast_fx/run-all.sh" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
 }
 # 「全件が走った」「既定（高速モード）ぶんだけ走った」のサマリー行は 26-B 以降で繰り返し使う。
@@ -268,6 +271,7 @@ expect_lacks "^== ${_fast_excl_name} ==" "対を持つ selftest（${_fast_excl_n
 expect_has "^== ${_fast_orphan_name} ==" "対を持たない selftest（${_fast_orphan_name}）は既定でも実行される"
 expect_tree_fast "本体 + 対なし selftest がすべて実行される（実体からの導出値と一致）"
 expect_lacks '^All ff-dev-toolkit fixture checks passed\.$' "既定（高速モード）は全体 pass を名乗らない"
+expect_lacks "^${FULL_NOTICE_HEAD}" "既定（高速モード）では全件モードの用途の注意を出さない"
 
 # 26-B: 全件実行の明示指定（FF_RUN_ALL_FULL=1）— 登録されている suite が全部走る。「全件実行した」
 # ことを ⚡ の**不在**でしか判別できないと、リリース前・公開同期前の全件実行（ADR-034 決定 2）の報告が
@@ -279,6 +283,22 @@ expect_tree_all "FF_RUN_ALL_FULL=1 では登録されている suite が全件�
 expect_has "^== ${_fast_excl_name} ==" "FF_RUN_ALL_FULL=1 では対を持つ selftest も実行される"
 expect_lacks '^⚡' "FF_RUN_ALL_FULL=1 で高速モードの文言を出さない"
 expect_has '^All ff-dev-toolkit fixture checks passed\.$' "全件実行の全 pass は従来の全体 pass を名乗る"
+# 公開同期の gate 段の外から FF_RUN_ALL_FULL=1 で既定一覧を回した回は、リリース・公開同期の前に限ることと
+# 通常 PR の起動方法を 1 行で出す（Issue `#3004`）。実行は止めない（上の rc=0 と全件の集計）。
+expect_has "^${FULL_NOTICE_HEAD}（ADR-086 / ADR-094）。通常 PR のマージ前ゲートは FF_RUN_ALL_CHANGED=1 bash .*run-all\\.sh で足ります。このまま全件で続行します$" \
+  "26-B: gate 段の外の FF_RUN_ALL_FULL=1 は用途の注意と通常 PR の起動方法を 1 行で出す"
+if [ "$(printf '%s\n' "$RUN_OUT" | grep -c "^${FULL_NOTICE_HEAD}" || true)" = 1 ]; then
+  ok "26-B: 用途の注意はちょうど 1 行"
+else
+  bad "26-B: 用途の注意が 1 行ではない"
+fi
+
+# 26-B2: 公開同期の gate 段（scripts/release-dev-toolkit.sh が FF_RELEASE_GATE_HEAD を渡して起動する）では
+# 同じ指定でも注意を出さない。全件の実行そのものは 26-B と同じであること。
+run_tree -u FF_RUN_ALL_FAST FF_RUN_ALL_FULL=1 FF_RELEASE_GATE_HEAD=0123456789abcdef0123456789abcdef01234567
+expect_rc 0 "26-B2: gate 段の FF_RUN_ALL_FULL=1 の既定一覧実行が rc=0"
+expect_tree_all "26-B2: gate 段でも登録されている suite が全件走る"
+expect_lacks "^${FULL_NOTICE_HEAD}" "26-B2: gate 段（FF_RELEASE_GATE_HEAD あり）では用途の注意を出さない"
 
 # 26-C: FF_RUN_ALL_FAST=0 は「明示的に高速モードでない」= 全件実行（ADR-034）。既定反転より前に
 # `export FF_RUN_ALL_FAST=0` で全件実行を意図していた呼び出し側を、既定の変更で黙って高速モードへ
@@ -288,6 +308,7 @@ expect_rc 0 "FF_RUN_ALL_FAST=0 の既定一覧実行が rc=0"
 expect_tree_all "FF_RUN_ALL_FAST=0 は全件実行（既定へ落とさない）"
 expect_lacks '^⚡' "FF_RUN_ALL_FAST=0 で高速モードの文言を出さない"
 expect_lacks '解釈できない値です' "FF_RUN_ALL_FAST=0 は通常の off なので警告しない"
+expect_lacks "^${FULL_NOTICE_HEAD}" "FF_RUN_ALL_FAST=0 の全件では用途の注意を出さない（FF_RUN_ALL_FULL=1 の明示に限る）"
 
 # 26-D: 矛盾する同時指定は黙って一方を採らず、fail-safe 側（全件実行）を採る。
 run_tree FF_RUN_ALL_FULL=1 FF_RUN_ALL_FAST=1
@@ -305,6 +326,7 @@ run_tree -u FF_RUN_ALL_FAST FF_RUN_ALL_FULL=true
 expect_rc 0 "解釈できない FF_RUN_ALL_FULL 値は警告のみで実行は継続する"
 expect_has 'FF_RUN_ALL_FULL="true" は解釈できない値です' "FF_RUN_ALL_FULL の解釈できない値は 1 行警告する"
 expect_tree_all "解釈できない FF_RUN_ALL_FULL 値でも fail-safe 側（全件実行）で続行する"
+expect_lacks "^${FULL_NOTICE_HEAD}" "解釈できない FF_RUN_ALL_FULL 値では用途の注意を出さない（警告は不正値の 1 行だけ）"
 
 # 26-F: FF_RUN_ALL_FAST の値の解釈を**既定一覧で**実測する。明示引数で回すと明示引数ルール
 # （FAST_REQUESTED != 1 なら除外しない）が先に効いて同じ結果になり、「不正値を fail-safe 側へ倒す」

@@ -187,8 +187,13 @@ export function judgeMultiReviewProbe(result) {
   const reason = detail ? `: ${detail}` : '';
   return NO_CLI.test(result.stderr ?? '') ? `Selected multiReview requires an available AI CLI (${PROBE} ${how})${reason}` : `Selected multiReview probe failed (${PROBE} ${how})${reason}`;
 }
+// The probe reads only available= / main=, so it turns off the per-CLI pre-launch checks that
+// --print-reviewers appends (lane_precheck.*): they call each CLI in turn (up to 10s each, 30s for the
+// grok sandbox probe, which also appends to grok's sandbox event log) and could push a healthy setup
+// past PROBE_TIMEOUT_MS.
 export function probeMultiReview(root) {
-  return judgeMultiReviewProbe(spawnSync('bash', [MULTI_AGENT, '--task', 'review', '--print-reviewers'], { cwd: root, encoding: 'utf8', timeout: PROBE_TIMEOUT_MS }));
+  return judgeMultiReviewProbe(spawnSync('bash', [MULTI_AGENT, '--task', 'review', '--print-reviewers'],
+    { cwd: root, encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, env: { ...process.env, MULTI_AGENT_LANE_PRECHECK: 'off' } }));
 }
 export function check(root, { probeMultiReview: probe = probeMultiReview } = {}) {
   const config = loadConfig(root);

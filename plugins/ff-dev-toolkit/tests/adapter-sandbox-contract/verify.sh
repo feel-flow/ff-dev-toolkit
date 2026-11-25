@@ -49,6 +49,15 @@
 # 掃除は削除競合を最大 3 回再試行し、残存時は警告とパスを出して検査 rc を保つ。
 # 空振り検出: 子プロセスが残らない通常回は 1 回で削除し、対象が既に無い回は削除を呼ばず成功扱い、検査途中の終了は末尾到達ガードが赤になる。
 # 空振り検出: 対の selftest は guard の削除/後置・物理化/CDPATH中和の除去・prefix/同一/ルート境界・TMPDIR/default の除去・空 Git root の成功化の12変異を赤にし、入力不在/空/読取不可とケース集合0件も赤にする（2026-10-24 macOS実測）。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/adapters/ scripts/perspectives/review/code-review.md
+# run-all-depends: scripts/lib/*-cli-readonly-boundary.sh
+# run-all-depends: scripts/multi-agent.sh
+# run-all-depends: tests/lib/adapter-env-isolation.sh tests/lib/cli-registry-parser*.sh
+# run-all-not-depends: tests/adapter-model-args/verify.sh 説明の言及（同じ契約を二重に持つ相互参照で、読まない）
+# run-all-not-depends: tests/run-all/verify.sh 説明の言及（case 10 の禁止の出典）
+# run-all-not-depends: /.claude/settings.json fixture の一時 HOME に作る Antigravity の設定ファイルの名前（リポジトリの設定は読まない）
 
 # 空振り検出: Claude adapter を変更前へ戻す対照は review/explore/inline の tools・MCP 限定の欠落を3件検出して rc=1。通常対照は rc=0（2026-10-28、TMPDIR と Git root を分離して実測）。
 set -euo pipefail

@@ -66,6 +66,11 @@
 #   作業ツリーから消えた tracked shell を黙って飛ばすコピーは E6、読めないファイルの判定を外したコピーは E5、違反ありで rc=0 を返すコピーは H1、shell 0 件で ok を返すコピーは E3 が赤になる。
 #   母集団の大半（tests/ 配下）を落としてアンカーだけ残すコピーは T4 が赤になる。実ツリーの adapter-common.sh を修正前の形へ戻すと T1 と M1 が赤になる。
 # 空振り検出: git リポジトリでない走査根（対象の不在）・tracked 一覧が空の repo（集合が空）・shell ソースを 1 件も持たない repo（0 件一致）・awk が非 0 で終わる走査器（書式変更で読めない回の代理）・読めない tracked shell・作業ツリーから消えた tracked shell を与えると E1〜E6 が「違反なし」ではなく検査不成立の赤になり、母集団から adapter-common.sh / 拡張子なし shell のアンカーが消えるか plugin 配下の走査件数が下限を割ると T2〜T4 が赤になる（実測 2026-09-27）。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: /**.sh /**.bash /**/fixtures/bin/
+# run-all-depends: tests/github-labels-setup/fixtures/gh-stub/gh tests/plugin-version-check/gh tests/precommit-exec-bit/fragment-recheck-git.fixture
+# run-all-not-depends: /README.md fixture のリポジトリに置く非 shell のファイル名（リポジトリの README は読まない）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

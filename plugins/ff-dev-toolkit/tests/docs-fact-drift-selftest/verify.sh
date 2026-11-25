@@ -89,6 +89,12 @@
 # 空振り検出: G7（正準表現全消去）/ G19（導出元消失）の理由付き赤と G37 の入力不在を実測。
 # 空振り検出: G38 は導出値の計算を eval へ、G39 は docs 走査の相対パス計算を sed プログラムへ戻した旧形で、それぞれ sentinel が作られて赤（2026-10-28 WSL で実測: 66 件中 2 件失敗）。
 # 変異はすべて ASCII 行への perl / ファイル操作で行う。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: tests/docs-fact-drift/verify.sh tests/lib/docs-scan.sh
+# run-all-depends: /docs/ /.claude-plugin/marketplace.json /plugins/*/skills/*/SKILL.md
+# run-all-depends: mcp/src/index.ts docs-template/scripts/ace/check-category-size.ts docs-template/scripts/ace/ace-refine-report.ts
+# run-all-depends: tests/*/verify.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

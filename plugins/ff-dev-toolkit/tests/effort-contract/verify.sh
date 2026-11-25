@@ -5,6 +5,8 @@
 #
 # 空振り検出: 並列規定を空・旧文言へ戻すと壁時計と総人時の検査が赤。換算基準の句だけを消す変異も赤（2026-10-17 実測）。
 # 空振り検出: 配備の行の照合手順の作業ディレクトリを /tmp 直書きへ戻すと実行前の検査と effort.md の否定検査が赤（328/2）、乱数名（mktemp -d）へ変えると保存先の検査が赤（334/1）、mkdir の失敗を exit 2 へ戻すと 334/1、cygpath の分岐を外すと 333/2、cygpath の失敗を見ない形にすると 334/1。close-issue の 5b の送信を /tmp 直書きへ戻す・5b の cygpath 分岐を外す・5b の導出を外すと各 334/1、手順 6 の導出を外して 5b の W をあてにすると 332/3（導出と cygpath の件数・単独実行）、手順 6 を単引用符の /tmp 直書きへ戻すと 333/2。正常は 335/0・既存 skip 2 件（2026-10-25 WSL 実測）。
+# 変異検出: effort-report.sh の加算予定について、乖離率の分母から加算予定を外す・加算行を last-wins で読む・加算行を単位宣言どおりに正規化しない（旧 d の ×8 と単位の食い違いの判定を外す）・読めない加算行を 0 として足す・値の後ろの照合を外す（`+3.0h + 4.0h` を先頭の値だけで読む）・加算行に似ているのに読めない行（字下げ・全角コロン・ブロックの外・`*` の箇条）を覚えない、の 6 変異がそれぞれ 検査 4i で赤になる（mutation/mut-added-*.py。run-mutations.sh は 53 / 見逃し 0。2026-11-25 WSL 実測）。
+# 空振り検出: 検査 4i（加算予定）は、effort.md から書式の行を消すと 1 件、estimation.md の書式を + なしの別形へ変えると 2 件（書式の不足と別形の混入）、両文書の式を `実績 ÷ 予定` へ戻すと 2 件、後付けにしない規則と部分 PR の経路の行を消すと 3 件、補正元で見積もった Issue の書き戻しを消すと 2 件、fixtures/planned-added.json を同名の空配列にすると 21 件が赤になり、fixture を消すと検査対象の確認で exit 1 になる。正常は 535/0・skip 0（2026-11-25 WSL 実測。14j は負荷の高い回に単発で赤になることがあり、この検査とは別）。
 # effort-contract: 工数 KPI 計測基盤（Issue #1136）の契約検査。
 #
 # 守っている事故:
@@ -49,7 +51,7 @@
 # 変異検出: 読み込みバイトを wall-clock 実測済みの Issue だけで集計すると 検査 4g の instruction_bytes_population_all=4 / 中央値が赤になる（mutation/mut-bytes-coupled.py）。
 # 変異検出: start が無いときの reflog からの補いを外すと 検査 13f が赤になる（mutation/mut-reflog-off.py）。
 # 変異検出: 空の単位宣言（`- effort_unit:`）を旧ブロックとして読むと 検査 4f の excluded_malformed=2 / population=6 が赤になる（mutation/mut-empty-unit.py）。
-# 変異検出: record-effort-wallclock.sh の Issue 番号抽出の `#` を任意に戻すと 検査 14c（`chore/2026-09-23-cleanup` を Issue として記録する）が赤になる（mutation/mut-hash-optional.py）。
+# 変異検出: record-effort-wallclock.sh が読む Issue 番号抽出（scripts/lib/branch-issue.sh の re_hash）の `#` を任意に戻すと 検査 14c（`chore/2026-09-23-cleanup` を Issue として記録する）が赤になる（mutation/mut-hash-optional.py）。
 # 空振り検出: bundle 規定の欠落・同じ針の写し残存は一致行数 0 / 2 以上で赤。規定 13 行を個別削除して各 exit 1、写し 1 行追加も exit 1（2026-09-28 実測）。
 # 空振り検出: references/estimation.md から「遡及付与しないのはこの書き換えに限る」を消すと 1 件、git-workflow ステップ2 のリンク行を消すと 1 件、着手時追記の行を「ブロックの無い既存 Issue へは遡及付与しない」へ戻すと 2 件が赤になる。正常は 355/0・既存 skip 2 件（2026-11-02 実測）。
 # 空振り検出: references/estimation.md の AI 工数の目安表から「既存の判定に乗る静的検出器・ゲート」の行を消すと 8 件、新設の倍率・回避形 2 巡を当てない句を反転すると 1 件、補正元より先に見る句を消すと 1 件、偽陽性潰しの実数を倍率へ戻すと 1 件、レビュー対応分を実装分と同額へ戻すと 1 件、除外の 2 形をこの行へ取り込むと 1 件、新設との区別の条件を消すと 1 件、出所の OBS-295 を差し替えると 1 件が赤になる。正常は 396/0・既存 skip 2 件（2026-11-06 WSL 実測）。
@@ -165,7 +167,7 @@ done
 
 # fixture の消失を「検査が通った」に化けさせない。判定器は exit 2 を「ファイル不在」と
 # 「マーカー構成の破損」の両方に使うため、期待値 2 の検査は fixture が消えても通る。
-for _x in issues.json percentile.json suspect.json band-edge.json units.json median-under.json median-edge.json median-lower-edge.json body-base.md body-checkbox.md body-block.md \
+for _x in issues.json percentile.json suspect.json band-edge.json units.json median-under.json median-edge.json median-lower-edge.json planned-added.json body-base.md body-checkbox.md body-block.md \
           body-both.md body-outside.md body-marker-removed.md body-collision-base.md \
           body-collision-new.md body-reversed-base.md body-reversed-new.md body-unclosed.md; do
   [ -f "$FIX/$_x" ] || { echo "✗ fixture が見つかりません: $FIX/$_x" >&2; exit 1; }
@@ -434,6 +436,97 @@ fi
 out_has "$PTXT" "中央値の位置:   過大見積もり側（中央値 < 0.50。帯を広げず推定手順を直す）" "text 形式に中央値の位置と行動が出る（過大側）"
 ITXT="$(bash "$REPORT" --input "$FIX/issues.json" 2>&1)"
 out_has "$ITXT" "中央値の位置:   帯内" "text 形式に中央値の位置が出る（帯内）"
+
+echo "検査 4i: 加算予定（effort_ai_planned_added）を乖離率の分母に足す（behavioral）"
+# fixture（30 件）: 401 は起票時 4.5h + 加算 3.0h に実績 13.0h（足さないと 2.89 で帯の外、足すと 1.73）。402 は
+# 加算行 2 本（+2.0h / +1.0h）を合計する（last-wins で読むと 4.0 ÷ 2.0 = 2.00）。403 は加算行なし（従来と同じ）。
+# 404 は宣言の無い旧 d ブロックの +0.5d を ×8 で足す（×8 しないで足すと 8.0 ÷ 4.5 = 1.78、足さないと 2.00）。
+# 読める形: 410 注記の無い +1.0h（値の後ろが行末）/ 423 注記の中の内訳と入れ子の括弧 / 424 半角の (注記) /
+# 425 全角空白の後の注記。疑わない形: 420 はブロックの外の散文・行全体を inline code で引いた箇条・「例:」の行、
+# 429 はブロックの外のコードフェンスの中の書式の例と、キーで始まるだけの散文の箇条。読めない加算行は 18 件で、
+# 乖離率の母集団からだけ外して名指しする: 405 宣言 h に d の値 / 406 先頭の + が無い / 408 単位の直後に英字 /
+# 409 正でない値 / 411 読めない行の後に読める行（前の読めない行は消えない）/ 412 1 行に 2 つの値 / 413 単位の
+# 直後に数字 / 414 空の値 / 415 宣言の無い旧ブロックに h の値 / 417 字下げ / 418 全角コロン / 419 end マーカーの
+# 後ろ / 421 `*` の箇条 / 422 注記の後ろに 2 つ目の値 / 426 キーをバッククォートで囲む / 427 `+` の箇条 /
+# 428 キーの綴りの欠け / 430 閉じていない注記。
+# 407（読めない加算行）と 416（読める加算行）は実績が未記入なので予定のみ（hooks/guard-effort-actual.sh と
+# finish.sh precheck が写している予定のみの判定は加算行を読まないので、そちらと処分を揃える）。
+AKV="$(bash "$REPORT" --input "$FIX/planned-added.json" --format kv 2>&1)"
+if [ $? -ne 0 ]; then
+  bad "planned-added fixture で集計器が異常終了した: ${AKV}"
+else
+  out_has "$AKV" "issues_scanned=30"           "planned-added fixture は 30 件"
+  out_has "$AKV" "population=28"               "読めない加算行の Issue も実績の母集団には残す（407 / 416 の予定のみ 2 件だけを外す）"
+  out_has "$AKV" "excluded_planned_only=2"     "実績が未記入なら加算行の読める・読めないにかかわらず予定のみ（407 / 416）"
+  out_has "$AKV" "excluded_malformed=0"        "加算行の重複（402 の 2 本）・読めない加算行を書式不正にしない"
+  out_has "$AKV" "excluded_unit_mismatch=0"    "加算行の単位の食い違い（405 / 415）は Issue 全体の単位の食い違いにしない"
+  out_has "$AKV" "compression_pairs=28"        "読めない加算行の Issue も圧縮率の対に残す（乖離率の母集団からだけ外す）"
+  out_has "$AKV" "human_planned_total=264.0"   "圧縮率の人間予定合計 24 + 4.0d×8 + 8×26 = 264.0h"
+  out_has "$AKV" "compression_denominator=181.0" "圧縮率の分母は実績合計と同じ 181.0h（読めない加算行の Issue を含む）"
+  out_has "$AKV" "compression_ratio=1.46"      "圧縮率 264.0 ÷ 181.0 = 1.46"
+  out_has "$AKV" "variance_population=10"      "乖離率の母集団は加算行を読めた・加算行の無い 10 件（401 / 402 / 403 / 404 / 410 / 420 / 423 / 424 / 425 / 429）"
+  out_has "$AKV" "variance_excluded_added_unreadable=18" "読めない加算行の件数"
+  out_has "$AKV" $'variance_excluded_added_unreadable_issues=405,406,408,409,411,412,413,414,415,417,418,419,421,422,426,427,428,430\n' "読めない加算行の Issue を番号で名指しする（ブロックの外で言及するだけの 420 / 429 と予定のみの 407 / 416 は含めない）"
+  out_has "$AKV" "ai_planned_total=23.0"       "AI 予定合計は乖離率の母集団の起票時の予定 4.5 + 1.0 + 2.0 + 0.5d×8 + 1.0 + 2.0 + 4.5 + 1.0 + 1.0 + 2.0 = 23.0h（読めない加算行の Issue と加算予定を含めない）"
+  out_has "$AKV" "ai_planned_added_total=16.0" "加算予定の合計 3.0 + (2.0 + 1.0) + 0.5d×8 + 1.0 + 3.0 + 1.0 + 1.0 = 16.0h（402 を last-wins で読むと 14.0）"
+  out_has "$AKV" "ai_planned_added_issues=7"   "加算行を持つ 7 件（読めない加算行の Issue は数えない）"
+  out_has "$AKV" "ai_actual_total=181.0"       "AI 実績合計（母集団 28 件。旧 d は ×8）= 181.0h"
+  out_has "$AKV" "variance_median=1.00"        "乖離率 1.00 ×9 / 1.73 の中央値 1.00"
+  out_has "$AKV" "variance_out_of_band=0"      "加算予定を分母に入れると帯の外は 0 件（入れないと 401・402・410・423 などが帯の外）"
+fi
+# 401 だけの母集団で、加算予定を足した乖離率そのものを固定する（13.0 ÷ (4.5 + 3.0) = 1.73。足さないと 2.89）
+ONE_JSON="$(mktemp)" || { echo "✗ 一時ファイルを作成できません" >&2; exit 1; }
+jq '[.[] | select(.number == 401)]' "$FIX/planned-added.json" > "$ONE_JSON"
+O1KV="$(bash "$REPORT" --input "$ONE_JSON" --format kv 2>&1)"
+rm -f "$ONE_JSON"
+out_has "$O1KV" "variance_median=1.73" "401 の乖離率 13.0 ÷ (4.5 + 3.0) = 1.73"
+ATXT="$(bash "$REPORT" --input "$FIX/planned-added.json" 2>&1)"
+if [ $? -ne 0 ]; then
+  bad "planned-added fixture の text 形式で集計器が異常終了した: ${ATXT}"
+else
+  out_has "$ATXT" "加算予定合計:   16.0h（7 件。乖離率の分母は予定 + 加算予定）" "text 形式に加算予定の合計と件数が出る"
+  _h='#'
+  out_has "$ATXT" "加算予定の行を読めない Issue が 18 件あります: ${_h}405, ${_h}406, ${_h}408, ${_h}409, ${_h}411, ${_h}412, ${_h}413, ${_h}414, ${_h}415, ${_h}417, ${_h}418, ${_h}419, ${_h}421, ${_h}422, ${_h}426, ${_h}427, ${_h}428, ${_h}430（" "text 形式の警告が読めない加算行の Issue を名指しする"
+  out_has "$ATXT" "行頭の「- effort_ai_planned_added:」（半角コロン）" "text 形式の警告が字下げ・全角コロン・ブロックの外でも直す先を案内する"
+fi
+# 乖離率の母集団が読めない加算行だけで空になった回は、その理由を書く（「予定と実績が揃った Issue が無い」と書かない）
+ONLY_BAD_JSON="$(mktemp)" || { echo "✗ 一時ファイルを作成できません" >&2; exit 1; }
+jq '[.[] | select(.number == 412)]' "$FIX/planned-added.json" > "$ONLY_BAD_JSON"
+OBTXT="$(bash "$REPORT" --input "$ONLY_BAD_JSON" 2>&1)"
+rm -f "$ONLY_BAD_JSON"
+out_has "$OBTXT" "算出不能（予定と実績が揃った Issue は、すべて加算予定の行を読めないため外しています）" "読めない加算行だけで乖離率の母集団が空になった回は理由を名指しする"
+out_lacks "$OBTXT" "予定と実績が揃った Issue がありません" "読めない加算行で空になった回に「揃った Issue が無い」と書かない"
+# 加算行の無い母集団は従来の値・表示のまま（互換）
+out_has "$KV" "ai_planned_added_total=0.0"                 "加算行の無い母集団の加算予定合計は 0.0"
+out_has "$KV" $'variance_excluded_added_unreadable_issues=\n' "加算行の無い母集団は読めない加算行の列挙が空"
+out_lacks "$ITXT" "加算予定合計"                            "加算行の無い母集団の text 形式は加算予定の行を出さない（従来の表示のまま）"
+out_lacks "$ITXT" "加算予定の行を読めない"                  "加算行の無い母集団の text 形式は読めない加算行の警告を出さない"
+# 書式は 1 通り（書く側の estimation.md と書き戻す側の effort.md に同じ行）。式も両方に置く
+ADDED_FMT='- effort_ai_planned_added: +N.Nh（YYYY-MM-DD <経路と件数>。<根拠 1 行>）'
+contains "$CREATE_ESTIMATION" "$ADDED_FMT" "create-issue（estimation.md）: 加算予定行の書式"
+contains "$CLOSE" "$ADDED_FMT" "close-issue（effort.md）: 加算予定行の書式（estimation.md と同じ 1 通り）"
+for _f in "$CREATE_ESTIMATION" "$CLOSE"; do
+  _n="create-issue（estimation.md）"; [ "$_f" = "$CLOSE" ] && _n="close-issue（effort.md）"
+  absent "$_f" 'effort_ai_planned_added: [^+]' \
+    "${_n}: 加算予定行の書式が + 始まりの 1 通りだけ" \
+    "${_n}: 加算予定行に + 始まりでない別の書式が混ざっている（書式は 1 通り）"
+  contains "$_f" '`実績 ÷ (予定 + 加算予定の合計)`' "${_n}: 乖離率の分母に加算予定を足す式"
+done
+contains "$CREATE_ESTIMATION" "足す時機は、範囲を足した時点（その分の実装を始める前）とする" "estimation.md: 加算予定は範囲を足した時点で足す"
+contains "$CREATE_ESTIMATION" "| 作業を部分 PR に分け直す・部分 PR を足す | その時点で、起票時の予定に含まれていない分" "estimation.md: 部分 PR の分け直し・追加の経路（起票時の予定に無い分だけ）"
+contains "$CREATE_ESTIMATION" "起票時の範囲を分け直しただけなら、PR を分けて増える固定費だけを足す" "estimation.md: 範囲を分け直しただけなら固定費の増分だけ（二重計上しない）"
+contains "$CREATE_ESTIMATION" "**範囲が縮んだときは、負の値の行で引かない**" "estimation.md: 範囲の縮小は加算予定で引かない"
+contains "$CLOSE" "**今回の PR で実装した追加分の加算予定行を、マージ直前に後から書き足さない**" "effort.md: 実装済みの追加分を後付けで足さない"
+contains "$CLOSE" "起票時の予定に含まれていない後続分" "effort.md: Refs 運用で足すのは起票時の予定に無い後続分だけ"
+contains "$CLOSE" "2 回目の送信が通った後に、工数ブロックだけを変える送信" "effort.md: スコープ変更の加算予定行は 2 回目の送信の後に足す"
+contains "$REPORT" 'else if (key == "effort_ai_planned_added")' "effort-report.sh: 加算予定のキーを読む行"
+# 書く側（コメントで AC・作業を足す経路）が目安を添える
+contains "$PLUGIN_ROOT/skills/out-of-scope-issue/references/consolidation.md" "追記分の予定（目安）" "out-of-scope-issue（consolidation.md）: 統合のコメントに追記分の予定の目安を書く"
+contains "$PLUGIN_ROOT/skills/retrospective/references/filing.md" "追記分の予定（目安）" "retrospective（filing.md）: bundle へのコメント追記に追記分の予定の目安を添える"
+# 補正元で見積もった Issue は、帯の内外にかかわらず実績の内訳と範囲の変化を残す（減じた比の当否を読むため）
+contains "$CLOSE" '**補正元で見積もった Issue の書き戻し**: `effort_basis` に補正元の Issue 番号がある Issue' "effort.md: 補正元で見積もった Issue の書き戻し"
+contains "$CLOSE" "帯の内外にかかわらず、\`effort_evidence\` に実績の内訳（実装分とレビュー対応分）と、着手後の範囲の変化の有無" "effort.md: 補正元で見積もった Issue は帯の内外にかかわらず内訳と範囲の変化を書く"
+contains "$CREATE_ESTIMATION" "**補正元で見積もった Issue の完了時の記録**" "estimation.md: 補正元の節から完了時の記録を指す"
 
 echo "検査 4c: 既定の出力形式（text）が実行できる"
 TXT="$(bash "$REPORT" --input "$FIX/issues.json" 2>&1)"

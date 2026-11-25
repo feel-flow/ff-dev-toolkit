@@ -488,8 +488,21 @@ gh_pr_view_or_die() { # <PR番号> <--json フィールド> → stdout に JSON
   err="$(mktemp)" || die_env "一時ファイルを作れません" "TMPDIR を書ける場所へ向けて再実行する"
   out="$(gh pr view "$pr" --json "$fields" 2>"$err")"; rc=$?
   if [[ "$rc" -ne 0 ]]; then
-    local text
+    local text rest_err rest_text
     text="$(cat "$err")"; rm -f "$err"
+    if ff_gh_is_graphql_unavailable "$text"; then
+      if [[ "$fields" == state ]]; then
+        rest_err="$(mktemp)" || die_env "一時ファイルを作れません" "TMPDIR を書ける場所へ向けて再実行する"
+        if out="$(ff_gh_rest_pr_view "$pr" "" "$PWD" "$rest_err")"; then
+          rm -f "$rest_err"
+          printf '%s' "$out"
+          return 0
+        fi
+        rest_text="$(cat "$rest_err" 2>/dev/null || true)"; rm -f "$rest_err"
+        die_env "PR #${pr} の取得で GraphQL が利用できず、REST API フォールバックも失敗しました（REST: ${rest_text:-不明} / GraphQL: ${text}）" "$(ff_gh_github_input_hint cleanup)"
+      fi
+      die_env "gh で PR #${pr} を読めません（GraphQL 利用不可: ${text}）" "$(ff_gh_github_input_hint precheck)"
+    fi
     case "$text" in
       *"Unknown JSON field"*)
         # 古い gh が field を知らない回は、どの実行ファイルが答えたかを出す（WSL の PATH 上の古い
@@ -519,6 +532,9 @@ gh_pr_view_or_die() { # <PR番号> <--json フィールド> → stdout に JSON
 # 復旧コマンドの案内（ブランチ名・refspec）は ff_shell_argv で 1 語ずつ引用してから出す
 # shellcheck source=lib/shell-quote.sh
 . "$self_dir/lib/shell-quote.sh" || { echo "shell-quote helper を読めません" >&2; exit 2; }
+# GraphQL 403 時の REST API フォールバックと --github-input 案内
+# shellcheck source=lib/gh-rest-fallback.sh
+. "$self_dir/lib/gh-rest-fallback.sh" || { echo "gh-rest-fallback helper を読めません" >&2; exit 2; }
 q() { ff_merge_quote "$@"; }
 
 # Explicit file acquisition is separate from the unchanged gh calls below.

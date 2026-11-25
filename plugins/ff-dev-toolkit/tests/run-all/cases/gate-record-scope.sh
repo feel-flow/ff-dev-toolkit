@@ -122,7 +122,7 @@ SH
     # 写しは記録器を持たない場所に置くので親の最終記録は書かれない（ここで測るのは継承だけ）。
     # 変異の対象となるシェル変数式を展開せず照合する。
     # shellcheck disable=SC2016
-    _gs_seq_needle='      if FF_SUITE_OUTPUT="$(ff_suite_env_isolate; bash "$script" 2>&1)"; then'
+    _gs_seq_needle='      if FF_SUITE_OUTPUT="$(ff_suite_env_isolate; bash "$script" 2>&1; ff_seq_cpu_trailer "$?")"; then'
     _gs_par_needle='        ff_suite_env_isolate'
     for _gs_mut in seq par; do
       if [ "$_gs_mut" = seq ]; then

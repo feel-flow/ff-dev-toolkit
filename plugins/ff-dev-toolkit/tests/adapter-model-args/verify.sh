@@ -25,6 +25,14 @@
 # 一時ディレクトリと git リポジトリを要求するので、いずれかが使えない環境では
 # 行頭 `○ skip` を出して exit 0 する（部分 skip はしない — 検査は全件走るか
 # 1 件も走らないかのどちらか）。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/adapters/ scripts/perspectives/
+# run-all-depends: scripts/multi-agent.sh scripts/agent-config.yaml
+# run-all-depends: tests/lib/git-fixture.sh tests/lib/adapter-env-isolation.sh
+# run-all-depends: scripts/lib/knowledge-read-acl.ps1
+# run-all-not-depends: skills/multi-review/references/model-selection.md 説明の言及（表と実装を突き合わせる方針の説明で、suite は読まない）
+# run-all-not-depends: tests/no-hardcoded-model/verify.sh 説明の言及（別 suite の役割の説明）
 
 set -euo pipefail
 

@@ -80,6 +80,7 @@
 #   multi-implement SKILL.md の参照リンクを外すと 1 件が赤。
 #   AGENTS.md の参照行の削除 / 義務本文の言い換え / 正本パスの誤記で、それぞれ 1 件が赤。
 #
+# 空振り検出（baseline の効く回と並走させない巡。contracts/baseline-worktree.tsv と waiting-work.md ブロック。Issue `#3017`。2026-11-25 実測）: git-workflow.md を外れた例へ戻すと 2 件、並走させない巡を「前の巡の fix の後」全般へ広げると 1 件、waiting-work.md を外れた例へ戻すと 1 件、並走させない文を消すと 1 件が赤（4 変異すべて検出、対照 352 件 pass）。
 # 空振り検出（contracts/review-wait-prep.tsv と multi-review SKILL.md 手順 2 の 1 文。2026-10-17 実測）: ステップ6 の見出し
 # 「セルフレビューの実行方法」を改名すると節スコープの針 4 本が「見出しが 0 本」で赤。SKILL.md は $DOCS の外なので
 # 契約 TSV へ載せず本 suite の multi-review ブロックが絶対パスで照合する（docs-gates-runtime は docs-template だけを複製する）。
@@ -314,6 +315,7 @@ if grep -qF 'ff_canonical_toolkit_root "$CLAUDE_PLUGIN_ROOT"' "$ROOT_PREREQUISIT
   && grep -qF '実際に読み込んだ ff-dev-toolkit skill の絶対 `SKILL.md` パス' "$ROOT_PREREQUISITE_DOC" \
   && grep -qF 'skill_dir="$(dirname "$FF_DEV_TOOLKIT_SKILL_FILE")"' "$ROOT_PREREQUISITE_DOC" \
   && grep -qF '$(basename "$skills_dir")" != skills' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF 'CDPATH= cd -P -- "$skill_dir"' "$ROOT_PREREQUISITE_DOC" \
   && grep -qF 'キャッシュ全体を探索したり、version 名を並べ替えて別版へ切り替えたりしない' "$ROOT_PREREQUISITE_DOC"; then
   ok "配布文書がClaude/Codexの固定root解決と別version再探索禁止をskill契約に合わせている"
 else
@@ -1288,6 +1290,17 @@ else
     ok "multi-review/references/waiting-work.md が別 worktree baseline の手順・正しい gate-record・後始末・最終ゲート契約を持つ"
   else
     bad "multi-review/references/waiting-work.md に別 worktree baseline の必須手順が不足、または旧 gate-head-record 誤記が残存しています"
+  fi
+  # baseline の効く回と並走させない巡を、Git Workflow ステップ6（contracts/baseline-worktree.tsv が節単位で
+  # 固定）と同じ区切りで持つこと（Issue `#3017`）。waiting-work.md は docs-template の外にあるので、
+  # 検査用コピー（FF_DOCS_GATE_DOCS）でも届く絶対パスでここに書く。外れた例が戻っていないことも見る。
+  if [ -s "$WAITING_WORK_REF" ] \
+      && grep -qF '差分（2 巡目なら前の巡の fix）が検査に掛からない文言だけの小さな修正のときだけ' "$WAITING_WORK_REF" \
+      && grep -qF '実装・検査・手順を変えた PR の初回のレビューと、既存ロジックを組み替えた fix の後の確認の巡は、指摘が出る見込みの高い巡に数えて並走させない' "$WAITING_WORK_REF" \
+      && ! grep -qF '指摘をすべて直した後の確認の巡' "$WAITING_WORK_REF"; then
+    ok "multi-review/references/waiting-work.md の baseline の効く回と並走させない巡がステップ6 と揃い、外れた例が戻っていない"
+  else
+    bad "multi-review/references/waiting-work.md の baseline の効く回・並走させない巡がステップ6 と食い違う、または外れた例（fix 後の確認の巡）が戻っている"
   fi
 fi
 

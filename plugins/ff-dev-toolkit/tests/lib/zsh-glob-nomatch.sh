@@ -21,8 +21,14 @@
 # `a.md` の後ろに 1 文字と `ref=main` が続く名前のファイルが実在しない限り必ず 0 件になる。
 # 一般の `?` glob（`ls a?.md`）は `?` の直後が `key=` にならないので対象に入らない。
 #
+# 3 つ目は `rm -f` のオペランドの未引用 glob（rm-force モード。公開 https://github.com/feel-flow/ff-dev-toolkit/issues/165）。
+# `-f` は「対象が無くても成功する」指定なので、書いた時点で 0 件の回を想定している。一致するかどうかは呼び出し
+# 文字列から分からなくても、0 件の回には NOMATCH で rm が実行されず必ず意図と食い違う。下の「一般のパス glob を
+# 入れない」判断の例外で、`rm` と `-f` が揃った形に限る。オペランドが `-` で始まる glob（`rm -f -*.bak`）は
+# オプションとして読むので数えない（既知の限界）。
+#
 # 述語に入れない形（呼び出し文字列だけでは真陽性と断定できない。Issue `#1774` の判断）:
-#   - 一般のパス glob（`ls *.md` / `ls workers/vitest*.mts`）— cwd の中身次第でマッチする
+#   - 一般のパス glob（`ls *.md` / `ls workers/vitest*.mts`）— cwd の中身次第でマッチする（`rm -f` は上の例外）
 #   - `-` で始まらない語の `=`（`FOO=*.md` の代入。zsh は既定で代入値を glob しない）
 #   - typeset 系（`export` / `typeset` / `local` / `declare` / `readonly` / `integer` / `float`）の
 #     `NAME=value` 引数（zsh は代入として読み値を glob しない。`builtin` / `command` の前置や、
@@ -53,6 +59,10 @@
 #         4 = 引用・展開（'…' / "…" / ${…} / $(…) / バッククォート）が閉じないまま入力が終わった。
 #             以降を走査できていないので「0 件」ではない（stdout はそこまでの検出）
 #         その他 = awk が失敗した（不在 127・破損）。stdout は信用しない
+#
+#   ff_zsh_rm_force_scan <コマンド文字列>
+#     stdout: `rm -f` のオペランドの未引用 glob 1 語につき 1 行 `<語>\t<書き換え案>`（案は `<語>(N)` か `-`）
+#     rc: ff_zsh_glob_scan と同じ
 #
 # 呼び出し側の契約: rc で分岐すること。非 0 を「検出 0 件」へ倒すと、awk が壊れた環境で
 # 判定不能が無音の素通しになる（TESTING.md「針が当たらない入力の既定」）。
@@ -96,8 +106,69 @@ function push(kind) {
   }
 }
 function pop() {
-  if (st[D] == "U" || st[D] == "K") fin(D)
+  if (st[D] == "U" || st[D] == "K") { fin(D); if (rmm) rm_flush(D) }
   if (D > 0) D--
+  # `$(…)` / バッククォートの中で立てた setopt null_glob などは、その置換のシェルの中だけで効く
+  if (rm_off && rm_off_d > D) rm_off = 0
+}
+# rm-force モード（公開 https://github.com/feel-flow/ff-dev-toolkit/issues/165）: 単純コマンドが `rm` で、`-f`（短い
+# オプションの束の f・`--force`）があり、オペランドに未引用の `*` / `?` / `[` がある形。`-f` は「対象が無くても成功する」
+# 指定なので、0 件の回を想定して書いている。zsh の NOMATCH はその 0 件の回に rm を実行せず非 0 で終わらせるので、
+# 一致するかどうかは呼び出し文字列から分からなくても、0 件の回に必ず意図と食い違う形として止める（一致がある回は
+# 意図どおり消える）。`-f` はオペランドの後にも書ける（GNU）ので、文の終わりで判定する。
+# `-i` / `--interactive`（`=never` / `=no` / `=none` を除く）がある回は「対象が無くても成功する」意図と読めないので
+# 出さない（発火面を縮める）。
+# 0 件の glob を許すオプション（`setopt null_glob` / `nonomatch` / `csh_null_glob`、`unsetopt nomatch`）を立てた後は
+# 出さない（書き換え案のサブシェル形 `(setopt null_glob; rm -f …)` を自分で止めない）。効く範囲は立てたシェルの中
+# だけで、立てた括弧のサブシェル `( … )` や `$(…)` を閉じた後の rm は数える。オプション名は大文字小文字と `_` を
+# 区別しない。
+function rm_opt(w, kind, d,   o) {
+  o = tolower(w); gsub(/_/, "", o)
+  if ((kind == 1 && (o == "nullglob" || o == "nonomatch" || o == "cshnullglob")) || (kind == 2 && o == "nomatch")) {
+    rm_off = 1; rm_off_d = d; rm_off_par = par[d]
+  }
+}
+# glob 修飾子 `(…)` が NULL_GLOB の `N` を含むか。並べ替えの指定（`oN` / `ON` は「並べ替えない」）と否定（`^N`）の
+# `N` は数えない。
+function rm_null_qual(q,   k, c, prev) {
+  for (k = 2; k < length(q); k++) {
+    c = substr(q, k, 1); prev = substr(q, k - 1, 1)
+    if (c == "N" && prev != "o" && prev != "O" && prev != "^") return 1
+  }
+  return 0
+}
+function rm_flush(d,   k) {
+  if (rmc[d] && rmf[d] && !rmi[d] && !rm_off) {
+    for (k = 1; k <= rmn[d]; k++) printf "%s\t%s\n", rmw[d, k], rmx[d, k]
+  }
+  rmc[d] = 0; rms[d] = 0; rmf[d] = 0; rmi[d] = 0; rmeo[d] = 0; rmn[d] = 0
+}
+# 書き換え案は zsh の glob 修飾子 `(N)`（0 件なら語ごと消える。GNU / BSD の `rm -f` はオペランドが 0 個でも成功する）。
+# 引用・展開・brace・括弧を含む語、語に続けて `(` を書いた語（修飾子・交替・グループ。gp）、末尾が `/` の語、語頭が
+# `=` の語には出さない（`-`）。語の終わりの修飾子が NULL_GLOB の `N` を含む語（gq。`x*(N)` / `x*(.N)`。`(#qN)` の形は EXTENDED_GLOB が無いと別のエラーで失敗するが、`N` を含むので数えない側に倒す）は
+# 0 件でも失敗しないので数えない。`N` を含まない修飾子（`x*(.)`）・並べ替えや否定の `N`（`x*(oN)` / `x*(^N)`）・
+# グループ（`a(b)*.log` / 語の途中の `a(N)b*.log`）は 0 件で失敗するので数える。
+function rm_arg(w, f, d, gq, gp,   k, ch, sug) {
+  if (!rmeo[d] && w == "--") { rmeo[d] = 1; return }
+  if (!rmeo[d] && substr(w, 1, 1) == "-" && length(w) > 1) {
+    if (w == "--force") rmf[d] = 1
+    else if (w ~ /^--interactive(=(always|once|yes))?$/) rmi[d] = 1
+    else if (w ~ /^-[A-Za-z]+$/) {
+      if (index(w, "f") > 0) rmf[d] = 1
+      if (index(w, "i") > 0) rmi[d] = 1
+    }
+    return
+  }
+  if (gq) return
+  for (k = 1; k <= length(w); k++) {
+    ch = substr(w, k, 1)
+    if (substr(f, k, 1) == "0" && (ch == "*" || ch == "?" || ch == "[")) {
+      sug = "-"
+      if (!gp && f !~ /[1c]/ && w !~ /["$`\\{}()]/ && w !~ /\/$/ && substr(w, 1, 1) != "=") sug = w "(N)"
+      rmn[d]++; rmw[d, rmn[d]] = w; rmx[d, rmn[d]] = sug
+      return
+    }
+  }
 }
 function is_reserved(w) {
   return (w == "if" || w == "then" || w == "else" || w == "elif" || w == "fi" || w == "do" || w == "done" || w == "while" || w == "until" || w == "for" || w == "select" || w == "!" || w == "{" || w == "}" || w == "time" || w == "nocorrect" || w == "builtin" || w == "command" || w == "exec")
@@ -109,6 +180,7 @@ function is_assign(w) {
 function clear_lists(   k) { for (k in lists) delete lists[k] }
 function clear_pending(   k) { for (k in pending) delete pending[k] }
 function statement(d, commit,   k) {
+  if (rmm) rm_flush(d)
   if (d != 0 || par[d] != 0) { clear_lists(); clear_pending(); return }
   if (commit && cmdpos[d]) {
     for (k in pending) lists[k] = pending[k]
@@ -135,10 +207,10 @@ function case_close(d) {
   if (csn[d] > 0) { cs[d] = csstk[d, csn[d]]; csn[d]-- } else cs[d] = 0
   cmdpos[d] = 0
 }
-function fin(d,   w, f, q, qp) {
+function fin(d,   w, f, q, qp, gq, gp) {
   if (!started[d]) return
-  w = wb[d]; f = wf[d]; q = wq[d]; qp = fq[d]
-  wb[d] = ""; wf[d] = ""; wq[d] = 0; started[d] = 0
+  w = wb[d]; f = wf[d]; q = wq[d]; qp = fq[d]; gq = wgq[d]; gp = wgp[d]
+  wb[d] = ""; wf[d] = ""; wq[d] = 0; started[d] = 0; wgq[d] = 0; wgp[d] = 0
   if (cs[d] == 1) {
     if (exm && substr(w, 1, 1) == "=") check_expansion(w, f, d)
     cs[d] = 2; return
@@ -161,9 +233,22 @@ function fin(d,   w, f, q, qp) {
     # 通常の引数になり glob するので外す（実測 2026-10-26）
     tsf[d] = !bpre[d] && !q && (w == "export" || w == "typeset" || w == "local" || w == "declare" || w == "readonly" || w == "integer" || w == "float")
     bpre[d] = 0
+    # rm-force: コマンド名の語で前の単純コマンドを判定し、この単純コマンドが rm か（`noglob rm` は除く）を持つ。
+    # 引用・エスケープしたコマンド名（`"rm"` / `\rm`）とパス指定（`/bin/rm`）も rm として実行される
+    if (rmm) {
+      rm_flush(d)
+      rmc[d] = (!ng[d] && w ~ /(^|\/)rm$/)
+      rms[d] = (w == "setopt") ? 1 : ((w == "unsetopt") ? 2 : 0)
+      return
+    }
   }
   # 修飾子モードは語の判定を出さない（検出は字句解析の `$` の位置で chk_mod が済ませる）
   if (mm) return
+  if (rmm) {
+    if (rms[d]) rm_opt(w, rms[d], d)
+    else if (rmc[d] && !ng[d]) rm_arg(w, f, d, gq, gp)
+    return
+  }
   if (exm) { check_expansion(w, f, d); return }
   if (ng[d]) return
   cur_q = q
@@ -233,7 +318,7 @@ function check_query(w, f,   k, m) {
     return
   }
 }
-BEGIN { SQ = sprintf("%c", 39); exm = (mode == "expansion" || mode == "equals-fix" || mode == "equals-apply"); mm = (mode == "modifier-fix") }
+BEGIN { SQ = sprintf("%c", 39); exm = (mode == "expansion" || mode == "equals-fix" || mode == "equals-apply"); mm = (mode == "modifier-fix"); rmm = (mode == "rm-force") }
 { src = src (NR > 1 ? "\n" : "") $0 }
 END {
   n = length(src)
@@ -348,7 +433,21 @@ END {
       continue
     }
     if (c == "(") {
+      # rm-force: 語に続けて書いた `(…)` は zsh の glob 修飾子（BARE_GLOB_QUAL）かグループ・交替。その語には
+      # 書き換え案 `(N)` を出さない（gp）。単純な `(…)` は語の一部として読み、語の終わりに置いた修飾子が
+      # NULL_GLOB の `N` を含むときだけ 0 件でも失敗しないので数えない（gq。書き換え案の形を自分で止めない）。
+      # 並べ替えの `oN` / `ON`・否定の `^N` の `N` と、語の途中の `(N)`（グループ）は数える。ほかのモードの字句解析は変えない
+      if (rmm && started[wc[D]] && rmc[wc[D]] && !cmdpos[wc[D]]) {
+        wgp[wc[D]] = 1
+        if (match(substr(src, i), /^\([^() \t\n;&|<>]*\)/)) {
+          rm_q = substr(src, i, RLENGTH)
+          rm_qn = substr(src, i + RLENGTH, 1)
+          if ((rm_qn == "" || index(" \t\n;&|<>)", rm_qn) > 0) && rm_null_qual(rm_q)) wgq[wc[D]] = 1
+          addc(rm_q, "1"); i += RLENGTH; continue
+        }
+      }
       fin(wc[D])
+      if (rmm) rm_flush(wc[D])
       clear_lists(); clear_pending()
       if (cs[D] == 3) { i++; continue }
       if (cmdpos[D] && substr(src, i + 1, 1) == "(") { push("A"); ad[D] = 2; i += 2; continue }
@@ -357,8 +456,14 @@ END {
     }
     if (c == ")") {
       fin(wc[D])
+      if (rmm) rm_flush(wc[D])
       if (cs[D] == 3) { cs[D] = 4; cmdpos[D] = 1; ng[D] = 0; i++; continue }
-      if (par[D] > 0) { par[D]--; cmdpos[D] = 1; ng[D] = 0; i++; continue }
+      if (par[D] > 0) {
+        par[D]--; cmdpos[D] = 1; ng[D] = 0; i++
+        # サブシェル `( … )` の中で立てた setopt null_glob などは、そのサブシェルを閉じたら効かない
+        if (rm_off && rm_off_d == D && par[D] < rm_off_par) rm_off = 0
+        continue
+      }
       if (s == "U" && sub_[D]) { pop(); i++; continue }
       cmdpos[D] = 1; ng[D] = 0
       i++; continue
@@ -368,6 +473,7 @@ END {
   # 引用・展開が閉じないまま入力が終わった。走査は途中で止まっているので「0 件」と区別する
   if (D > 0) { while (D > 0) pop(); fin(0); exit 4 }
   fin(0)
+  if (rmm) rm_flush(0)
   if (mode == "equals-apply") {
     if (ebad) {
       if (ebadw == "") ebadw = "（不明）"
@@ -397,6 +503,16 @@ END {
 
 ff_zsh_glob_scan() { # <cmd>
   printf '%s\n' "$1" | "${FF_ZSH_GLOB_AWK:-awk}" "$_FF_ZSH_GLOB_AWK_PROG"
+}
+
+# stdout: `rm -f`（短いオプションの束の f・`--force`）のオペランドにある未引用の glob 1 語につき 1 行
+# `<語>\t<書き換え案>`（公開 https://github.com/feel-flow/ff-dev-toolkit/issues/165）。書き換え案は zsh の glob 修飾子を
+# 付けた `<語>(N)`、引用・展開・brace・括弧を含む語・語に続けて `(` を書いた語・末尾が `/` の語・語頭が `=` の語は `-`。
+# `-i` / `--interactive`（`=never` などを除く）のある rm・`noglob rm`・語の終わりに NULL_GLOB の `N` を含む修飾子を付けた語・同じシェルの前の文で
+# `setopt null_glob` などを立てた後の rm（立てたサブシェル・置換を閉じた後は数える）は出さない。
+# 入力の一般のパス glob の判定（ff_zsh_glob_scan）の契約は変えない。rc は glob と共通。
+ff_zsh_rm_force_scan() { # <cmd>
+  printf '%s\n' "$1" | "${FF_ZSH_GLOB_AWK:-awk}" -v mode=rm-force "$_FF_ZSH_GLOB_AWK_PROG"
 }
 
 # stdout: equals（停止候補）/ scalar（警告候補）、1 語につき各種別最大 1 行。rc は glob と共通。

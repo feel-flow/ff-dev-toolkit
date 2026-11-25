@@ -1,8 +1,22 @@
 # 別 worktree の baseline 実行と自動待機（Git Workflow ステップ6）:
-# PR 作成直後の baseline 全件ゲートは PR HEAD へ detach した一時 worktree で回し、
+# 通常 PR のゲートは「単体検証 → PR 作成 → レビュー収束 → 最終ゲート 1 回」の順で、
+# PR 作成直後の baseline は任意（Issue `#3004`）。回す場合は PR HEAD へ detach した一時 worktree で回し、
 # 元の作業ツリーを凍結せずに全レビュー終端後すぐ修正へ着手・commit（.sh 変更時の
 # run-all/verify.sh も baseline を待たない）できる手順と、gate-record 引継を固定する。
-section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	baseline の全件ゲートは、元の作業ツリーを離れて **PR HEAD へ detach した一時 worktree** で回すのを既定とする	Git Workflow ステップ6 が別 detach worktree での baseline 実行を既定にする
+# 鮮度の赤だけの回の経路（checks の有無で分ける）も同じステップ6の契約として固定する。
+section	05-operations/deployment/git-workflow.md	#### 自動テストの実行	「変更対象の単体検証（ステップ4）→ PR 作成（ステップ5）→ レビュー収束（ステップ6）→ 最終ゲート 1 回（ステップ6 の重い検証ゲート）」の順に回す	Git Workflow ステップ4 が通常 PR のゲートの順序をレビュー収束後の最終 1 回に揃える
+section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	baseline ゲートをレビューと並走させてもよい（任意）	Git Workflow ステップ6 が baseline の並走を任意の選択肢にする
+section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	並走が効くのは、差分（2 巡目なら前の巡の fix）が検査に掛からない文言だけの小さな修正のときである	Git Workflow ステップ6 が baseline の効く回を文言だけの修正に絞る（Issue `#3017`）
+section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	実装・検査・手順を変えた PR の初回のレビューと、既存ロジックを組み替えた fix の後の確認の巡は、指摘が出る見込みの高い巡に数えて並走させない	Git Workflow ステップ6 が並走させない巡を変更の中身で区切る（Issue `#3017`）
+absent	05-operations/deployment/git-workflow.md	指摘をすべて直した後の確認の巡	Git Workflow ステップ6 に外れた baseline の例（fix 後の確認の巡）が戻っていない（Issue `#3017`）
+# waiting-work.md（docs-template の外）の同じ規定は verify.sh の WAITING_WORK_REF ブロックが絶対パスで見る
+section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	baseline を回す場合は、元の作業ツリーを離れて **PR HEAD へ detach した一時 worktree** で回す	Git Workflow ステップ6 が baseline を回す場合の置き場を別 detach worktree に定める
+section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	**赤が鮮度（base の先行）だけで説明できた回は、全件モードへ上げて回し直さない。**	Git Workflow ステップ6 が鮮度の赤だけの回に全件モードでの回し直しを求めない
+section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	赤だった suite だけを名指しで回し直して緑を確かめる	Git Workflow ステップ6 が STALE_ONLY_FAILED の suite だけの回し直しを案内する
+section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	取り込んだ HEAD を push し、その SHA の checks が全件成功したらマージへ進める	Git Workflow ステップ6 が checks のあるプロジェクトの根拠を取り込み後の HEAD の checks に限る
+section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	リリース前の PR と実行基盤の契約面を変えた PR は、checks があってもこの省略を使わず	Git Workflow ステップ6 が鮮度赤の checks 経路からリリース前・実行基盤の契約面の PR を外す
+section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	名指しの再実行は部分実行の記録になり、precheck が `RERUN_FULL_GATE=yes` を返す	Git Workflow ステップ6 が checks の無いプロジェクトでは名指しの再実行をマージの根拠にしない
+section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	`FF_RUN_ALL_FULL=1` は足さない	Git Workflow ステップ6 が鮮度赤からの回し直しを全件モードへ上げない
 section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	git worktree add --detach	Git Workflow ステップ6 が detach worktree の作成手順を持つ
 section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	npm ci --prefix	Git Workflow ステップ6 が一時 worktree 側での依存導入手順を持つ
 section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	FF_RUN_ALL_WAIT=1 bash	Git Workflow ステップ6 が自動待機付き baseline 起動形を持つ

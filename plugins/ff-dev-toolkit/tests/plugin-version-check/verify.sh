@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # 実ユーザー登録・ネットワークを使わない3層検査。macOS /bin/bash 3.2 でも同じ入口を実行。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/check-plugin-versions.sh scripts/lib/plugin-versions.jq
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"

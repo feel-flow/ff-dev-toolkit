@@ -21,6 +21,19 @@
 # 変異検出: knowledge-commit.sh を develop の版（cwd 起点の cd -P + pwd -P の前方一致）へ戻すと、Windows の Git Bash で 6b の別名ケースが赤。add のトップレベル照合を外すと 6c が赤（linked worktree・兄弟のリポジトリの同じ相対位置のパスを受理する）（2026-10-04 実測）。
 # 空振り検出: 17 の fixture で `## Changelog` を落とす・`#### 追加` / `#### カウンター更新` の見出しを別綴りにすると、書き込み口は契約形の行 0 件を緑へ倒さず exit 2（判定不能）で止まり stage も保留記録も作らない（2026-10-11 実測。lib の END で no-rows を ok へ倒すと 17 の判定不能ケースが赤）。
 # 変異検出: knowledge-commit.sh の add から Changelog 判定の呼び出しを外すと 17 の束ね形ケース（直接・finish.sh 経由）が赤、lib の Helpful 正規表現から `×N` の選択肢を外すと 17 の契約形ケースが赤、節の判定を外して全見出しの配下を読むと 17 の `#### 変更` ケースが赤（2026-10-11 実測）。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/knowledge-commit.sh scripts/finish.sh scripts/lib/finish-knowledge-commit-functions.* scripts/lib/github-input.*
+# run-all-depends: scripts/lib/playbook-changelog-scan.awk scripts/lib/knowledge-read-acl.ps1 scripts/lib/abs-path.sh scripts/lib/git-literal-pathspec.sh tests/lib/git-fixture.sh
+# run-all-depends: skills/ace-curate/SKILL.md skills/ace-curate/references/curate.md skills/ace-curate/references/extract-prompt.md
+# run-all-depends: docs-template/05-operations/deployment/ace-cycle.md docs-template/.claude/agents/ace-capture.md
+# run-all-depends: docs-template/scripts/ace/sync-playbook-frontmatter.ts docs-template/scripts/ace/check-entry-format.ts docs-template/scripts/ace/check-category-size.ts
+# run-all-not-depends: scripts/mutation-harness.sh 実測手順の説明
+# run-all-not-depends: /docs/08-knowledge/PLAYBOOK.md 照合する文言の中のパス（実体は読まない）
+# run-all-not-depends: /docs/08-knowledge/OBSERVATIONS.md fixture リポジトリの中のパス
+# run-all-not-depends: /scripts/ace/sync-playbook-frontmatter.ts curate.md の文言の中の名前
+# run-all-not-depends: tests/skill-references-existence/fixtures/outside.md 書き込み口へ渡す ../outside.md 引数
+# run-all-not-depends: scripts/jev/build-ace-eval-sets.ts 契約の出典の説明（実行しない）
 
 # 空振り検出: 18 は PR を照会できて番号が無い（空・不正値・参照なし。ace-from-pr-N と明示の --pr）ときだけ branch #N を採り、照会の失敗（gh の非 0・gh 実行不能・github-input のライブラリ欠落）は branch #N を使わず rc2（subject-query-failed）で stage・保留無し・別の PR を照会しないこと、commit 時の照会の失敗は保留を残すことを確認する。解決元無しは version claim・ID・要約の数字を推測せず rc4 / stage・保留無し（2026-10-17 実測。照会の失敗は 2026-11-24 に追加）。
 # 変異検出: resolve_subject_issue が照会の失敗を branch #N へ落とす（`)" || return 3` → `)" || true`）と 18 が赤（2026-11-24 WSL 実測。mutation-harness で detected、対照は 226 件 pass）。

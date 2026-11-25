@@ -23,6 +23,12 @@
 # vitest 本体は mcp/node_modules のものを再利用する（docs-template はテンプレート
 # 配布物なので自前の node_modules を持たない）。node_modules が無い環境では
 # run-all.sh の契約どおり行頭 `○ skip` を出して exit 0 する。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: docs-template/scripts/ace/ /scripts/ace/
+# run-all-depends: docs-template/.claude/hooks/post-merge.ace.sample.sh docs-template/.claude/agents/ace-capture.md
+# run-all-depends: docs-template/05-operations/deployment/ace-domain.md docs-template/08-knowledge/playbook/
+# run-all-depends: scripts/lib/knowledge-read-acl.ps1
 
 set -euo pipefail
 

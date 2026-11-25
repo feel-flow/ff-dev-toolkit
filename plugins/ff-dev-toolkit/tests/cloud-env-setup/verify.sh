@@ -27,6 +27,13 @@
 # scripts/setup-cloud-env.sh は無く、その skip は正当な適用外（claude-hooks-path /
 # public-dependabot-health / sync-sha-contract と同じ扱い）。jq 不在は suite 全体を落とさず
 # probe --json の検査だけを部分 skip するので、この宣言が許しているのは適用外の skip だけ
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: /scripts/setup-cloud-env.sh /scripts/probe-env-capabilities.sh tests/lib/utf8-locale.*
+# run-all-depends: tests/run-all.sh tests/docs-gates/verify.sh tests/docs-gates-runtime/verify.sh tests/plugin-root-contract/verify.sh
+# run-all-not-depends: /README.md fixture の seed リポジトリに作るファイルの名前
+# run-all-not-depends: scripts/multi-agent.sh fixture の木（空白入りパス）に置く空ファイルの名前。実物は読まない
+# run-all-not-depends: docs-template/README.md 変数のディレクトリに続く README.md は fixture の seed リポジトリの同名ファイル（プラグイン内の README は読まない）
 
 set -euo pipefail
 

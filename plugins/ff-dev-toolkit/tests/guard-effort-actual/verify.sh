@@ -102,6 +102,59 @@ printf '%s\n' "$*" >> "$FF_STUB_DIR/gh-calls.log"
 [ "${FF_STUB_FAIL:-0}" = "1" ] && exit 1
 resource="${1:-}"
 verb="${2:-}"
+if [ "$resource" = "api" ]; then
+  [ "${STUB_REST_FAIL:-0}" = "1" ] && { echo "gh: HTTP 500: rest unavailable" >&2; exit 1; }
+  shift 1
+  endpoint=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --hostname) shift 2; continue ;;
+      -*) shift; continue ;;
+      *) [ -n "$endpoint" ] || endpoint="$1"; shift ;;
+    esac
+  done
+  case "$endpoint" in
+    repos/*/pulls/*)
+      pr_n="${endpoint##*/pulls/}"
+      pr_n="${pr_n%%\?*}"
+      f="$FF_STUB_DIR/rest-pr-${pr_n}.json"
+      [ -f "$f" ] || { echo "gh: HTTP 404: Not Found" >&2; exit 1; }
+      cat "$f"
+      exit 0
+      ;;
+    repos/*/pulls\?*)
+      f="$FF_STUB_DIR/rest-pr-list.json"
+      [ -f "$f" ] || { echo '[]'; exit 0; }
+      cat "$f"
+      exit 0
+      ;;
+    repos/*/issues/*/comments*)
+      if [ "${FF_STUB_FAIL_COMMENTS:-0}" = "1" ]; then
+        echo "gh: HTTP 500: comments unavailable" >&2
+        exit 1
+      fi
+      iss_n="${endpoint%/comments*}"
+      iss_n="${iss_n##*/issues/}"
+      f="$FF_STUB_DIR/rest-issue-comments-${iss_n}.json"
+      [ -f "$f" ] || { echo '[]'; exit 0; }
+      cat "$f"
+      exit 0
+      ;;
+    repos/*/issues/*)
+      iss_n="${endpoint##*/issues/}"
+      iss_n="${iss_n%%\?*}"
+      f="$FF_STUB_DIR/rest-issue-${iss_n}.json"
+      [ -f "$f" ] || { echo "gh: HTTP 404: Not Found" >&2; exit 1; }
+      cat "$f"
+      exit 0
+      ;;
+  esac
+  exit 1
+fi
+if [ "${STUB_GRAPHQL_403:-0}" = "1" ]; then
+  echo "HTTP 403: GitHub GraphQL is not available from Claude Code sessions; use the REST API (gh api repos/{owner}/{repo}/...)" >&2
+  exit 1
+fi
 shift 2 2>/dev/null || true
 selector=""
 json_fields=""
@@ -1238,6 +1291,95 @@ STUB
   assert_pass "PR 番号に CR が残る jq でも、完了報告の印で Refs を通す"
   cp "$TEST_TMP/jq-wrapper.orig" "$BIN_DIR/jq"
 fi
+
+echo "guard-effort-actual: GraphQL 403 時の REST API フォールバック"
+REST_REPO="$TEST_TMP/rest-repo"
+mkdir -p "$REST_REPO"
+git -C "$REST_REPO" init -q
+git -C "$REST_REPO" remote add origin "https://github.com/acme/widgets.git"
+git -C "$REST_REPO" checkout -q -b feat/rest-branch
+
+write_rest_pr() { # <num> <body> [state=open] [merged=false] [head_ref=feat/rest-branch]
+  local num="$1" body="$2" st="${3:-open}" merged="${4:-false}" href="${5:-feat/rest-branch}"
+  jq -n --argjson n "$num" --arg b "$body" --arg st "$st" --argjson m "$merged" --arg hr "$href" '
+    {
+      number: $n, state: $st, merged: $m, merged_at: (if $m then "2026-11-01T00:00:00Z" else null end),
+      draft: false, title: ("PR " + ($n | tostring)), body: $b,
+      html_url: ("https://github.com/acme/widgets/pull/" + ($n | tostring)),
+      head: {ref: $hr, sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", repo: {id: 1, full_name: "acme/widgets"}},
+      base: {ref: "develop", sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", repo: {id: 1, full_name: "acme/widgets"}}
+    }' > "$STUB_DIR/rest-pr-${num}.json"
+}
+write_rest_issue() { # <num> <body> [state=open] [comments_json='[]']
+  local num="$1" body="$2" st="${3:-open}" comments="${4:-[]}"
+  jq -n --argjson n "$num" --arg b "$body" --arg st "$st" '{number:$n, body:$b, state:$st}' > "$STUB_DIR/rest-issue-${num}.json"
+  printf '%s\n' "$comments" > "$STUB_DIR/rest-issue-comments-${num}.json"
+}
+
+write_rest_pr 42 "$(closes_body 900)"
+write_rest_pr 44 "$(closes_body 902)"
+write_rest_pr 45 "$(closes_body 903)"
+write_rest_pr 48 "本文に Issue 参照なし（サイドバー手動リンク相当）"
+write_rest_pr 66 "$(refs_body 930)"
+write_rest_pr 67 "$(refs_body 931)"
+jq -s '.' "$STUB_DIR/rest-pr-42.json" > "$STUB_DIR/rest-pr-list.json"
+write_rest_issue 900 "$BLOCK_UNFILLED" open
+write_rest_issue 902 "$BLOCK_NONE" open
+write_rest_issue 903 "$BLOCK_FILLED" open
+write_rest_issue 930 "$BLOCK_UNFILLED" open "$(marker_comments 66)"
+write_rest_issue 931 "$BLOCK_UNFILLED" open '[{"body":"<!-- close-issue-report:ISSUE-931 -->"}]'
+
+HOOK_CWD="$REST_REPO"
+# GraphQL 結果と REST 結果の完全等価性（deny 本文の完全一致を含む）
+run_hook "gh pr merge 42 --squash"
+GQL_DENY_42="$REASON"
+run_hook "gh pr merge 42 --squash" STUB_GRAPHQL_403=1
+assert_fire "GraphQL 403 + REST: 未記入 Issue を閉じる PR 42 を deny する"
+if [ "$REASON" = "$GQL_DENY_42" ] && grep -q '^api repos/acme/widgets/pulls/42$' "$STUB_DIR/gh-calls.log" \
+   && grep -q '^api repos/acme/widgets/issues/900$' "$STUB_DIR/gh-calls.log"; then
+  ok "GraphQL 403 + REST: PR 42 の deny 文言が GraphQL 経路と完全一致し、REST API 経由で取得している"
+else
+  bad "GraphQL 403 + REST: PR 42 の deny 文言または呼び出しが GraphQL 経路と食い違う"
+fi
+
+run_hook "gh pr merge --squash" STUB_GRAPHQL_403=1
+assert_fire "GraphQL 403 + REST: PR 指定省略（現在ブランチ）でも REST で PR を特定して deny する"
+run_hook "gh pr merge https://github.com/acme/widgets/pull/42 --squash" STUB_GRAPHQL_403=1
+assert_fire "GraphQL 403 + REST: PR URL 指定でも REST で PR を特定して deny する"
+run_hook "gh pr merge 45 --squash" STUB_GRAPHQL_403=1
+assert_pass "GraphQL 403 + REST: 記入済み Issue を閉じる PR 45 は通す（GraphQL と等価）"
+run_hook "gh pr merge 44 --squash" STUB_GRAPHQL_403=1
+assert_pass "GraphQL 403 + REST: ブロック不在の PR 44 は通す（GraphQL と等価）"
+run_hook "gh pr merge 66 --squash" STUB_GRAPHQL_403=1
+assert_pass "GraphQL 403 + REST: Refs で完了報告ありの PR 66 は REST コメント取得で通す（GraphQL と等価）"
+run_hook "gh pr merge 67 --squash"
+GQL_DENY_67="$REASON"
+run_hook "gh pr merge 67 --squash" STUB_GRAPHQL_403=1
+assert_fire "GraphQL 403 + REST: Refs で完了報告なしの PR 67 は deny する"
+if [ "$REASON" = "$GQL_DENY_67" ]; then
+  ok "GraphQL 403 + REST: PR 67（Refs）の deny 文言が GraphQL 経路と完全一致する"
+else
+  bad "GraphQL 403 + REST: PR 67 の deny 文言が GraphQL 経路と食い違う"
+fi
+run_hook "gh pr merge 42 --squash" STUB_GRAPHQL_403=1 STUB_REST_FAIL=1
+assert_pass "GraphQL 403 + REST も失敗: Bash 経路は従来どおり fail-open（無音通過）"
+run_hook "gh pr merge 42 --squash" FF_STUB_FAIL=1
+if ! grep -q '^api ' "$STUB_DIR/gh-calls.log"; then
+  ok "非回帰: 通常の gh 失敗（非 GraphQL 403）では REST API へフォールバックしない"
+else
+  bad "非回帰: 通常の gh 失敗で不要に REST API を呼んでいる"
+fi
+HOOK_CWD=""
+
+# MCP 経路も GraphQL 403 時に REST フォールバックで同じ deny / pass / skip 判定になり、通過時は手動リンク未確認を systemMessage で知らせる
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":42}' STUB_GRAPHQL_403=1
+assert_fire "GraphQL 403 + REST（MCP）: 未記入 Issue を閉じる PR 42 を deny する"
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":66}' STUB_GRAPHQL_403=1
+ff_mcp_assert_message "GraphQL 403 + REST（MCP）: Refs 完了報告ありの PR 66 を通しつつ手動リンク未確認を systemMessage で知らせる" "サイドバー手動リンク"
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":48}' STUB_GRAPHQL_403=1
+ff_mcp_assert_message "GraphQL 403 + REST（MCP）: 本文に Issue 参照がない PR 48 は手動リンク未確認を systemMessage で知らせて通す" "サイドバー手動リンク"
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":42}' STUB_GRAPHQL_403=1 STUB_REST_FAIL=1
+ff_mcp_assert_message "GraphQL 403 + REST も失敗（MCP）: 止めずに省略理由を systemMessage で出す" "gh で読めない"
 
 echo
 if [ "$FAIL" -gt 0 ]; then

@@ -24,7 +24,9 @@ PR どうしが同じファイルの同じ領域を触る**ため、並行作業
 | `matches` | `matches<TAB>相対パス<TAB>拡張正規表現<TAB>ラベル` |
 | `absent` | `absent<TAB>相対パス<TAB>固定文字列<TAB>ラベル` |
 
-- 相対パスは `docs-template/` 起点（`verify.sh` の `DOCS` と同じ基準）
+- 相対パスは `docs-template/` 起点（`verify.sh` の `DOCS` と同じ基準）。`../` で docs-template の外を
+  指さない — 検査用コピー（`FF_DOCS_GATE_DOCS`。`docs-gates-runtime` の positive control）は docs-template
+  だけを複製するので届かず、無変異のコピーが赤になる。外のファイルは `verify.sh` 側に絶対パスで書く
 - `section` は見出し行の**リテラル前方一致**で節を切り出してから照合します（節の外へ
   写した文言で合格しないため。実装の正本は `tests/lib/section-scope.sh`）
 - 固定文字列にタブと改行は書けません。必要なら `matches` を使うか、`verify.sh` 側へ

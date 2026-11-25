@@ -163,9 +163,21 @@ ff_precheck_fetch_report_bodies() { # <owner/repo#N> <PR番号>
   if ! json="$(gh issue view "$num" --repo "$owner" --json comments 2>"$err")"; then
     text="$(cat "$err")"
     rm -f "$err"
-    die_env "Issue ${tok} のコメントを取得できません（gh: ${text}）。取得失敗を一致なしとは読まない" "gh issue view ${num} --repo ${owner} --json comments が通る状態で finish.sh precheck を再実行する"
+    if ff_gh_is_graphql_unavailable "$text"; then
+      local rest_err rest_text
+      rest_err="$(mktemp)" || die_env "一時ファイルを作れません" "TMPDIR を書ける場所へ向けて再実行する"
+      if ! json="$(ff_gh_rest_issue_comments "$num" "$owner" "$PWD" "$rest_err")"; then
+        rest_text="$(cat "$rest_err" 2>/dev/null || true)"
+        rm -f "$rest_err"
+        die_env "Issue ${tok} のコメント取得で GraphQL が利用できず、REST API フォールバックも失敗しました（REST: ${rest_text:-不明} / GraphQL: ${text}）。取得失敗を一致なしとは読まない" "$(ff_gh_github_input_hint precheck)"
+      fi
+      rm -f "$rest_err"
+    else
+      die_env "Issue ${tok} のコメントを取得できません（gh: ${text}）。取得失敗を一致なしとは読まない" "gh issue view ${num} --repo ${owner} --json comments が通る状態で finish.sh precheck を再実行する"
+    fi
+  else
+    rm -f "$err"
   fi
-  rm -f "$err"
   printf '%s' "$json" | jq --arg marker "$marker" "$filter" \
     || die_env "Issue ${tok} のコメントを解釈できません。取得失敗を一致なしとは読まない" "gh issue view の JSON を確かめて再実行する"
 }

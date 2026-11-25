@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 空振り検出: 対象不在（GC1a: git-write-chain-scan.sh 無し）・読めない（GC1d: chmod 000）・関数なし（GC2）・awk 失敗（GC3: false）・番兵欠落（GC4: true）・未終端入力（GC5）はすべて判定不能 deny（候補に限る）、かつ M1〜M6 で SURVIVED=0 を確認（2026-11-15 macOS / Bash 3.2 実測）。
-# 変異検出: M1 prefilter の *rg* 枝から git_write_chain_raw_candidate 削除、M2 cmp 検出削除、M3 && 左辺（j<k）の set -e 抑止削除、M4 git -C 大域オプション処理削除、M5 E\tdone 番兵照合削除、M6 ff_git_write_chain_rewrite の書換後再検査削除のすべてで SURVIVED=0。
+# 空振り検出: 対象不在（GC1a: git-write-chain-scan.sh 無し）・読めない（GC1d: chmod 000）・関数なし（GC2）・awk 失敗（GC3: false）・番兵欠落（GC4: true）・未終端入力（GC5）はすべて判定不能 deny（候補に限る）、かつ M1〜M6 で SURVIVED=0 を確認（2026-11-15 macOS / Bash 3.2 実測）。コマンド置換の中の heredoc が区切り語で閉じない入力（GH9）も判定不能 deny で、区切り語の直後に閉じ括弧を続けた行（EOF)。GH10〜GH12）は判定不能にせず従来どおり判定する（2026-11-25 実測）。
+# 変異検出: M1 prefilter の *rg* 枝から git_write_chain_raw_candidate 削除、M2 cmp 検出削除、M3 && 左辺（j<k）の set -e 抑止削除、M4 git -C 大域オプション処理削除、M5 E\tdone 番兵照合削除、M6 ff_git_write_chain_rewrite の書換後再検査削除、M7 コマンド置換の中の heredoc 本文の読み飛ばし削除、M8 コマンド置換の中の算術コマンドの読み飛ばし削除、M9 区切り語の直後の閉じ括弧（EOF)）を heredoc の終わりと読む分岐の削除のすべてで SURVIVED=0（M7〜M9 は 2026-11-25 Windows Git Bash 実測）。
 #
 # git-write-chain.sh — fail-fast でない git 書き込み連鎖の PreToolUse ガードの回帰検査
 
@@ -615,6 +615,73 @@ assert_deny 'RG-S1f: 複合算術式 (( rc != 0 || x == 0 )) の後は安全扱�
 run_hook 'git add a.txt; rc=$?; [ "$rc" -ne 0 -o "$x" -eq 0 ] && git commit -m x'
 assert_deny 'RG-S1g: 複合条件 [ -ne 0 -o ... ] の後は安全扱いせず検出する'
 
+# GH: コマンド置換の中の heredoc（Issue `#2971`）。`$(…)` の境界を探す走査が本文をコードとして読み、
+# 本文の単一引用符を引用の開始、`fix(#N):` の `#` をコメントと読んで閉じ括弧を見失っていた（判定不能の deny）。
+# rc が 4 でないことだけでなく判定（素通し / 検出）まで見る — 境界を早く閉じると本文がコマンドに化けるため。
+echo "git-write-chain: GH — コマンド置換の中の heredoc（本文の引用符・括弧・# で境界を見失わない）"
+run_hook "git add a.txt && git commit -m \"\$(cat <<'EOF'
+fix(#N): 件名
+
+本文 (括弧) と don't
+EOF
+)\" && git push"
+assert_pass 'GH1: 本文に fix(#N): と単一引用符を含む && 連鎖は素通し'
+for gh_body in "'" '"' '`' '(' ')' '#' "it's (#N)"; do
+  run_hook "git add a.txt && git commit -m \"\$(cat <<'EOF'
+件名 ${gh_body} 末尾
+EOF
+)\" && git push"
+  assert_pass "GH2: 本文に単独の [${gh_body}] を含む && 連鎖は素通し"
+done
+run_hook "git add a.txt && git commit -m \"\$(cat <<'EOF'
+fix(#N): 件名 don't
+EOF
+)\"
+git push"
+assert_deny 'GH3: 本文を読み飛ばした後の改行区切りの commit->push は検出する'
+run_hook "git add a.txt && git commit -m \"\$(cat <<'EOF'
+git add x; git commit -m y; git push
+EOF
+)\" && git push"
+assert_pass 'GH4: 本文に書いた連鎖の例はデータとして素通し'
+run_hook "git add a.txt && git commit -m \"\$(cat <<-'EOF'
+	件名 don't
+	EOF
+)\" && git push"
+assert_pass 'GH5: <<- のタブ字下げの区切り語でも本文を読み飛ばす'
+run_hook "git add a.txt && git commit -m \"\$(cat <<'A' <<'B'
+a (#N)
+A
+b don't
+B
+)\" && git push"
+assert_pass 'GH6: 1 行に 2 つ開いた heredoc を順に読み飛ばす'
+run_hook "git add a.txt && git commit -m \"\$( (( n = 1 << 2 ))
+echo v\$n )\" && git push"
+assert_pass 'GH7: コマンド置換の中の算術コマンドの << は heredoc と読まない（後ろに改行が続く形）'
+run_hook "git add a.txt && git commit -m \"\$(cat <<< 'x (y')\" && git push"
+assert_pass 'GH8: コマンド置換の中の here-string（<<<）は heredoc と読まない'
+run_hook "git add a.txt && git commit -m \"\$(cat <<'EOF'
+件名
+)\" && git push"
+assert_deny_unavailable 'GH9: 区切り語で閉じない heredoc は判定不能 deny（fail-closed）'
+# GH10〜GH12: 区切り語の直後に閉じ括弧を続けた行（`EOF)`）。bash は heredoc の終わりとして読むので、従来どおり通す
+run_hook "git add a.txt && git commit -m \"\$(cat <<'EOF'
+fix: 件名
+EOF)\" && git push"
+assert_pass 'GH10: 区切り語の直後に閉じ括弧を続けた形（EOF)）の && 連鎖は素通し'
+run_hook "git add a.txt; git commit -m \"\$(cat <<'EOF'
+fix: 件名
+EOF)\""
+case "$REASON" in
+  *'判定不能'*) bad "GH11: EOF) の形の ; 連鎖が判定不能で止まった: [$REASON]" ;;
+  *) assert_deny 'GH11: EOF) の形でも ; で繋いだ add->commit は検出する（判定不能にしない）' ;;
+esac
+run_hook "git add a.txt && git commit -m \"\$(cat <<'EOF'
+it's (#N)
+EOF)\" && git push"
+assert_pass 'GH12: EOF) の形で本文に単一引用符と (#N) を含む && 連鎖も素通し'
+
 echo "git-write-chain: GC — fail-closed（候補コマンドに限り判定不能を deny）"
 GC_NOLIB="$TEST_TMP/gc-nolib"
 make_tree "$GC_NOLIB"
@@ -653,7 +720,7 @@ assert_deny_unavailable 'GC5: 未閉鎖クォートの構文失敗は候補に�
 run_hook 'FF_EXIT_CODE_ACK=1 git add "unterminated; git commit -m x'
 assert_pass 'GC6: 判定不能でも先頭 FF_EXIT_CODE_ACK=1 で抜け道が効く'
 
-echo "git-write-chain: GM — 変異検出（6 種すべて SURVIVED=0）"
+echo "git-write-chain: GM — 変異検出（9 種すべて SURVIVED=0）"
 # M1: prefilter の *rg* 枝から git_write_chain_raw_candidate を削除
 M1_DIR="$TEST_TMP/mut-m1"
 make_tree "$M1_DIR"
@@ -754,6 +821,63 @@ else
     ok 'GM-M6: 再検査を外すと set +e へ壊れた updatedInput を出して検知できる'
   else
     bad "GM-M6: 変異が生き残った decision=[$DECISION] updated=[$UPDATED_CMD]"
+    SURVIVED=$((SURVIVED + 1))
+  fi
+fi
+
+# M7: コマンド置換の中の heredoc 本文の読み飛ばしを外す（本文をコードとして読む元の挙動へ戻す）
+M7_DIR="$TEST_TMP/mut-m7"
+make_tree "$M7_DIR"
+sed 's/if (qmode == 0 && cs_hn\[lvl\] > 0) p = cs_skip_heredocs(src, p, n, lvl)/cs_hn[lvl] = cs_hn[lvl]/' "$GWC_LIB" >"$M7_DIR/tests/lib/git-write-chain-scan.sh"
+if cmp -s "$GWC_LIB" "$M7_DIR/tests/lib/git-write-chain-scan.sh"; then
+  bad 'GM-M7: 変異注入が空振りした'
+  SURVIVED=$((SURVIVED + 1))
+else
+  run_hook_on "$M7_DIR/hooks/guard-exit-code.sh" "git add a.txt && git commit -m \"\$(cat <<'EOF'
+fix(#N): 件名 don't
+EOF
+)\" && git push"
+  if [ "$DECISION" = "deny" ]; then
+    ok 'GM-M7: 本文の読み飛ばしを外すと本文の単一引用符・# で判定不能 deny に戻り検知できる'
+  else
+    bad "GM-M7: 変異が生き残った decision=[$DECISION]"
+    SURVIVED=$((SURVIVED + 1))
+  fi
+fi
+
+# M8: コマンド置換の中の算術コマンドの読み飛ばしを外す（`(( 1 << 2 ))` の << を heredoc と読む）
+M8_DIR="$TEST_TMP/mut-m8"
+make_tree "$M8_DIR"
+sed 's/if (substr(src, p + 1, 1) == "(" && is_true_arith_dbl_paren(src, p + 2, n)) {/if (0) {/' "$GWC_LIB" >"$M8_DIR/tests/lib/git-write-chain-scan.sh"
+if cmp -s "$GWC_LIB" "$M8_DIR/tests/lib/git-write-chain-scan.sh"; then
+  bad 'GM-M8: 変異注入が空振りした'
+  SURVIVED=$((SURVIVED + 1))
+else
+  run_hook_on "$M8_DIR/hooks/guard-exit-code.sh" "git add a.txt && git commit -m \"\$( (( n = 1 << 2 ))
+echo v\$n )\" && git push"
+  if [ "$DECISION" = "deny" ]; then
+    ok 'GM-M8: 算術コマンドの読み飛ばしを外すと << を heredoc と読んで判定不能 deny になり検知できる'
+  else
+    bad "GM-M8: 変異が生き残った decision=[$DECISION]"
+    SURVIVED=$((SURVIVED + 1))
+  fi
+fi
+
+# M9: 区切り語の直後に閉じ括弧を続けた行（EOF)）を heredoc の終わりとして読む分岐を外す
+M9_DIR="$TEST_TMP/mut-m9"
+make_tree "$M9_DIR"
+sed 's/if (substr(line_str, 1, length(delim)) == delim \&\& substr(line_str, length(delim) + 1, 1) == ")") {/if (0) {/' "$GWC_LIB" >"$M9_DIR/tests/lib/git-write-chain-scan.sh"
+if cmp -s "$GWC_LIB" "$M9_DIR/tests/lib/git-write-chain-scan.sh"; then
+  bad 'GM-M9: 変異注入が空振りした'
+  SURVIVED=$((SURVIVED + 1))
+else
+  run_hook_on "$M9_DIR/hooks/guard-exit-code.sh" "git add a.txt && git commit -m \"\$(cat <<'EOF'
+fix: 件名
+EOF)\" && git push"
+  if [ "$DECISION" = "deny" ]; then
+    ok 'GM-M9: EOF) の行を heredoc の終わりと読む分岐を外すと判定不能 deny になり検知できる'
+  else
+    bad "GM-M9: 変異が生き残った decision=[$DECISION]"
     SURVIVED=$((SURVIVED + 1))
   fi
 fi

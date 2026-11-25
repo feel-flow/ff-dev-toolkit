@@ -713,7 +713,7 @@ setup_semver_is_newer() {
 }
 
 # 配置先シムの版を推定する。シムは版を持たないので、導入済み toolkit（シムの解決と同じ
-# Codex cache / Claude cache / grok の導入実体）のうち、template が配置先シムと行末 CR を
+# Codex cache / Claude cache / Claude synced / grok の導入実体）のうち、template が配置先シムと行末 CR を
 # 除いて一致するものの plugin.json の最大版を配置先の版とみなす。一致が 0 件なら非 0（版不明）。
 # 結果は DEPLOYED_SHIM_VERSION / DEPLOYED_SHIM_ROOT へ置く。読めない候補は一致に数えない。
 setup_deployed_shim_version() { # <行末正規化済みの配置先シム> <作業ディレクトリ>
@@ -725,6 +725,7 @@ setup_deployed_shim_version() { # <行末正規化済みの配置先シム> <作
     fi
     if [ -n "${CLAUDE_CONFIG_DIR:-}" ] || [ -n "${HOME:-}" ]; then
         setup_match_installed_templates "$norm_dest" "$work" "${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/plugins/cache/"*/ff-dev-toolkit/*
+        setup_match_installed_templates "$norm_dest" "$work" "${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/plugins/synced/"*/ff-dev-toolkit
     fi
     if [ -n "$grok_home" ]; then
         setup_match_installed_templates "$norm_dest" "$work" "${grok_home}/installed-plugins/ff-dev-toolkit-"*

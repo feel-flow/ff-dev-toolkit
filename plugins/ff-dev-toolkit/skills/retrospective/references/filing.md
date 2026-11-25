@@ -48,10 +48,10 @@
 
    検索しても知見ストアが見つからない repo でだけ本手順をスキップして手順 3 へ進む（手順 1・4 は ACE の有無にかかわらず常に行う）
 3. **既存 Issue の確認**: まず起票先 repo の open な `bundle`（着手単位。子 Issue を全件 1 PR で束ねる Issue）を `gh issue list --repo "<owner>/<repo>" --state open --label bundle --limit 200` で列挙し、**改善対象が導入先の CLAUDE.md / docs の規律（散文の追記）なら、表題に「規律」を含む bundle へのコメント追記を既定にする**（単独の docs Issue を立てない。`bundle` ラベルが実在しない repo ではこの列挙を飛ばす）。次に既存 Issue を state を絞らずに検索する（`gh issue list --repo "<owner>/<repo>" --search "<キーワード>" --state all --limit 200`。`--limit` は省略しない — 既定では取得が 30 件で打ち切られ、その先にある重複を「無い」と誤判定する）。重複する Issue が既にあれば新規起票せず、ヒットした Issue の state で分岐する:
-   - **open**: **既存 Issue へのコメント追記**（再発情報の集約先として）を提案する
+   - **open**: **既存 Issue へのコメント追記**（再発情報の集約先として）を提案する。追記で AC・作業が増え、その Issue に `ff-effort` ブロックがあるときは、コメントに `追記分の予定（目安）: +N.Nh` を添える（再発の実測だけで範囲が増えないときは添えない。書式と足す時機は `create-issue` の [references/estimation.md「起票後に範囲を足すときの加算予定」](../../create-issue/references/estimation.md#起票後に範囲を足すときの加算予定)）
    - **closed**: closed へのコメント単独では作業として追跡されないため、未対応のまま閉じられていたなら **reopen** を、修正後の再発なら **closed Issue を参照した regression Issue の新規起票**を提案する（どちらなのかを提案に明示する）
 
-   <!--d1f6dc7536dd2bb1-->
+   <!--0d1f91155a6dbec5-->
    MCP: 取得値: MCP で同じ repo の state / label / 検索語に合う number / title / body / labels / state / url を取得。形式: 明示した上限 / 全 page の JSON、候補本文は全文。渡し先: この段の候補選択 / 見積もり根拠へ渡す。不足時: 重複探索は必須不足 / 上限到達で停止。見積もり用の任意履歴は取得不能と記録して継続。
 
    ヒットした open Issue は本文を**全文**読み（先頭だけで切らない）、重複でなくても提案がその Issue の定める方針・制約に矛盾しないことを確認する — 矛盾する提案はそのまま出さず、方針側の変更提案であることを明示するか取り下げる

@@ -151,6 +151,48 @@
 # 空振り検出: run-all の鮮度行の文言が変わった（stale_only_suites の照合を別の見出しへ差し替えた）回は鮮度と読まず、gate は再検査せずに「run-all が失敗した」で止まる（neutral の前進のケースほか 8 ケースが赤 = 止める側。2026-10-19 実測）。--advance-check は解決できない HEAD で ADVANCE=unknown・exit 2（判定不能を neutral へ倒さない）。
 #
 # run-all-required: no — 同期スクリプトを持たない公開 checkout での skip は正当な適用外（SSOT 専用の検査）
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: /.claude/skills/sync-dev-toolkit/SKILL.md
+# run-all-depends: /scripts/sync-dev-toolkit-to-public.sh /scripts/scan-unreachable-repo-refs.sh
+# run-all-depends: /scripts/release-dev-toolkit.sh /scripts/lib/release-*-functions.sh
+# run-all-depends: /scripts/check-full-gate-reuse.sh /scripts/check-release-required.sh
+# run-all-depends: /.claude/hooks/post-merge-dev-toolkit-sync.sh /.claude/hooks/session-start-sync-drift.sh
+# run-all-depends: scripts/lib/commit-identity-functions*.sh scripts/lib/github-input*.sh scripts/lib/abs-path*.sh scripts/lib/stop-block*.sh
+# run-all-depends: /plugins/ff-media-toolkit/scripts/lib/node-bin*.sh
+# run-all-depends: /plugins/ff-media-toolkit/tests/render-smoke/verify.sh /plugins/ff-media-toolkit/tests/typecheck/verify.sh
+# run-all-depends: /docs/04-quality/TESTING.md
+# run-all-depends: tests/lib/git-fixture.sh tests/lib/msys-case.sh tests/lib/relay-skip-lines.sh tests/lib/gate-in-flight.sh
+# run-all-depends: tests/lib/release-skip-profile.* tests/lib/shared-changelog-judge*.sh
+# run-all-depends: tests/sync-forbidden-patterns/verify.sh tests/host-route-parity/verify.sh tests/claude-hooks-path/verify.sh tests/knowledge-lookup/verify.sh
+# run-all-not-depends: /scripts/check-dev-toolkit-sync-drift.sh 説明の言及と fixture の stub の名前（実物は実行しない）
+# run-all-not-depends: /scripts/materialize-dev-toolkit-changelog.sh release-runtime が fixture に書く stub の名前
+# run-all-not-depends: /scripts/check-weekly-run-all-health.sh release-runtime が fixture に書く stub の名前
+# run-all-not-depends: /scripts/update-dev-toolkit-changelog-footer.sh SKILL へ当てる針の文字列と stub の名前
+# run-all-not-depends: scripts/changelog-digest.sh fixture の stub の名前
+# run-all-not-depends: tests/run-all.sh fixture の stub の名前
+# run-all-not-depends: tests/public-layout/verify.sh fixture の stub の名前
+# run-all-not-depends: tests/changelog-public-tags/verify.sh fixture の stub の名前
+# run-all-not-depends: tests/changelog-contract/verify.sh fixture の stub の名前
+# run-all-not-depends: tests/changelog-fragments/verify.sh fixture の stub の名前
+# run-all-not-depends: tests/shared-version-convergence/verify.sh fixture の stub の名前
+# run-all-not-depends: tests/changelog-fragments/cases/footer.sh 説明の言及
+# run-all-not-depends: docs-template/05-operations/deployment/git-workflow.md 説明の言及
+# run-all-not-depends: /changelog.d/README.md fixture に書くファイルと hook の通知文の針（実体の changelog.d/ は読まない）
+# run-all-not-depends: /oss/ff-dev-toolkit/.github/workflows/weekly-public-run-all.yml hook へ渡す変更ファイル名
+# run-all-not-depends: /oss/ff-dev-toolkit/CHANGELOG.md fixture に書く CHANGELOG と hook へ渡す変更ファイル名
+# run-all-not-depends: /oss/ff-dev-toolkit/README.md hook へ渡す変更ファイル名
+# run-all-not-depends: /oss/ff-dev-toolkit/USING_WITH_VSCODE_COPILOT.md hook へ渡す変更ファイル名
+# run-all-not-depends: .claude-plugin/plugin.json fixture に書く版と hook へ渡す変更ファイル名
+# run-all-not-depends: scripts/agent-config.yaml fixture に書く構成
+# run-all-not-depends: docs-template/README.md fixture に書くファイル
+# run-all-not-depends: /README.md fixture のリポジトリへ書くファイル
+# run-all-not-depends: LICENSE fixture のリポジトリへ書くファイル
+# run-all-not-depends: scripts/templates/codex-review.sh 設計の由来を説明するコメント
+# run-all-not-depends: /plugins/ff-media-toolkit/scripts/ff-media.sh run-all の stub が出す skip 文の中の名前
+# run-all-not-depends: mcp/.gitignore fixture に書くファイルの名前
+# run-all-not-depends: mcp/package-lock.json fixture に書くファイルの名前
+# run-all-not-depends: mcp/package.json fixture に書くファイルの名前
 
 # 変異検出: in-flight の固定時計18ケースは実runtimeのblock/helperを抜き出した単体で19 pass / 0 fail、実runtime全体は115 pass / 0 fail（2026-10-22）。
 # 変異検出: 負年齢の下限を0/-299/-301へ各単独変更すると4/2/2件、有効期限の上限削除/>=化で各2件、PID生存照合を除くと2件、異hostを同host扱いすると4件が赤（単体、全7変異 exit 1。構文検査は通過）。

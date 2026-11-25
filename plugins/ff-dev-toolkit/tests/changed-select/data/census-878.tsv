@@ -1,0 +1,35 @@
+# 選択の漏れの回帰検査（Issue `#3006` の AC6）。simulate.sh --expect が読む。
+# 出典は Issue `#878` の監視漏れの census（手書きの対応表が、suite の実際に読むファイルを覆っていなかった 14 件）。
+# 各行は「このファイルが変わったら、この suite は選ばれなければならない」。依存の宣言（# run-all-depends:）を持つ
+# suite の行だけが照合され、宣言の無い suite の行は飛ばされる（字面の照合で選ばれる）。suite に宣言を足したら、
+# その suite の行が自動で照合の対象に入る。
+# 列: <変更パス（プラグインルート相対。/ 始まりはリポジトリルート相対）><TAB><suite><TAB><出典>
+# census のうち、今の木に入力が無い行（census-13 の mcp-state-selftest が読んでいた tests/mcp-state/verify.sh、
+# census-14 の tests/fixtures/gh-stub/gh）は除いた。
+/.claude-plugin/marketplace.json	docs-fact-drift	census-1
+mcp/src/index.ts	docs-fact-drift	census-1
+scripts/check-closing-keywords.sh	no-hardcoded-model	census-2
+scripts/workflow-tier.sh	no-hardcoded-model	census-2
+hooks/guard-exit-code.sh	no-hardcoded-model	census-2
+skills/multi-review/SKILL.md	multi-agent-timeout	census-3
+docs-template/06-reference/REVIEW_AGENT_CREATION_GUIDE.md	multi-agent-timeout	census-3
+docs-template/05-operations/deployment/multi-cli-review-orchestration.md	multi-agent-timeout	census-3
+/oss/ff-dev-toolkit/README.md	sync-forbidden-patterns	census-4
+/plugins/ff-media-toolkit/skills/illustrate/SKILL.md	skill-bash-blocks	census-5
+/.claude/skills/sync-dev-toolkit/SKILL.md	skill-bash-blocks	census-5
+/scripts/check-dev-toolkit-sync-drift.sh	claude-hooks-path	census-6
+skills/ace-curate/SKILL.md	ace-refine	census-7
+docs-template/03-implementation/PATTERNS.md	ace-refine	census-7
+docs-template/05-operations/deployment/ace-cycle.md	ace-refine	census-7
+/docs/08-knowledge/PLAYBOOK.md	ace-refine	census-7
+/docs/MASTER.md	validate-docs-placeholders	census-8
+/scripts/ace/README.md	ace-line-budget-docs	census-9
+/docs/04-quality/TESTING.md	docs-gates	census-10
+scripts/adapters/codex-cli-adapter.sh	docs-gates	census-10
+/oss/ff-dev-toolkit/README.md	out-of-scope-routing	census-11
+/README.md	retrospective-contract	census-11
+skills/create-issue/SKILL.md	github-labels-setup	census-12
+docs-template/05-operations/deployment/github-setup.md	issue-label-supply	census-12
+skills/multi-review/SKILL.md	review-freeze-contract	census-12
+tests/no-hardcoded-model/verify.sh	cli-registry-completeness	census-13
+tests/merge-cleanup/verify.sh	run-all	census-13

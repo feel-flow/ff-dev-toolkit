@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # 空振り検出: security-glob の不在・空、設定の不在（明示）・読めない・yq 不在・キー検査の失敗・review 配下以外への配置・文字列でない / 空の値・未知の値、変更 0 件、根の判定不能を与えると M1 と M3〜M16 が unknown 以外（no への縮退）で、M2 は --check の緑で赤になる（M10 は root 実行者だけ skip）。主担当 codex-cli で security-diff-scan の不在（別スキルだけ・CODEX_HOME の不在・~/.codex も無い）や diff scan の基点の不在（--base も origin/HEAD も無い・解決できない --base）を与えると C4 / C5 / C6a / C14 / C15 が codex-security への縮退で赤になる。主担当 grok-cli で GROK_SUBAGENTS=0 かつ security-diff-scan が無い、またはスキルは在るが PATH に codex が無い回を grok-session にすると K3 / K3b が赤になる。
+# 空振り検出: R（結果の行の書式。Issue 2956）は、security-review の回の書式を出さない・該当なしを含む全ゲートで書式を出す・書式を計画の形（「を実施する」）へ崩す・unsupported の回にも書式を出す・precheck の判定器が未記入の書式（`<N>` / 理由を含む `<…>`）を記録に数える・判定器が置き場所でない `<…>`（`<script>`）を含む記入済みの行まで捨てる、の 6 変異で各 rc=1（2026-11-25 WSL 実測。mutation-harness で detected、対照は 97 件 pass）。書式を出さない回（R6〜R8・R7b）は gate の値も照合し、review-route.sh が何も出さない回を緑にしない。
 #
 # セキュリティに関わる変更の判定と、主担当ホストでの専用ゲートの分岐（Issue `#2391` / `#2392` / `#2393`）。
 #
@@ -17,6 +18,10 @@
 #      食い違いでは止めない。未導入は unverified と「未確認」の 1 行、他ホストの印と併存すれば unknown
 #   M. 針が当たらない入力: 分類・設定を読めない回はすべて unknown（no へ倒さない）で、unknown は
 #      ゲートの対象から外れない（none にならない）
+#   R. 結果の行の書式（Issue 2956）: ゲートを実行する回（security-review / grok-session /
+#      antigravity-session / codex-security）だけ REVIEW_SECURITY_RECORD_DONE / _SKIPPED を出し、
+#      none / unverified / off では出さない。DONE / SKIPPED の行は finish.sh security-record が
+#      recorded と認め、報告行（「… を実行する（…）」）だけの本文は missing（対照）
 #
 # 規定の正本は docs-template/05-operations/deployment/self-review.md「レビュー担当の選択と
 # 利用制限時の継続」の専用セキュリティゲート項。出力行の契約は review-route.sh のヘッダ。
@@ -518,6 +523,98 @@ if [ "$(kv REVIEW_SECURITY_GATE)" = "unverified" ]; then
   esac
 else
   bad "AG5 未解決 base: gate=[$(kv REVIEW_SECURITY_GATE)] line=[$line]"
+fi
+
+echo "security-review-gate R: PR 本文へ書く結果の行の書式（Issue 2956）"
+# ゲートを実行する回だけ、実行した回（DONE）と実行しなかった回（SKIPPED）の書式を並べる。報告行の
+# 「… を実行する（…）」は計画で precheck が記録に数えないので、書式は precheck と同じ判定で認められる形にする
+skipped_want="専用セキュリティゲート: 未確認（<実行しなかった理由。誤検知と判断した回はその根拠>）"
+assert_record() { # <label> <DONE の期待値（空なら DONE / SKIPPED とも出ないこと）> [<空のときの gate の期待値>]
+  local done_line skipped_line gate_line
+  done_line="$(kv REVIEW_SECURITY_RECORD_DONE)"
+  skipped_line="$(kv REVIEW_SECURITY_RECORD_SKIPPED)"
+  gate_line="$(kv REVIEW_SECURITY_GATE)"
+  if [ -z "$2" ]; then
+    # 書式が無いことだけを見ると、review-route.sh が何も出さない回・別の gate へずれた回も緑になる
+    if [ -z "$OUT" ] || [ -z "${3:-}" ] || [ "$gate_line" != "$3" ]; then
+      bad "$1: gate=[$gate_line]（期待 [${3:-}]）rc=$RC"
+    elif grep -q '^REVIEW_SECURITY_RECORD_' <<<"$OUT"; then
+      bad "$1: gate=[$gate_line] に結果の書式が出た: [$done_line] / [$skipped_line]"
+    else
+      ok "$1"
+    fi
+  elif [ "$done_line" = "$2" ] && [ "$skipped_line" = "$skipped_want" ]; then
+    ok "$1"
+  else
+    bad "$1: gate=[$(kv REVIEW_SECURITY_GATE)] done=[$done_line] skipped=[$skipped_line]"
+  fi
+}
+git -C "$REPO" checkout -q auth-change
+run_gate CLAUDECODE=1 -- --git --base base
+assert_record "R1 security-review の回は /security-review 実施（指摘 <N> 件）と未確認の書式" \
+  "専用セキュリティゲート: /security-review 実施（指摘 <N> 件）"
+record_done_r1="$(kv REVIEW_SECURITY_RECORD_DONE)"
+record_skipped_r1="$(kv REVIEW_SECURITY_RECORD_SKIPPED)"
+record_report_r1="$(kv REVIEW_SECURITY_REPORT_LINE)"
+run_gate GROK_AGENT=1 -- --files src/auth/login.ts
+assert_record "R2 grok-session の回は grok-cli セッション内レビュー実施の書式" \
+  "専用セキュリティゲート: grok-cli セッション内レビュー実施（指摘 <N> 件）"
+run_gate ANTIGRAVITY_AGENT=1 -- --files src/auth/login.ts
+assert_record "R3 antigravity-session の回は antigravity-cli セッション内レビュー実施の書式" \
+  "専用セキュリティゲート: antigravity-cli セッション内レビュー実施（指摘 <N> 件）"
+run_gate CODEX_THREAD_ID=t-1 "CODEX_HOME=$CODEX_ON" -- --git --base origin/base
+assert_record "R4 codex-security の回は Codex Security security-diff-scan 実施の書式" \
+  "専用セキュリティゲート: Codex Security security-diff-scan 実施（指摘 <N> 件）"
+run_gate GROK_AGENT=1 GROK_SUBAGENTS=0 "CODEX_HOME=$CODEX_ON" "PATH=$WITHCODEX_PATH" -- --files src/auth/login.ts
+assert_record "R5 grok-cli から codex へ縮退した回は担当: codex-cli を含む書式" \
+  "専用セキュリティゲート: Codex Security security-diff-scan 実施（担当: codex-cli。指摘 <N> 件）"
+git -C "$REPO" checkout -q docs-change
+run_gate CLAUDECODE=1 -- --git --base base
+assert_record "R6 該当なし（none）の回は結果の書式を出さない" "" none
+git -C "$REPO" checkout -q auth-change
+run_gate CODEX_THREAD_ID=t-1 "CODEX_HOME=$CODEX_OFF" -- --git --base origin/base
+assert_record "R7 unverified の回は報告行そのものが結果の行なので書式を出さない" "" unverified
+run_gate -- --git --base base
+assert_record "R7b unsupported（主担当を判定できない回）は報告行そのものが結果の行なので書式を出さない" "" unsupported
+run_gate CLAUDECODE=1 MULTI_AGENT_SECURITY_REVIEW=off -- --git --base base
+assert_record "R8 security_review=off の回は書式を出さない" "" off
+# 書式をそのまま本文の 1 行にしたとき、/close-issue の precheck と同じ判定（finish.sh security-record）が
+# 記録として認めること。報告行を貼っただけの本文は認めない（対照）
+FINISH_SH="${PLUGIN_ROOT}/scripts/finish.sh"
+record_gate_for() { # <本文の 1 行> → SECURITY_RECORD_GATE の値
+  local out=""
+  printf '## セルフレビュー結果\n\n- %s\n' "$1" > "$TEST_TMP/record-body.md"
+  out="$(cd "$REPO" && env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT -u MULTI_AGENT_CONFIG \
+    -u MULTI_AGENT_SECURITY_GLOB -u MULTI_AGENT_SECURITY_GLOB_EXTRA -u MULTI_AGENT_SECURITY_REVIEW \
+    bash "$FINISH_SH" security-record --body-file "$TEST_TMP/record-body.md" --base base 2>/dev/null)"
+  awk -F= '$1 == "SECURITY_RECORD_GATE" { print $2; exit }' <<<"$out"
+}
+# 埋めた書式は認め、埋めずに貼った書式（<N> / <理由> が残る）と報告行だけの本文は認めない
+filled_done="${record_done_r1/<N>/0}"
+filled_skipped="${record_skipped_r1/<*>/glob の誤検知と判断: テスト fixture の path だけが該当}"
+r_done="$(record_gate_for "$filled_done")"
+r_skipped="$(record_gate_for "$filled_skipped")"
+r_raw_done="$(record_gate_for "$record_done_r1")"
+r_raw_skipped="$(record_gate_for "$record_skipped_r1")"
+r_report="$(record_gate_for "$record_report_r1")"
+if [ -n "$record_done_r1" ] && [ "$filled_done" != "$record_done_r1" ] && [ "$filled_skipped" != "$record_skipped_r1" ] \
+  && [ "$r_done" = "recorded" ] && [ "$r_skipped" = "recorded" ]; then
+  ok "R9 DONE / SKIPPED の書式を埋めた行は security-record が recorded と認める"
+else
+  bad "R9 埋めた書式の判定: done=[$r_done]（[$filled_done]） skipped=[$r_skipped]"
+fi
+if [ "$r_raw_done" = "missing" ] && [ "$r_raw_skipped" = "missing" ] && [ "$r_report" = "missing" ]; then
+  ok "R10 書式を埋めずに貼った行（<N> / <理由> が残る）と報告行だけの本文は missing（ゲートを実行しなくても通る形を認めない）"
+else
+  bad "R10 未記入の書式の判定: done=[$r_raw_done] skipped=[$r_raw_skipped] report=[$r_report]"
+fi
+# 置き場所でない <…>（指摘の中身として書いた <script> など）を含む記入済みの行は数える
+script_done="${record_done_r1/<N> 件）/1 件。<script> のエスケープ漏れを修正）}"
+r_script="$(record_gate_for "$script_done")"
+if [ "$script_done" != "$record_done_r1" ] && [ "$r_script" = "recorded" ]; then
+  ok "R11 置き場所でない <…>（<script>）を含む記入済みの行は recorded"
+else
+  bad "R11 <script> を含む記入済みの行: [$r_script]（[$script_done]）"
 fi
 
 echo ""

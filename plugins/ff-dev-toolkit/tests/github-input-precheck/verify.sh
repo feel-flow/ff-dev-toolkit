@@ -10,6 +10,20 @@
 # 空振り検出: 2026-10-23 R2はCheckRunを空conclusion/IN_PROGRESS→SUCCESSまたはFAILURE/COMPLETEDで測定。正常69件rc0、attempt常時1の逆変異は4件だけ赤。
 # 空振り検出: 2026-10-26（Issue `#2367`）WSL で正常 82 件。ace-pending.sh を独自の `/` 判定へ戻す → 1 件赤（各箇所の照合表 7 行。行数が 7 でない回・表の箇所のファイルが無い回も赤）。
 # 空振り検出: 2026-10-26（Issue `#2334`）WSL で正常 74 件。共有判定が OS を問わずドライブ文字を受け付ける → 1 件赤、finish.sh を独自の `/` 判定へ戻す → 1 件赤、link-sub-issues.sh の判定を外す → 3 件赤。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/finish.sh scripts/merge-cleanup.sh scripts/link-sub-issues.sh scripts/record-gate-head.sh
+# run-all-depends: scripts/check-closing-keywords.sh scripts/check-merge-freshness.sh scripts/effort-report.sh
+# run-all-depends: scripts/review-route.sh scripts/decision-tree/
+# run-all-depends: scripts/lib/github-input.sh tests/lib/git-fixture.sh
+# run-all-depends: scripts/lib/finish-precheck*.sh scripts/lib/abs-path*.sh scripts/lib/merge-message*.sh scripts/lib/shell-quote*.sh
+# run-all-depends: scripts/ace-pending.sh scripts/knowledge-commit.sh scripts/workflow-doctor.sh hooks/guard-merge-closing-keyword.sh
+# run-all-depends: scripts/lib/adapter-common-git*.sh scripts/lib/finish-knowledge-commit-functions*.sh
+# run-all-not-depends: tests/run-all.sh ゲート記録に書く gate 名の文字列（ランナーは実行しない）
+# run-all-not-depends: tests/github-input-knowledge/fixtures/repo.json 一時ディレクトリに作る gh 応答のファイル名（別 suite の fixture は読まない）
+# run-all-not-depends: tests/github-input-knowledge/fixtures/empty.json 一時ディレクトリに作る応答のファイル名
+# run-all-not-depends: tests/github-input/fixtures/index.json 一時ディレクトリに作る入力のファイル名
+# run-all-not-depends: tests/github-input/fixtures/position.json 一時ディレクトリに作る入力のファイル名
 
 set -euo pipefail
 # precheck の専用セキュリティゲートの記録（Issue `#2684`）は導入先の設定で分類が変わる。開発者の環境の値を隔離する

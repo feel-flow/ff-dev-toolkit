@@ -30,13 +30,13 @@
 
 ## ff-dev-toolkit plugin root の固定（必須）
 
-この文書は消費プロジェクトへコピーされる一方、`setup-multi-agent.sh` / `multi-agent.sh` / `multi-review.sh` は plugin 同梱物のままで、消費プロジェクトの `scripts/` へはコピーされない。Claude Code ではその呼び出しでホストが渡した `${CLAUDE_PLUGIN_ROOT}`、grok CLI では Bash tool 環境の `${GROK_PLUGIN_ROOT}`（1.0.13 の skill 経路では未設定が普通。そのときは `FF_DEV_TOOLKIT_SKILL_FILE`）、Codex など他ホストでは実際に読み込んだ ff-dev-toolkit skill の絶対 `SKILL.md` パスを `FF_DEV_TOOLKIT_SKILL_FILE` として渡し、その `../..` を、1回の Bash tool 呼び出し / shell script body 中の `FF_DEV_TOOLKIT_ROOT` として一度だけ固定する。この変数名と handoff は各 ff-dev-toolkit skill の root 契約にも定義する。review / explore / implement のどの入口でも、別の skill を探さず、その呼び出しで読み込んだ実体を使う。
+この文書は消費プロジェクトへコピーされる一方、`setup-multi-agent.sh` / `multi-agent.sh` / `multi-review.sh` は plugin 同梱物のままで、消費プロジェクトの `scripts/` へはコピーされない。Claude Code ではその呼び出しでホストが渡した `${CLAUDE_PLUGIN_ROOT}`、grok CLI では Bash tool 環境の `${GROK_PLUGIN_ROOT}`（1.0.13 の skill 経路では未設定が普通。そのときは `FF_DEV_TOOLKIT_SKILL_FILE`）、Codex など他ホストでは実際に読み込んだ ff-dev-toolkit skill の絶対 `SKILL.md` パスを `FF_DEV_TOOLKIT_SKILL_FILE` として渡し、`skills` が symlink のホスト環境でも物理パス（`cd -P` / `pwd -P`）でその `../..` を解決して、1回の Bash tool 呼び出し / shell script body 中の `FF_DEV_TOOLKIT_ROOT` として一度だけ固定する。この変数名と handoff は各 ff-dev-toolkit skill の root 契約にも定義する。review / explore / implement のどの入口でも、別の skill を探さず、その呼び出しで読み込んだ実体を使う。
 
 handoff の producer は skill を実行する AI host である。Claude Code は plugin skill 呼び出しの `${CLAUDE_PLUGIN_ROOT}` を同じ Bash tool body へ渡す。grok CLI の `${GROK_PLUGIN_ROOT}` は plugin hook 環境向けであり、1.0.13 では plugin hooks が実行対象に入らないため skill の Bash tool には通常渡らない。grok の skill 経路では、skill loader が返した絶対パスを `FF_DEV_TOOLKIT_SKILL_FILE` として同じ Bash tool body へ渡す。Codex など、skill loader が読み込んだファイルの絶対パスを返す host も同じ `FF_DEV_TOOLKIT_SKILL_FILE="<skill loader が返したこの SKILL.md の絶対パス>"; export FF_DEV_TOOLKIT_SKILL_FILE` の placeholder を実値へ置換する。review / explore / implement resource を直接呼ぶ host は、task の workspace repository root も `FF_DEV_TOOLKIT_PROJECT_ROOT="<AI host の task workspace repository root>"; export FF_DEV_TOOLKIT_PROJECT_ROOT` の実値として渡し、下の fence と後続コマンドを続ける。単独ターミナルの利用者が cache path や別 repository を推測してこれらの値を手書きしてはならない。
 
 キャッシュ全体を探索したり、version 名を並べ替えて別版へ切り替えたりしない。次の resolver + guard を、以下に続く直接実行例より前に同じ shell へ読み込む。Claude Code / Codex / grok CLI の host は、上記の値をこの fence の実行環境へ渡すこと。初回 setup は読み込み済み skill を持つ Claude Code / Codex / grok CLI の host セッションからだけ実行する。単独ターミナルで setup 前の状態から plugin を探索する手順は提供しない。setup 後の単独ターミナルは Codex-only 互換シムを使い、固定版の pair / distributed review は skill を再呼び出して実行する。machine-local sidecar の手動 source は対話ターミナル向けに提供せず、後述の永続 hook の handoff にだけ使う。root が未設定、または更新で resource が消えた場合は別版へフォールバックせず status 2 を返す。
 
-このresolver + guard fenceの対象は、ここから直接呼ぶreview系3 resourceと、Git Workflowが `FF_DEV_TOOLKIT_ROOT` 経由で起動する同梱scriptである。後者は `check-closing-keywords.sh`（Issueクローズキーワードの手動検査）に加え、`check-merge-freshness.sh`（マージ前の鮮度検査）・`update-version-claim.sh` / `check-version-claims.sh`（version claimの生成と検証）・`mutation-harness.sh`（PR作成前の変異表の実行）を含む。呼び出す側の案内だけが増えて対象の列挙が追従しない状態を作らないため、Git Workflowから同梱scriptを新たに呼ぶときはこの列挙も同時に更新する。消費プロジェクトへ配置済みの後方互換 `scripts/codex-review.sh` はこの契約の例外で、`FF_DEV_TOOLKIT_ROOT` 未指定時は Codex cache → Claude cache → grok の導入実体（`${GROK_HOME:-~/.grok}/installed-plugins/ff-dev-toolkit-*`。Issue `#2119`）を横断し、配置済みシムと内容一致する候補の semantic version 最大を sidecar より先に選ぶ。一致候補が無ければ全体の最大版を選び、内容照合で拒否する（同じ版なら Codex → Claude → grok の順。Issue `#623` の互換動作）。一致する旧版を使い、新しい版がある場合は stderr に新版と setup の案内を各 1 回出す。固定版の pair / distributed review にはシムを使わず、更新後は setup をすぐ再実行して hook の sidecar も同じ版へ更新する。Codex-only の旧入口として使う場合はシム側の診断と再セットアップ案内に従う。
+このresolver + guard fenceの対象は、ここから直接呼ぶreview系3 resourceと、Git Workflowが `FF_DEV_TOOLKIT_ROOT` 経由で起動する同梱scriptである。後者は `check-closing-keywords.sh`（Issueクローズキーワードの手動検査）に加え、`check-merge-freshness.sh`（マージ前の鮮度検査）・`update-version-claim.sh` / `check-version-claims.sh`（version claimの生成と検証）・`mutation-harness.sh`（PR作成前の変異表の実行）を含む。呼び出す側の案内だけが増えて対象の列挙が追従しない状態を作らないため、Git Workflowから同梱scriptを新たに呼ぶときはこの列挙も同時に更新する。消費プロジェクトへ配置済みの後方互換 `scripts/codex-review.sh` はこの契約の例外で、`FF_DEV_TOOLKIT_ROOT` 未指定時は `CLAUDE_PLUGIN_ROOT`（`ff-dev-toolkit` 自身のとき。別プラグインはスキップし不整合は exit 2）→ Codex cache → Claude cache → Claude synced（`${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/synced/*/ff-dev-toolkit`）→ grok の導入実体（`${GROK_HOME:-~/.grok}/installed-plugins/ff-dev-toolkit-*`。Issue `#2119`）を横断し、配置済みシムと内容一致する候補の semantic version 最大を sidecar より先に選ぶ。一致候補が無ければ全体の最大版を選び、内容照合で拒否する（同じ版なら Codex → Claude cache → Claude synced → grok の順。Issue `#623` の互換動作）。一致する旧版を使い、新しい版がある場合は stderr に新版と setup の案内を各 1 回出す。固定版の pair / distributed review にはシムを使わず、更新後は setup をすぐ再実行して hook の sidecar も同じ版へ更新する。Codex-only の旧入口として使う場合はシム側の診断と再セットアップ案内に従う。
 
 消費側の hook / ゲートが toolkit の**別のスクリプト**（`record-gate-head.sh` など）を呼ぶときは、sidecar を自前で読まず、シムの `--print-toolkit-root` で同じ解決器を使う（下の「消費側の hook / ゲートから toolkit のスクリプトを解決する」）。
 
@@ -45,7 +45,7 @@ handoff の producer は skill を実行する AI host である。Claude Code �
 ```bash
 ff_canonical_toolkit_root() {
   local candidate="$1"
-  (cd -P -- "$candidate" 2>/dev/null && pwd -P)
+  (CDPATH= cd -P -- "$candidate" 2>/dev/null && pwd -P)
 }
 
 ff_toolkit_handoff_error() {
@@ -127,7 +127,13 @@ ff_require_toolkit_root() {
       ff_toolkit_handoff_error "読み込み済みファイルが<plugin-root>/skills/<skill>/SKILL.md形式ではありません"
       return "$?"
     fi
-    skill_root="$(cd "$skills_dir/.." && pwd -P)" || {
+    skill_root="$(
+      CDPATH= cd -P -- "$skill_dir" 2>/dev/null \
+        && CDPATH= cd -P -- .. 2>/dev/null \
+        && [ "$(basename "$(pwd -P)")" = skills ] \
+        && CDPATH= cd -P -- .. 2>/dev/null \
+        && pwd -P
+    )" || {
       ff_toolkit_handoff_error "SKILL.mdからplugin rootを解決できません"
       return "$?"
     }
@@ -461,9 +467,15 @@ export LANG=C.UTF-8 LC_ALL=C.UTF-8
 ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --print-reviewers
 ```
 
-出力は `main=` / `sub=` / `main_source=` / `sub_source=` / `source=` / `cross_review=` / `cross_review_source=` / `available=` / `known=` の行（この順。消費側は `^available=` のようにキーで grep する契約なので、並びと綴りは変えない）。`available=` は利用可能な CLI の空白区切りで、PATH 上で実行できるものと `--delegate-to-host` でホストへ委譲したもの（PATH に無くてもよい）を含み、`exclude_clis` / `--exclude-cli` の除外は反映済み。`known=` はレジストリ上の全 CLI。
+出力は `main=` / `sub=` / `main_source=` / `sub_source=` / `source=` / `cross_review=` / `cross_review_source=` / `available=` / `known=` の行（この順。消費側は `^available=` のようにキーで grep する契約なので、並びと綴りは変えない）。`available=` は利用可能な CLI の空白区切りで、PATH 上で実行できるものと `--delegate-to-host` でホストへ委譲したもの（PATH に無くてもよい）を含み、`exclude_clis` / `--exclude-cli` の除外は反映済み。`known=` はレジストリ上の全 CLI。その後ろに `lane_precheck=on`（`MULTI_AGENT_LANE_PRECHECK=off` なら `lane_precheck=off` の 1 行だけ）と、`available=` の CLI ごとに 1 行の `lane_precheck.<CLI 名>=<verdict> usage=<利用枠・認証> sandbox=<適用可否>`（保存済みの `main=` の CLI も確かめる。確かめないのはホスト委譲のレーンだけで、`skipped reason=delegated` と出る）が続く。モデルを起動しない起動前の確認で、判定はレーン確認（`scripts/lib/multi-agent-precheck.sh`）と `--dry-run` の sandbox probe をそのまま使う。verdict は 3 つ:
 
-終了コード（0 / 3 / 1）の分岐と、`available=` / `cross_review=` からクロスレビューを加えるかの判断は [self-review.md §レビュー担当の選択と利用制限時の継続](./self-review.md#レビュー担当の選択と利用制限時の継続) の 2 に従う（本書は再掲しない）。
+- `unavailable` … 使えないと判明した。理由は同じ行の `usage=exhausted` / `unauthenticated`、または `sandbox=inert` / `refused-to-start` / `unsandboxed-start`
+- `available` … 利用枠が残っていると読めた（実行時の成功の保証ではない）
+- `unknown` … 確かめられない（使えるとも使えないとも言わない）
+
+値の詳細の正本は同ファイルの `print_lane_precheck_lines` のヘッダ。確認は CLI ごとに直列で、1 回の取得は `MULTI_AGENT_LANE_PRECHECK_TIMEOUT` 秒（既定 10）、grok の sandbox 判定は 30 秒までかかりうる。grok の判定は grok の sandbox イベントログへ 1 行足す。追加行を読まない機械的な呼び出し元は `MULTI_AGENT_LANE_PRECHECK=off` で呼ぶ（asdd の `--check` はそうしている）。
+
+終了コード（0 / 3 / 1）の分岐と、`available=` / `cross_review=` / `lane_precheck` からクロスレビューを加えるかの判断は [self-review.md §レビュー担当の選択と利用制限時の継続](./self-review.md#レビュー担当の選択と利用制限時の継続) の 2 に従う（本書は再掲しない）。
 
 ---
 
@@ -755,7 +767,7 @@ echo "✅ レビュー完了。出力先: $FF_REVIEW_OUTPUT"
 
 上の pre-push 例は review 系 3 resource だけを固定版で呼ぶ、無人の厳格なゲートである。これとは別に、消費プロジェクトの hook / 検証スイートが toolkit の**別のスクリプト**（鮮度ゲートの記録を書く `record-gate-head.sh` など）を呼ぶ場面がある。そこで上の例の sidecar 読み込みブロックをコピーしてはならない。sidecar（`scripts/.ff-dev-toolkit-root`）は版ディレクトリの絶対 path を焼き込むため、plugin 更新で旧版のディレクトリが消えると、hook は消えた版を指したまま起動を続ける。呼び出し先が無いので記録だけが黙って止まり、ゲートは緑のまま `/close-issue` の鮮度照合が判定不能になる（実際に 2 回観測された事象）。setup の再実行で直るが、**plugin 更新のたびに再実行が要る構造**そのものは残る。
 
-配置済みの `scripts/codex-review.sh`（シム）は `--print-toolkit-root` で解決結果だけを返す。解決順と fail closed はレビュー時と**完全に同じ**（`FF_DEV_TOOLKIT_ROOT` → Codex / Claude plugin cache・grok の導入実体の内容一致候補の semantic version 最大（無ければ全体の最大版を照合して拒否）→ sidecar。別実装ではなく同じ関数を通る）で、stdout には解決したプラグインルートが 1 行だけ出る。`ℹ️ ff-dev-toolkit version=… source=… root=…` は stderr の診断行であり、消費側がパースする契約ではない。
+配置済みの `scripts/codex-review.sh`（シム）は `--print-toolkit-root` で解決結果だけを返す。解決順と fail closed はレビュー時と**完全に同じ**（`FF_DEV_TOOLKIT_ROOT` → `CLAUDE_PLUGIN_ROOT`（`ff-dev-toolkit` 自身のとき）→ Codex / Claude plugin cache・Claude synced・grok の導入実体の内容一致候補の semantic version 最大（無ければ全体の最大版を照合して拒否）→ sidecar。別実装ではなく同じ関数を通る）で、stdout には解決したプラグインルートが 1 行だけ出る。`ℹ️ ff-dev-toolkit version=… source=… root=…` は stderr の診断行であり、消費側がパースする契約ではない。
 
 ```sh
 # 消費プロジェクトの hook / 検証スイートから toolkit のスクリプトを解決する例

@@ -58,6 +58,12 @@ ALPHA="$ROOT/docs/alpha.md"
 DELTA="$ROOT/docs/delta.md"
 echo "CHG-DOCS-PROBE-EXECUTED"
 echo "CHG-DOCS-PROBE-ENV=${FF_RUN_ALL_CHANGED:-unset}"
+# 47-T: 鮮度だけの赤を起こす（行頭の鮮度マーカー + 非 0。復旧手段は書かない。ここにパスの字面を
+# 書くと参照として導出され、参照 0 本を前提にする 47-H が崩れる）
+if [ "${CHG_FORCE_STALE:-}" = 1 ]; then
+  echo "✗ 鮮度: base が先行しているため疑似判定が成立しません（変更起因の赤ではありません）" >&2
+  exit 1
+fi
 exit 0
 PROBE
 cat > "$_chg_plug/tests/chg-script-probe/verify.sh" <<'PROBE'
@@ -75,6 +81,11 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 GAMMA="$ROOT/docs/gamma.md"
 if false; then
   echo "○ skip: 名簿掲載の材料（この分岐は実行されない）"
+  exit 0
+fi
+# 47-U: 必須 suite の環境都合の skip を起こす
+if [ "${CHG_FORCE_SKIP:-}" = 1 ]; then
+  echo "○ skip: 47-U の疑似的な環境都合"
   exit 0
 fi
 echo "CHG-REQUIRED-PROBE-EXECUTED"
@@ -96,6 +107,9 @@ printf '#!/usr/bin/env bash\n' > "$_chg_plug/scripts/beta.sh"
 printf 'unrelated\n' > "$_chg_repo/other/unrelated.txt"
 printf '# lib\n' > "$_chg_plug/tests/lib/helper.sh"
 cp "$TESTS_DIR/../scripts/record-gate-head.sh" "$_chg_plug/scripts/record-gate-head.sh"
+# 選択の CLI（参照の導出・依存の宣言・source の逆引き。Issue `#3006`）。複製ランナーはこれを呼ぶ
+mkdir -p "$_chg_plug/tests/changed-select"
+cp "$TESTS_DIR/changed-select/select.sh" "$_chg_plug/tests/changed-select/select.sh"
 awk '
   /^  SCRIPTS=\($/ {
     print
@@ -173,7 +187,7 @@ _chg_step() { # <説明> <sh 断片>
 _chg_run() {
   rm -f "$_chg_rec"
   if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_CHANGED \
-    -u FF_RUN_ALL_ALLOW_SKIP -u FF_RUN_ALL_ALLOW_DIRTY "$@" FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1 \
+    -u FF_RUN_ALL_ALLOW_SKIP -u FF_RUN_ALL_ALLOW_DIRTY -u FF_RELEASE_GATE_HEAD "$@" FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1 \
     FF_RUN_ALL_JOBS=1 FF_GATE_RECORD_FILE="$_chg_rec" bash "$_chg_plug/tests/run-all.sh" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
 }
 _chg_rec_has() { # <行> <検査名>
@@ -474,6 +488,7 @@ expect_has '^🔎 全件実行: 登録されている 4 suite をすべて実行
 expect_has '^↪ 変更ベースの選択（FF_RUN_ALL_CHANGED）から全件実行へ倒しました: 実行基盤の契約面に触れる変更: plugins/ff/hooks/hooks.json（CHANGED_FULL_PLUGIN_PATHS の hooks/hooks.json）' "47-N: 倒した理由に実行基盤側の変更を出す（文書が先）"
 expect_lacks '^🎯 文書契約面に触れる変更' "47-N: 全件へ倒した回は文書契約面の部分実行を名乗らない（文書が先）"
 expect_lacks '^doc-contract: ' "47-N: 全件へ倒した回は束の件数行を出さない（文書が先）"
+expect_lacks "^${FULL_NOTICE_HEAD}" "47-N: 契約面に触れた変更ベースの自動全件では全件モードの用途の注意を出さない（通常 PR の正当な経路）"
 _chg_rec_has 'MODE=full' "47-N: 文書 + 実行基盤（文書が先）の記録は full"
 _chg_rec_has 'COVERS_DIFF=' "47-N: 文書 + 実行基盤（文書が先）は COVERS_DIFF を空にする"
 _chg_step "文書契約面と実行基盤の契約面を同時に変える（実行基盤が先）" "mkdir -p .github/workflows && printf 'name: zz\\n' > .github/workflows/zz-probe.yml && printf '# probe\\n' >> AGENTS.md"
@@ -758,6 +773,147 @@ expect_has '^never-run: excluded=1 (public-layout)$' "47-S: 外すのは条件�
 _chg_git reset -q --hard "$_chg_base" >/dev/null 2>&1
 _chg_git clean -qfd >/dev/null 2>&1
 
+# 47-T / 47-U: 変更ベースの部分ゲートの回が赤・必須 skip で終わったとき、通しで回し直す案内は同じ
+# FF_RUN_ALL_CHANGED の指定を写す（Issue `#3004`）。FAST_MODE=0 から全件の前置（FF_RUN_ALL_FULL=1）へ
+# 化けると、通常 PR の再実行が全件モードへ上がり、全件モードの用途の注意と自分で食い違う。
+_chg_step "47-T: alpha を変える" "printf 'alpha-t\\n' > plugins/ff/docs/alpha.md"
+_chg_run FF_RUN_ALL_CHANGED="$_chg_base" CHG_FORCE_STALE=1
+expect_rc nz "47-T: 鮮度だけの赤で終わった変更ベースの実行が非 0"
+_chg_t_full="$(printf '%s\n' "$RUN_OUT" | awk 'f { sub(/^    /, ""); print; exit } /^  base を取り込んで通しで 1 回回し直す（マージの根拠になる）:$/ { f = 1 }')"
+# base を SHA で固定した指定（ここでは fixture の base コミット）は、取り込んだ後も古い base を測るので、
+# 取り込む先（origin/HEAD）と同じ `1` へ戻して案内する。ref 名の指定はそのまま写す（下の 47-T2）。
+case "$_chg_t_full" in
+  "FF_RUN_ALL_CHANGED=1 bash /"*"/tests/run-all.sh") ok "47-T: 鮮度だけの赤の通しの案内は変更ベースの指定を前置し、SHA で固定した base は 1（origin/HEAD）へ戻す（全件モードへ上げない）" ;;
+  *) bad "47-T: 鮮度だけの赤の通しの案内が変更ベースの指定（SHA の base は 1）を前置していない: '${_chg_t_full:-空}'" ;;
+esac
+expect_lacks '^    FF_RUN_ALL_FULL=1 bash ' "47-T: 変更ベースの回の通し・名指しの回し直しに全件の前置を出さない"
+_chg_git branch -f chg-t-base "$_chg_base" >/dev/null 2>&1 || bad "case 47: 47-T2 の base ブランチを作れない"
+_chg_run FF_RUN_ALL_CHANGED=chg-t-base CHG_FORCE_STALE=1
+_chg_t2_full="$(printf '%s\n' "$RUN_OUT" | awk 'f { sub(/^    /, ""); print; exit } /^  base を取り込んで通しで 1 回回し直す（マージの根拠になる）:$/ { f = 1 }')"
+case "$_chg_t2_full" in
+  "FF_RUN_ALL_CHANGED=chg-t-base bash /"*"/tests/run-all.sh") ok "47-T2: ref 名で渡した base は通しの案内へそのまま写す（実行時に解決し直すため）" ;;
+  *) bad "47-T2: ref 名の base が通しの案内へ写っていない: '${_chg_t2_full:-空}'" ;;
+esac
+_chg_git branch -D chg-t-base >/dev/null 2>&1 || true
+_chg_step "47-U: gamma を変える" "printf 'gamma-u\\n' > plugins/ff/docs/gamma.md"
+_chg_run FF_RUN_ALL_CHANGED="$_chg_base" CHG_FORCE_SKIP=1
+expect_rc nz "47-U: 必須 suite の skip で終わった変更ベースの実行が非 0（fail-closed）"
+expect_has "^    FF_RUN_ALL_CHANGED=${_chg_base} FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1 FF_RUN_ALL_ALLOW_SKIP=\"chg-required-probe\" bash tests/run-all\\.sh$" \
+  "47-U: 必須 skip の再現コマンドは同じ FF_RUN_ALL_CHANGED の指定を前置する（全件モードへ上げない）"
+_chg_git reset -q --hard "$_chg_base" >/dev/null 2>&1
+_chg_git clean -qfd >/dev/null 2>&1
+
+# 47-V〜47-Y（Issue `#3006`）。基点を作り直す補助: _chg_base から木を作り直し、呼び出し側が木を書き換えた
+# 後で _chg_x_commit を呼ぶと、それを新しい base（_chg_base_x）にする。
+_chg_x_reset() {
+  _chg_git reset -q --hard "$_chg_base" >/dev/null 2>&1
+  _chg_git clean -qfd >/dev/null 2>&1
+}
+_chg_x_commit() { # <説明>
+  _chg_git add -A >/dev/null 2>&1
+  _chg_git commit -qm "$1" >/dev/null 2>&1 || bad "case 47: $1 をコミットできない"
+  _chg_base_x="$(_chg_git rev-parse HEAD 2>/dev/null)"
+}
+_chg_x_change() { # <説明> <sh 断片> — 直前の _chg_x_commit の木へ変更を 1 コミット積む
+  (cd "$_chg_repo" && sh -c "$2") >/dev/null 2>&1 || bad "case 47: 変更を当てられない: $1"
+  _chg_git add -A >/dev/null 2>&1
+  _chg_git commit -qm "$1" >/dev/null 2>&1 || bad "case 47: 変更をコミットできない: $1"
+}
+
+# 47-V: 依存を宣言した suite は字面の照合をやめ、宣言に当たる変更（と自身のディレクトリ）でだけ選ばれる。
+# chg-docs-probe は字面に alpha と delta を持つ。delta だけを宣言すると、alpha の変更では選ばれない。
+_chg_x_reset
+printf '# run-all-depends: docs/delta.md\n' >> "$_chg_plug/tests/chg-docs-probe/verify.sh"
+_chg_x_commit "47-V: chg-docs-probe に依存の宣言を足す"
+_chg_v_base="$_chg_base_x"
+_chg_x_change "47-V: alpha を変える" "printf 'alpha-v\\n' > plugins/ff/docs/alpha.md"
+_chg_run FF_RUN_ALL_CHANGED="$_chg_v_base"
+expect_rc 0 "47-V: 宣言のある suite を含む変更ベースの実行が rc=0"
+expect_lacks '^CHG-DOCS-PROBE-EXECUTED$' "47-V: 宣言のある suite は、字面にあっても宣言に無い変更（alpha）では選ばれない"
+_chg_git reset -q --hard "$_chg_v_base" >/dev/null 2>&1
+_chg_x_change "47-V: delta を変える" "printf 'delta-v\\n' > plugins/ff/docs/delta.md"
+_chg_run FF_RUN_ALL_CHANGED="$_chg_v_base"
+expect_has '^CHG-DOCS-PROBE-EXECUTED$' "47-V: 宣言に当たる変更（delta）では選ばれる"
+expect_has '^🎯   chg-docs-probe ← plugins/ff/docs/delta\.md ← 宣言 docs/delta\.md$' "47-V: 根拠に、当たった宣言のパターンを出す"
+
+# 47-W: ランナー（tests/run-all.sh）はブラックボックス。変更は全件へ倒れず、ランナー自身の suite（run-all）を
+# 必ず選ぶ。fixture の run-all は字面にランナーを持たない（字面の照合では選ばれない）ので、規則だけで選ばれる。
+_chg_x_reset
+mkdir -p "$_chg_plug/tests/run-all"
+cat > "$_chg_plug/tests/run-all/verify.sh" <<'PROBE'
+# 空振り検出: 47-W の fixture（ランナー自身の suite の代役。実物の検査は持たない）
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+GAMMA="$ROOT/docs/gamma.md"
+echo "CHG-RUNNER-SELF-EXECUTED"
+exit 0
+PROBE
+chmod +x "$_chg_plug/tests/run-all/verify.sh"
+awk '{ print } $0 == "    \"$SCRIPT_DIR/chg-tree-probe/verify.sh\"" { print "    \"$SCRIPT_DIR/run-all/verify.sh\"" }' \
+  "$_chg_plug/tests/run-all.sh" > "$_chg_plug/tests/run-all.sh.new" \
+  && mv "$_chg_plug/tests/run-all.sh.new" "$_chg_plug/tests/run-all.sh" \
+  || bad "case 47: 47-W の複製ランナーへ run-all の登録を足せない"
+[ "$(grep -c '^    "\$SCRIPT_DIR/run-all/verify\.sh"$' "$_chg_plug/tests/run-all.sh")" -eq 1 ] \
+  || bad "case 47: 47-W の複製ランナーへ run-all の登録が入っていない（一覧の書式変更で awk が空振り）"
+_chg_x_commit "47-W: ランナー自身の suite を登録する"
+_chg_w_base="$_chg_base_x"
+_chg_x_change "47-W: ランナーを変える" "printf '# 47-W\\n' >> plugins/ff/tests/run-all.sh"
+_chg_run FF_RUN_ALL_CHANGED="$_chg_w_base"
+expect_rc 0 "47-W: ランナーの変更の変更ベースの実行が rc=0"
+expect_lacks '^↪ 変更ベースの選択' "47-W: ランナーの変更は全件へ倒れない（ブラックボックス）"
+expect_has '^🎯 変更ベースの選択: ' "47-W: ランナーの変更でも部分実行を名乗る"
+expect_has '^CHG-RUNNER-SELF-EXECUTED$' "47-W: ランナー自身の suite（run-all）を必ず選ぶ"
+expect_has '^🎯   run-all ← plugins/ff/tests/run-all\.sh ← ランナー自身の suite' "47-W: 根拠にランナー自身の suite であることを出す"
+expect_lacks '^CHG-DOCS-PROBE-EXECUTED$' "47-W: ランナーを参照しない suite は選ばない"
+
+# 47-X: 共有 lib（tests/lib）の変更は全件へ倒れず、その lib を（推移的に）source する suite を選ぶ。
+# chg-script-probe は helper を直接、chg-required-probe は helper を source する helper2 を source する。
+_chg_x_reset
+printf '. "${BASH_SOURCE[0]%%/*}/helper.sh"\n' > "$_chg_plug/tests/lib/helper2.sh"
+printf '. "$ROOT/tests/lib/helper.sh"\n' >> "$_chg_plug/tests/chg-script-probe/verify.sh"
+printf '. "$ROOT/tests/lib/helper2.sh"\n' >> "$_chg_plug/tests/chg-required-probe/verify.sh"
+_chg_x_commit "47-X: lib を source する suite を作る"
+_chg_x_base_x="$_chg_base_x"
+_chg_x_change "47-X: lib を変える" "printf '# lib-x\\n' >> plugins/ff/tests/lib/helper.sh"
+_chg_run FF_RUN_ALL_CHANGED="$_chg_x_base_x"
+expect_rc 0 "47-X: lib の変更の変更ベースの実行が rc=0"
+expect_lacks '^↪ 変更ベースの選択' "47-X: tests/lib の変更は全件へ倒れない"
+expect_has '^CHG-SCRIPT-PROBE-EXECUTED$' "47-X: lib を直接 source する suite を選ぶ"
+expect_has '^CHG-REQUIRED-PROBE-EXECUTED$' "47-X: lib を推移的に source する suite（lib を source する lib を source する）を選ぶ"
+expect_lacks '^CHG-DOCS-PROBE-EXECUTED$' "47-X: lib を source しない suite は選ばない"
+expect_has '^🎯   chg-script-probe ← plugins/ff/tests/lib/helper\.sh を名指す ' "47-X: 根拠に元の lib の変更を出す"
+# 推移の 2 段目を観測する: chg-required-probe の verify.sh 自身が利用側に入った（helper2 経由）ときだけ、
+# 根拠が「suite 自身のディレクトリ」になる（1 段の展開なら helper2.sh の字面で選ばれ、この行は出ない）
+expect_has '^🎯   chg-required-probe ← plugins/ff/tests/lib/helper\.sh を名指す plugins/ff/tests/chg-required-probe/verify\.sh ← suite 自身のディレクトリ$' \
+  "47-X: 推移的な利用側は、利用側の suite 自身の変更として選ばれる（2 段目まで広がる）"
+
+# 47-Z: tests/lib のシェル以外の共有ファイル（全 suite の git 設定・lib が読むデータ）は利用側をたどれないので
+# 全件へ倒す（CHANGED_FULL_PLUGIN_NONSHELL_DIRS）
+_chg_x_reset
+_chg_z_base="$_chg_base"
+_chg_x_change "47-Z: tests/lib の設定を足す" "printf '[init]\\n' > plugins/ff/tests/lib/isolated.gitconfig"
+_chg_run FF_RUN_ALL_CHANGED="$_chg_z_base"
+expect_has '^↪ 変更ベースの選択（FF_RUN_ALL_CHANGED）から全件実行へ倒しました: 実行基盤の契約面に触れる変更: plugins/ff/tests/lib/isolated\.gitconfig（CHANGED_FULL_PLUGIN_NONSHELL_DIRS の tests/lib/' \
+  "47-Z: tests/lib のシェル以外のファイルの変更は全件へ倒し、名簿の要素を名指す"
+
+# 47-Y: 試算モード（FF_RUN_ALL_SELECT_ONLY=1 + FF_RUN_ALL_CHANGED_FILES_FROM）は選択だけを出して終わる。suite は
+# 回さず、記録も書かない。試算モードでない回の注入は全件へ倒す（ゲートの選択に使わせない）。
+_chg_x_reset
+_chg_y_list="$_chg_fx/inject-y.txt"
+printf 'plugins/ff/docs/alpha.md\n' > "$_chg_y_list"
+_chg_run FF_RUN_ALL_CHANGED=1 FF_RUN_ALL_SELECT_ONLY=1 FF_RUN_ALL_CHANGED_FILES_FROM="$_chg_y_list" FF_RUN_ALL_ALLOW_DIRTY=1
+expect_rc 0 "47-Y: 試算モードは rc=0"
+expect_has '^select-only: mode=changed selected=2 registered=4$' "47-Y: 注入した変更一覧への選択の件数を出す"
+expect_has '^select-only: suite=chg-docs-probe$' "47-Y: 選ばれた suite を名指す"
+expect_lacks '^CHG-DOCS-PROBE-EXECUTED$' "47-Y: 試算モードは suite を回さない"
+if [ -f "$_chg_rec" ]; then bad "47-Y: 試算モードがゲートの記録を書いた"; else ok "47-Y: 試算モードはゲートの記録を書かない"; fi
+_chg_run FF_RUN_ALL_CHANGED="$_chg_base" FF_RUN_ALL_CHANGED_FILES_FROM="$_chg_y_list"
+expect_has '^↪ 変更ベースの選択（FF_RUN_ALL_CHANGED）から全件実行へ倒しました: FF_RUN_ALL_CHANGED_FILES_FROM は試算モード' "47-Y: 試算モードでない回の注入は全件へ倒す"
+# 試算モードを変更ベースの選択なしで使った回は、suite を 1 本も回さず終了コード 2
+_chg_run FF_RUN_ALL_SELECT_ONLY=1 FF_RUN_ALL_ALLOW_DIRTY=1
+expect_rc 2 "47-Y: FF_RUN_ALL_CHANGED の無い試算モードは終了コード 2"
+expect_lacks '^CHG-DOCS-PROBE-EXECUTED$' "47-Y: FF_RUN_ALL_CHANGED の無い試算モードは suite を回さない"
+_chg_x_reset
+
 # 47-P: 実物の名簿の整合。束の全要素が既定一覧に 1 回だけ登録されていて実体があること、ADR-095
 # 決定 2 が名指す束の核（9 suite）が束から外れていないこと、2 種類の契約面の名簿が重ならず、
 # 所属が名前で固定されていることを、run-all.sh の配列から読んで確かめる（読めた要素が 0 件なら
@@ -838,18 +994,38 @@ else
   bad "47-P: 文書として扱う拡張子の名簿が想定と違う: [${_chg_p_suffixes}]"
 fi
 _chg_p_full_missing=""
-for _chg_core in "tests/run-all.sh" "tests/lib/" "hooks/hooks.json" "mcp/package.json" "mcp/package-lock.json"; do
+for _chg_core in "tests/changed-select/" "hooks/hooks.json" "mcp/package.json" "mcp/package-lock.json"; do
   if [ "$(printf '%s\n' "$_chg_plugin_list" | grep -cxF -- "$_chg_core")" -ne 1 ]; then
     _chg_p_full_missing="${_chg_p_full_missing:+${_chg_p_full_missing} }${_chg_core}"
   fi
 done
+# ランナーと共有 lib は名簿に載せない（Issue `#3006`。ADR-096）: ランナーはブラックボックスとして
+# 自身の suite と参照する suite を、共有 lib は利用側の逆引きで利用側を選ぶ。名簿へ戻すと、run-all.sh や
+# tests/lib に触れる PR がまた全件へ倒れる（評価集合の 60 本中 28 本が全件で、うち 19 本はランナーか
+# tests/lib だけが理由だった）。tests/lib のシェル以外は CHANGED_FULL_PLUGIN_NONSHELL_DIRS で全件へ倒す。
+_chg_p_full_extra=""
+for _chg_core in "tests/run-all.sh" "tests/lib/"; do
+  if [ "$(printf '%s\n' "$_chg_plugin_list" | grep -cxF -- "$_chg_core")" -ne 0 ]; then
+    _chg_p_full_extra="${_chg_p_full_extra:+${_chg_p_full_extra} }${_chg_core}"
+  fi
+done
+if [ "$(_chg_list CHANGED_FULL_PLUGIN_NONSHELL_DIRS | tr '\n' ' ')" = "tests/lib/ " ]; then
+  ok "47-P: tests/lib のシェル以外を全件へ倒す名簿は tests/lib/ だけ"
+else
+  bad "47-P: シェル以外を全件へ倒す名簿が想定と違う: [$(_chg_list CHANGED_FULL_PLUGIN_NONSHELL_DIRS | tr '\n' ' ')]（0 件なら配列の書式変更で空振り）"
+fi
+if [ -z "$_chg_p_full_extra" ]; then
+  ok "47-P: ランナーと共有 lib は実行基盤の契約面の名簿に載っていない（ブラックボックス・利用側の逆引きで選ぶ）"
+else
+  bad "47-P: ランナー・共有 lib が実行基盤の契約面の名簿に戻っている: ${_chg_p_full_extra}（ブラックボックス化を戻すなら ADR とこの検査を改める）"
+fi
 for _chg_core in ".github/workflows/" ".github/actions/"; do
   if [ "$(printf '%s\n' "$_chg_repo_list" | grep -cxF -- "$_chg_core")" -ne 1 ]; then
     _chg_p_full_missing="${_chg_p_full_missing:+${_chg_p_full_missing} }${_chg_core}"
   fi
 done
 if [ -z "$_chg_p_full_missing" ]; then
-  ok "47-P: 実行基盤の契約面の名簿に、ランナー・共有 lib・hook 登録・共有依存・CI 定義が残っている"
+  ok "47-P: 実行基盤の契約面の名簿に、選択の仕組み・hook 登録・共有依存・CI 定義が残っている"
 else
   bad "47-P: 実行基盤の契約面の名簿から外れている要素がある: ${_chg_p_full_missing}"
 fi

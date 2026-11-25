@@ -70,6 +70,18 @@
 # 空振り検出: 背景実行のゲート起動の前置き行（代入・cd・heredoc でスクリプトを書く行。Issue `#2672`）は bg-prefix.sh が持つ。fixture のディレクトリが無い・pass が 11 件未満・expect.tsv と fire-*.txt の数が合わない・OBS 4 件と Count 4 の 2 本が欠けると赤。検出器を Issue `#2672` の修正前の版へ戻したツリーでは 62 件、代入を並べた 1 文の退行（Issue `#2683`）の修正前の版では 9 件失敗する（2026-11-07 Windows Git Bash 実測）。2 行目以降の fail-fast の準備の行と表示だけの行を持つ本文（Issue `#2813`。pass-prep-or-exit-build-e2e.txt）が欠けても赤で、Issue `#2813` の修正前の版（origin/develop 607494bc）へ戻したツリーでは 40 件失敗する（2026-11-16 macOS 実測。PR のレビュー対応と再点検の fixture・変異を含む）。bg-prefix.sh の失敗はこの suite の失敗として数える。
 # 空振り検出: 単語分割の書き換えが先頭へ付ける文を終了コードガードの判定入力から外す検査は zsh-prefix.sh が持つ。fixture のディレクトリが無い・pass が 2 件未満・expect.tsv と fire-*.txt の数が合わない・pass と fire-dropped の本文が字面を持たない・fire-near-shwordsplit がその字面を含む・本文が共有定義の変数名を含むと赤。共有定義を別の文へ変えた実ファイルでこの suite を回すと 1 件失敗（成功 268。正常は 269/0）。子の zsh-prefix.sh は 8 件失敗（成功 14。正常は 26/0）で、伝播する 2 件が deny、伝播を欠く fire-dropped の 3 検査が素通し、変異前コピーの対照 2 件が deny、コピーへの再変異は元の字面が残っていないので sed が当たらない（2026-11-09 実測）。zsh-prefix.sh の失敗はこの suite の失敗として数える。
 # 空振り検出: 背景実行の判定が、準備の行・表示だけの行を足しても変わらないことの検査は prefix-invariance.sh が持つ（Issue `#2832`）。行の集合・本文の集合・検査した件数が下限を割る、検出器が無い・読めない・awk の失敗で判定を返さない、行を差し込めず基準と同じ本文を比べている、変異の置換が当たらない、のいずれも赤。このスクリプトを Issue `#2672` の修正前（84db5538）・Issue `#2813` の修正前（607494bc）の版のツリーへ置いて回すと、どちらも 9 件失敗（rc=1。2026-11-17 macOS 実測）。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: hooks/*.sh hooks/asdd-feature.mjs hooks/hooks.json scripts/asdd/config.mjs
+# run-all-depends: tests/lib/exit-code-*.sh tests/lib/heredoc-strip*.sh tests/lib/wait-bounds*.sh
+# run-all-depends: tests/lib/git-write-chain-scan*.sh tests/lib/rg-stdin-scan*.sh tests/lib/zsh-word-split-prefix*.sh
+# run-all-depends: tests/lib/adapter-env-isolation.sh tests/lib/asdd-gate-drain.sh tests/lib/crlf-jq-shim.sh tests/lib/git-fixture.sh
+# run-all-depends: scripts/lib/stop-block*.sh scripts/lib/l4-declarations.tsv
+# run-all-depends: docs-template/04-quality/TESTING.md
+# run-all-not-depends: /docs/08-knowledge/OBSERVATIONS.md 説明の言及（fixture の出典の観測）
+# run-all-not-depends: scripts/multi-review.sh 説明の言及（名簿外のゲートの例）
+# run-all-not-depends: tests/run-all.sh hook に判定させるコマンド文字列の中の名前（ランナーは実行しない）
+# run-all-not-depends: scripts/check-closing-keywords.sh hook に判定させるコマンド文字列の中の名前
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

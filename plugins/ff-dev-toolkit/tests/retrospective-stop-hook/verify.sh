@@ -36,6 +36,13 @@
 # 空振り検出: 隣接 user chunk の連結を外すと「Grok で /retrospective が2つの user chunk に分かれていても継続を返す」が赤になる（新しい断片だけが境界になり no-tail。2026-10-18）。
 # 空振り検出: 未完成の連結を末尾コマンドの接頭辞として残す分岐（isTailCommandPrefix）を外すと「Grok で /retrospective が3つの user chunk に分かれていても継続を返す」が赤になる（2 分割は完成した連結だけで通り、3 分割の途中が落ちて no-tail。2026-10-19 実測。1 件失敗）。
 # 空振り検出: 事前注入へ ACE_DEFER_TO_RETRO=1 を復元する変異と optional /ace-curate を削る変異の全 2 件を mutation-harness.sh（--group context）で実測し全件 detected（rc=1）、無変異対照は 22 件 pass（2026-11-23 macOS 実測）。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: hooks/*.sh hooks/*.mjs hooks/hooks.json scripts/asdd/config.mjs
+# run-all-depends: tests/lib/asdd-gate-drain.sh tests/lib/section-scope.sh skills/retrospective/SKILL.md
+# run-all-not-depends: scripts/mutation-harness.sh 実測手順の説明（suite は実行しない）
+# run-all-not-depends: skills/retrospective/references/auto-trigger.md fixture の transcript の中の名前
+# run-all-not-depends: tests/retrospective-contract/verify.sh fixture の prompt の中の名前
 set -euo pipefail
 
 # Full runs remain the default. Mutation selftests select the owning group instead of

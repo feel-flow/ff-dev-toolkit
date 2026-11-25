@@ -138,6 +138,18 @@
 # 空振り検出: pipefail_grep_q_scan が行頭の継承宣言（# pipefail-inherited:）を読まない写しでは「検出器が継承宣言を読まない」が赤（2026-10-20 実測）。値の中の同じ文言で設定扱いにしないことが対照。
 #
 # 使い方: bash plugins/ff-dev-toolkit/tests/run-all/verify.sh
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: /**.sh /**.bash /**SKILL.md docs-template/**.md
+# run-all-depends: tests/ hooks/ scripts/lib/
+# run-all-depends: /plugins/*/.claude-plugin/plugin.json /oss/ff-dev-toolkit/
+# run-all-depends: /scripts/* /plugins/*/scripts/* /.claude/hooks/*
+# run-all-not-depends: /README.md suite 自身の README（tests/run-all/README.md）を指すコメント
+# run-all-not-depends: /docs/04-quality/TESTING.md ランナーの案内文に出るパスの文字列を照合するだけで文書は読まない
+# run-all-not-depends: /AGENTS.md 一時リポジトリに書く probe と名簿の文字列比較だけで実物は読まない
+# run-all-not-depends: /CLAUDE.md 文書契約面の名簿の文字列比較だけで実物は読まない
+# run-all-not-depends: mcp/package.json コメントと名簿の文字列。実物の起動ガードは既定一覧でしか読まず本 suite はその手前で戻る
+# run-all-not-depends: mcp/package-lock.json 名簿の文字列比較だけで実物は読まない
 
 # 空振り検出: case35のconsumer集合だけを空にしたケースとcasesファイル全体を空にしたケースは、source後の集合検査だけが赤（77/1、0/1、各rc=1）。case35+同じ親検査の未変異85/0を対照に実測。空白だけの宣言は互換入力としてallowする（2026-10-22）。
 # 変異検出（consumer context、2026-10-22）: 実cases sourceから実tracked走査へ渡す7状態の
@@ -152,6 +164,7 @@
 # 空振り検出: case 47-M〜47-S（文書契約面と、選択に入れない suite。ADR-095）は、ランナーの写しへ変異を 1 つずつ当て、case 47 だけを同じ cases ファイルで回して測った（件数は赤になった検査項目の数）。束の suite を足さない → 34 件（47-M 18・47-Q 9・47-S 7）/ 文書契約面を見つけた時点で実行基盤の照合を打ち切る → 8 件（47-N 6・47-R 2）/ 束と登録一覧の件数照合を外す → 17 件（47-O 10・47-S 7）/ 束が空の回の全件フォールバックを外す → 5 件（47-O）/ 文書契約面を実行基盤の名簿へ戻す → 27 件（47-M 11・47-N 1・47-P 1・47-Q 5・47-R 2・47-S 7）/ 配布テンプレート配下の文書でないファイルも文書として扱う → 7 件（47-R）/ 束の suite が交差でも選ばれた回を「登録一覧に在った」と数えない → 5 件（47-Q）/ 実行基盤の要素（共有 lib）を文書契約面の名簿へ移す → 2 件（47-P）/ 文書契約面の入口を別名へ置き換える → 1 件（47-P）/ 常に skip する suite を選択から外さない → 20 件（47-S）/ 明示起動の指定がある回も選択から外す → 17 件（47-S 16・47-P 1）/ 選択から外す判定を束の照合の後ろへ回す → 11 件（47-S）/ 名簿に在るが「常に skip する」条件を書いていない名前も外す → 3 件（47-S）/ 外した suite を実行の入口で名乗らない → 2 件（47-S）。無変異の対照は 256 件 pass・0 件赤（2026-11-23 WSL 実測）。47-S の fixture の public-layout は実行ビットを付けず、選択に入った回もランナーは起動しない（この名前の実プロセスは、同じホストの別セッションのゲートが公開検査の並走として読むため）。47-P は、選択に入れない suite の名簿・ランナーの条件と公開検査の先頭の分岐の字面・分岐が無条件に skip して終わることを実物から読み、読めた箇所が 1 つでなければ赤。
 # 空振り検出: case 57（自己検証とゲート間の排他の境界。ADR-095）は、合成したプロセス一覧を並走検出へ読ませる。候補から自己検証の子孫を外す条件を消した写し（57-D）は fixture のランナー（4194101）を並走として返し、同じ一覧の 57-A を赤にする形になる（条件の行が 1 行でなければ 57-D 自身が赤）。cwd からの起動・`-c` に続く語がパスである形・別 suite・名前の後方一致の親は自己検証として読まず、子を並走に数える（57-C）。57-E は実プロセスの孤児と子で、この suite の ps が系譜の外を全列挙へ出さないことを測り、孤児・子・一覧のどれかを用意できない回は赤。57-F は、ランナーと待機 lib が全プロセスを列挙する起動（4 箇所）がこの suite の ps の絞る 2 つの形から外れていないことを実装から拾って突き合わせ、拾えた箇所が 4 未満なら赤（2026-11-23 WSL 実測）。
 # 空振り検出: case 56（`cases/git-env-isolation.sh`）は `tests/lib/git-isolated.gitconfig` 不在・`user.useConfigOnly` / `core.excludesFile` 欠落で 56-0 が赤（`--file` で作業リポから隔離読取）、隔離無しで `core.excludesFile` / `$XDG_CONFIG_HOME/git/ignore`（`*~`）が `git check-ignore "~/app.txt"` へ漏れない前提不成立で 56-pre が赤、`ff_suite_env_isolate` から git 隔離を外した写しで逐次・並列（2 suite 同時）とも作者無し commit 緑化と excludesfile 漏れ赤化を 56-M1 で実測、空の隔離設定での `useConfigOnly` 欠落を 56-M2 で実測する（2026-11-23 macOS 実測: case 56 全 11 件 pass、隔離除去変異で逐次・並列とも 56-A / 56-D が赤転）。
+# 空振り検出: 全件モードの用途の注意（case 18・26-A〜C・26-B2・26-E・47-N）と変更ベースの回の回し直しの案内（47-T / 47-T2 / 47-U。Issue `#3004`）は、ランナーの写しへ変異を 1 つずつ当て、verify.sh を fast-mode.sh の case まで回してから case 47 を足して測った（2026-11-25 macOS、対照は 635〜636 件 pass）。注意の行を消すと 26-B の 2 件、gate 段（FF_RELEASE_GATE_HEAD）でも黙らない形にすると 26-B2 の 1 件、条件を FULL_EXPLICIT から FAST_MODE へ替えると 26-C・26-E・47-N の 3 件、既定一覧の条件を外すと case 18 の 1 件、変更ベースの回の鮮度赤の通しの前置を全件（FF_RUN_ALL_FULL=1）へ戻すと 47-T・47-T2 の 2 件、SHA で固定した base を通しの案内で 1 へ戻さないと 47-T の 1 件、名指しの回し直しに全件の前置を付けると 47-T の 1 件、必須 skip の再現の前置を全件へ戻すと 47-U の 1 件が赤になる（8 変異すべて検出。注意が出ない・出すべきでない回に出る、案内が全件モードへ上がる・古い base を固定する、のどれも緑にしない）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -541,6 +554,8 @@ fi
 # スロットの空き方で完了順が変わり、既定のままだとケースごとに再現性の無い実行になる。並列側の
 # 契約は case 30 / 32 が RUN_JOBS を明示して測る。
 run_runner() {
+  # 3 分岐とも FF_RELEASE_GATE_HEAD を外す: 公開同期の gate 段の中でこの suite が回ると外側から継承され、
+  # 全件モードの用途の注意（Issue `#3004`）を外す検査が「gate 段だから黙る」理由で緑になる。
   # 両方 1 は呼び出し側の意図が不明なので黙って一方を採らない（この suite が最も警戒する形）。
   if [ "${RUN_FAST:-0}" = "1" ] && [ "${RUN_FULL:-0}" = "1" ]; then
     bad "run_runner: RUN_FAST と RUN_FULL の同時指定（呼び出し側の誤り）"
@@ -549,11 +564,11 @@ run_runner() {
     return 0
   fi
   if [ "${RUN_FAST:-0}" = "1" ]; then
-    if RUN_OUT="$(env -u FF_RUN_ALL_FULL -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_POLL_INTERVAL FF_RUN_ALL_FAST=1 FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+    if RUN_OUT="$(env -u FF_RUN_ALL_FULL -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_POLL_INTERVAL -u FF_RELEASE_GATE_HEAD FF_RUN_ALL_FAST=1 FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
   elif [ "${RUN_FULL:-0}" = "1" ]; then
-    if RUN_OUT="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_POLL_INTERVAL FF_RUN_ALL_FULL=1 FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+    if RUN_OUT="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_POLL_INTERVAL -u FF_RELEASE_GATE_HEAD FF_RUN_ALL_FULL=1 FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
   else
-    if RUN_OUT="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_POLL_INTERVAL FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+    if RUN_OUT="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_WAIT -u FF_RUN_ALL_WAIT_MAX_SECONDS -u FF_RUN_ALL_WAIT_POLL_INTERVAL -u FF_RELEASE_GATE_HEAD FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
   fi
 }
 
@@ -644,6 +659,9 @@ expect_rc() {
 # 各ファイルは同一プロセスで source され、上の fixture・関数・PASS/FAIL を共有する。
 # **この一覧の順序が契約**で、分割前の verify.sh の行の順序そのもの。後ろの cases は前の cases
 # が定義した関数と fixture を使う。1 ファイルだけを実行する入口は置かない。
+# 全件モードの用途の注意（run-all.sh。Issue `#3004`）の行頭。fast-mode.sh（case 18・26）と
+# changed-selection.sh（47-N）が出る回・出ない回を縛る。
+FULL_NOTICE_HEAD='ℹ️  FF_RUN_ALL_FULL=1 の全件実行はリリース・公開同期の前に回すものです'
 # shellcheck source=../lib/suite-cases.sh
 . "$TESTS_DIR/lib/suite-cases.sh"
 suite_cases_source "$SCRIPT_DIR/cases" accounting.sh

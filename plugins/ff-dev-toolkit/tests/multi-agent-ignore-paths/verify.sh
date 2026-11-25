@@ -22,6 +22,13 @@
 # '/' は肯定形 :(glob,top)/ が rc=128 で落ちるため報告クエリごと壊れる）。
 #
 # 実 CLI は 1 つも起動しない（stub で覆う）。書き込み不可の環境では skip。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/multi-agent.sh scripts/lib/multi-agent-*.sh
+# run-all-depends: scripts/adapters/ scripts/lib/adapter-common-*.sh scripts/lib/knowledge-read-acl.ps1
+# run-all-depends: scripts/agent-config.yaml scripts/perspectives/review/
+# run-all-depends: tests/lib/git-fixture.sh tests/lib/adapter-env-isolation.sh tests/lib/multi-agent-sources.sh
+# run-all-not-depends: /docs/04-quality/TESTING.md ヘッダの案内（ホスト git 障害時の切り分け手順の参照先）。中身は読まない
 
 set -euo pipefail
 

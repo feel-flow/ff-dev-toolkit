@@ -65,6 +65,14 @@
 #     （`$Config` など大文字始まりの Perl 変数）や、呼び出しの外で export 済みの名前の誤検知用
 #   - ガードごと止める: 環境変数 `FF_DEV_TOOLKIT_SKIP=literal-write`
 #
+# 書き換え先が一意に決まる形（公開 https://github.com/feel-flow/ff-dev-toolkit/issues/163）: 検出がすべて D / Q
+# （Bash ツールがコマンド文字列の `\\` を `\` に縮めること）だけで、元のコマンドに CR が無いときは、停止文に
+# この呼び出しのコマンドを本文として載せ（同じバイト列。4000 バイトを超える回は再掲しない）、Write でファイルへ
+# 書いて `bash <ファイル>` で実行する手順を返す。ファイルの中の `\\` は書いたとおりに bash へ届くので、同じ
+# データのまま 1 回で復帰できる。A / B / H / P を含む回はファイルへ移しても値が変わるので載せない。入力の書き換え
+# （updatedInput で `bash <ファイル>` へ差し替える形）は採らない — 本文がファイルへ移ると、ホストの権限判定と
+# 集約入口の再検査が中身を読めなくなる（guard-zsh-glob.sh が `bash <<'EOF'` へ包み直す案を採らないのと同じ理由）。
+#
 # 既知の限界（素通しする形）は判定ヘルパの冒頭にまとめてある。
 #
 # 互換性: bash 3.2（stock macOS）。連想配列・readarray を使わない。
@@ -342,10 +350,53 @@ advice=""
   - PowerShell の置換の値は Write ツールでファイルにし、[IO.File]::ReadAllText('<ファイル>') で読む
   - 文字列を単一引用符（'…'）かヒアストリング @'…'@ にする（中のバッククォートをエスケープとして読まない）。スクリプトは Write で .ps1 に書いて -File で渡す"
 
+# ---- 書き換え先が一意に決まる形（公開 https://github.com/feel-flow/ff-dev-toolkit/issues/163） ----------------
+# 検出がすべて D / Q（Bash ツールがコマンド文字列の \\ を \ に縮めること）だけなら、同じコマンドをファイルから
+# bash へ渡せば、ファイルの中の \\ は書いたとおりに届く。書き換え先はこの呼び出しのコマンドそのもの（同じバイト列）
+# なので、停止文に本文として載せ、Write でファイルへ書いて bash <ファイル> で実行する手順を返す。
+# A / B / H / P を含む回は、ファイルへ移しても値が変わる（変数が届かない・展開される・PowerShell が読む）ので載せない。
+# 入力の書き換え（updatedInput で bash <ファイル> へ差し替える）は使わない — 本文がファイルへ移ると、ホストの
+# 権限判定と集約入口の再検査が中身を読めなくなる（guard-zsh-glob.sh の「案 B を採らない」と同じ理由）。
+# 元のコマンドに CR がある回は、判定用に CR を落とした cmd が元と同じバイト列でないので載せない。
+unique_block=""
+lw_begin='----- 本文ここから -----'
+lw_end='----- 本文ここまで -----'
+if [ "$has_a" -eq 0 ] && [ "$has_b" -eq 0 ] && [ "$has_h" -eq 0 ] && [ "$has_p" -eq 0 ] \
+  && { [ "$has_d" -eq 1 ] || [ "$has_q" -eq 1 ]; } \
+  && printf '%s' "$input" | jq -e '(.tool_input.command // "") | contains("\r") | not' >/dev/null 2>&1; then
+  case "$cmd" in
+    *"$lw_begin"* | *"$lw_end"*) : ;;
+    *)
+      cmd_bytes="$(printf '%s' "$cmd" | wc -c)"
+      cmd_bytes=$((cmd_bytes + 0))
+      unique_block="
+書き換え先（一意に決まります）: 検出はどれも Bash ツールがコマンド文字列の \\\\ を \\ に縮めることによるもので、同じコマンドをファイルから bash へ渡せば、ファイルの中の \\\\ は書いたとおりに届きます。
+  1) Write ツールで、作業ツリーの外のファイル（例: scratchpad の run.sh）へ、この呼び出しのコマンドを 1 文字も変えずに書く
+  2) Bash ツールで bash <そのファイルの絶対パス> を実行する（ホストのシェルが zsh でも bash で実行されます。Bash ツールへ渡すコマンドには \\\\ を書かない）"
+      if [ "$cmd_bytes" -le 4000 ]; then
+        cmd_shown="$cmd"
+        case "$cmd_shown" in
+          *"
+") : ;;
+          *) cmd_shown="${cmd_shown}
+" ;;
+        esac
+        unique_block="${unique_block}
+本文（この呼び出しのコマンドと同じバイト列。区切りの 2 行は含めない）:
+${lw_begin}
+${cmd_shown}${lw_end}"
+      else
+        unique_block="${unique_block}
+（コマンドが ${cmd_bytes} バイトと長いので、本文はここに再掲しません。この呼び出しのコマンドをそのまま書いてください）"
+      fi
+      ;;
+  esac
+fi
+
 deny "⚠️ ff-dev-toolkit guard（literal-write: 書き込む本文がシェル・別言語の解釈で無音に変わる形）: ${summary}
 検出した箇所:${listed}
 次のいずれかで書き直してください:
-  - ファイル本文は Write / Edit ツールで直接書く（シェルも別言語のリテラルも経由しない。最も確実）${advice}
+  - ファイル本文は Write / Edit ツールで直接書く（シェルも別言語のリテラルも経由しない。最も確実）${advice}${unique_block}
 誤検知の場合（大文字始まりの Perl 変数を意図して書いた・呼び出しの外で export 済み・バックスラッシュ / バッククォートの解釈を承知のうえで書いた等）は、コマンドの**先頭**へ環境代入を付けて再実行します: FF_LITERAL_WRITE_ACK=1 <コマンド>
 このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=literal-write を設定します。判定の正本は ${HELPER_DIR_SHOWN}/literal-write-scan.sh です。" \
   literal-write tests/lib/literal-write-scan.sh \

@@ -129,6 +129,26 @@
 # 移し先も境界に止められたら赤で終わる。symlink を作れない Git Bash では symlink・chmod 000・最小 PATH を
 # 前提にするケースを字下げした部分 skip にする（tests/lib/msys-case.sh。Issue `#2539`）。
 # run-all-required: yes — 台帳の読み側（状態切り分け・不在時の既定・promoted 突き合わせ）を見る唯一の層で、一時領域不足で skip すると「promoted を未対策として返す」退行が黙って戻る
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/knowledge-lookup.sh scripts/lib/knowledge-read-boundary.sh scripts/lib/playbook-changelog-functions.sh scripts/lib/wsl-notice.sh
+# run-all-depends: scripts/lib/knowledge-read-acl.ps1 scripts/lib/playbook-changelog-scan.awk scripts/lib/stop-block.* scripts/lib/knowledge-lookup-store.*
+# run-all-depends: tests/lib/msys-case.sh tests/lib/git-fixture.sh .claude-plugin/plugin.json
+# run-all-depends: docs-template/08-knowledge/OBSERVATIONS.md docs-template/08-knowledge/PLAYBOOK.md
+# run-all-depends: skills/ace-curate/SKILL.md skills/ace-refine/SKILL.md skills/ace-curate/references/curate.md skills/knowledge-lookup/SKILL.md
+# run-all-not-depends: scripts/mutation-harness.sh 実測手順の説明
+# run-all-not-depends: /docs/MASTER.md K22 の説明（検索は fixture の root）
+# run-all-not-depends: /AGENTS.md K22 の説明（検索は fixture の root）
+# run-all-not-depends: /docs/08-knowledge/playbook/coding.md fixture の名前
+# run-all-not-depends: docs-template/08-knowledge/playbook/coding.md fixture の名前
+# run-all-not-depends: /docs/08-knowledge/playbook/archive/coding.md fixture の名前
+# run-all-not-depends: /docs/08-knowledge/PLAYBOOK.md fixture の root の中のパス
+# run-all-not-depends: /docs/08-knowledge/OBSERVATIONS.md fixture の root の中のパス
+# run-all-not-depends: /docs/06-reference/DECISIONS.md fixture の台帳本文の参照文字列
+# run-all-not-depends: /docs/08-knowledge/PENDING_CANDIDATES.md fixture の root の中のパス
+# run-all-not-depends: tests/knowledge-lookup-resident-acl/verify.sh 分割先 suite の説明
+# run-all-not-depends: tests/setup-ai-config/fixtures/expected/AGENTS.md fixture の root（*/AGENTS.md）の同名
+# run-all-not-depends: tests/setup-ai-config/fixtures/expected/CLAUDE.md fixture の root（*/CLAUDE.md）の同名
 
 set -euo pipefail
 
@@ -1632,6 +1652,171 @@ if [[ -r "${k47_curate}" && -r "${k47_skill}" ]] \
   ok "K47g: /ace-curate の重複照合の手順が --each の 1 回の呼び出しを指し、/knowledge-lookup の正本が語ごとの RECORD の形を書いている"
 else
   bad "K47g: curate.md の重複照合の手順、または knowledge-lookup の SKILL.md に --each の記載が無い（読めない回も赤）"
+fi
+
+# ── K48: GraphQL 403 時の REST API フォールバック（PR 除外・複数ページ・上限打ち切り・--github-input 案内）──
+ROOT_K48="${TMP}/root-k48"
+mkdir -p "${ROOT_K48}/docs/08-knowledge"
+cat >"${ROOT_K48}/docs/08-knowledge/OBSERVATIONS.md" <<'MD'
+# 振り返り観測台帳
+
+## エントリ一覧
+
+<a id="obs-480"></a>
+
+### OBS-480: REST open issue
+
+| Kind | problem | Count | 3 |
+| First | 2026-11-01 | Last | 2026-11-20 |
+| Status | promoted | Issue | feel-flow/ff-dev-toolkit#101 |
+
+restfallbackneedle open issue
+
+---
+
+<a id="obs-481"></a>
+
+### OBS-481: REST open PR (pull_request key must be excluded)
+
+| Kind | problem | Count | 3 |
+| First | 2026-11-01 | Last | 2026-11-20 |
+| Status | promoted | Issue | feel-flow/ff-dev-toolkit#102 |
+
+restfallbackneedle pr excluded
+
+---
+
+<a id="obs-482"></a>
+
+### OBS-482: REST page 2 open issue
+
+| Kind | problem | Count | 3 |
+| First | 2026-11-01 | Last | 2026-11-20 |
+| Status | promoted | Issue | feel-flow/ff-dev-toolkit#103 |
+
+restfallbackneedle page2 open issue
+
+---
+
+<a id="obs-483"></a>
+
+### OBS-483: REST closed issue
+
+| Kind | problem | Count | 3 |
+| First | 2026-11-01 | Last | 2026-11-20 |
+| Status | promoted | Issue | feel-flow/ff-dev-toolkit#104 |
+
+restfallbackneedle closed issue
+MD
+
+STUB_BIN_K48="${TMP}/stub-bin-k48"
+mkdir -p "${STUB_BIN_K48}"
+K48_LOG="${TMP}/k48-gh.log"
+cat >"${STUB_BIN_K48}/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${K48_GH_LOG:?}"
+if [ "${1:-}" = "api" ]; then
+  if [ "${K48_REST_FAIL:-0}" = "1" ]; then
+    echo "gh: HTTP 500: rest unavailable" >&2
+    exit 1
+  fi
+  shift 1
+  ep=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --hostname) shift 2; continue ;;
+      -*) shift; continue ;;
+      *) [ -n "$ep" ] || ep="$1"; shift ;;
+    esac
+  done
+  if [ "${K48_REST_OVER_LIMIT:-0}" = "1" ]; then
+    # 1 ページあたり 100 件の通常 Issue を返し続けて 1000 件上限へ到達させる
+    p="${ep##*&page=}"
+    p="${p%%&*}"
+    jq -nc --argjson base "$(( (p - 1) * 100 + 1 ))" '[range(0; 100) | {number: ($base + .)}]'
+    exit 0
+  fi
+  case "$ep" in
+    *"&page=1")
+      # 101 は通常 Issue、102 は PR（pull_request キー付き → 除外必須）、残り 98 件も PR として計 100 件にする
+      jq -nc '[{number: 101}, {number: 102, pull_request: {url: "https://api.github.com/repos/feel-flow/ff-dev-toolkit/pulls/102"}}] + [range(0; 98) | {number: (500 + .), pull_request: {url: "https://api.github.com/repos/feel-flow/ff-dev-toolkit/pulls/500"}}]'
+      exit 0
+      ;;
+    *"&page=2")
+      jq -nc '[{number: 103}]'
+      exit 0
+      ;;
+    *)
+      echo '[]'
+      exit 0
+      ;;
+  esac
+fi
+if [ "${K48_MODE:-gql403}" = "gql403" ]; then
+  echo "HTTP 403: GitHub GraphQL is not available from Claude Code sessions; use the REST API (gh api repos/{owner}/{repo}/...)" >&2
+  exit 1
+elif [ "${K48_MODE}" = "gql_ok" ]; then
+  printf '101\n103\n'
+  exit 0
+else
+  echo "error connecting to api.github.com" >&2
+  exit 1
+fi
+STUB
+chmod +x "${STUB_BIN_K48}/gh"
+
+: >"${K48_LOG}"
+set +e
+K48_GQL_OUT="$(K48_GH_LOG="${K48_LOG}" K48_MODE=gql_ok PATH="${STUB_BIN_K48}:${PATH}" "${LOOKUP[@]}" --root "${ROOT_K48}" --promoted-open 2>"${TMP}/k48-gql.err")"; k48_gql_rc=$?
+: >"${K48_LOG}"
+K48_REST_OUT="$(K48_GH_LOG="${K48_LOG}" K48_MODE=gql403 PATH="${STUB_BIN_K48}:${PATH}" "${LOOKUP[@]}" --root "${ROOT_K48}" --promoted-open 2>"${TMP}/k48-rest.err")"; k48_rest_rc=$?
+K48_SEARCH_OUT="$(K48_GH_LOG="${K48_LOG}" K48_MODE=gql403 PATH="${STUB_BIN_K48}:${PATH}" "${LOOKUP[@]}" --root "${ROOT_K48}" restfallbackneedle 2>"${TMP}/k48-search.err")"; k48_search_rc=$?
+set -e
+if [[ "${k48_gql_rc}" -eq 0 && "${k48_rest_rc}" -eq 0 && "${k48_search_rc}" -eq 0 \
+   && "${K48_REST_OUT}" == "${K48_GQL_OUT}" \
+   && "${K48_REST_OUT}" == *'OBS-480'* && "${K48_REST_OUT}" == *'OBS-482'* \
+   && "${K48_REST_OUT}" != *'OBS-481'* && "${K48_REST_OUT}" != *'OBS-483'* \
+   && "${K48_SEARCH_OUT}" == *'feel-flow/ff-dev-toolkit#101(open)'* \
+   && "${K48_SEARCH_OUT}" == *'feel-flow/ff-dev-toolkit#102(closed)'* \
+   && "${K48_SEARCH_OUT}" == *'feel-flow/ff-dev-toolkit#103(open)'* \
+   && "${K48_SEARCH_OUT}" == *'feel-flow/ff-dev-toolkit#104(closed)'* ]] \
+   && grep -q 'repos/feel-flow/ff-dev-toolkit/issues?state=open&per_page=100&page=1' "${K48_LOG}" \
+   && grep -q 'repos/feel-flow/ff-dev-toolkit/issues?state=open&per_page=100&page=2' "${K48_LOG}"; then
+  ok "K48: GraphQL 403 時に REST API へフォールバックし、PR を除外・複数ページを結合して GraphQL と同一の open/closed 判定を返す"
+else
+  bad "K48: GraphQL 403 の REST フォールバックが期待と違う rc=${k48_gql_rc}/${k48_rest_rc}/${k48_search_rc} out=[${K48_REST_OUT}] search=[${K48_SEARCH_OUT}] err=[$(cat "${TMP}/k48-rest.err")]"
+fi
+
+set +e
+K48_LIMIT_OUT="$(K48_GH_LOG="${K48_LOG}" K48_MODE=gql403 K48_REST_OVER_LIMIT=1 PATH="${STUB_BIN_K48}:${PATH}" "${LOOKUP[@]}" --root "${ROOT_K48}" --promoted-open 2>"${TMP}/k48-limit.err")"; k48_limit_rc=$?
+set -e
+if [[ "${k48_limit_rc}" -eq 0 && "${K48_LIMIT_OUT}" == *'未確認'* ]] \
+   && grep -q '上限 1000 件に達しました' "${TMP}/k48-limit.err"; then
+  ok "K48b: REST 経路でも open Issue が上限 1000 件に達したら fail-closed で 未確認 にする"
+else
+  bad "K48b: REST 上限打ち切りの fail-closed が違う rc=${k48_limit_rc} out=[${K48_LIMIT_OUT}] err=[$(cat "${TMP}/k48-limit.err")]"
+fi
+
+set +e
+K48_FAIL_OUT="$(K48_GH_LOG="${K48_LOG}" K48_MODE=gql403 K48_REST_FAIL=1 PATH="${STUB_BIN_K48}:${PATH}" "${LOOKUP[@]}" --root "${ROOT_K48}" --promoted-open 2>"${TMP}/k48-fail.err")"; k48_fail_rc=$?
+set -e
+if [[ "${k48_fail_rc}" -eq 0 && "${K48_FAIL_OUT}" == *'未確認'* ]] \
+   && grep -qF -- '--github-input' "${TMP}/k48-fail.err" \
+   && grep -qF '"operation":"lookup.open-set"' "${TMP}/k48-fail.err"; then
+  ok "K48c: REST も失敗時は --github-input と lookup.open-set の最小 index JSON 手順を stderr へ添えて 未確認 にする"
+else
+  bad "K48c: REST 失敗時の --github-input 案内が不足 rc=${k48_fail_rc} err=[$(cat "${TMP}/k48-fail.err")]"
+fi
+
+: >"${K48_LOG}"
+set +e
+K48_OTHER_OUT="$(K48_GH_LOG="${K48_LOG}" K48_MODE=other_err PATH="${STUB_BIN_K48}:${PATH}" "${LOOKUP[@]}" --root "${ROOT_K48}" --promoted-open 2>"${TMP}/k48-other.err")"; k48_other_rc=$?
+set -e
+if [[ "${k48_other_rc}" -eq 0 && "${K48_OTHER_OUT}" == *'未確認'* ]] \
+   && ! grep -q '^api ' "${K48_LOG}"; then
+  ok "K48d: 非回帰: 通常の gh 通信失敗（非 GraphQL 403）では REST API へフォールバックしない"
+else
+  bad "K48d: 通常エラーで不要に REST API を呼んでいる rc=${k48_other_rc}"
 fi
 
 echo ""

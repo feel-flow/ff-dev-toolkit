@@ -4,6 +4,10 @@
 # 空振り検出: 2 段変異 3 ケースの各段を存在しないアンカーへ変えると、全 6 通りで段名付き未到達診断・非 0。各無変異対照は 0（2026-09-28 実測）。
 # Mutation self-test for retrospective prompt/Stop hooks (Issues #583 / #616).
 # 空振り検出: consumer の判定リスト抽出を、散文モードからフェンス行で状態を反転するだけの簡易な除外へ戻した写しを与えると、「フェンス内の番号付き例示を残して判定リスト側を壊す」変異（4 連の中の 3 連・バッククォートの中の ~~~）が検出されず exit 1 で止まる（2026-09-23 実測。consumer が例示側の出現で緑に倒れる形を「検出した」扱いにしない）。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: tests/retrospective-stop-hook/ hooks/*.sh hooks/*.mjs hooks/hooks.json scripts/asdd/config.mjs
+# run-all-depends: tests/lib/asdd-gate-drain.* tests/lib/section-scope.* skills/retrospective/SKILL.md
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

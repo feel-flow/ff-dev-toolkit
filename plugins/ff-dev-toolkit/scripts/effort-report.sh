@@ -21,6 +21,20 @@
 # 「記入されていない」と「記入されているが読めない」を同じ数字に合流させると、
 # 記入ミスが KPI から静かに消える。
 #
+# 加算予定（effort_ai_planned_added）: 起票後に AC・作業・部分 PR が足されたとき、起票時の
+# effort_ai_planned を書き換えずに足した予定の行（`+N.Nh（日付と経路。根拠）`）。範囲を足すたびに
+# 1 行ずつ増えるので、このキーだけは重複を書式不正にせず合計する。乖離率は
+# 実績 ÷ (予定 + 加算予定の合計) で出す（足さないと、範囲の追加が見積もりの外れとして母集団に入る）。
+# 読めない行（書式・正でない値・単位の食い違い・値の後ろに別の値・加算行に似ているのにブロックの
+# 中のキーとして読めない行）がある Issue は 0 として足さず、乖離率の母集団からだけ外して番号で
+# 名指しする（variance_excluded_added_unreadable。上の 5 種とは別に、乖離率の母集団だけから外す
+# 除外で、圧縮率と実績合計には残す。AI 予定合計 ai_planned_total は乖離率の母集団の合計なので、
+# この Issue の予定も数えない）。名指しは実績が記入済みで予定が正の Issue に限る（予定のみの
+# Issue は加算行を評価する前に母集団から外れる）。予定のみ・実績なしの判定には関わらない
+# — hooks/guard-effort-actual.sh と finish.sh precheck が写している判定はこのキーを読まない。
+# 書式と書く時機の正本は skills/close-issue/references/effort.md と
+# skills/create-issue/references/estimation.md。
+#
 # 単位: 集計は人時（h）で行う。`- effort_unit: h` 行を持つブロックは値を `N.Nh` で読み、
 # その行が無い旧ブロックは値を `N.Nd`（人日）で読んで ×8 で人時へ正規化し、同じ母集団へ
 # 入れる（旧ブロックを捨てると較正母集団が消える）。単位宣言と値の単位が食い違うもの
@@ -799,6 +813,43 @@ function as_hours(s, unit,   v) {
   return -2
 }
 
+# 加算予定の値の後ろ（空白を除いた残り）が、空か、行末で閉じる 1 組の注記（`（…）` か `(…)`。
+# 中の入れ子と内訳の数値は問わない）かを返す。注記の外に文字があれば 0（`+3.0h + 4.0h`・
+# `+1.0h〜2.0h`・`+1.5hours`・`+1.5h3`・`+3.0h（…）、+4.0h（…）`）。LC_ALL=C で読むので、全角の
+# 括弧は 3 バイトの並びとして比べる（正規表現の括弧式に多バイト文字を入れない）。
+function added_note_ok(r,   i, n, d, c1, c3) {
+  if (r == "") return 1
+  n = length(r); i = 1; d = 0
+  while (i <= n) {
+    c3 = substr(r, i, 3); c1 = substr(r, i, 1)
+    if (c3 == "（") { d++; i += 3; continue }
+    if (c1 == "(") { d++; i++; continue }
+    if (c3 == "）" || c1 == ")") {
+      d--; i += (c3 == "）") ? 3 : 1
+      if (d < 0 || (d == 0 && i <= n)) return 0
+      continue
+    }
+    if (d == 0) return 0
+    i++
+  }
+  return (d == 0)
+}
+
+# 加算予定の 1 行を人時へ正規化する。値は `+` で始まる数値と単位（ブロックの宣言どおり h、
+# 宣言の無い旧ブロックは d）で、その後ろは空か、行末で閉じる注記（`（2026-11-24 追記の AC 4 件。…）`
+# 等）だけ。値の後ろへ別の値・幅・文字を続けた行を先頭の値だけで読まない（読むと 2 つ目の値が
+# 黙って 0 になる）。値と注記の間の空白（全角を含む）は任意。戻り値は as_hours() と同じ
+# （-2 = 書式不正・正でない値、-3 = 単位の食い違い）。空の値も -2（足すつもりの行が読めない）。
+function as_added(s, unit,   tok, rest) {
+  s = trim(s)
+  if (!match(s, /^\+[0-9]+(\.[0-9]+)?[hd]/)) return -2
+  tok = substr(s, 2, RLENGTH - 1)
+  rest = substr(s, RLENGTH + 1)
+  sub(/^([ \t]|　)+/, "", rest)
+  if (!added_note_ok(rest)) return -2
+  return as_hours(tok, unit)
+}
+
 # 速度指標の集計: 変更クラスごとの値を tmp へ写して並べ、中央値 / p75 を返す。
 # 該当 0 件は "(unmeasured)"（0 と区別する）。fmt は printf 書式。
 function class_stat(kind, cls, which, fmt,   i, n, tmp) {
@@ -880,6 +931,22 @@ FNR == NR { if ($0 != "") { order[++total] = $0 + 0 } ; next }
   # 行末空白という本来の検出対象は落ちない（いずれも行全体は HTML コメントのままだから）。
   if (inblock[num] != 1 && is_marker_shaped(line)) suspect[num] = 1
 
+  # 加算予定の行に似ているのに、ブロックの中の `- effort_ai_planned_added:` として読めない行
+  # （字下げ・`*` / `+` の箇条・キーのバッククォート・全角コロン・綴りの欠け・ブロックの外）を
+  # 覚えておく。他のキーは欠ければ母集団から外れて安全側に倒れるが、このキーは「行が無い」のが
+  # 正常なので、読めなかった行が加算なしと同じに見え、誤った分母のまま乖離率の母集団に残る。
+  # 疑うのは、行頭（空白の後）が箇条の記号・キーの綴り（キーだけをバッククォートで囲んだ形を含む）・
+  # コロン（半角・全角）の順に並ぶ行に限る。キーで始まるだけの散文の箇条・行全体を inline code で
+  # 引いた箇条（`` - `effort_ai_planned_added: +N.Nh` ``）・行の途中の言及は疑わない。ブロックの外のコードフェンスの中
+  # （書式の例を写したもの）も疑わない — 疑うと、警告を消す手段が正しい例文を壊すことになる
+  pa_shape = line
+  sub(/^[ \t]+/, "", pa_shape)
+  if (inblock[num] != 1 && pa_shape ~ /^(```|~~~)/) { pa_fence[num] = !pa_fence[num]; next }
+  if (!(inblock[num] != 1 && pa_fence[num]) \
+      && pa_shape ~ /^[-*+][ \t]*(effort_ai_planned_add[a-z_]*|`effort_ai_planned_add[a-z_]*`)[ \t]*(:|：)/ \
+      && !(inblock[num] == 1 && line ~ /^-[ ]*effort_ai_planned_added[ ]*:/))
+    pa_near[num] = 1
+
   if (inblock[num] != 1) next
 
   if (line !~ /^-[ ]*[a-z_]+[ ]*:/) next
@@ -896,6 +963,9 @@ FNR == NR { if ($0 != "") { order[++total] = $0 + 0 } ; next }
   else if (key == "effort_ai_planned") { if (num in ap_raw) broken[num] = 1; ap_raw[num] = val }
   else if (key == "effort_ai_actual")  { if (num in aa_raw) broken[num] = 1; aa_raw[num] = val }
   else if (key == "effort_unit")       { if (num in unit_raw) broken[num] = 1; unit_raw[num] = val }
+  # 加算予定は範囲を足すたびに 1 行ずつ増える（重複を書式不正にしない唯一の予定キー）。
+  # last-wins で読むと、最後の 1 回分だけが予定に足される。
+  else if (key == "effort_ai_planned_added") { pa_raw[num, ++pa_n[num]] = val }
   # 配備の行（effort_deploy）はここで読まない。記入の有無は --deploy-check が別に判定し、
   # 集計の母集団・除外件数へは影響させない（既存 Issue の遡及付与を強制しない）。
   # 速度指標のキーは重複しても Issue 全体を malformed にしない（乖離率の母集団を巻き添えに
@@ -922,6 +992,7 @@ END {
   rr_unmeasured = 0; rr_malformed = 0; gm_unmeasured = 0; gm_malformed = 0
   population = 0; suspect_n = 0; suspect_kv = ""; suspect_txt = ""
   hp_total = 0; ap_total = 0; aa_total = 0
+  pa_total = 0; pa_issues = 0; pa_bad_n = 0; pa_bad_kv = ""; pa_bad_txt = ""
   pair_n = 0; pair_denom = 0; vn = 0; out_of_band = 0
 
   for (i = 1; i <= total; i++) {
@@ -1005,10 +1076,26 @@ END {
     population++
     aa_total += aa
     if (ap > 0) {
-      ap_total += ap
-      v = aa / ap
-      variances[++vn] = v
-      if (v < lower + 0 || v > upper + 0) out_of_band++
+      # 加算予定は全行を読めたときだけ分母へ足す。1 行でも読めなければ、足した予定が
+      # 分からないので乖離率の母集団から外す（0 として足すと、範囲の追加が外れに化ける）
+      added = 0; added_bad = (n in pa_near) ? 1 : 0
+      for (k = 1; k <= pa_n[n] + 0; k++) {
+        t = as_added(pa_raw[n, k], unit)
+        if (t < 0) added_bad = 1
+        else added += t
+      }
+      if (added_bad) {
+        pa_bad_n++
+        ns = sprintf("%d", n)
+        pa_bad_kv = (pa_bad_kv == "") ? ns : (pa_bad_kv "," ns)
+        pa_bad_txt = (pa_bad_txt == "") ? ("#" ns) : (pa_bad_txt ", #" ns)
+      } else {
+        ap_total += ap
+        if (pa_n[n] + 0 > 0) { pa_total += added; pa_issues++ }
+        v = aa / (ap + added)
+        variances[++vn] = v
+        if (v < lower + 0 || v > upper + 0) out_of_band++
+      }
     }
     # 圧縮率は対で集計する。片側欠測を分母にだけ入れない
     if (hp > 0) { hp_total += hp; pair_denom += aa; pair_n++ }
@@ -1048,8 +1135,14 @@ END {
     printf "compression_denominator=%.1f\n", pair_denom
     printf "compression_ratio=%.2f\n", compression
     printf "ai_planned_total=%.1f\n", ap_total
+    # 加算予定（乖離率の分母に足した分）。ai_planned_total は乖離率の母集団の起票時の予定の合計で、
+    # 加算予定を含まない（読めない加算行で乖離率の母集団から外した Issue の予定も含まない）
+    printf "ai_planned_added_total=%.1f\n", pa_total
+    printf "ai_planned_added_issues=%d\n", pa_issues
     printf "ai_actual_total=%.1f\n", aa_total
     printf "variance_population=%d\n", vn
+    printf "variance_excluded_added_unreadable=%d\n", pa_bad_n
+    printf "variance_excluded_added_unreadable_issues=%s\n", pa_bad_kv
     printf "variance_p10=%.2f\n", vp10
     printf "variance_p25=%.2f\n", vp25
     printf "variance_median=%.2f\n", vmed
@@ -1113,7 +1206,11 @@ END {
 
   printf "\n## 乖離率（精度指標・件ごとに算出）\n\n"
   printf "AI 予定合計:    %.1fh\n", ap_total
+  if (pa_issues > 0)
+    printf "加算予定合計:   %.1fh（%d 件。乖離率の分母は予定 + 加算予定）\n", pa_total, pa_issues
   printf "AI 実績合計:    %.1fh（母集団全体）\n", aa_total
+  if (pa_bad_n > 0)
+    printf "  ⚠️ 加算予定の行を読めない Issue が %d 件あります: %s（乖離率の母集団から外しています。工数ブロックの中に、行頭の「- effort_ai_planned_added:」（半角コロン）に続けて +N.Nh（日付と経路。根拠）を 1 行に 1 つ書く。宣言の無い旧ブロックは +N.Nd）\n", pa_bad_n, pa_bad_txt
   if (vn > 0) {
     printf "p10:            %.2f\n", vp10
     printf "p25:            %.2f\n", vp25
@@ -1124,6 +1221,8 @@ END {
     if (vpos == "underestimate") printf "中央値の位置:   過小見積もり側（中央値 > %s。帯を広げず推定手順を直す）\n", upper
     else if (vpos == "overestimate") printf "中央値の位置:   過大見積もり側（中央値 < %s。帯を広げず推定手順を直す）\n", lower
     else printf "中央値の位置:   帯内（外れが多いなら裾が広い。帯の引き直しを検討する）\n"
+  } else if (pa_bad_n > 0) {
+    printf "算出不能（予定と実績が揃った Issue は、すべて加算予定の行を読めないため外しています）\n"
   } else {
     printf "算出不能（予定と実績が揃った Issue がありません）\n"
   }

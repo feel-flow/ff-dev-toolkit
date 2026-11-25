@@ -2,6 +2,13 @@
 #
 # 同梱resourceを使うskillのplugin root固定契約（Issue #838）。
 # 読み込み元のrootを実行中の正本にし、消失時に旧版へfallbackしないことを固定する。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: skills/ docs-template/
+# run-all-depends: scripts/*.sh scripts/**.mjs .claude-plugin/plugin.json
+# run-all-depends: tests/lib/utf8-locale.sh
+# run-all-not-depends: tests/merge-cleanup/verify.sh 実測コメントの出典として名前を出すだけ
+# run-all-not-depends: scripts/templates/codex-review.sh handoff の綴りの由来を説明するコメントだけ
 
 set -euo pipefail
 
@@ -161,6 +168,7 @@ check_tree() {
       'grok CLIでは、Bash tool 環境の `${GROK_PLUGIN_ROOT}` があればそれを使う' \
       '実際に読み込んだこの `SKILL.md` の絶対パス' \
       '`FF_DEV_TOOLKIT_SKILL_FILE` として固定' \
+      '物理パス（`cd -P` / `pwd -P`）で `../..` を解決' \
       'skill loaderが返した実値で `FF_DEV_TOOLKIT_SKILL_FILE="<このSKILL.mdの絶対パス>"; export FF_DEV_TOOLKIT_SKILL_FILE` を実行' \
       '読み込んだこの `SKILL.md` のdirectoryを基準にした [plugin root固定契約](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite)' \
       'consumerへコピーされた `docs/` や物理CWDを基準に解決しない' \

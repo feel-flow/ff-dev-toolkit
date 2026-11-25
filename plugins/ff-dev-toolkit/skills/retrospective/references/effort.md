@@ -6,7 +6,7 @@
 
 予定と実績の乖離率を下の帯で判定し、**過小・当たり・過大の 3 方向すべて**を記録対象にする（記録しないのは、ブロックが無く乖離率を算出できない場合だけ）。
 
-| 乖離率（AI 実績 ÷ AI 予定） | 判定 | 記録する種別 | 書く内容 |
+| 乖離率（AI 実績 ÷ AI 予定。加算予定行があれば予定に合計を足す） | 判定 | 記録する種別 | 書く内容 |
 | ---- | ---- | ---- | ---- |
 | `2.00` 超 | 過小見積もり | `Kind: problem` | 何が予定に無かったか |
 | `0.50` 〜 `2.00`（端を含む） | **当たり** | `Kind: keep` | どの立て方が当たったか |
@@ -36,6 +36,7 @@ MCP は対象 repo の state / limit に合う全 Issue の number / body を `e
 | `suspect_marker` が 1 以上 | マーカーの綴りずれ・字下げ・行末空白。該当 Issue は書き戻し側でも集計側でも**永久に静かに落ちる**ので、**警告に列挙された番号**（`kv` 形式では `suspect_marker_issues`）の本文を直す。疑うのはマーカー形の行（行全体が 1 個の HTML コメントで `ff-effort` に言及しているもの）だけなので、ブロックの外で `ff-effort` という語を散文で説明しているだけの Issue はここに出ない |
 | `excluded_malformed` が多い | 記入書式の周知不足。`/create-issue` のテンプレ（SKILL.md 手順 6）か目安表（`references/estimation.md`）に問題がある可能性 |
 | `excluded_unit_mismatch` が 1 以上 | `effort_unit` の宣言と値の単位が食い違っている（宣言ありの `N.Nd`・宣言なしの `N.Nh`）。列挙された番号（`excluded_unit_mismatch_issues`）の本文を直す。宣言の無い旧ブロックの `N.Nd` は食い違いではなく、集計器が 1d = 8h で人時へ正規化して母集団に入れている |
+| `variance_excluded_added_unreadable` が 1 以上 | 加算予定行（`effort_ai_planned_added`）を読めない Issue を、乖離率の母集団からだけ外している（実績合計と圧縮率には残る）。列挙された番号（`variance_excluded_added_unreadable_issues`）の本文の加算予定行を、値を変えずに書式 `+N.Nh（…）`（宣言の無い旧ブロックは `+N.Nd`）へ直す。値が読み取れない行（空・数値でない・0）は行ごと消す（後から値を決めて書かない）。字下げ・全角コロン・ブロックの外・1 行に 2 つの値も読めない行に数える。放っておくと、範囲を足した Issue ほど較正の母集団から静かに抜ける |
 | `wallclock_unmeasured` が `wallclock_population_all` より多い（`instruction_bytes_*` / `review_rounds_*` / `gate_minutes_*` も同様） | hook の記録（`${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/`）または巡回カウンタの記録（`<git common dir>/ff-review-rounds/`）が取れていない。記録置き場の権限・`FF_DEV_TOOLKIT_SKIP` の鍵 `effort-metrics`（wall-clock / 読み込みバイト / ゲート分の 3 記録を止める）・`FF_REVIEW_ROUND_LIMIT=0`（巡回カウンタを無効化し記録も止める）の設定・ゲートを Issue 番号付きブランチで回しているかを確認する（鮮度記録を止める内部変数はゲート分の記録を止めない）。速度指標（`wallclock_*` / `instruction_bytes_*` / `review_rounds_*` / `gate_minutes_*`）は構造改善の before / after 比較に使うもので、乖離率の帯の較正トリガではない |
 | `limit_reached=1` | 母集団が打ち切られている。`--limit` を上げて取り直す |
 

@@ -29,6 +29,8 @@ V=plugins/ff-dev-toolkit/tests/effort-contract/verify.sh
 JUDGE=plugins/ff-dev-toolkit/scripts/check-issue-body-diff.sh
 REPORT=plugins/ff-dev-toolkit/scripts/effort-report.sh
 WC_HOOK=plugins/ff-dev-toolkit/hooks/record-effort-wallclock.sh
+# Issue 番号抽出の正本（record-effort-wallclock.sh はこれを読む）
+BRANCH_LIB=plugins/ff-dev-toolkit/scripts/lib/branch-issue.sh
 RUNNER=plugins/ff-dev-toolkit/tests/run-all.sh
 MUTDIR=plugins/ff-dev-toolkit/tests/effort-contract/mutation
 
@@ -164,7 +166,7 @@ probe "空の宣言の旧ブロック扱い（検査 4f）" "$REPORT" "git check
 
 echo "変異 8l: Issue 番号抽出の # を任意に戻す"
 python3 "$MUTDIR/mut-hash-optional.py"
-probe "日付入りブランチの Issue 誤認（検査 14c）" "$WC_HOOK" "git checkout -- '$WC_HOOK'"
+probe "日付入りブランチの Issue 誤認（検査 14c）" "$BRANCH_LIB" "git checkout -- '$BRANCH_LIB'"
 
 echo "変異 9: 集計器の重複キー検出を外す"
 python3 "$MUTDIR/mut-dupkey.py"
@@ -246,6 +248,30 @@ probe "2 組目のブロックを malformed にしない（検査 5b）" "$REPOR
 echo "変異 9t: --deploy-check からブロック外の end の検出を外す"
 python3 "$MUTDIR/mut-deploy-extraend.py"
 probe "余分な end を malformed にしない（検査 5b）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9u: 乖離率の分母から加算予定を外す"
+python3 "$MUTDIR/mut-added-denominator.py"
+probe "加算予定を分母に足さない（検査 4i）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9v: 加算予定行を last-wins で読む"
+python3 "$MUTDIR/mut-added-lastwins.py"
+probe "複数の加算行を合計しない（検査 4i）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9w: 加算予定の値を単位宣言どおりに正規化しない"
+python3 "$MUTDIR/mut-added-unit.py"
+probe "旧 d ブロックの加算行を ×8 しない・単位の食い違いを受ける（検査 4i）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9x: 読めない加算行を 0 として足す"
+python3 "$MUTDIR/mut-added-unreadable-zero.py"
+probe "読めない加算行の Issue を乖離率の母集団に残す（検査 4i）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9y: 加算行の値の後ろの照合を外す"
+python3 "$MUTDIR/mut-added-boundary.py"
+probe "値の後ろに別の値・文字が続く加算行を先頭の値だけで読む（検査 4i）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9z: 加算行に似ているのに読めない行を覚えない"
+python3 "$MUTDIR/mut-added-near.py"
+probe "字下げ・全角コロン・ブロックの外の加算行を加算なしと同じに扱う（検査 4i）" "$REPORT" "git checkout -- '$REPORT'"
 
 # --- 以下 2 件は実ツリーを触らず一時 root へ注入する（検査 11/12 の実起動） ---
 inject_root() { # <estimation.md の中身を作る関数名> → 一時 root のパスを stdout

@@ -14,7 +14,7 @@ description: 既存 GitHub Issue の仕様曖昧さを6観点 + コードベー�
 
 - Claude Codeでは、その呼び出しでホストが渡した `${CLAUDE_PLUGIN_ROOT}` を使う
 - grok CLIでは、Bash tool 環境の `${GROK_PLUGIN_ROOT}` があればそれを使う（skill 経路では未設定が普通なので、次項の `FF_DEV_TOOLKIT_SKILL_FILE` を渡す）
-- Codexなど他ホストでは、実際に読み込んだこの `SKILL.md` の絶対パスを `FF_DEV_TOOLKIT_SKILL_FILE` として固定し、そこから `../..` を解決する
+- Codexなど他ホストでは、実際に読み込んだこの `SKILL.md` の絶対パスを `FF_DEV_TOOLKIT_SKILL_FILE` として固定し、`skills` が symlink でも物理パス（`cd -P` / `pwd -P`）で `../..` を解決する
 
 このskillを実行するAI hostは、Bash tool呼び出しを組み立てるとき、skill loaderが返した実値で `FF_DEV_TOOLKIT_SKILL_FILE="<このSKILL.mdの絶対パス>"; export FF_DEV_TOOLKIT_SKILL_FILE` を実行し、同じshell script bodyでresourceを呼び出す。placeholderのまま実行したり、cache pathを推測して埋めたりしない。
 plugin内ドキュメントの正本は、読み込んだこの `SKILL.md` のdirectoryを基準にした [plugin root固定契約](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) である。consumerへコピーされた `docs/` や物理CWDを基準に解決しない。
@@ -138,7 +138,7 @@ Issue body の内容から、関連しそうな参照文書を提案します。
 
 SubAgent への指示テンプレートは [references/actions.md](references/actions.md#探索の指示) に置く。
 
-目安として 3〜5 件返ることを期待しますが、根拠の薄い論点を水増ししない方針。
+目安は 3〜5 件で、根拠の薄い論点は水増ししません。
 
 手順 6・7 を skip して手順 9 の完了報告へ直行するのは、**手順 4 の 6 観点違反が 0 件 かつ 手順 5 の SubAgent 探索論点が 0 件**（refine の必要なし）の場合だけです。どちらか一方でも 1 件以上あれば skip せず手順 6 へ進みます。SubAgent 論点が 0 件でも手順 4 で検出済みの 6 観点違反は握りつぶさず、階層化判定・反映まで必ず届けます（skip 条件を「SubAgent 論点 0 件」だけにすると、上流ゲートの検出結果が後段へ届かず落ちる）。
 
@@ -248,4 +248,4 @@ URL: <Issue URL>
 
 ## Out of Scope
 
-複数 Issue の順次・一括 refine（`/loop` 連携・batch モード・`needs-refinement` ラベルからの自動抽出）、司令ファイル + PreCompact hook 連携、Architectural 質問への返信の自動取り込み（現状は再度 `/refine-issue` を手動実行）、GitHub Enterprise Server は範囲外です。
+複数 Issue の一括 refine（`/loop`・batch・`needs-refinement` 自動抽出）、司令ファイル + PreCompact hook 連携、Architectural 質問返信の自動取り込み（再手動実行）、GHES は範囲外です。

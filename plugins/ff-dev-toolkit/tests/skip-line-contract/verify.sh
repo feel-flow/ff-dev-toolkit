@@ -4,6 +4,11 @@
 # 空振り検出: OS 別プロファイルが無い・空・不正な行、静的照合の対象が空、理由の固定句が無い場合は赤。Linux と macOS の欄を交換する変異は対照が赤になる。
 # 空振り検出: --check の停止で停止文の lib をサブシェルの外でも読ませると、先頭で exit する lib の写しのケースが赤（2026-11-08 macOS / Bash 3.2.57 実測。64/1。Issue `#2712`）。
 # 空振り検出: 公開配置の合成実行の suite skip の許容（public-layout/resident-skip-allow.sh）は、判定・public-layout・実物の suite・公開 workflow のいずれかが無い回と、workflow の許容名簿の代入が 0 件か 2 件以上の回を赤にする。写しの木に 1 つずつ当てた変異はすべて赤（2026-11-10 macOS / Bash 3.2.57 実測。無変異は 77 件 pass）: 列 0 の鍵を外す・skip の印を見ない（部分 skip で許容）、単体実行の rc を見ない、前回の値を持ち越す、suite の不在・ログを書けない回を起動へ進める、判定の不在、実物の suite の理由句の改稿、public-layout が値を渡さない・設定時だけ渡す・step の後で判定する、workflow の許容名簿を元へ戻す・既定へ suite を足す・env: やインラインで値を設定する・2 つ目の代入を足す、workflow の不在。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: /plugins/**/tests/**.sh /plugins/**/tests/**.bash /plugins/**/tests/**.py /plugins/**/tests/**.mjs
+# run-all-depends: tests/lib/release-skip-profile.tsv scripts/lib/stop-block.*
+# run-all-depends: /oss/ff-dev-toolkit/.github/workflows/weekly-public-run-all.yml
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

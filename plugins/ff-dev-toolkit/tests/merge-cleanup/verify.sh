@@ -6,6 +6,7 @@
 # 空振り検出: 対象ブランチでの絞り込みを外すと、独立 fixture の dry-run が別のマージ済み worktree を保全しないため赤になる。
 # 空振り検出: agent branch専用fixtureが削除処理の欠落・祖先判定欠落・worktree判定欠落・remote判定欠落を赤にする。
 # 空振り検出: gone ancestor専用fixture（gone-ancestor.sh）が、祖先削除の欠落（no-ancestor）・取得不能/3値判定の祖先誤認（fetch-fail-as-ancestor）・複数同名PR緩和（allow-multi-pr）・dry-run本体リポジトリ汚染（dry-pollutes-repo）の各変異を赤にする（2026-11-18 macOS / Bash 3.2 実測）。
+# 空振り検出: GraphQL 403 時 REST フォールバック専用 fixture（graphql-rest.sh）が、フォールバック無効化（no-fallback）・head.repo=null の false 化（head-repo-null-false）・open PR 一覧上限打ち切りの素通し（open-list-truncate-ok）・merged PR 一覧要求件数未満打ち切りの素通し（merged-list-truncate-ok）・open ガード空化（open-guard-empty）の 5 変異を赤にする（2026-11-25 macOS / Bash 3.2 実測）。
 # 空振り検出: msys の core.longpaths=true を外した mutant は long-paths.sh の呼び出し記録の照合で赤になる。Windows の実機では、深い node_modules の削除が git の「Filename too long」で失敗して赤になる（2026-10-30 実測、Issue `#2479`）。
 # 空振り検出: msys で ignored のリンクを外す工程を除いた mutant は、long-paths.sh の「worktree remove の時点のリンク数」が 1 になって赤になる（リンクを数えられない回は印の行で 0 にならない）。Windows の実機では windows-junctions.sh の outside の回が参照先の keep.txt の消失で、pnpm の回が単独でも「Directory not empty」で赤になる。残ったリンクの確認を除いた mutant は long-paths.sh の hidden-untracked の回が赤にする。ジャンクションを作れない回と、登録の照合が実行前に当たらない回も赤（2026-10-31 実測、Issue `#2557`）。
 # 空振り検出: 入口の「ファイルが無い」分岐を外した写しを与えると、「構成ファイルを読めない入口が削除前に止まっていない（mode=missing）」の 1 件だけが赤になる（2026-10-21 実測。成功は残り全部。判定は exit 1 のまま、針「がありません」が外れ、次の分岐の「が 0 バイトです」になる。削除へは進まない）。
@@ -170,6 +171,14 @@
 # 書き込み不可の環境（read-only チェックアウト等）では skip して成功扱いにする。
 #
 # run-all-required: no — 一時領域が無い環境の skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。必須へ昇格するなら REQUIRED_SUITES へ移す）
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/merge-cleanup.sh scripts/lib/merge-cleanup-*.sh scripts/lib/shell-quote.* scripts/lib/gh-rest-fallback.*
+# run-all-depends: tests/lib/git-fixture.sh tests/lib/mbcs-guard.sh tests/lib/suite-cases.sh
+# run-all-not-depends: tests/run-all/verify.sh 同じ検出器を使う別 suite の説明
+# run-all-not-depends: /README.md fixture リポジトリへ書くファイル名
+# run-all-not-depends: /.claude/settings.json 運用の説明（読まない）
+# run-all-not-depends: mcp/dist/index.js 長いパスの fixture の中のファイル名
 
 set -euo pipefail
 
@@ -281,6 +290,7 @@ mbcs_assert_clean() {
 mbcs_assert_clean "$TARGET" "merge-cleanup.sh"
 mbcs_assert_clean "$SCRIPT_DIR/verify.sh" "本 suite (tests/merge-cleanup/verify.sh)"
 mbcs_assert_clean "$SCRIPT_DIR/gone-ancestor.sh" "本 suite の gone-ancestor.sh"
+mbcs_assert_clean "$SCRIPT_DIR/graphql-rest.sh" "本 suite の graphql-rest.sh"
 _mc_cases=0
 for _mc_case in "$SCRIPT_DIR"/cases/*.sh; do
   [ -f "$_mc_case" ] || continue
@@ -290,6 +300,7 @@ done
 [ "$_mc_cases" -gt 0 ] || bad "本 suite の cases ファイルが 1 本も見つからない（マルチバイト検査が空振りしている）"
 MC_PARTS=(
   "$PLUGIN_ROOT/scripts/lib/shell-quote.sh"
+  "$PLUGIN_ROOT/scripts/lib/gh-rest-fallback.sh"
   "$PLUGIN_ROOT/scripts/lib/merge-cleanup-pre.sh"
   "$PLUGIN_ROOT/scripts/lib/merge-cleanup-remote.sh"
   "$PLUGIN_ROOT/scripts/lib/merge-cleanup-local.sh"
@@ -333,7 +344,10 @@ refuse_cleanup_unreadable() { # <mode> <needle>
   git -C "$dir/repo" switch -qc keep-me
   before="$(git -C "$dir/repo" rev-parse HEAD)"
   # 先に読む共有 helper は揃え、壊すのは merge-cleanup-pre.sh だけにする（missing は lib を空のまま）
-  [ "$mode" = missing ] || cp "$PLUGIN_ROOT/scripts/lib/shell-quote.sh" "$dir/lib/shell-quote.sh"
+  if [ "$mode" != missing ]; then
+    cp "$PLUGIN_ROOT/scripts/lib/shell-quote.sh" "$dir/lib/shell-quote.sh"
+    cp "$PLUGIN_ROOT/scripts/lib/gh-rest-fallback.sh" "$dir/lib/gh-rest-fallback.sh"
+  fi
   case "$mode" in
     missing) ;;
     empty) : > "$dir/lib/merge-cleanup-pre.sh" ;;
@@ -809,6 +823,72 @@ for ga_mut in no-ancestor fetch-fail-as-ancestor allow-multi-pr dry-pollutes-rep
     exit 1
   else
     ok "gone-ancestor mutant ${ga_mut} を fixture が赤にする"
+  fi
+done
+
+if bash "$SCRIPT_DIR/graphql-rest.sh" "$TARGET"; then
+  ok "GraphQL 403 時の REST API フォールバック（PR 取得・複数ページ一覧・CLOSED/head.repo=null 正規化・--github-input 案内）"
+else
+  bad "GraphQL 403 時の REST API フォールバック回帰"
+  exit 1
+fi
+for gr_mut in no-fallback head-repo-null-false open-list-truncate-ok merged-list-truncate-ok open-guard-empty; do
+  GR_DIR="$TMP/gr-mutant-${gr_mut}"
+  stage_cleanup_mutant "$GR_DIR"
+  case "$gr_mut" in
+    no-fallback)
+      awk '
+        /^ff_gh_is_graphql_unavailable\(\)/ { print; print "  return 1"; next }
+        { print }
+      ' "$GR_DIR/lib/gh-rest-fallback.sh" > "$GR_DIR/lib/gh-rest-fallback.new"
+      mv "$GR_DIR/lib/gh-rest-fallback.new" "$GR_DIR/lib/gh-rest-fallback.sh"
+      ;;
+    head-repo-null-false)
+      awk '
+        /if \(\.head\.repo == null\) or \(\.base\.repo == null\) then true/ {
+          sub(/then true/, "then false")
+        }
+        { print }
+      ' "$GR_DIR/lib/gh-rest-fallback.sh" > "$GR_DIR/lib/gh-rest-fallback.new"
+      mv "$GR_DIR/lib/gh-rest-fallback.new" "$GR_DIR/lib/gh-rest-fallback.sh"
+      ;;
+    open-list-truncate-ok)
+      awk '
+        /if \[ "\$mode" = "open" \] && \[ "\$complete" -ne 1 \]; then/ {
+          sub(/\[ "\$complete" -ne 1 \]/, "false")
+        }
+        { print }
+      ' "$GR_DIR/lib/gh-rest-fallback.sh" > "$GR_DIR/lib/gh-rest-fallback.new"
+      mv "$GR_DIR/lib/gh-rest-fallback.new" "$GR_DIR/lib/gh-rest-fallback.sh"
+      ;;
+    merged-list-truncate-ok)
+      awk '
+        /if \[ "\$mode" = "merged" \] && \[ "\$complete" -ne 1 \] && \[ "\$total" -lt "\$limit" \]; then/ {
+          sub(/\[ "\$complete" -ne 1 \]/, "false")
+        }
+        { print }
+      ' "$GR_DIR/lib/gh-rest-fallback.sh" > "$GR_DIR/lib/gh-rest-fallback.new"
+      mv "$GR_DIR/lib/gh-rest-fallback.new" "$GR_DIR/lib/gh-rest-fallback.sh"
+      ;;
+    open-guard-empty)
+      awk '
+        /jq -c '\''\[\.\[\] \| \{headRefName: \(\.head\.ref \/\/ null\)\}\]'\''/ {
+          sub(/\[\.\[\] \| \{headRefName: \(\.head\.ref \/\/ null\)\}\]/, "[]")
+        }
+        { print }
+      ' "$GR_DIR/lib/gh-rest-fallback.sh" > "$GR_DIR/lib/gh-rest-fallback.new"
+      mv "$GR_DIR/lib/gh-rest-fallback.new" "$GR_DIR/lib/gh-rest-fallback.sh"
+      ;;
+  esac
+  if cmp -s "$PLUGIN_ROOT/scripts/lib/gh-rest-fallback.sh" "$GR_DIR/lib/gh-rest-fallback.sh"; then
+    bad "graphql-rest mutant ${gr_mut} が原本と同一（空振り）"
+    exit 1
+  fi
+  if bash "$SCRIPT_DIR/graphql-rest.sh" "$GR_DIR/merge-cleanup.sh" > "$TMP/gr-mutant-${gr_mut}.log" 2>&1; then
+    bad "graphql-rest mutant ${gr_mut} が生き残った"
+    exit 1
+  else
+    ok "graphql-rest mutant ${gr_mut} を fixture が赤にする"
   fi
 done
 

@@ -1,0 +1,13 @@
+# 選択の漏れの回帰検査（Issue `#3006`）。simulate.sh --expect が読む（tests/changed-select/verify.sh の L2）。
+# 共有 lib の利用側の逆引き（select.sh users）は lib/ 配下のシェルだけを中継し、宣言の照合（select.sh check）は
+# suite のスクリプトの字面だけを見る。次の種類の依存は逆引きに乗らず、照合は suite の字面に名前が出る間しか
+# 検出しない（代表のうち adapter-common.sh と setup-cloud-env.sh は今は字面にも出るが、出なくなれば L1 は
+# 赤にならない）。種類ごとに代表の組を 1 行ずつ置き、宣言が後で狭まったら L2 が赤にする:
+#   - lib/ の外で source される共有のファイル（hook が source する asdd-hook-gate.sh、アダプタが source する adapter-common.sh）
+#   - scripts/lib/ のシェル以外のデータ（multi-agent.sh が Windows で読む knowledge-read-acl.ps1）
+#   - プラグインの外のスクリプト（リポジトリルートの scripts/）
+# 列: <変更パス（プラグインルート相対。/ 始まりはリポジトリルート相対）><TAB><suite><TAB><出典>
+hooks/asdd-hook-gate.sh	guard-shell-save	not-relayed:source-outside-lib
+scripts/adapters/adapter-common.sh	review-wrapper-shim	not-relayed:source-outside-lib
+scripts/lib/knowledge-read-acl.ps1	stop-reason-evidence	not-relayed:non-shell-data
+/scripts/setup-cloud-env.sh	cloud-env-setup	not-relayed:outside-plugin

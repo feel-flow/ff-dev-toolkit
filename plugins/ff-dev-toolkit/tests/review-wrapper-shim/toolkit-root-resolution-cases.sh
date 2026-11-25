@@ -587,3 +587,195 @@ else
   bad "配置先の既定がトップレベルでない（サブディレクトリ実行で迷子になる）"
   sed 's/^/    | /' "$WORK/install3.log" >&2
 fi
+
+echo "-- Claude Code クラウド配置（plugins/synced と CLAUDE_PLUGIN_ROOT） --"
+
+SYNCED_HOME="$WORK/claude-synced-home"
+SYNCED_V1="$SYNCED_HOME/plugins/synced/cloud-id-a/ff-dev-toolkit"
+SYNCED_V2="$SYNCED_HOME/plugins/synced/cloud-id-b/ff-dev-toolkit"
+make_cache_toolkit "$SYNCED_V1" "1.0.0"
+make_cache_toolkit "$SYNCED_V2" "2.0.0"
+_synced_v2_phys="$(cd "$SYNCED_V2" && pwd -P)"
+
+# 1. cache / sidecar 不在でも plugins/synced/<id>/ff-dev-toolkit から最大版を自動解決する
+printf '%s\n' "$WORK/nonexistent-toolkit" > "$SIDECAR"
+run_print_root CODEX_HOME="$WORK/empty-codex-home" CLAUDE_CONFIG_DIR="$SYNCED_HOME" -- --print-toolkit-root=kv
+if [ "$PRINT_RC" -eq 0 ] \
+   && [ "$(print_root_physical "$(sed -n 's/^root=//p' "$WORK/print.out")")" = "$_synced_v2_phys" ] \
+   && grep -qxF "version=2.0.0" "$WORK/print.out" \
+   && grep -qxF "source=claude-synced" "$WORK/print.out"; then
+  ok "クラウド synced: plugins/synced/<id>/ff-dev-toolkit から最大版を自動解決し source=claude-synced を返す"
+else
+  bad "クラウド synced の自動解決または最大版選択が不正 (rc=$PRINT_RC)"
+  sed 's/^/    | out: /' "$WORK/print.out" >&2
+  sed 's/^/    | err: /' "$WORK/print.err" >&2
+fi
+
+# レビュー実行経路も synced 単独配置から完走する
+: > "$WORK/argv-synced.log"
+SYNCED_RC=0
+run_isolated_shim -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$WORK/empty-codex-home" \
+  CLAUDE_CONFIG_DIR="$SYNCED_HOME" ARGV_LOG="$WORK/argv-synced.log" \
+  bash "$PLACED" --base develop >"$WORK/synced-run.log" 2>&1 || SYNCED_RC=$?
+if [ "$SYNCED_RC" -eq 0 ] && [ -s "$WORK/argv-synced.log" ] \
+   && grep -q 'source=claude-synced' "$WORK/synced-run.log"; then
+  ok "クラウド synced: レビュー実行経路も plugins/synced から完走する"
+else
+  bad "クラウド synced のレビュー実行経路が失敗した (rc=$SYNCED_RC)"
+  sed 's/^/    | /' "$WORK/synced-run.log" >&2
+fi
+
+# 2. CLAUDE_PLUGIN_ROOT が ff-dev-toolkit 自身を指すときは自動探索より優先（source=claude-plugin-root）
+_synced_v1_phys="$(cd "$SYNCED_V1" && pwd -P)"
+run_print_root CLAUDE_PLUGIN_ROOT="$SYNCED_V1" CODEX_HOME="$WORK/empty-codex-home" \
+  CLAUDE_CONFIG_DIR="$SYNCED_HOME" -- --print-toolkit-root=kv
+if [ "$PRINT_RC" -eq 0 ] \
+   && [ "$(print_root_physical "$(sed -n 's/^root=//p' "$WORK/print.out")")" = "$_synced_v1_phys" ] \
+   && grep -qxF "version=1.0.0" "$WORK/print.out" \
+   && grep -qxF "source=claude-plugin-root" "$WORK/print.out"; then
+  ok "CLAUDE_PLUGIN_ROOT: ff-dev-toolkit 自身のときは自動探索より優先し source=claude-plugin-root を返す"
+else
+  bad "CLAUDE_PLUGIN_ROOT の解決が不正 (rc=$PRINT_RC)"
+  sed 's/^/    | out: /' "$WORK/print.out" >&2
+  sed 's/^/    | err: /' "$WORK/print.err" >&2
+fi
+
+# 3. FF_DEV_TOOLKIT_ROOT は CLAUDE_PLUGIN_ROOT より優先される
+run_print_root FF_DEV_TOOLKIT_ROOT="$TOOLKIT" CLAUDE_PLUGIN_ROOT="$SYNCED_V1" \
+  CODEX_HOME="$WORK/empty-codex-home" CLAUDE_CONFIG_DIR="$SYNCED_HOME" -- --print-toolkit-root=kv
+if [ "$PRINT_RC" -eq 0 ] && grep -qxF "source=explicit" "$WORK/print.out"; then
+  ok "CLAUDE_PLUGIN_ROOT: FF_DEV_TOOLKIT_ROOT が両方あるときは FF_DEV_TOOLKIT_ROOT が勝つ"
+else
+  bad "FF_DEV_TOOLKIT_ROOT が CLAUDE_PLUGIN_ROOT に負けた (rc=$PRINT_RC)"
+fi
+
+# 4. CLAUDE_PLUGIN_ROOT が不正（不在パス / ff-dev-toolkit の内容不一致）のときは synced へ逃げず exit 2
+run_print_root CLAUDE_PLUGIN_ROOT="$WORK/missing-claude-plugin" CODEX_HOME="$WORK/empty-codex-home" \
+  CLAUDE_CONFIG_DIR="$SYNCED_HOME" -- --print-toolkit-root
+if [ "$PRINT_RC" -eq 2 ] && [ ! -s "$WORK/print.out" ] \
+   && grep -q 'CLAUDE_PLUGIN_ROOT が設定されていますが、使える multi-agent.sh がありません' "$WORK/print.err"; then
+  ok "CLAUDE_PLUGIN_ROOT: 不在パスは有効な synced 候補があっても逃げず exit 2（fail-closed）"
+else
+  bad "CLAUDE_PLUGIN_ROOT の不在パスが別候補へ逃げた (rc=$PRINT_RC)"
+  sed 's/^/    | err: /' "$WORK/print.err" >&2
+fi
+
+MISMATCH_CLAUDE="$WORK/claude-plugin-mismatch"
+make_cache_toolkit "$MISMATCH_CLAUDE" "3.0.0"
+printf '\n# mismatch\n' >> "$MISMATCH_CLAUDE/scripts/templates/codex-review.sh"
+run_print_root CLAUDE_PLUGIN_ROOT="$MISMATCH_CLAUDE" CODEX_HOME="$WORK/empty-codex-home" \
+  CLAUDE_CONFIG_DIR="$SYNCED_HOME" -- --print-toolkit-root
+if [ "$PRINT_RC" -eq 2 ] && [ ! -s "$WORK/print.out" ] \
+   && grep -q '配置済み shim が内容不一致です' "$WORK/print.err"; then
+  ok "CLAUDE_PLUGIN_ROOT: ff-dev-toolkit 自身の内容不一致は別候補へ逃げず exit 2（fail-closed）"
+else
+  bad "CLAUDE_PLUGIN_ROOT の内容不一致が別候補へ逃げた (rc=$PRINT_RC)"
+fi
+
+# 4b. CLAUDE_PLUGIN_ROOT 不在パスでの通常実行（降格案内）が setup 再実行ではなく CLAUDE_PLUGIN_ROOT / FF_DEV_TOOLKIT_ROOT 復旧手順を出す
+CLAUDE_FALLBACK_RC=0
+run_isolated_shim -u FF_DEV_TOOLKIT_ROOT \
+  CLAUDE_PLUGIN_ROOT="$WORK/missing-claude-plugin" \
+  CODEX_HOME="$WORK/empty-codex-home" CLAUDE_CONFIG_DIR="$SYNCED_HOME" \
+  bash "$PLACED" --dry-run >"$WORK/claude-fb.out" 2>"$WORK/claude-fb.err" || CLAUDE_FALLBACK_RC=$?
+if [ "$CLAUDE_FALLBACK_RC" -eq 2 ] \
+   && grep -qF 'CLAUDE_PLUGIN_ROOT のパスを確認するか' "$WORK/claude-fb.err" \
+   && grep -qF 'FF_DEV_TOOLKIT_ROOT' "$WORK/claude-fb.err"; then
+  ok "CLAUDE_PLUGIN_ROOT: 不在パスでの降格案内が CLAUDE_PLUGIN_ROOT / FF_DEV_TOOLKIT_ROOT 復旧手順を出す"
+else
+  bad "CLAUDE_PLUGIN_ROOT 不在パスでの降格案内が不正 (rc=$CLAUDE_FALLBACK_RC)"
+  sed 's/^/    | err: /' "$WORK/claude-fb.err" >&2
+fi
+
+# 5. CLAUDE_PLUGIN_ROOT が別プラグインを指すときはスキップして通常の自動探索へ進む
+OTHER_PLUGIN="$WORK/other-plugin"
+mkdir -p "$OTHER_PLUGIN/.claude-plugin"
+printf '%s\n' '{' '  "name": "other-plugin",' '  "version": "1.0.0"' '}' > "$OTHER_PLUGIN/.claude-plugin/plugin.json"
+run_print_root CLAUDE_PLUGIN_ROOT="$OTHER_PLUGIN" CODEX_HOME="$WORK/empty-codex-home" \
+  CLAUDE_CONFIG_DIR="$SYNCED_HOME" -- --print-toolkit-root=kv
+if [ "$PRINT_RC" -eq 0 ] \
+   && [ "$(print_root_physical "$(sed -n 's/^root=//p' "$WORK/print.out")")" = "$_synced_v2_phys" ] \
+   && grep -qxF "source=claude-synced" "$WORK/print.out"; then
+  ok "CLAUDE_PLUGIN_ROOT: 別プラグイン（name != ff-dev-toolkit）のときはスキップして通常探索で解決する"
+else
+  bad "別プラグインの CLAUDE_PLUGIN_ROOT でシムが止まった (rc=$PRINT_RC)"
+  sed 's/^/    | out: /' "$WORK/print.out" >&2
+  sed 's/^/    | err: /' "$WORK/print.err" >&2
+fi
+
+# 5b. manifest を持たない無関係な別プラグインの CLAUDE_PLUGIN_ROOT も通常探索へ進み、壊れた manifest は引き続き exit 2
+NOMANIFEST_PLUGIN="$WORK/other-no-manifest"
+mkdir -p "$NOMANIFEST_PLUGIN/hooks"
+run_print_root CLAUDE_PLUGIN_ROOT="$NOMANIFEST_PLUGIN" CODEX_HOME="$WORK/empty-codex-home" \
+  CLAUDE_CONFIG_DIR="$SYNCED_HOME" -- --print-toolkit-root=kv
+if [ "$PRINT_RC" -eq 0 ] \
+   && [ "$(print_root_physical "$(sed -n 's/^root=//p' "$WORK/print.out")")" = "$_synced_v2_phys" ] \
+   && grep -qxF "source=claude-synced" "$WORK/print.out"; then
+  ok "CLAUDE_PLUGIN_ROOT: manifest を省略した無関係な別プラグインでもスキップして通常探索で解決する"
+else
+  bad "manifest 省略別プラグインの CLAUDE_PLUGIN_ROOT でシムが止まった (rc=$PRINT_RC)"
+  sed 's/^/    | err: /' "$WORK/print.err" >&2
+fi
+
+BROKEN_MANIFEST_PLUGIN="$WORK/broken-manifest-plugin"
+mkdir -p "$BROKEN_MANIFEST_PLUGIN/.claude-plugin"
+printf '{broken json\n' > "$BROKEN_MANIFEST_PLUGIN/.claude-plugin/plugin.json"
+run_print_root CLAUDE_PLUGIN_ROOT="$BROKEN_MANIFEST_PLUGIN" CODEX_HOME="$WORK/empty-codex-home" \
+  CLAUDE_CONFIG_DIR="$SYNCED_HOME" -- --print-toolkit-root
+if [ "$PRINT_RC" -eq 2 ] && [ ! -s "$WORK/print.out" ]; then
+  ok "CLAUDE_PLUGIN_ROOT: 壊れた manifest がある場合はスキップせず exit 2（fail-closed）"
+else
+  bad "壊れた manifest の CLAUDE_PLUGIN_ROOT が通常探索へ逃げた (rc=$PRINT_RC)"
+fi
+
+# 入れ子 author.name が先にある ff-dev-toolkit manifest を別プラグインと誤読しないこと
+NESTED_MANIFEST_KIT="$WORK/nested-manifest-kit"
+make_cache_toolkit "$NESTED_MANIFEST_KIT" "1.5.0"
+printf '%s\n' '{' '  "author": { "name": "other-author" },' '  "name": "ff-dev-toolkit",' '  "version": "1.5.0"' '}' \
+  > "$NESTED_MANIFEST_KIT/.claude-plugin/plugin.json"
+_nested_phys="$(cd "$NESTED_MANIFEST_KIT" && pwd -P)"
+run_print_root CLAUDE_PLUGIN_ROOT="$NESTED_MANIFEST_KIT" CODEX_HOME="$WORK/empty-codex-home" \
+  CLAUDE_CONFIG_DIR="$SYNCED_HOME" -- --print-toolkit-root=kv
+if [ "$PRINT_RC" -eq 0 ] \
+   && [ "$(print_root_physical "$(sed -n 's/^root=//p' "$WORK/print.out")")" = "$_nested_phys" ] \
+   && grep -qxF "source=claude-plugin-root" "$WORK/print.out"; then
+  ok "CLAUDE_PLUGIN_ROOT: 入れ子 author.name に釣られず top-level name で ff-dev-toolkit を識別する"
+else
+  bad "入れ子 author.name で ff-dev-toolkit を別プラグインと誤読した (rc=$PRINT_RC)"
+  sed 's/^/    | err: /' "$WORK/print.err" >&2
+fi
+
+# 6. 未解決エラー案内に CLAUDE_PLUGIN_ROOT・plugins/synced・FF_DEV_TOOLKIT_ROOT の回避手順があること
+run_print_root CODEX_HOME="$WORK/empty-codex-home" CLAUDE_CONFIG_DIR="$WORK/empty-claude-home" -- --print-toolkit-root
+if [ "$PRINT_RC" -eq 1 ] && [ ! -s "$WORK/print.out" ] \
+   && grep -qF 'CLAUDE_PLUGIN_ROOT' "$WORK/print.err" \
+   && grep -qF 'plugins/synced/*/ff-dev-toolkit' "$WORK/print.err" \
+   && grep -qF 'FF_DEV_TOOLKIT_ROOT="' "$WORK/print.err"; then
+  ok "未解決案内: CLAUDE_PLUGIN_ROOT・plugins/synced・クラウド向け FF_DEV_TOOLKIT_ROOT 回避手順を出力する"
+else
+  bad "未解決案内にクラウド配置または回避手順の記載が不足 (rc=$PRINT_RC)"
+  sed 's/^/    | err: /' "$WORK/print.err" >&2
+fi
+
+# 7. setup-multi-agent.sh の版推定（setup_deployed_shim_version）が plugins/synced も走査すること
+SYNCED_SETUP_VER=""
+SYNCED_SETUP_RC=0
+SYNCED_SETUP_VER="$(
+  env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT \
+    CLAUDE_CONFIG_DIR="$SYNCED_HOME" CODEX_HOME="$WORK/empty-codex-home" GROK_HOME="$WORK/no-grok" \
+    bash -c '
+      set -euo pipefail
+      . "'"$FAKE"'/scripts/setup-multi-agent.sh" >/dev/null 2>&1
+      w="$(mktemp -d)"
+      trap "rm -rf \"$w\"" EXIT
+      setup_strip_cr <"'"$PLACED"'" >"$w/norm"
+      setup_deployed_shim_version "$w/norm" "$w"
+      printf "%s\n" "$DEPLOYED_SHIM_VERSION"
+    ' 2>/dev/null
+)" || SYNCED_SETUP_RC=$?
+if [ "$SYNCED_SETUP_RC" -eq 0 ] && [ "$SYNCED_SETUP_VER" = "2.0.0" ]; then
+  ok "setup: setup_deployed_shim_version も plugins/synced/<id>/ff-dev-toolkit から最大版を推定できる"
+else
+  bad "setup: plugins/synced からの配置先シム版推定が失敗した (rc=$SYNCED_SETUP_RC ver=[$SYNCED_SETUP_VER])"
+fi
+printf '%s\n' "$FAKE/scripts" > "$SIDECAR"

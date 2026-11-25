@@ -20,6 +20,51 @@
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-11-26
+
+### 追加
+
+- 工数ブロックに、起票後に足した範囲の予定を表す加算予定行 `effort_ai_planned_added`（`+N.Nh（日付と経路。根拠）`）を足した。AC の追記・コメントでの追記・部分 PR の分け直しで範囲が増えたとき、起票時の予定を書き換えずに 1 行ずつ足す（1 行に値は 1 つ）。集計器 `effort-report.sh` はこの行を合計して、乖離率を `実績 ÷ (予定 + 加算予定)` で出す（`--format kv` に `ai_planned_added_total` / `ai_planned_added_issues` を足した。`ai_planned_total` は乖離率の母集団の起票時の予定の合計で、加算予定を含まない）。読めない加算行（値の後ろに別の値が続く行や、字下げ・全角コロン・ブロックの外に書いた加算行を含む）がある Issue は 0 として足さず、乖離率の母集団からだけ外して `variance_excluded_added_unreadable` に件数を、`variance_excluded_added_unreadable_issues` に番号を出す。これまでは追記のたびに乖離率が積み上がり、範囲の追加が見積もりの外れとして較正の母集団に入っていた
+- 加算予定行を書く時機を、追記する側（本文への追記は同じ書き込みで、コメントでの追記は `追記分の予定（目安）` を添える）・着手する側（写っていない追記を実装前に写す。bundle 以外の Issue も同じ）・部分 PR を足す側に書いた（`/create-issue` の見積もり手順、`/out-of-scope-issue` の統合、`/retrospective` の起票、`/close-issue` のスコープ変更、git-workflow の着手）。足すのは起票時の予定に含まれていない分だけで、起票時の範囲を部分 PR に分け直しただけなら増える固定費だけを足す。bundle 本文へ足した範囲は、加算予定も実績も親に置く。`/close-issue` は、今回の PR で実装した追加分の行をマージ直前に後から書き足さない
+- zsh で動く Bash ツールの未引用 glob のガード（`guard-zsh-glob.sh`）が、`rm -f`（`-rf` / `--force` を含む）のオペランドの未引用 glob を実行前に止めるようにした。`-f` は「消す対象が無くても成功する」指定ですが、zsh は 0 件の未引用 glob で `rm` を実行しないまま非 0 で終わるので、初回など対象がまだ無い回に `&&` で続く処理が黙って飛ばされていました。停止文は語の引用ではなく、zsh の glob 修飾子 `(N)` を付けた書き換え案、`(setopt null_glob; rm -f …)`、`find … -delete` を示します（引用した glob は名前どおりのファイルだけを対象にし、何も消さずに成功するため）。引用した glob・`noglob` 前置・`-f` の無い rm・一般のパス glob は従来どおり止めません（公開 https://github.com/feel-flow/ff-dev-toolkit/issues/165）
+- リテラル書き込みのガード（`guard-literal-write.sh`）が、検出がすべて Bash ツールによるバックスラッシュ 2 本の縮み（引用付き heredoc でインタプリタへ渡すプログラムと、コマンド行の引数）だけの回に、この呼び出しのコマンドを同じバイト列の本文として停止文に載せ、Write ツールでファイルへ書いて bash でそのファイルを実行する手順を示すようにした。ファイルから渡すとバックスラッシュは書いたとおりに届くので、同じデータのまま 1 回で書き直せます。perl / node の変数・引用なし heredoc の展開・PowerShell のバッククォートを含む回、CR を含む回は従来の停止文のままです（公開 https://github.com/feel-flow/ff-dev-toolkit/issues/163）
+- 経路判定（`review-route.sh`）が、専用セキュリティゲートを実行する回に、PR 本文へ書く結果の行の書式を 2 つ並べて出すようにした（実行した回の `REVIEW_SECURITY_RECORD_DONE` と、実行しなかった回・誤検知と判断した回の `REVIEW_SECURITY_RECORD_SKIPPED`）。これまでの報告行は「… を実行する（…）」という計画の行だけで、`/close-issue` の precheck が記録として認める書き方は、止まったときに初めて示されていた。指摘の件数や理由を埋めた行は precheck と同じ判定で記録として認められ、書式を埋めずに貼っただけの行（件数や理由の置き場所が残る行）は、ゲートを実行しなくても通ってしまうので認めない。該当なし・未確認・未対応・無効の回は出さない
+- `multi-agent.sh --task review --print-reviewers`（レビュー担当の環境チェック）が、`available=` の各 CLI について起動前の確認（利用枠・認証・sandbox の適用可否。モデルは起動しない）を 1 回でまとめ、`lane_precheck.CLI名=` の行に 1 行ずつ出すようにした。値は `unavailable`（理由は同じ行の `usage=` / `sandbox=`）・`available`・`unknown`（確かめられない）・`skipped`（ホスト委譲のレーン）の 4 つ。代替の CLI を選ぶために候補ごとに `--dry-run` を回す必要は無くなった。既存の行（`main=` から `known=` まで）の並びと終了コードは変わらない。`MULTI_AGENT_LANE_PRECHECK=off` では確かめず、`lane_precheck=off` の 1 行だけを出す。
+- 環境チェックのたびに grok の sandbox 判定が走り、grok の sandbox イベントログへ 1 行足すようになった（これまでは `--dry-run` のときだけ）。追加行を読まない `asdd-init --check` の multiReview の確認は、この起動前の確認を省いて呼ぶ。
+- 全件ゲート（`tests/run-all.sh` の既定一覧）が、通過した suite ごとの CPU 時間を時間予算と比べ、超えたらゲートを赤にするようにした。上限は `tests/time-budget/baseline.tsv` に suite ごとに置き、基線に無い新設 suite は 180 秒まで。基線は縮める方向にしか動かせず、上限の引き上げは `time-budget` suite が赤にする。CPU 時間は機械の速さを較正で揃えてから比べるので、基線を測った機械より遅い機械でも一律に赤にはならない。計測値が取れない・基線が読めない回も赤になる。明示引数の実行と入れ子の実行は判定せず、サマリーの後に suite ごとの CPU 秒の観測行（`cpu-sec:` と、落ちた・skip した suite の `cpu-sec-other:`）だけを出す。
+- 基線を測っていない環境（別の OS の CI など）では、`FF_RUN_ALL_TIME_BUDGET=off` で判定を外せる。外した回は警告を出し、マージ前の鮮度照合の証拠にならない記録（partial）になる。
+
+### 変更
+
+- 通常 PR のゲートを回す順序を「変更対象の単体検証 → PR 作成 → レビュー収束 → 最終ゲート 1 回」に揃えた（`docs-template/05-operations/deployment/git-workflow.md` のステップ 4〜6 と `multi-review` スキル）。レビューと並走させる別 worktree の baseline は任意の選択肢になり、指摘 0 件の見込みが高い回だけ使う。HEAD が動いたら最終ゲートは省かない。
+- 全件ゲートの赤が鮮度（base の先行）だけで説明できた回の手順を足した。赤だった suite だけを名指しで回し直したうえで、PR の checks がマージ前のゲートを担うプロジェクトは取り込んだ HEAD の checks の全件成功で進める（リリース前の PR と実行基盤の契約面を変えた PR は除き、通しのゲートを 1 回回す）。checks の無いプロジェクトでは、取り込んだ HEAD で通常 PR と同じ指定のゲートを 1 回回す（全件モードの指定は足さない）。
+- `tests/run-all.sh` を `FF_RUN_ALL_FULL=1` で起動すると、全件モードはリリース・公開同期の前に回すものであることと、通常 PR のマージ前ゲートの起動方法（`FF_RUN_ALL_CHANGED=1`）を 1 行で出すようにした。実行は止めない。公開同期のリリーススクリプトの gate 段からの起動、明示引数の実行、変更ベースの部分ゲートが自動で全件へ倒れた回では出さない。
+- 変更ベースの部分ゲート（`FF_RUN_ALL_CHANGED`）の回が鮮度の赤・必須 suite の skip で終わったとき、`tests/run-all.sh` の回し直しの案内が全件の前置（`FF_RUN_ALL_FULL=1`）を出していたのを、同じ `FF_RUN_ALL_CHANGED` の指定を写すように直した。鮮度だけの赤の通しの案内では、base をコミット SHA で固定した指定を `1`（`origin/HEAD`）へ戻す（取り込んだ後も古い base を測らないように）。
+- `FF_RUN_ALL_CHANGED`（変更ベースの部分ゲートの起動）を、公開面の一覧（`PUBLIC-SURFACE.md`）で内部から契約へ移した。通常 PR のゲートの起動方法として手順と上の注意が案内するため。
+- 変更ベースの部分ゲート（`FF_RUN_ALL_CHANGED`）で、suite が自分の依存を宣言できるようにした。suite のスクリプトに `# run-all-depends:` の行でパターンを並べると、その suite は字面の照合をやめ、宣言したパターンに一致する変更と自分のディレクトリの変更でだけ選ばれる。ディレクトリ名や `*.md` のような汎用の字面で重い suite が選ばれるのを、suite 側で止められる。字面には出るが依存ではないファイルは `# run-all-not-depends:` の行にパスと理由を書いて外す。宣言の無い suite は従来どおり字面で選ぶ。
+- 宣言と実際の参照の食い違い（宣言に無い参照・1 つに決まらない名前の参照・宣言した lib を source していない・実体に当たらない宣言・古い `run-all-not-depends`）は、新設の `changed-select` suite が毎回赤にする。参照の導出・宣言の照合・共有 lib の利用側の逆引きは `tests/changed-select/select.sh` へ移した（契約面の名簿と、ランナー自身の変更での強制選択などの規則は `tests/run-all.sh` に残る）。
+- 共有の shell lib（`tests/lib/` など）を変えたときは全件へ倒さず、その lib の名前に（推移的に）触れるファイル（tests・hooks・scripts）を参照する suite をすべて選ぶようにした。`tests/lib/` のシェル以外のファイル（全 suite の git 設定など）は、利用側をたどれないので全件へ倒す。`tests/run-all.sh` 自身を変えたときも全件へ倒さず、ランナーの自己検証 suite（`run-all`）を必ず選ぶ。選択の仕組み（`tests/changed-select/`）を変えたときは全件へ倒す。
+- 運用ガイド（`docs-template/05-operations/deployment/workflow-principles.md` の 3 層モデル）に「Tier 2b から外してよいもの」を足した。共有 lib は読み込み元を推移的にたどって利用側の検査をすべて選ぶ仕組み、ランナー自身は自己検証を必ず選ぶ仕組みを検証スイートが持つ回だけ全件へ倒さなくてよい。差分から検査を選ぶ仕組みそのものの変更は全件のまま。`git-workflow.md` と配布テンプレートの `TESTING.md` の契約面の名簿も同じ形へ揃えた。
+- 変更一覧を渡して選択だけを出す試算モード（`FF_RUN_ALL_SELECT_ONLY=1` と `FF_RUN_ALL_CHANGED_FILES_FROM`）と、過去の PR の評価集合へ当てて回す秒数の全件比を出す `tests/changed-select/simulate.sh` を足した。
+- 変更ベースの部分ゲート（`FF_RUN_ALL_CHANGED`）で、重い suite 55 本に依存の宣言（`# run-all-depends:`）を足した。`*.md` や `*/scripts` のような汎用の字面ではなく、suite が実際に読む・実行する・走査するファイルでだけ選ばれる。過去の 60 本のプルリクエストへ当てた試算で、1 本あたりに回す秒数は全件の平均 83.3% から 47.6% へ、文書だけの変更では約 53% から 12.4% / 6.5% へ下がった。
+- `tests/changed-select/simulate.sh` に `--expect`（照合の行を書いたファイルを渡す）を足した。「このファイルが変わったら、この suite は選ばれる」を 1 行ずつ、実際のランナーの選択で照合する（依存の宣言を持つ suite の行だけを照合し、宣言の無い suite の行は飛ばす）。`changed-select` suite が、過去に手書きの対応表で起きた選択の漏れ（`tests/changed-select/data/census-878.tsv`）と、宣言の照合が字面に名前が出る間しか検出できない種類の依存の代表（`tests/changed-select/data/expect-not-relayed.tsv`）を毎回照合する。これらの行に載った変更について、宣言がその入力を覆っていないと赤になる（載っていない依存の宣言漏れは検出しない）。
+- `changed-select` suite を公開リポジトリの週次の suite セットから外した。宣言と照合の行が開発元のリポジトリルートのファイルを指すため、公開側では検査の前提が成立しない（公開 checkout で単体起動した回は、開発元の配置に依存する照合を飛ばす）。
+
+### 修正
+
+- git 書き込み連鎖の判定（`tests/lib/git-write-chain-scan.sh`）が、`git commit -m "$(cat …)"` のようにコマンド置換の中で開いた heredoc の本文を、閉じ括弧を探す走査でコードとして読んでいたため、本文に単一引用符や `fix(#N):` の形（`#` をコメントと読む）があると判定不能で止めていたのを直した。コマンド置換の中の heredoc は、次の改行で本文を区切り語まで読み飛ばす。here-string と算術コマンドのシフト演算子は heredoc と読まない
+- `skills` ディレクトリ配下が symlink のホスト環境で、`FF_DEV_TOOLKIT_SKILL_FILE` から物理パス（`cd -P` / `pwd -P`）で plugin root を解決するよう契約とガード実装を修正した（`SKILL.md` 自体の symlink 拒否は維持）
+- 配置済みシム（`codex-review.sh`）と `setup-multi-agent.sh` が Claude Code のクラウド同期配置（`plugins/synced/*/ff-dev-toolkit`）と `CLAUDE_PLUGIN_ROOT`（`ff-dev-toolkit` 自身のとき優先・別プラグインはスキップ）を解決できるようにした
+- GitHub GraphQL が HTTP 403 で利用できない環境向けに、`finish.sh`・`merge-cleanup.sh`・`guard-effort-actual.sh`・`knowledge-lookup.sh` へ `gh api` による REST API フォールバック（PR 状態・fork 判定・open Issue の PR 除外・ページングの等価正規化）と、REST 利用不可時の `--github-input` 手順案内を追加した
+
+### ドキュメント
+
+- `/close-issue` の工数の書き戻しで、補正元の実績比で見積もった Issue（比を減じた Issue を含む）は、帯の内外にかかわらず実績の内訳（実装分とレビュー対応分）と着手後の範囲の変化の有無を `effort_evidence` に書くようにした。減じた見積もりが帯の内側に入ったとき、判断が当たったのか、レビュー対応分の見込み過大と相殺したのか、範囲が縮んだのかを後から読み分けられるようにする。`/create-issue` の見積もり手順の補正元の節からも指した
+- `/multi-review` の手順で、スキルの引数のうち `multi-review.sh` へ渡すのはオプションと PR 番号（正の整数 1 つ）だけだと明記した。説明は `--description` で渡し、`--cli` には `codex-cli` のような正式名を使う。コマンド例も、引数がそのまま位置引数として展開されない形に直した（説明の文や `codex` を渡すと、起動前に止まっていた）
+- ネイティブ経路のセルフレビューでも、専用セキュリティゲートの判定（`review-route.sh`）は省かずに 1 回実行し、該当なら同じ巡で専用ゲートを実行して結果の行を PR 本文へ書く、とセルフレビューの手順と `/multi-review` の手順 0 に書いた
+- セルフレビューの手順に「実行経路を変える変更の自己点検（初回レビューの前）」の一覧を新設した。実行者の権限でコードや外部プロセスを動かす経路を変える変更について、初回のレビューの前に点検する面を並べた。面は、取り出す commit と ref、置き場所と後始末、実行元の信頼区分、git の設定、cwd と PATH、継承する環境変数、入力待ち、副作用で書くファイル、手元に無い object、引数と出力の境界。あわせて、fix のたびに触った面を同じ一覧で確かめ直すことを書いた
+- レビューと並走させる baseline ゲートが効く回を、差分（2 巡目なら前の巡の fix）が検査に掛からない文言だけの小さな修正のときに絞った（`docs-template/05-operations/deployment/git-workflow.md` ステップ6 と `multi-review` スキルの待ち時間の手順）。実装・検査・手順を変えた PR の初回のレビューと、既存ロジックを組み替えた fix の後の確認の巡は、指摘が出る見込みの高い巡に数えて並走させない。後者と並走させたゲートは、実測で 2 回ともその巡の指摘で途中で止めた。
+
 ## [2.1.1] - 2026-11-24
 
 ### 修正

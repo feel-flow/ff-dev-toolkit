@@ -39,6 +39,7 @@ needs a POSIX file system (real host is	allow	stop	stop
 checkout より新しい公開タグ	stop	stop	stop
 一時領域が使えないため	stop	stop	stop
 bump 幅の照合を飛ばしました	stop	stop	stop
+L2 の照合を飛ばしました	stop	stop	stop	plugins/ff-dev-toolkit/tests/time-budget/verify.sh
 疑似検査A（外部CLI不在を模す）	stop	stop	stop
 疑似検査B（外部CLI不在を模す）	stop	stop	stop
 node が無いため P5 は未検査	stop	stop	stop
@@ -159,5 +160,6 @@ W17 は PowerShell 7 を入れた Windows でだけ成立する検査のため�
 ln -s が symlink を作らない環境（Windows の Git Bash で MSYS=winsymlinks:nativestrict でない等）のため P-leaf / P-parent は未検査	stop	stop	stop
 repository docs/06-reference/DECISIONS.md が無い checkout のため ADR 相互照合のみ対象外（配布先 checkout。SKILL 側の針と実体 pin は上で実行済み）	stop	stop	stop
 リポジトリ直下の scripts/ が無い公開 checkout のため changelog 断片検査（F 系）をスキップ（除外集合の真実源 scripts/check-release-required.sh / scripts/release-dev-toolkit.sh は SSOT 限定。この節の検査は 1 件も実行していません）	stop	stop	stop
+L1・L2 は開発元のリポジトリ配置でだけ成立する検査のため未実行	stop	stop	stop	plugins/ff-dev-toolkit/tests/changed-select/verify.sh
 node が無いため MCP stdio 疎通は未検査	stop	stop	stop
 timeout / gtimeout 不在のため時間切れ境界は未検証	stop	stop	stop	plugins/ff-dev-toolkit/tests/guard-issue-assign/verify.sh

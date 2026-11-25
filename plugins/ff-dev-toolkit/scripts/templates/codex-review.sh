@@ -162,14 +162,15 @@ SCRIPT_NAME="$(basename "$0")"
 
 # ── オーケストレータの解決 ──────────────────────────────────────────────────────
 #
-# 探索順は FF_DEV_TOOLKIT_ROOT（環境変数）→ Codex plugin cache / Claude plugin
-# cache / grok の導入実体 → 同じディレクトリのサイドカー。3 つの導入先を横断して
+# 探索順は FF_DEV_TOOLKIT_ROOT（環境変数）→ CLAUDE_PLUGIN_ROOT（ff-dev-toolkit 自身のとき）
+# → Codex plugin cache / Claude plugin cache / Claude synced（クラウド同期配置）/
+# grok の導入実体 → 同じディレクトリのサイドカー。導入先を横断して
 # 配置済みシムと内容が一致する候補の semantic version 最大を選ぶ。一致候補が無ければ
-# 全候補の最大版を選び、照合で拒否する。同じ版・同じ一致状態なら Codex → Claude → grok の
-# 順で優先する（grok は ff-dev-toolkit 開発元 Issue 番号 2119 で追加。grok は ~/.grok/installed-plugins/
-# ff-dev-toolkit-<識別子>/ へ版名の無いディレクトリで導入するので、版は manifest で読む。
-# 置き場は grok 自身の規約どおり GROK_HOME（既定 ~/.grok）配下）。どれも解決
-# できなければ推測で走らずに落とす。
+# 全候補の最大版を選び、照合で拒否する。同じ版・同じ一致状態なら Codex → Claude cache →
+# Claude synced → grok の順で優先する（grok は ff-dev-toolkit 開発元 Issue 番号 2119 で追加。
+# grok は ~/.grok/installed-plugins/ff-dev-toolkit-<識別子>/ へ版名の無いディレクトリで導入するので、
+# 版は manifest で読む。置き場は grok 自身の規約どおり GROK_HOME（既定 ~/.grok）配下）。
+# どれも解決できなければ推測で走らずに落とす。
 #
 # **このファイルへパスを焼き込まない**理由が 3 つある:
 #   1. 焼き込むと配置後のファイルがマシン固有になる。配置先の scripts/ は通常
@@ -230,6 +231,53 @@ toolkit_manifest_version() {
   version="$(sed -nE 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' "$manifest")"
   [ "$(printf '%s\n' "$version" | grep -c . || true)" -eq 1 ] || return 1
   printf '%s\n' "$version"
+}
+
+# plugin.json のルートオブジェクト直下（ネスト深さ 1）の "name" だけを純 bash で読む。
+# symlink・非通常ファイル・読めないファイルは失敗とし、別プラグイン除外の根拠にしない。
+toolkit_manifest_name() {
+  local manifest="${1}/.claude-plugin/plugin.json" line="" rest="" seg="" tmp="" acc=""
+  local depth=0 instr=0 expect=0 last="" bs=0
+  [ -f "$manifest" ] && [ ! -L "$manifest" ] && [ -r "$manifest" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    rest="$line"
+    while [ -n "$rest" ]; do
+      if [ "$instr" -eq 1 ]; then
+        case "$rest" in
+          *'"'*) seg="${rest%%'"'*}"; rest="${rest#*'"'}" ;;
+          *) acc="${acc}${rest}"; rest=""; continue ;;
+        esac
+        tmp="$seg"; bs=0
+        while [ "${tmp%\\}" != "$tmp" ]; do bs=$((bs + 1)); tmp="${tmp%\\}"; done
+        acc="${acc}${seg}"
+        if [ $((bs % 2)) -eq 1 ]; then acc="${acc}\""; continue; fi
+        instr=0
+        if [ "$expect" -eq 1 ]; then printf '%s\n' "$acc"; return 0; fi
+        last="$acc"; acc=""
+        continue
+      fi
+      case "$rest" in
+        *'"'*) seg="${rest%%'"'*}"; rest="${rest#*'"'}"; instr=1; acc="" ;;
+        *) seg="$rest"; rest="" ;;
+      esac
+      tmp="$seg"
+      while [ "${tmp#*'{'}" != "$tmp" ]; do depth=$((depth + 1)); tmp="${tmp#*'{'}"; done
+      tmp="$seg"
+      while [ "${tmp#*'['}" != "$tmp" ]; do depth=$((depth + 1)); tmp="${tmp#*'['}"; done
+      tmp="$seg"
+      while [ "${tmp#*'}'}" != "$tmp" ]; do depth=$((depth - 1)); tmp="${tmp#*'}'}"; done
+      tmp="$seg"
+      while [ "${tmp#*']'}" != "$tmp" ]; do depth=$((depth - 1)); tmp="${tmp#*']'}"; done
+      case "$seg" in
+        *:*) if [ "$depth" -eq 1 ] && [ "$last" = "name" ]; then expect=1; fi ;;
+      esac
+      case "$seg" in
+        *'{'*|*'['*|*,*) expect=0 ;;
+      esac
+      last=""
+    done
+  done < "$manifest"
+  return 1
 }
 
 semver_is_newer() {
@@ -377,18 +425,21 @@ usable_orchestrator() {
 }
 
 resolve_toolkit() {
-  local root version sidecar sidecar_value="" codex_cache claude_cache
+  local root version sidecar sidecar_value="" codex_cache="" claude_base="" claude_cache="" claude_synced=""
+  local claude_root_phys="" claude_manifest_name=""
   CACHE_BEST_ROOT=""; CACHE_BEST_VERSION=""; CACHE_BEST_SOURCE=""
   CACHE_MATCH_ROOT=""; CACHE_MATCH_VERSION=""; CACHE_MATCH_SOURCE=""
   RESOLVED_ORCHESTRATOR=""
   RESOLVED_TOOLKIT_ROOT=""
   RESOLVED_TOOLKIT_VERSION=""
   RESOLVED_TOOLKIT_SOURCE=""
+  RESOLVED_FAIL_ENV=""
   if [ -n "${FF_DEV_TOOLKIT_ROOT:-}" ]; then
     # skill 群は FF_DEV_TOOLKIT_ROOT を**プラグインルート**として定義し
     # ${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh を叩く。scripts/ を直接指す
     # 使い方も許すため両方を候補にする（前者が正規形）。
     if ! root="$(canonical_toolkit_root "$FF_DEV_TOOLKIT_ROOT")"; then
+      RESOLVED_FAIL_ENV="FF_DEV_TOOLKIT_ROOT"
       echo "ERROR: FF_DEV_TOOLKIT_ROOT が設定されていますが、使える multi-agent.sh がありません。" >&2
       echo "       指定: ${FF_DEV_TOOLKIT_ROOT}" >&2
       echo "       明示指定を黙って無視して別の toolkit で走ることはしません。" >&2
@@ -396,24 +447,66 @@ resolve_toolkit() {
       return 2
     fi
     if ! version="$(toolkit_manifest_version "$root" 2>/dev/null)" || [ -z "$version" ]; then
+      RESOLVED_FAIL_ENV="FF_DEV_TOOLKIT_ROOT"
       echo "ERROR: FF_DEV_TOOLKIT_ROOT の plugin version を読めません: $root" >&2
       return 2
     fi
-    set_resolved_toolkit "$root" "$version" "explicit"
-    return $?
+    set_resolved_toolkit "$root" "$version" "explicit" || { RESOLVED_FAIL_ENV="FF_DEV_TOOLKIT_ROOT"; return 2; }
+    return 0
   fi
 
-  codex_cache="${CODEX_HOME:-${HOME}/.codex}/plugins/cache"
-  claude_cache="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/plugins/cache"
-  select_cache_toolkit "$codex_cache" codex-cache || true
-  select_cache_toolkit "$claude_cache" claude-cache || true
+  # Claude Code セッションでは CLAUDE_PLUGIN_ROOT が渡る。別プラグイン（manifest で別名と確定、
+  # または manifest を省略した無関係な実在プラグイン）は通常探索へ進み、ff-dev-toolkit 自身または
+  # 不在・壊れた manifest 等は plugin root 固定契約どおり別候補へ逃げず exit 2 で止める。
+  if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+    claude_root_phys="$(CDPATH= cd -P -- "$CLAUDE_PLUGIN_ROOT" 2>/dev/null && pwd -P)" || claude_root_phys=""
+    if [ -n "$claude_root_phys" ]; then
+      claude_manifest_name="$(toolkit_manifest_name "$claude_root_phys" 2>/dev/null)" || claude_manifest_name=""
+    fi
+    if [ -n "$claude_root_phys" ] && [ -z "$claude_manifest_name" ] \
+       && [ ! -e "${claude_root_phys}/.claude-plugin/plugin.json" ] \
+       && [ ! -L "${claude_root_phys}/.claude-plugin/plugin.json" ] \
+       && [ ! -e "${claude_root_phys}/multi-agent.sh" ] \
+       && [ ! -e "${claude_root_phys}/scripts/multi-agent.sh" ] \
+       && [ ! -e "${claude_root_phys}/scripts/templates/codex-review.sh" ]; then
+      :
+    elif [ -z "$claude_manifest_name" ] || [ "$claude_manifest_name" = "ff-dev-toolkit" ]; then
+      if ! root="$(canonical_toolkit_root "$CLAUDE_PLUGIN_ROOT")"; then
+        RESOLVED_FAIL_ENV="CLAUDE_PLUGIN_ROOT"
+        echo "ERROR: CLAUDE_PLUGIN_ROOT が設定されていますが、使える multi-agent.sh がありません。" >&2
+        echo "       指定: ${CLAUDE_PLUGIN_ROOT}" >&2
+        echo "       plugin root 固定契約のため、別の toolkit へ切り替えて走ることはしません。" >&2
+        print_toolkit_path_shapes "       "
+        return 2
+      fi
+      if ! version="$(toolkit_manifest_version "$root" 2>/dev/null)" || [ -z "$version" ]; then
+        RESOLVED_FAIL_ENV="CLAUDE_PLUGIN_ROOT"
+        echo "ERROR: CLAUDE_PLUGIN_ROOT の plugin version を読めません: $root" >&2
+        return 2
+      fi
+      set_resolved_toolkit "$root" "$version" "claude-plugin-root" || { RESOLVED_FAIL_ENV="CLAUDE_PLUGIN_ROOT"; return 2; }
+      return 0
+    fi
+  fi
+
+  if [ -n "${CODEX_HOME:-}" ] || [ -n "${HOME:-}" ]; then
+    codex_cache="${CODEX_HOME:-${HOME}/.codex}/plugins/cache"
+    select_cache_toolkit "$codex_cache" codex-cache || true
+  fi
+  if [ -n "${CLAUDE_CONFIG_DIR:-}" ] || [ -n "${HOME:-}" ]; then
+    claude_base="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/plugins"
+    claude_cache="${claude_base}/cache"
+    claude_synced="${claude_base}/synced"
+    select_cache_toolkit "$claude_cache" claude-cache || true
+    select_cache_toolkit "$claude_synced" claude-synced "*/ff-dev-toolkit" || true
+  fi
   # GROK_HOME も HOME も無い環境（set -u）では grok の置き場を推測しない — Codex / Claude の解決を巻き添えにしない
   local grok_home="${GROK_HOME:-}"
   [ -n "$grok_home" ] || { [ -z "${HOME:-}" ] || grok_home="${HOME}/.grok"; }
   if [ -n "$grok_home" ]; then
     select_cache_toolkit "${grok_home}/installed-plugins" installed-by-grok "ff-dev-toolkit-*" || true
   fi
-  # 同じ一致状態・同じ版なら、先に走査した Codex → Claude → grok を保持する。
+  # 同じ一致状態・同じ版なら、先に走査した Codex → Claude cache → Claude synced → grok を保持する。
   if [ -n "$CACHE_BEST_ROOT" ]; then
     if [ -n "$CACHE_MATCH_ROOT" ]; then
       set_resolved_toolkit "$CACHE_MATCH_ROOT" "$CACHE_MATCH_VERSION" "$CACHE_MATCH_SOURCE" || return $?
@@ -530,7 +623,7 @@ load_resolved_toolkit() {
   fi
   if [ "$resolve_rc" -ne 0 ]; then
     echo "ERROR: multi-agent.sh が見つかりません。" >&2
-    echo "       探索順: FF_DEV_TOOLKIT_ROOT → Codex/Claude cache・grok の導入実体（${GROK_HOME:-~/.grok}/installed-plugins）の内容一致候補の最大版（無ければ全体の最大版を照合。同版は Codex → Claude → grok）→ ${FF_ROOT_SIDECAR_PATH}" >&2
+    echo "       探索順: FF_DEV_TOOLKIT_ROOT → CLAUDE_PLUGIN_ROOT（ff-dev-toolkit 自身のとき）→ Codex/Claude cache・Claude synced（${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/synced/*/ff-dev-toolkit）・grok の導入実体（${GROK_HOME:-~/.grok}/installed-plugins）の内容一致候補の最大版（無ければ全体の最大版を照合。同版は Codex → Claude cache → Claude synced → grok）→ ${FF_ROOT_SIDECAR_PATH}" >&2
     if [ -f "$FF_ROOT_SIDECAR_PATH" ]; then
       echo "       サイドカーは在りますが、指す先に multi-agent.sh がありません" >&2
       echo "       記録値: $(sidecar_recorded_value "$FF_ROOT_SIDECAR_PATH")" >&2
@@ -539,6 +632,7 @@ load_resolved_toolkit() {
       echo "       サイドカーがありません。setup-multi-agent.sh を実行して配置し直すか、" >&2
       echo "       FF_DEV_TOOLKIT_ROOT を toolkit のプラグインルートへ向けてください。" >&2
     fi
+    echo "       クラウド環境などで自動探索外のパスにある場合は FF_DEV_TOOLKIT_ROOT=\"<ff-dev-toolkit のパス>\" を指定して再実行してください。" >&2
     print_toolkit_path_shapes "       "
     return "$resolve_rc"
   fi
@@ -1350,7 +1444,11 @@ print_claude_fallback_notice() { # $1: 理由 / $2: toolkit（multi-agent.sh）�
     if [ "$resolve_rc" -eq 2 ] && [ -n "${FF_DEV_TOOLKIT_ROOT:-}" ]; then
       echo "     1. FF_DEV_TOOLKIT_ROOT を修正するか unset する（この変数は cache / サイドカーより先に勝つので、setup-multi-agent.sh の再実行では解決先が変わりません）" >&2
       echo "        現在値: ${FF_DEV_TOOLKIT_ROOT}" >&2
-      echo "        unset すれば Codex/Claude cache・grok の導入実体 → サイドカーの探索へ進めます。拒否の理由は上の ERROR 行が示しています。" >&2
+      echo "        unset すれば Codex/Claude cache・Claude synced・grok の導入実体 → サイドカーの探索へ進めます。拒否の理由は上の ERROR 行が示しています。" >&2
+    elif [ "$resolve_rc" -eq 2 ] && [ "${RESOLVED_FAIL_ENV:-}" = "CLAUDE_PLUGIN_ROOT" ] && [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+      echo "     1. CLAUDE_PLUGIN_ROOT のパスを確認するか、有効な ff-dev-toolkit を FF_DEV_TOOLKIT_ROOT へ明示指定する（CLAUDE_PLUGIN_ROOT が不整合の間は setup-multi-agent.sh の再実行だけでは解決先が変わりません）" >&2
+      echo "        現在値: ${CLAUDE_PLUGIN_ROOT}" >&2
+      echo "        ff-dev-toolkit プラグインの再導入・セッション再起動、または有効な実体への FF_DEV_TOOLKIT_ROOT 指定で復旧できます。拒否の理由は上の ERROR 行が示しています。" >&2
     else
       echo "     1. setup-multi-agent.sh を再実行して toolkit を配置し直す（解決できるまで別 CLI への再配分も実行できない）" >&2
     fi

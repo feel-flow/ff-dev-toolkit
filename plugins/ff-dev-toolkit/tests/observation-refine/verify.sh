@@ -37,6 +37,14 @@
 # 依存: bash・awk・mktemp・cksum・find。通信しない（gh を呼ばない）。fixture の置き場は読み取り境界の
 # ff_knowledge_job_directory で作る（台帳の読み出しが境界の検査を通る場所である必要がある）。作れない
 # 環境では skip せず赤で終わる。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/observation-refine.sh scripts/knowledge-lookup.sh
+# run-all-depends: scripts/lib/observation-refine-*.awk scripts/lib/knowledge-read-boundary*.sh scripts/lib/knowledge-read-acl.ps1
+# run-all-depends: .claude-plugin/plugin.json
+# run-all-depends: skills/observation-refine/SKILL.md skills/observation-refine/references/apply.md
+# run-all-depends: skills/retrospective/SKILL.md skills/retrospective/references/ledger.md skills/retrospective/references/promotion.md
+# run-all-not-depends: /docs/08-knowledge/OBSERVATIONS.md fixture の台帳の名前（実物は読まない）
 
 set -euo pipefail
 

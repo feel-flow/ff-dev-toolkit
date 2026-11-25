@@ -75,6 +75,17 @@
 # 空振り検出: metadata整合性拡張後の(23)(28)(31)は無変異44/0。headとmanifestの照合だけを外すとvalid-headの4件が赤40/4、generationとgeneration-hashの照合だけを外すとvalid-generation/有効hash差替の8件が赤36/8（2026-10-22 実測）。同/新HEAD・元argv/description落ちを測り、新HEAD正常退役・state-only再開と次1回採用は両変異でも緑。各変異の1回適用・前後SHA256・rcを記録。
 #
 # 実 CLI は 1 つも起動しない（claude / codex を stub で覆う）。書き込み不可の環境では skip。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/multi-agent.sh scripts/multi-review.sh scripts/lib/multi-agent-*.sh
+# run-all-depends: scripts/adapters/ scripts/lib/adapter-common-*.sh scripts/lib/knowledge-read-acl.ps1
+# run-all-depends: scripts/agent-config.yaml scripts/perspectives/review/ scripts/perspectives/explore/ scripts/review-evidence.py
+# run-all-depends: hooks/guard-review-in-flight.sh hooks/asdd-hook-gate.sh
+# run-all-depends: skills/multi-review/SKILL.md docs-template/05-operations/deployment/self-review.md
+# run-all-depends: docs-template/05-operations/deployment/git-workflow.md docs-template/05-operations/deployment/multi-cli-review-orchestration.md
+# run-all-depends: tests/lib/git-fixture.sh tests/lib/adapter-env-isolation.sh tests/lib/multi-agent-sources.sh
+# run-all-not-depends: /docs/04-quality/TESTING.md ヘッダの案内（git 障害時の切り分け手順の参照先）。中身は読まない
+# run-all-not-depends: scripts/review-route.sh 文書に要求する文言の中の名前。起動しない
 
 set -euo pipefail
 

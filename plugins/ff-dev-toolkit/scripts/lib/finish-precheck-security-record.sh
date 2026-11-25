@@ -27,6 +27,9 @@ fi
 #   - 値の頭（最初の括弧 `（` / `(` の前）が「実施」「未確認」「未対応」で終わる。括弧の中（根拠の path・理由）の
 #     語は数えない。「未実施」「実施しない」「を実施する」「実施予定」「対象外（… 実施せず）」と、review-route.sh の
 #     報告行を貼っただけの「… を実行する（…）」（結果の無い計画行）は数えない
+#   - 値に review-route.sh の書式の置き場所（`<N>` と、`理由` を含む `<…>`）が残る行（REVIEW_SECURITY_RECORD_DONE /
+#     _SKIPPED の書式を埋めずに貼った行）は数えない。書式を貼るだけで記録が通ると、ゲートを実行しなくても通る。
+#     置き場所でない `<…>`（指摘の中身として書いた `<script>` など）は数える
 # フェンスと HTML コメントの中（PR テンプレートの記入例など）は数えない。バイトで比べる（LC_ALL=C）。
 # 最初の一致の後も入力を最後まで読む — 途中で終わると上流が SIGPIPE で落ち、pipefail で一致を失う。
 ff_precheck_security_record_line() {
@@ -43,6 +46,9 @@ ff_precheck_security_record_line() {
       if (substr(rest, 1, 1) == ":") rest = substr(rest, 2)
       else if (substr(rest, 1, length(colon)) == colon) rest = substr(rest, length(colon) + 1)
       else next
+      # review-route.sh の書式（REVIEW_SECURITY_RECORD_DONE / _SKIPPED）を埋めずに貼った行は結果が無いので数えない。
+      # 置き場所は <N> と「理由」を含む <…> に限る（指摘の中身の <script> などは数える）
+      if (rest ~ /<N>/ || rest ~ /<[^>]*理由[^>]*>/) next
       head = rest
       j = index(head, paren); if (j) head = substr(head, 1, j - 1)
       j = index(head, "("); if (j) head = substr(head, 1, j - 1)
@@ -133,7 +139,7 @@ ff_precheck_security_record_eval() { # <files> <files_rc> <files_err_why> <empty
   else
     reason="セキュリティに関わる変更かを判定できません（${why}）。該当なしとは読まず、PR 本文に専用セキュリティゲートの記録行を求めます"
   fi
-  next="主担当の専用セキュリティゲート（review-route.sh の REVIEW_SECURITY_GATE）を実行し、PR 本文に「専用セキュリティゲート: /security-review 実施（指摘 N 件）」のような結果の行、実行できなかった回は「専用セキュリティゲート: 未確認（<理由>）」を書いてから ${recheck_cmd} を再実行する。「対象外」「未実施」と「… を実行する（…）」の計画行は記録に数えない。glob の誤検知と判断した回も理由を書いた「未確認」で残す。専用ゲートを使わない導入先は review.security_review: \"off\" を設定する（設定ファイルを読むには yq が要る。無い環境では環境変数 MULTI_AGENT_SECURITY_REVIEW=off）"
+  next="主担当の専用セキュリティゲート（review-route.sh の REVIEW_SECURITY_GATE）を実行し、PR 本文にreview-route.sh の REVIEW_SECURITY_RECORD_DONE の書式（例「専用セキュリティゲート: /security-review 実施（指摘 <N> 件）」。ゲート名は主担当の出力に従う）の <N> を件数で埋めた結果の行、実行できなかった回は「専用セキュリティゲート: 未確認（<理由>）」の <理由> を埋めた行を書いてから ${recheck_cmd} を再実行する。「対象外」「未実施」と「… を実行する（…）」の計画行、<N> や <理由> の置き場所を残したまま貼った行は記録に数えない。glob の誤検知と判断した回も理由を書いた「未確認」で残す。専用ゲートを使わない導入先は review.security_review: \"off\" を設定する（設定ファイルを読むには yq が要る。無い環境では環境変数 MULTI_AGENT_SECURITY_REVIEW=off）"
   if [[ "$files_rc" -eq 2 && -n "$fetch_base" ]]; then
     next="先に $(ff_shell_argv git fetch origin "$fetch_base" "$fetch_head") で PR の差分を取り込み、${recheck_cmd} を再実行する（取り込めれば分類できる）。取り込めない回は、${next}"
   fi

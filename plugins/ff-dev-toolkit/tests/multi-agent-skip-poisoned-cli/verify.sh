@@ -55,6 +55,14 @@
 #   （切れ端の除去で抜粋が既に正しい UTF-8）。
 #
 # 実 CLI は 1 つも起動しない（全 CLI を stub で覆う）。書き込み不可の環境では skip。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/multi-agent.sh scripts/lib/multi-agent-*.sh
+# run-all-depends: scripts/adapters/ scripts/lib/adapter-common-*.sh scripts/lib/knowledge-read-acl.ps1 scripts/lib/l4-declarations.tsv
+# run-all-depends: scripts/agent-config.yaml scripts/perspectives/review/
+# run-all-depends: tests/lib/git-fixture.sh tests/lib/adapter-env-isolation.sh tests/lib/multi-agent-sources.sh
+# run-all-not-depends: /docs/04-quality/TESTING.md ヘッダの案内（git 障害時の切り分け手順の参照先）。中身は読まない
+# run-all-not-depends: mcp/package.json 偽の npm 配置（fixture）に書く @openai/codex の package.json の名前。プラグインのものは読まない
 
 set -euo pipefail
 

@@ -68,6 +68,19 @@
 # コメントを含むコードフェンスを置く。読む範囲の境界とフェンスの扱いも G1 で常時実測する。
 #
 # 書き込み不可の環境（read-only チェックアウト等）では skip して成功扱いにする。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: tests/skill-count-consistency/verify.sh
+# run-all-not-depends: hooks/hooks.json fixture に書く hooks.json の名前（実物は読まない）
+# run-all-not-depends: PUBLIC-SURFACE.md fixture に書く公開面一覧の名前（実物は読まない）
+# run-all-not-depends: .claude-plugin/plugin.json fixture に書く plugin.json の名前（実物は読まない）
+# run-all-not-depends: /.claude-plugin/marketplace.json fixture に書く marketplace.json の名前（実物は読まない）
+# run-all-not-depends: /oss/ff-dev-toolkit/.claude-plugin/marketplace.json fixture に書く公開側 marketplace.json の名前（実物は読まない）
+# run-all-not-depends: /oss/ff-dev-toolkit/README.md fixture に書く公開 README の名前（実物は読まない）
+# run-all-not-depends: /README.md fixture に書く root README の名前（実物は読まない）
+# run-all-not-depends: /scripts/sync-dev-toolkit-to-public.sh fixture に置く --list-targets の stub の名前（実物は実行しない）
+# run-all-not-depends: mcp/README.md fixture に書く MCP README の名前（変数のディレクトリに続く README.md の同名候補。実物は読まない）
+# run-all-not-depends: mcp/src/index.ts fixture に書く MCP 実行物の名前（実物は読まない）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

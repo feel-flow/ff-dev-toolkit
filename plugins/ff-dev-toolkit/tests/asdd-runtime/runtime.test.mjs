@@ -348,6 +348,17 @@ test('asdd-init --check accepts multiReview with one AI CLI and no project agent
   assert.deepEqual(JSON.parse(result.stdout).errors, []);
   assert.equal(fs.existsSync(path.join(root, '.claude/agent-config.yaml')), false);
 });
+test('asdd-init --check does not run the pre-launch lane checks it does not read', t => {
+  const root = temporary(t); apply(root, withMultiReview());
+  const bin = path.join(root, 'fake-bin'); fs.mkdirSync(bin, { recursive: true });
+  const calls = path.join(root, 'codex-calls');
+  fs.writeFileSync(path.join(bin, 'codex'), `#!/bin/sh\necho "$*" >> '${calls}'\nexit 0\n`, { mode: 0o755 });
+  const result = runCheck(root, bin);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).errors, []);
+  // --print-reviewers would otherwise read codex's usage through `codex app-server` (lane_precheck.*).
+  assert.equal(fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8') : '', '');
+});
 test('asdd-init --check accepts a saved main reviewer that is installed and rejects one that is not', t => {
   const root = temporary(t); apply(root, withMultiReview());
   const bin = fakeCli(root);

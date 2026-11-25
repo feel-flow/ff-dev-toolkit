@@ -126,7 +126,10 @@
 #   --dry-run               Show plan without executing
 #   --print-reviewers       Print the resolved review pair (main / sub / sources) plus
 #                           cross_review and its source as key=value lines, then exit
-#                           (0 = main set, 3 = unset). Builds no plan.
+#                           (0 = main set, 3 = unset). Builds no plan. After known=, it
+#                           adds lane_precheck=on|off and one lane_precheck.<cli>= line per
+#                           available CLI: the pre-launch check (usage / login / sandbox,
+#                           no model started). MULTI_AGENT_LANE_PRECHECK=off skips it.
 #   --set-reviewers <spec>  Save main=<cli>[,sub=<cli>][,cross_review=auto|off] to the user
 #                           config. main= is required unless only cross_review= is given
 #                           (then the saved main, if any, is kept); sub= / cross_review=

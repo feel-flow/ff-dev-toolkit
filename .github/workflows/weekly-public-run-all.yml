@@ -208,6 +208,10 @@ jobs:
           #   - host-route-parity / root-instructions-parity: 開発元の docs/（正本表）と
           #     リポジトリ直下の指示文書（CLAUDE.md / AGENTS.md。いずれも同期対象外）の
           #     一致を検査する。配布先 checkout では検査対象が 1 件も同梱されない
+          #   - changed-select: 開発元の suite が宣言する依存（# run-all-depends:）と、選択の漏れの
+          #     照合の行（data/*.tsv）は、開発元のリポジトリルートのファイル（docs/・scripts/・oss/ 等、
+          #     同期対象外）を指す。公開側では宣言も照合の行も「実体に当たらない」になり、検査の前提が
+          #     成立しない。選択の仕組み自体は開発元の run-all で検査済み
           #   - section-ref-existence: 開発元のリポジトリ全体（docs/・CLAUDE.md 等、同期対象外）の
           #     節参照を走査し、除外パターン（docs/08-knowledge/ 等）が当たらなければ
           #     fail-closed する。配布物（plugins/ff-dev-toolkit/）内の参照は開発元の run-all で検査済み
@@ -236,6 +240,7 @@ jobs:
             public-dependabot-health release-required-selftest
             cloud-env-setup weekly-health-contract
             host-route-parity root-instructions-parity section-ref-existence
+            changed-select
             public-layout ff-media-toolkit
             scripts-node-tests
           "

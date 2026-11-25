@@ -48,6 +48,16 @@
 # 品質ゲートスキルの fixture はプラグインの必須依存 Perl を追加で使う。
 #
 # 使い方: bash plugins/ff-dev-toolkit/tests/merge-freshness/verify.sh
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/check-merge-freshness.sh scripts/record-gate-head.sh tests/run-all.sh
+# run-all-depends: scripts/lib/finish-precheck.* scripts/lib/abs-path.* .claude-plugin/plugin.json
+# run-all-depends: skills/close-issue/SKILL.md skills/close-issue/references/merge-gate.md
+# run-all-depends: skills/verify-gate/SKILL.md skills/verify-gate/scripts/run.sh
+# run-all-depends: docs-template/05-operations/deployment/git-workflow.md /docs/05-operations/DEPLOYMENT.md
+# run-all-not-depends: scripts/finish.sh 説明の言及（鮮度分岐の実体は scripts/lib/finish-precheck.sh を読む）。実行しない
+# run-all-not-depends: tests/run-all/verify.sh 説明の言及（mktemp の扱いの出典）
+# run-all-not-depends: /docs/04-quality/TESTING.md DEPLOYMENT.md が無いときだけ存在を見る（中身は読まない。DEPLOYMENT.md の変更は宣言で選ばれる）
 
 set -uo pipefail
 
@@ -1158,6 +1168,13 @@ stale_case notrun SIM_STALE="f0 f1" SIM_NOT_RUN="x0"
 if grep -qE '^STALE_ONLY_FAILED=.+' "$SIM_REC"; then bad "起動できなかった suite がある回に鮮度赤だけと記録している"; else ok "起動できなかった suite がある回は鮮度赤だけと記録しない"; fi
 stale_case reqskip SIM_STALE="f0 f1" SIM_REQ_SKIP="y0"
 if grep -qE '^STALE_ONLY_FAILED=.+' "$SIM_REC"; then bad "必須 skip がある回に鮮度赤だけと記録している"; else ok "必須 skip がある回は鮮度赤だけと記録しない"; fi
+# 時間予算の赤（Issue `#3005`）が重なった回: 名指しの再実行は予算を判定しないので、鮮度赤だけと記録しない
+stale_case budget SIM_STALE="f0 f1" TIME_BUDGET_FAILED=1
+if grep -qE '^STALE_ONLY_FAILED=.+' "$SIM_REC"; then bad "時間予算の赤がある回に鮮度赤だけと記録している"; else ok "時間予算の赤がある回は鮮度赤だけと記録しない"; fi
+# 時間予算の判定を FF_RUN_ALL_TIME_BUDGET=off で外した既定一覧の緑は、検証が欠けているので partial
+rm -f "$SIM_REC"
+env TIME_BUDGET_OPTED_OUT=1 FF_GATE_RECORD_FILE="$SIM_REC" bash "$SIM" "$SIM_REPO/tests" 1 1 3 pass 0 >/dev/null 2>&1
+contains "$SIM_REC" "STATUS=partial" "時間予算の判定を外した既定一覧の緑は STATUS=partial で記録する（照合の証拠にしない）"
 
 # 旧記録（行が無い）と読めない値は従来の案内へ倒す（鮮度扱いへ倒さない）。
 for STALE_MUT in drop 'f0;rm -rf x' 'f0  f1'; do

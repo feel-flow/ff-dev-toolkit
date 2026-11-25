@@ -55,6 +55,14 @@
 #       off             … security_review=off（判定は出すが専用ゲートを起動しない）
 #       none            … 該当なし（unknown は no へ倒さず、yes と同じくゲートの対象にする）
 #   REVIEW_SECURITY_REPORT_LINE=専用セキュリティゲート: …   … PR の Self-Review 欄へ転記する判定の 1 行
+#   REVIEW_SECURITY_RECORD_DONE=専用セキュリティゲート: … 実施（指摘 <N> 件）
+#   REVIEW_SECURITY_RECORD_SKIPPED=専用セキュリティゲート: 未確認（<実行しなかった理由。誤検知と判断した回はその根拠>）
+#                       … ゲートを実行する回（security-review / grok-session / antigravity-session /
+#                         codex-security）だけ出す、PR 本文へ書く結果の行の書式。報告行の「… を実行する（…）」は
+#                         計画で記録に数えないので、実行した回は DONE の <N> を、実行しなかった回（誤検知と
+#                         判断した回を含む）は SKIPPED の <…> を埋めて書く。どちらも /close-issue の precheck が
+#                         記録として認める形（scripts/lib/finish-precheck-security-record.sh）。unverified /
+#                         unsupported の回は報告行そのものが結果の行なので出さない（none / off も出さない）
 #
 # 設定（フィールド単位に env > プロジェクト設定 > 既定。プロジェクト設定は MULTI_AGENT_CONFIG、
 # 無ければ <repo>/.claude/agent-config.yaml の review 配下。ユーザー設定の層は持たない — path の
@@ -620,4 +628,22 @@ echo "REVIEW_PRIMARY_HOST=${host}"
 echo "REVIEW_SECURITY_BASE_CHECK=${base_check}"
 echo "REVIEW_SECURITY_GATE=${gate}"
 echo "REVIEW_SECURITY_REPORT_LINE=専用セキュリティゲート: ${report}"
+# 実行する回だけ、PR 本文へ書く結果の行の書式を並べる（報告行は計画で、precheck は記録に数えない）。
+# 書式の名前は self-review.md の専用セキュリティゲート項の記録例と揃える
+record_done=""
+case "$gate" in
+  security-review) record_done="/security-review 実施（指摘 <N> 件）" ;;
+  grok-session) record_done="grok-cli セッション内レビュー実施（指摘 <N> 件）" ;;
+  antigravity-session) record_done="antigravity-cli セッション内レビュー実施（指摘 <N> 件）" ;;
+  codex-security)
+    if [ "$grok_fallback" -eq 1 ]; then
+      record_done="Codex Security security-diff-scan 実施（担当: codex-cli。指摘 <N> 件）"
+    else
+      record_done="Codex Security security-diff-scan 実施（指摘 <N> 件）"
+    fi ;;
+esac
+if [ -n "$record_done" ]; then
+  echo "REVIEW_SECURITY_RECORD_DONE=専用セキュリティゲート: ${record_done}"
+  echo "REVIEW_SECURITY_RECORD_SKIPPED=専用セキュリティゲート: 未確認（<実行しなかった理由。誤検知と判断した回はその根拠>）"
+fi
 exit "$RC"

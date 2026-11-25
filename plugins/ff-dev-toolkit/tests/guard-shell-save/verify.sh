@@ -43,6 +43,16 @@
 # 空振り検出: 保存前の読み取りの stderr を 2>/dev/null へ戻す変異で C6b だけが赤（suite rc=1、他 93 件成功。2026-10-29 WSL 実測、Issue `#2461`）。
 # 空振り検出: 縮退検査（Issue `#2560`。2026-10-31 に Windows の Git Bash で実測、変異なしは 122 件緑）。FF_GUARD_SHELL_SAVE_TARGET で差し替えた hook に対し、場所の拒否を縮退させない → E1〜E8・E11・E12・T1〜T4・P-leaf・P-parent の 27 件赤、全拒否を縮退させる → C6・C6b・E10・E13 赤、場所の行が無い read-unverifiable も縮退させる → E10 赤、継承宣言を外す → E2〜E4 赤、断片の CR を残す → E3b 赤、通した回の注記を消す → E1・E5・E7・E8・E11・E12・T3・P-leaf ほか 13 件赤、行継続の判定を外す → E6〜E6d 赤、パイプ・論理演算子の行継続だけを外す → E6b〜E6d 赤、develop の旧 hook → E1〜E8・E11・E12・T1〜T4・P-write ほか 28 件赤（D4 は差し替えた実体の隣に ASDD ゲートが無いため、M5・M6 は自前の変異のアンカーが消えるため、差し替え時は赤）。
 # 空振り検出: 針が当たらない入力（Issue `#2560`）。%TEMP% の祖先の ACL で read-unverifiable を再現できない環境の T1 は ok に数えず skip と名指しし、境界の種別の行の書式が変わる（大文字など）と種別を読めず E13 のとおり判定不能の deny になる（緑へ倒さない）。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: hooks/guard-shell-save.sh hooks/hooks.json
+# run-all-depends: hooks/asdd-hook-gate.sh hooks/asdd-feature.mjs scripts/asdd/config.mjs
+# run-all-depends: scripts/lib/knowledge-read-*
+# run-all-depends: tests/lib/mbcs-guard.* tests/lib/pipefail-grep-q.* tests/lib/exit-code-guard.*
+# run-all-depends: tests/lib/adapter-env-isolation.sh tests/lib/asdd-gate-drain.sh tests/lib/crlf-jq-shim.sh
+# run-all-not-depends: tests/run-all/verify.sh 違反の綴りを実行時に組み立てる理由の説明（読まない）
+# run-all-not-depends: hooks/run-bash-hooks.sh R2 の判定文の中の名前。hooks.json の Bash matcher を jq で見るだけで中身は読まない
+# run-all-not-depends: tests/lib/release-skip-profile.tsv skip 理由文を合わせる先の説明（読まない）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

@@ -35,6 +35,17 @@
 #
 # 変異検出: close-issue SKILL.md 手順 3 から「根拠は AC の指す対象を測っているか」の行を消すと、手順 3 の節を見る 4 針（上位視点・対象一致の 1 行・測れない = 未達・原因未確定の報告）が赤（2026-09-27 実測）。
 # 変異検出: guard-merge-closing-keyword.sh の --body-file の判定を `/` 始まりだけへ戻すと、merge hook の「MSYSではC:/のbody-fileを絶対パスとして読む」が赤（368/1。2026-10-26 WSL 実測。Issue `#2367`）。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/check-closing-keywords.sh hooks/guard-merge-closing-keyword.sh hooks/asdd-hook-gate.sh scripts/lib/l4-declarations.tsv
+# run-all-depends: scripts/lib/merge-message.sh scripts/lib/finish-precheck.* tests/lib/section-scope.sh tests/lib/review-shell-lex.*
+# run-all-depends: skills/close-issue/SKILL.md skills/close-issue/references/merge-gate.md skills/close-issue/references/ac-judgement.md
+# run-all-depends: skills/close-issue/references/report.md skills/close-issue/references/prless-close.md
+# run-all-depends: docs-template/05-operations/deployment/git-workflow.md docs-template/05-operations/deployment/workflow-principles.md
+# run-all-depends: docs-template/05-operations/deployment/review-response-policy.md
+# run-all-not-depends: scripts/finish.sh precheck の実行主体の説明（検査は finish-precheck.sh の本文を読む）
+# run-all-not-depends: scripts/check-issue-body-diff.sh prless-close.md の節で探す文字列（ファイルは読まない）
+# run-all-not-depends: tests/out-of-scope-routing/verify.sh 重複検査の説明の言及
 
 set -euo pipefail
 

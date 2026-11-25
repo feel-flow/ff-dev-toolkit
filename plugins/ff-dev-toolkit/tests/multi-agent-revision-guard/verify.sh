@@ -18,6 +18,14 @@
 # を検出できない（前後のスナップショットが一致するため）。両方を別々に検査する。
 #
 # 実 CLI は 1 つも起動しない（stub で覆う）。書き込み不可の環境では skip。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/multi-agent.sh scripts/lib/multi-agent-*.sh
+# run-all-depends: scripts/adapters/ scripts/lib/adapter-common-*.sh scripts/lib/knowledge-read-acl.ps1
+# run-all-depends: scripts/agent-config.yaml scripts/perspectives/review/ scripts/perspectives/explore/
+# run-all-depends: tests/lib/git-fixture.sh tests/lib/adapter-env-isolation.sh tests/lib/multi-agent-sources.sh
+# run-all-not-depends: /docs/04-quality/TESTING.md ヘッダの案内（git 障害時の切り分け手順の参照先）。中身は読まない
+# run-all-not-depends: hooks/guard-review-in-flight.sh ロックを読む側として名前を出す説明のコメント。hook は起動しない
 
 set -euo pipefail
 

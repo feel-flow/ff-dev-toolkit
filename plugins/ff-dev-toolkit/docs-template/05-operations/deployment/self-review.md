@@ -110,6 +110,36 @@ TESTING.mdの基準に照らし、テストが十分か評価してください
 
 ---
 
+### 6. 実行経路を変える変更の自己点検（初回レビューの前）
+
+**当てる条件**: 実行者の権限でコードや外部プロセスを動かす経路を変える変更。たとえば次のものを変える変更が当たる。
+
+- 外部コマンド・スクリプトを起動する箇所、またはその解決先（環境変数・設定・パスから実行先を決める処理を含む）
+- git の取得・checkout・一時領域への展開
+- 子プロセスへ渡す環境
+
+このような変更では、セルフレビューの巡ごとに実行環境の別の面から指摘が 1〜2 件ずつ出て収束が遅れやすい。そこで初回のレビューを起動する**前**に、次の面を一覧で確かめてまとめて直しておく。
+
+**点検する面**:
+
+- [ ] **取り出す commit と ref**: 解決する ref を完全修飾する（`origin/<base>` は同名タグ `refs/tags/origin/<base>` で曖昧になりうるので `refs/remotes/origin/<base>`）。検証した blob をそのまま実行し、検証の後で作業ツリーのファイルを実行しない（検証と実行の間の差し替え）
+- [ ] **置き場所と後始末**: 展開・実行の置き場所が他のユーザーの書ける一時領域でないか。後始末（EXIT trap の張り直しを含む）が全経路で効くか
+- [ ] **実行元の信頼区分**: 明示して固定した実行元と、継承した環境変数から解決した実行元を分けて扱い、明示指定の経路へ副作用が出ないかを確かめる
+  - 環境変数から解決するパスは、「作業ツリーの外」というブラックリストではなく、ホストが管理する領域のホワイトリストで受ける
+  - 作業ツリー経由の拒否は、文字列の前方一致ではなく全親ディレクトリの物理パスで判定する（上位の symlink、キャッシュ配下に作業ツリーがある構成）
+  - 作業ツリー側の未コミットの改変・`assume-unchanged`・ブランチ上の差分と、シムが返す解決元の許可範囲も見る
+- [ ] **git の設定**: 置換 ref・`core.*` の上書き・`diff.relative=true` による相対パスの欠落（`-c diff.relative=false`）・改行を含むファイル名による行区切りの崩れ（`-z` で受ける）
+- [ ] **cwd と PATH**: 名前だけのコマンドがどこから見つかるか（Windows の node は名前だけのコマンドを cwd から先に探す）。PATH の要素の引用
+- [ ] **継承する環境変数**: 利用者の設定を上書きするか尊重するか。ツール系の環境変数（`CLAUDE_PLUGIN_ROOT` / `GROK_PLUGIN_ROOT` など）を継承して解決先が変わらないか
+- [ ] **入力待ち**: ssh のホスト鍵とパスフレーズ・`GIT_ASKPASS` / `core.askPass`（git は `GIT_TERMINAL_PROMPT` より先に呼ぶ）・credential helper・GCM・partial clone の遅延取得
+- [ ] **副作用で書くファイル**: `FETCH_HEAD` など、利用者の後続の操作が読むものを上書きしないか
+- [ ] **手元に無い object**: 取り出す commit・blob が手元に無い（未取得・partial clone）ときに、黙って別のものを使わないか
+- [ ] **引数と出力の境界**: `awk` が `=` を含むパス引数を代入と読む（`< "$file"` で渡す）・外部由来のパスや出力に含まれる制御文字（C0 / C1）
+
+**fix のたびに同じ一覧で確かめる**: 指摘を直した fix は、その fix が触った面を同じ一覧で確かめ直してから次の巡へ進む（前の巡の fix の副作用が次の巡の指摘になるのを防ぐ）。この一覧は巡を増やす根拠ではない。巡の上限と停止条件は [fix ループの収束判定と打ち切り](./multi-cli-review-orchestration.md#fix-ループの収束判定と打ち切り) に従う。
+
+---
+
 ## セルフレビューの実行方法（推奨）
 
 > **レビュー起動時の必須規定は [Git Workflow ステップ6](./git-workflow.md#ステップ6-セルフレビューpr作成後重要) が正本**: レビュー用サブエージェントの read-only 起動と、**全エージェントが終端に達するまでの作業ツリー凍結**（作業ツリーを共有して起動した場合。worktree 隔離既定を含む適用条件も正本を参照）を含む。本書はレビューの観点と記録様式を扱い、起動時の規定は再掲しない（件数も網羅的な列挙も持たせない — 規定が増えたときに「網羅的に見える不完全な要約」へ腐るため、正本を読ませる）。
@@ -142,14 +172,14 @@ AIがレビュー結果を返したら、指摘事項があればその場で修
 セルフレビュー（PR 作成後・マージ前に 1 回。fix commit の後に担当の選択をやり直して全体を再実行しない — 差分が動いた範囲は部分再検証で足りる）において、**基準線は主担当のセルフレビュー**である。主担当 1 モデルで完了した回は正常であり、クロスレビューは環境チェックで別 CLI が在るときに**加える**ものであって、無いことを記録する義務は負わない（利用者の多くは AI CLI を 1 つしか持たない — 反転の判断は本テンプレートのソースリポジトリの ADR-053）。全候補の実行は不要。
 
 1. **主担当**は実装を進めている Claude / Codex / Grok / Copilot / Google Antigravity とする。Claude Code / Codex / grok / Google Antigravity は下の [主担当ホストのネイティブセルフレビュー](#主担当ホストのネイティブセルフレビュー)で実行担当を選ぶ。他ホストは主担当自身が必要な全観点をセルフレビューする。いずれも結果と対象 commit / diff を記録する。同じ主担当 CLI の再起動は必須ではない。
-2. **環境チェック**。次を実行し、`cross_review=` と `available=` の行を読む。本書のコマンドは [Multi-CLI Review Orchestration §ff-dev-toolkit plugin root の固定](./multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) とセットで導入する — 実行前に同節の resolver + guard へ host の読み込み済み plugin 情報と `FF_DEV_TOOLKIT_PROJECT_ROOT` を渡し、fence 全体とコマンドを 1 回の Bash tool 呼び出し / shell script body で実行する。
+2. **環境チェック**。次を実行し、`cross_review=` と `available=` と `lane_precheck` の行を読む。本書のコマンドは [Multi-CLI Review Orchestration §ff-dev-toolkit plugin root の固定](./multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) とセットで導入する — 実行前に同節の resolver + guard へ host の読み込み済み plugin 情報と `FF_DEV_TOOLKIT_PROJECT_ROOT` を渡し、fence 全体とコマンドを 1 回の Bash tool 呼び出し / shell script body で実行する。
 
    ```bash
    ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --print-reviewers
    ```
 
-   **終了コードで分岐する**（出力のマーカー行を `grep -q` で拾わない — パイプ入力の `grep -q` は SIGPIPE + `pipefail` で判定が反転する）。exit 0 / 3 は続行、exit 1 は設定または環境の問題なので stderr をそのまま提示して止まる — ただし stderr が `No AI CLIs are installed` の exit 1 は「別 CLI が無い」という事実であって設定不正ではないので、止まらずに 4 へ進むか主担当のみで正常に完了する。`cross_review=off` なら 3（別 CLI のクロスレビュー）の自動起動を省略する — 4 の Toolkit エージェントは同一モデルの別軸なので任意のまま（[クロスレビューの単一固定](#クロスレビューの単一固定cross_review)）。検出は PATH 上の有無（と `exclude_clis` / `--exclude-cli` の除外）だけで、認証・残高はここでは見ない（課金される probe もしない）。モデルを起動せずに読める CLI の分だけ、タスクを起動する直前のレーン確認が確かめる（5）。
-3. **別 CLI が `available=` に在れば、クロスレビューを 1 本加える**。主担当以外から 1 つ選ぶ。CLI 名は `claude-code` / `codex-cli` / `grok-cli` / `copilot-cli` / `antigravity-cli`。利用者の明示指定を優先し、可能なら異なるモデル系統を選ぶ。別 CLI でも同じモデルの場合はモデルの独立性を保証しない。Copilot も候補だが、利用者の既存の利用・課金許可の範囲で選ぶ。**主担当が Claude Code / Codex / grok の回は `antigravity-cli` を選ばない**（headless の `agy` を他のエージェントホストから起動しない方針。アダプタも他ホストの印 `CLAUDECODE=1` / `CODEX_THREAD_ID` / `GROK_AGENT` を見て、`--cli antigravity-cli` を明示した回でも起動せずに未確認として記録する）。PATH に在ることは利用可能の確定ではない。起動前に確かめられるのは一部の CLI の一部の状態だけ（5）で、それ以外は実行するまで分からないので、まず走らせる。
+   **終了コードで分岐する**（出力のマーカー行を `grep -q` で拾わない — パイプ入力の `grep -q` は SIGPIPE + `pipefail` で判定が反転する）。exit 0 / 3 は続行、exit 1 は設定または環境の問題なので stderr をそのまま提示して止まる — ただし stderr が `No AI CLIs are installed` の exit 1 は「別 CLI が無い」という事実であって設定不正ではないので、止まらずに 4 へ進むか主担当のみで正常に完了する。`cross_review=off` なら 3（別 CLI のクロスレビュー）の自動起動を省略する — 4 の Toolkit エージェントは同一モデルの別軸なので任意のまま（[クロスレビューの単一固定](#クロスレビューの単一固定cross_review)）。検出は PATH 上の有無（と `exclude_clis` / `--exclude-cli` の除外）で決まる。そのうえで `available=` の CLI ごとに、モデルを起動しない起動前の確認（利用枠・認証と sandbox の適用可否。課金される probe はしない）を 1 回ずつ行い、`lane_precheck.<CLI 名>=` の行に出す。行の形・値・期限は [CLI別インストール状態の確認](./multi-cli-review-orchestration.md#cli別インストール状態の確認) にある。grok の sandbox 判定は grok の sandbox イベントログへ 1 行足す。`MULTI_AGENT_LANE_PRECHECK=off` では確かめない。
+3. **別 CLI が `available=` に在れば、クロスレビューを 1 本加える**。主担当以外から 1 つ選ぶ。CLI 名は `claude-code` / `codex-cli` / `grok-cli` / `copilot-cli` / `antigravity-cli`。利用者の明示指定を優先し、可能なら異なるモデル系統を選ぶ。別 CLI でも同じモデルの場合はモデルの独立性を保証しない。Copilot も候補だが、利用者の既存の利用・課金許可の範囲で選ぶ。**主担当が Claude Code / Codex / grok の回は `antigravity-cli` を選ばない**（headless の `agy` を他のエージェントホストから起動しない方針。アダプタも他ホストの印 `CLAUDECODE=1` / `CODEX_THREAD_ID` / `GROK_AGENT` を見て、`--cli antigravity-cli` を明示した回でも起動せずに未確認として記録する）。2 の出力で `unavailable`（利用枠切れ・未ログイン・sandbox 不適用と判明）の CLI は選ばず、試行もしない（判定のために候補ごとの `--dry-run` を回す必要は無い。外し方などの対処の案内は `--dry-run --cli <CLI 名>` の警告にある）。選べる候補が残らなければ、試行せずに主担当のみで完了する。`unknown` は使えないと分かったわけではないので候補に残して走らせる — PATH に在ることも `available` も、実行時に成功することの確定ではない。主担当（実装しているホスト）自身の CLI の行は候補選びに使わない。
 4. **別 CLI が無く、ホストが Claude Code で Toolkit のレビューエージェントが使えるなら、`pr-review-toolkit:*` を read-only で並列起動してよい**（任意。ホストがサブエージェント起動に対応し、Toolkit が利用可能で、利用者の既存の利用・課金許可の範囲で実行できる場合）。`pr-review-toolkit:code-reviewer` / `comment-analyzer` / `silent-failure-hunter` などから、差分の性質に合うものを選ぶ（runbook・手順書なら `comment-analyzer` の「記述と実態の一致・腐りやすさ」が効く）。起動時の規定は本書では再掲せず、[ステップ6 の正本](./git-workflow.md#ステップ6-セルフレビューpr作成後重要)に従う。**この段はモデル独立性を回復しない** — エージェントはホストと同じモデルで動くので、3 の「別 CLI でも同じモデルの場合はモデルの独立性を保証しない」がそのまま当てはまる。位置づけは「別モデルの代替」ではなく「**主担当のみで完了する前に、既存の利用・課金許可の範囲で同一モデルの追加観点を増やす段**」である。**サブエージェントもトークンを消費する**ので、ホスト非対応・Toolkit 未導入・利用枠や予算の都合で起動しない場合は、そのまま主担当のみで完了してよい（理由の記録は不要）。実測（消費プロジェクトでの運用）: 完走した別 CLI 1 本が Important 1 件だったのに対し、Toolkit 2 観点で Critical 1 + Important 6 を検出し、うち 1 件は手順書どおりに実行すると本番 migration の read-back で偽の緑を作れる設計欠陥だった。
 5. **一時的な利用不可を永続設定へ保存せず、ホストが代替の要否を判断する**。別 CLI の認証・残高・利用枠・モデル非対応をスクリプトが分類すると、同一 CLI の残りタスクはスキップされる。pair モード（`--route full` 等）で主担当が全観点を完走した回は、スクリプトは 0 終了し、統合レポートへ「主担当のみで完了（codex-cli: モデル非対応）」等を残す。**exit 0 の単一縮退でも、ホストは下の「失敗時の担当選択」を適用してから完了を判断する。** これはスクリプトの終了コード変更ではなく、ホストの追加確認である。主担当そのものが利用不可・途中失敗の回と、単一 CLI の起動（主担当はホスト自身）は非 0 のまま記録する。副担当のレーンは起動前に、モデルを起動しない取得で確かめられる範囲だけを確かめる（能力はアダプタが宣言する。codex は残量、claude は認証のみ、grok / copilot / antigravity は確かめない）。明示的に尽きている・未ログインのレーンは起動せず、実行時に利用不可で落ちた回と同じ扱いで「未確認（利用枠）」「未確認（認証）」と記録する。確かめられない・取得に失敗した回は通常どおり起動する。同じレビュー入力の `--resume` は、利用不可と確定したレーンを再起動しない（`--retry-exhausted` で再試行、`MULTI_AGENT_LANE_PRECHECK=off` で確認と記憶を止める。1 回の取得の期限は `MULTI_AGENT_LANE_PRECHECK_TIMEOUT` 秒、既定 10）。どのレーンも起動しなかった回は非 0 のまま、ホストが diff を直読する。INCOMPLETE の結果ファイル先頭と統合レポートの「未完了の観点」には停止理由の候補（推定・確定・不明）が出るが、表示用であり、上の分類と終了コードには使わない。codex-cli は起動前に `~/.codex/models_cache.json` の `client_version` と比べ、古ければ npm / Homebrew で自動更新してから回す（`--dry-run` は表示のみ、無効化は `FF_DEV_TOOLKIT_SKIP=codex-auto-update`）。代替の確認後に、制限解除待ち・繰り返しの再試行・事後クロスレビューを一律の義務にしない。**`exclude_clis` や pair 設定へ書き込まない** — 一時的な利用不可を保存すると枠が復活しても戻らない。次回は 2 の環境チェックからやり直す。原因不明の失敗・タイムアウト・`INCOMPLETE` は未確認であり、指摘なしではない。主担当そのものが利用不可の回でも、ホストが Claude Code なら落ちた主担当レーン（`🔑` / `💳`）は案内どおりの委譲（`--delegate-to-host` のあと `--resume`）で埋められる。終了コードは非 0 のまま。
 6. **記録は事実だけを書く**。PR / 最終報告には実施した担当と本数を書く（「主担当のみ」「主担当側: Codex ネイティブサブエージェント + 追加: claude-code」等）。主担当側の実施経路・対象 SHA と、従来経路を選んだ場合の理由も残す。候補別の利用不可理由の列挙は要求しない。主担当のレビューが未完了なら、本節のどの経路でも先へ進めない。
@@ -168,7 +198,7 @@ AIがレビュー結果を返したら、指摘事項があればその場で修
    - `off` … `security_review=off` で専用ゲートを無効化している（判定と根拠は報告行に残る）。`none` … 該当なし
    - `REVIEW_SECURITY_SENSITIVE=unknown`（パターンや設定を読めない・変更 0 件・根の判定不能）は該当なしへ倒さず、該当と同じくゲートの対象にする。理由は報告行に出る
 
-   プロジェクトごとのパターンは `.claude/agent-config.yaml` の `review.security_glob_extra`（追加）/ `review.security_glob`（置き換え）、無効化は `review.security_review: "off"` に書く（いずれも空白区切りの 1 文字列。環境変数 `MULTI_AGENT_SECURITY_GLOB_EXTRA` / `MULTI_AGENT_SECURITY_GLOB` / `MULTI_AGENT_SECURITY_REVIEW` が優先する。ユーザー設定の層は持たない）。`/security-review` は候補ごとにサブエージェントを起動して誤検知を絞るので、利用者の既存の利用・課金許可の範囲で実行し、許可の外なら `off` を合意して保存する。**記録は事実だけを書く**: PR の Self-Review 欄に「専用セキュリティゲート: /security-review 実施（指摘 N 件）」「専用セキュリティゲート: Codex Security security-diff-scan 実施（指摘 N 件）」「専用セキュリティゲート: grok-cli セッション内レビュー実施（指摘 N 件）」「専用セキュリティゲート: antigravity-cli セッション内レビュー実施（指摘 N 件）」「専用セキュリティゲート: 対象外（該当変更なし）」「専用セキュリティゲート: 未対応（主担当 unknown）」の形で残す。担当した CLI の名前をその行に含める（セッション内レビューは grok-cli / antigravity-cli、フォールバックで diff scan を回した回は codex-cli）。`/security-review` / `security-diff-scan` / セッション内レビューが途中で失敗した・タイムアウトした・利用枠切れになった・型付き判定行が無く完走を確認できない回は「未確認」と書き、「指摘なし」に数えない。セッション内レビューが無効で実行できる別 CLI も無い回は、報告行の「未確認（実行できる CLI なし」をそのまま残す。`security-diff-scan` が報告するカバレッジの欠け（レビューしきれなかった変更ファイル・未決の候補）は、その範囲を「未確認」と併記する。指摘の対応は [PRレビュー対応ポリシー](./review-response-policy.md) に従う。**記録はマージ前に機械で確かめる**: `/close-issue` の `finish.sh precheck` が PR の変更ファイルを同じ判定で分類し、該当（判定不能を含む）で `security_review=off` でない PR の本文に「専用セキュリティゲート: … 実施 / 未確認 / 未対応 …」の行が無ければ止める（ネイティブ経路で `review-route.sh` を回さなかった回も対象。認める形は [close-issue の merge-gate](../../../skills/close-issue/references/merge-gate.md#security-record-gate)）。「対象外」と「… を実行する（…）」は結果の行に数えない。
+   プロジェクトごとのパターンは `.claude/agent-config.yaml` の `review.security_glob_extra`（追加）/ `review.security_glob`（置き換え）、無効化は `review.security_review: "off"` に書く（いずれも空白区切りの 1 文字列。環境変数 `MULTI_AGENT_SECURITY_GLOB_EXTRA` / `MULTI_AGENT_SECURITY_GLOB` / `MULTI_AGENT_SECURITY_REVIEW` が優先する。ユーザー設定の層は持たない）。`/security-review` は候補ごとにサブエージェントを起動して誤検知を絞るので、利用者の既存の利用・課金許可の範囲で実行し、許可の外なら `off` を合意して保存する。**記録は事実だけを書く**: 報告行（`REVIEW_SECURITY_REPORT_LINE=`）の「… を実行する（…）」は計画で、記録に数えない。ゲートを実行する回は `review-route.sh` が結果の行の書式を 2 つ並べて出すので、実行した回は `REVIEW_SECURITY_RECORD_DONE=` の `<N>` を、実行しなかった回（実行できない・glob の誤検知と判断した回）は `REVIEW_SECURITY_RECORD_SKIPPED=` の理由を埋めて書く（`<N>` や理由の置き場所を残したまま貼った行は記録に数えない。unverified / unsupported の回は報告行そのものが結果の行）。PR の Self-Review 欄に「専用セキュリティゲート: /security-review 実施（指摘 `<N>` 件）」「専用セキュリティゲート: Codex Security security-diff-scan 実施（指摘 `<N>` 件）」「専用セキュリティゲート: grok-cli セッション内レビュー実施（指摘 `<N>` 件）」「専用セキュリティゲート: antigravity-cli セッション内レビュー実施（指摘 `<N>` 件）」「専用セキュリティゲート: 対象外（該当変更なし）」「専用セキュリティゲート: 未対応（主担当 unknown）」の形で残す（`<N>` は件数で埋める）。担当した CLI の名前をその行に含める（セッション内レビューは grok-cli / antigravity-cli、フォールバックで diff scan を回した回は codex-cli）。`/security-review` / `security-diff-scan` / セッション内レビューが途中で失敗した・タイムアウトした・利用枠切れになった・型付き判定行が無く完走を確認できない回は「未確認」と書き、「指摘なし」に数えない。セッション内レビューが無効で実行できる別 CLI も無い回は、報告行の「未確認（実行できる CLI なし」をそのまま残す。`security-diff-scan` が報告するカバレッジの欠け（レビューしきれなかった変更ファイル・未決の候補）は、その範囲を「未確認」と併記する。指摘の対応は [PRレビュー対応ポリシー](./review-response-policy.md) に従う。**記録はマージ前に機械で確かめる**: `/close-issue` の `finish.sh precheck` が PR の変更ファイルを同じ判定で分類し、該当（判定不能を含む）で `security_review=off` でない PR の本文に「専用セキュリティゲート: … 実施 / 未確認 / 未対応 …」の行が無ければ止める（ネイティブ経路で `review-route.sh` を回さなかった回も対象。認める形は [close-issue の merge-gate](../../../skills/close-issue/references/merge-gate.md#security-record-gate)）。「対象外」と「… を実行する（…）」は結果の行に数えない。
 
 CLI の失敗・タイムアウトと `INCOMPLETE` は「未確認」であり「指摘なし」ではない。スクリプトの非0終了を成功へ書き換えず、**ホストが根拠を確認して別 CLI を明示実行するか、主担当のみでの完了を記録する**。上の 5 による主担当のみの完了を決める前に、下の「失敗時の担当選択」を適用する。実行ごとの出力を別ディレクトリに保持し、失敗した試行と採用した結果を区別する。無人の厳格なレビューフックの終了コード判定は変更しない。
 
@@ -195,7 +225,7 @@ CLI の失敗・タイムアウトと `INCOMPLETE` は「未確認」であり�
 
 主担当側のネイティブレビューは OS に依存せず、Bash / yq / WSL / 外部 CLI の導入を起動条件にしない。差分の取得と閲覧はホストが提供する Git・ファイル閲覧機能や利用可能なシェルを使う。外部 CLI の環境チェックを実行できない場合は追加クロスレビューを未確認と記録し、ネイティブレビューの完了とは区別する。設定不正や失敗した CLI レビューを、この例外で成功へ変えない。Windows 実機の完走を保証する記述ではなく、実施した OS・ホスト・対象 SHA を証跡に残す。
 
-ネイティブ経路では review-route.sh を起動・完了条件にせず、本書とステップ6の観点を担当へ渡す。Bash が無くセキュリティ該当性を判定できない場合は該当と同じ扱いにし、親節の項8のホスト・比較元・スキル可用性の条件で専用ゲートを選ぶ。スクリプトの出力値を推測で作らず、ホストが判断した経路と根拠を記録する。専用ゲートを実施できなければ、その理由と未確認の範囲を記録する。主担当側レビューと専用ゲートの完了を混同せず、既存の必須マージ条件は免除しない。
+ネイティブ経路ではレーンの数・観点を決めるために review-route.sh を起動・完了条件にせず、本書とステップ6の観点を担当へ渡す。ただし専用セキュリティゲートの判定はネイティブ経路でも省かず、親節の項8のとおり review-route.sh を 1 回実行して `REVIEW_SECURITY_GATE=` を読み、該当なら同じ巡で専用ゲートを実行して結果の行を PR 本文へ書く（ネイティブの担当へ渡したレビューだけで専用ゲートを済ませたことにしない）。Bash が無くセキュリティ該当性を判定できない場合は該当と同じ扱いにし、親節の項8のホスト・比較元・スキル可用性の条件で専用ゲートを選ぶ。スクリプトの出力値を推測で作らず、ホストが判断した経路と根拠を記録する。専用ゲートを実施できなければ、その理由と未確認の範囲を記録する。主担当側レビューと専用ゲートの完了を混同せず、既存の必須マージ条件は免除しない。
 
 直接委譲は既存 hook のレーン・巡回カウンタへ自動登録されない。親が凍結と同じ HEAD を同じ巡とする2巡上限を守り、機械ガード発火済みと報告しない。手動の巡管理にも既存の [収束判定](./multi-cli-review-orchestration.md#fix-ループの収束判定と打ち切り)を適用する。起動前と採用前に作業ツリーが対象 commit と一致することも照合する。追跡・未追跡の変更を見落として固定 SHA だけで受理せず、レビュー出力先の除外はステップ6に従う。
 
@@ -228,7 +258,7 @@ read-only: 編集・ファイル作成・ビルド・テスト実行・git 書�
 
 1. **主担当の観点が未完了なら、先に主担当のレビューを完了する。** 自ホストのレーンを委譲する場合は [ホスト委譲](./multi-cli-review-orchestration.md#host-delegation) に従う。別モデルの結果だけで主担当完了としない。
 2. **利用者がそのモデルのみ・代替不可と明示した回は、別モデルを完了条件の代わりにしない。** 別モデルを実行せず、本節の手順 3 を省いて指定モデルの追加レビューを未完了として記録する。 モデル名の指定は担当選択の優先条件であり、それだけでは代替禁止と扱わない。代替可能か不明なら独立してできる作業を進めつつ確認する。
-3. **既存の利用・課金許可がある未試行の別 CLI が在れば、ホストが 1 本だけ明示実行する。** 実行時の代替コマンドより本節の候補選択を優先し、主担当を指す案内は実行しない。主担当と失敗した CLI を除き、同じ対象 HEAD・base・観点を固定して、下の「クロスモデルレビュー」の実行方法に従う。例えば Codex 主担当で Claude が利用枠切れなら、導入済みの Grok を `--mode cross-model --cli grok-cli --perspective comprehensive-review --output-dir <今回専用の出力先>` で選ぶ。Copilot は明示 opt-in が必要。`antigravity-cli` は主担当が Claude Code / Codex / grok の回は代替にも選ばない（上の項 3 と同じ方針）。`cross_review=off` / `features.multiReview=false` は自動追加を止めるが、利用者の明示した単発追加レビューは対象とする。
+3. **既存の利用・課金許可がある未試行の別 CLI が在れば、ホストが 1 本だけ明示実行する。** 実行時の代替コマンドより本節の候補選択を優先し、主担当を指す案内は実行しない。主担当と失敗した CLI と、親節の項 2 の出力で `unavailable` の CLI を除き、同じ対象 HEAD・base・観点を固定して、下の「クロスモデルレビュー」の実行方法に従う。例えば Codex 主担当で Claude が利用枠切れなら、導入済みの Grok を `--mode cross-model --cli grok-cli --perspective comprehensive-review --output-dir <今回専用の出力先>` で選ぶ。Copilot は明示 opt-in が必要。`antigravity-cli` は主担当が Claude Code / Codex / grok の回は代替にも選ばない（上の項 3 と同じ方針）。`cross_review=off` / `features.multiReview=false` は自動追加を止めるが、利用者の明示した単発追加レビューは対象とする。
 4. **候補が無いか代替も利用不可なら、その回の再試行を増やさない。** 通常のセルフレビューは親節の項 5 に従い主担当のみで完了できる。利用者が求める追加レビューが未完了なら、その事実と対象を記録し、追加レビュー完了とは報告しない。復旧待ちや予約は、利用者が継続を求めた場合にだけ行う。
 5. **失敗した試行と代替結果は別ディレクトリに保持する。** CLI 名・対象 SHA・完走状態をそれぞれ記録し、Grok の完走を Claude 完走へ読み替えない。代替が完走したら不要になった復旧待ちの予約を停止する。ただし特定モデルの完走が引き続き必要な依頼は残す。
 

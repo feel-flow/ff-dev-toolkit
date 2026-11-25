@@ -14,6 +14,16 @@
 #     ff_git_write_chain_scan で再検証（rc=0 かつ 0 件を確認）してから stdout に出力して 0 を返す。
 #     非対象（0 件 / unsafe / 構文エラー / 再検証失敗）は 1（または scan エラー時はその rc）を返す。
 #
+# heredoc の本文はコードとして読まない。最上位では改行で本文を読み飛ばし、`$(…)` の中で開いた heredoc も
+# 境界（閉じ括弧）を探す走査が次の改行で区切り語まで読み飛ばす（`git commit -m "$(cat <<'EOF'` の次の行から
+# 区切り語の行までの本文に単一引用符や `fix(#N):` があっても閉じ括弧を見失わない。Issue `#2971`）。区切り語の
+# 直後に閉じ括弧を続けた行（`EOF)`）は bash と同じく heredoc の終わりとして読み、閉じ括弧から境界の走査へ戻る。
+#
+# 既知の限界: バッククォートの置換（`` `…` ``）は次の未エスケープのバッククォートで閉じるだけで、中の heredoc の
+# 本文を読み飛ばさない（本文にバッククォートがあると境界がずれる）。`$(cat <<EOF)` のように改行より前に閉じた
+# `$(…)` の heredoc は読み飛ばさない（従来どおり）。語に続けて書いた zsh の glob 修飾子（`x-*(N)`）は、語の終わりと
+# サブシェルの括弧として読む（同じ呼び出しの連鎖を見落とすことがある）。
+#
 # 環境変数（テスト・診断用）:
 #   FF_GIT_WRITE_CHAIN_AWK  使用する awk 実行バイナリ（既定 awk）
 
@@ -152,16 +162,58 @@ function consume_heredocs(src, p, n,    delim, strip_tab, quoted, body, line_sta
   return p
 }
 
-# $() 内部を位置 p (`$(` の直後) から対応する `)` まで走査して終端の次位置と中身を _sub_body で返す
-function scan_cmdsubst(src, p, n,    depth, ch, ch2, start_p, qmode) {
+# $() の中で開いた heredoc の本文を、その $() の入れ子の段 lvl の待ち行列から順に読み飛ばす。
+# 本文はコードとして読まない（本文の単一引用符や `(#N)` の `#` を引用・コメントと読むと閉じ括弧を見失う）。
+# 本文の中身は、境界が決まった $() の中身を再帰の走査で読むときに tokenize が改めて扱う。
+# 区切り語の直後に閉じ括弧を続けた行（`EOF)`）は、bash と同じく heredoc の終わりとして読み、閉じ括弧から
+# 境界の走査へ返す（この形は従来どおり通す。zsh は構文エラーにする）。
+function cs_skip_heredocs(src, p, n, lvl,    k, delim, line_start, line_str, lead, nl) {
+  for (k = 1; k <= cs_hn[lvl]; k++) {
+    delim = cs_hd[lvl, k]
+    while (p <= n) {
+      line_start = p
+      while (p <= n && substr(src, p, 1) != "\n") p++
+      line_str = substr(src, line_start, p - line_start)
+      nl = 0
+      if (p <= n) {
+        p++
+        cur_ln++
+        nl = 1
+      }
+      lead = length(line_str)
+      if (cs_hs[lvl, k]) sub(/^\t+/, "", line_str)
+      lead -= length(line_str)
+      if (line_str == delim) {
+        delim = ""
+        break
+      }
+      if (substr(line_str, 1, length(delim)) == delim && substr(line_str, length(delim) + 1, 1) == ")") {
+        if (nl) cur_ln--
+        cs_hn[lvl] = 0
+        return line_start + lead + length(delim)
+      }
+    }
+    if (delim != "") fail_unterminated("unterminated-heredoc:" cs_hd[lvl, k])
+  }
+  cs_hn[lvl] = 0
+  return p
+}
+
+# $() 内部を位置 p (`$(` の直後) から対応する `)` まで走査して終端の次位置と中身を _sub_body で返す。
+# `<<` / `<<-` で開いた heredoc は、次の引用の外の改行で本文を区切り語まで読み飛ばす
+# （`git commit -m "$(cat <<\047EOF\047 … EOF)"` の本文に単一引用符や `fix(#N):` があっても境界を見失わない）。
+function scan_cmdsubst(src, p, n,    depth, ch, ch2, start_p, qmode, lvl, strip) {
   start_p = p
   depth = 1
   qmode = 0
+  lvl = ++cs_lvl
+  cs_hn[lvl] = 0
   while (p <= n && depth > 0) {
     ch = substr(src, p, 1)
     if (ch == "\n") {
       cur_ln++
       p++
+      if (qmode == 0 && cs_hn[lvl] > 0) p = cs_skip_heredocs(src, p, n, lvl)
       continue
     }
     if (qmode == 1) {
@@ -208,6 +260,20 @@ function scan_cmdsubst(src, p, n,    depth, ch, ch2, start_p, qmode) {
       p += 2
       continue
     }
+    # here-string（`<<<`）は heredoc ではない。`<<` / `<<-` は区切り語を読み、本文は次の改行で読み飛ばす
+    if (ch == "<" && substr(src, p + 1, 1) == "<") {
+      if (substr(src, p + 2, 1) == "<") {
+        p += 3
+        continue
+      }
+      strip = (substr(src, p + 2, 1) == "-")
+      p = read_heredoc_delim(src, p + (strip ? 3 : 2), n)
+      cs_hn[lvl]++
+      cs_hd[lvl, cs_hn[lvl]] = hd_delim[hd_cnt]
+      cs_hs[lvl, cs_hn[lvl]] = strip
+      hd_cnt--
+      continue
+    }
     if (ch == "#") {
       if (p == start_p || substr(src, p - 1, 1) ~ /[ \t\n;()&|]/) {
         while (p <= n && substr(src, p, 1) != "\n") p++
@@ -239,6 +305,11 @@ function scan_cmdsubst(src, p, n,    depth, ch, ch2, start_p, qmode) {
       continue
     }
     if (ch == "(") {
+      # 算術コマンド `(( x << 2 ))` の `<<` を heredoc と読まない（tokenize と同じ判定で丸ごと飛ばす）
+      if (substr(src, p + 1, 1) == "(" && is_true_arith_dbl_paren(src, p + 2, n)) {
+        p = skip_arith(src, p + 2, n)
+        continue
+      }
       depth++
       p++
       continue
@@ -247,6 +318,9 @@ function scan_cmdsubst(src, p, n,    depth, ch, ch2, start_p, qmode) {
       depth--
       if (depth == 0) {
         _sub_body = substr(src, start_p, p - start_p)
+        # 改行より前に閉じた $() の heredoc（`$(cat <<EOF)`）は従来どおり読み飛ばさない
+        cs_hn[lvl] = 0
+        cs_lvl--
         return p + 1
       }
       p++

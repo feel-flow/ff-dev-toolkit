@@ -27,6 +27,14 @@
 # 空振り検出: ジョブ制御警告分離（run_with_timeout の `{ set -m; ...; set +m; } 2>/dev/null`）を外す変異を mutation-harness.sh で当てると、BASH_ENV の set -m / set +m 注入による silent+jc-warn・credits_short+jc-warn の 6 件（codex / claude / grok 各 2 件）が赤になる（無変異は全 43 pass。本 fixture は起動ブロックの fd 2 隔離を保証し、fork 後 exec 前の実 setpgid EPERM 警告分離は macOS bash 5.3 + __DATA,__interpose で別途実測確認。2026-11-22 macOS 実測）。
 #
 # 実 CLI は 1 つも起動しない（全 CLI を stub で覆う）。書き込み不可の環境では skip。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/multi-agent.sh scripts/lib/multi-agent-*.sh scripts/lib/adapter-common-*.sh
+# run-all-depends: scripts/adapters/ scripts/agent-config.yaml scripts/perspectives/
+# run-all-depends: tests/lib/git-fixture.sh tests/lib/adapter-env-isolation.sh tests/lib/multi-agent-sources.sh
+# run-all-depends: scripts/lib/knowledge-read-acl.ps1
+# run-all-not-depends: /docs/04-quality/TESTING.md 説明の言及（ホスト git 障害時の切り分けの出典）
+# run-all-not-depends: scripts/mutation-harness.sh 説明の言及（変異の実測に使った道具）
 
 set -euo pipefail
 

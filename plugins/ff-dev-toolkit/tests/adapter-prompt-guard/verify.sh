@@ -30,6 +30,14 @@
 # 空振り検出: プロンプトから例示行を消すと「例示が無い（針が当たらない）」で赤（0 件一致を緑にしない。2026-09-25 実測）。
 # 空振り検出: get_diff_content から --irreversible-delete を外すと「削除本文がレビュー diff に残っている」が赤になる。CODEX_TURN_MAX_CHARS を 999999999 に上げると、上限検査の stub が受理応答を返すため「上限超過のプロンプトでアダプタが 0 終了した」が赤になる（2026-11-04 実測。各 1 件失敗）。
 # 変異検出: adapter-common-git.sh の --staging-dir の判定を `/` 始まりだけへ戻すと「MSYS では C:/… の staging を絶対パスとして受け付ける」が赤（2026-10-26 WSL 実測。Issue `#2367`）。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/adapters/ scripts/lib/adapter-common-git.sh
+# run-all-depends: scripts/multi-agent.sh scripts/lib/multi-agent-*.sh
+# run-all-depends: scripts/agent-config.yaml scripts/perspectives/
+# run-all-depends: tests/lib/git-fixture.sh tests/lib/adapter-env-isolation.sh tests/lib/multi-agent-sources.sh
+# run-all-depends: scripts/lib/knowledge-read-acl.ps1
+# run-all-not-depends: /AGENTS.md 説明とプロンプト文言の中の名前（リポジトリの AGENTS.md は読まない）
 
 set -euo pipefail
 

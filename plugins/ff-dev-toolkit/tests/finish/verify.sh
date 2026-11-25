@@ -71,6 +71,17 @@
 #
 # 実 gh・ネットワーク・課金は伴わない。一時ディレクトリを作れない環境は skip ではなく
 # 赤（この suite の検査は 1 件も成立していない）。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/finish.sh scripts/check-closing-keywords.sh scripts/check-merge-freshness.sh scripts/record-gate-head.sh scripts/effort-report.sh
+# run-all-depends: scripts/knowledge-commit.sh scripts/merge-cleanup.sh scripts/review-route.sh scripts/update-version-claim.sh scripts/check-version-claims.sh scripts/check-shebang-cr.sh
+# run-all-depends: scripts/lib/ scripts/decision-tree/route.sh scripts/decision-tree/tree.tsv .claude-plugin/plugin.json
+# run-all-depends: skills/**/SKILL.md skills/close-issue/references/merge-gate.md
+# run-all-depends: hooks/guard-exit-code.sh hooks/asdd-hook-gate.sh tests/lib/git-fixture.sh tests/lib/adapter-env-isolation.sh
+# run-all-not-depends: tests/run-all.sh record-gate-head.sh へ渡す gate 名（fixture の中の名前）
+# run-all-not-depends: hooks/hooks.json 変更分類へ渡すパスの文字列（読まない）
+# run-all-not-depends: /docs/08-knowledge/OBSERVATIONS.md fixture リポジトリの中のパス
+# run-all-not-depends: /docs/08-knowledge/PLAYBOOK.md fixture リポジトリの中のパス
 
 # run-all-required: yes — finish.sh の前提崩れ（PR 不在 / gh 不通 / 記録不在）が非 0 で名指しされる契約と、本線バイト上限の名簿を見る唯一の層。環境都合の skip 経路を持たない（一時領域・git・jq の不在は赤）
 
@@ -511,6 +522,10 @@ if [ "${1:-}" = "--version" ]; then
 fi
 case "$1 $2" in
   "pr view")
+    if [ "${STUB_GRAPHQL_403:-0}" = "1" ]; then
+      echo "HTTP 403: GitHub GraphQL is not available from Claude Code sessions; use the REST API (gh api repos/{owner}/{repo}/...)" >&2
+      exit 1
+    fi
     if [ "${STUB_PR_UNKNOWN_FIELD:-0}" = "1" ]; then
       printf 'Unknown JSON field: "closingIssuesReferences"\nAvailable fields:\n  number\n  state\n' >&2
       exit 1
@@ -541,16 +556,24 @@ case "$1 $2" in
     if [ -n "$jq_expr" ]; then jq -r "$jq_expr" "${STUB_PR_JSON:?}"; else cat "${STUB_PR_JSON:?}"; fi
     ;;
   "issue view")
-    if [ "${STUB_ISSUE_MISSING:-0}" = "1" ]; then
-      echo "Could not resolve to an issue" >&2
-      exit 1
-    fi
     case "$*" in
       *"--json comments"*)
+        if [ "${STUB_ISSUE_COMMENTS_GRAPHQL_403:-0}" = "1" ]; then
+          echo "HTTP 403: GitHub GraphQL is not available from Claude Code sessions; use the REST API (gh api repos/{owner}/{repo}/...)" >&2
+          exit 1
+        fi
         if [ "${STUB_ISSUE_COMMENTS_MISSING:-0}" = "1" ]; then echo "stub: comments unavailable" >&2; exit 1; fi
         if [ -n "${STUB_ISSUE_COMMENTS_FILE:-}" ]; then cat "$STUB_ISSUE_COMMENTS_FILE"; else echo '{"comments":[]}'; fi
         exit 0 ;;
     esac
+    if [ "${STUB_ISSUE_GRAPHQL_403:-0}" = "1" ]; then
+      echo "HTTP 403: GitHub GraphQL is not available from Claude Code sessions; use the REST API (gh api repos/{owner}/{repo}/...)" >&2
+      exit 1
+    fi
+    if [ "${STUB_ISSUE_MISSING:-0}" = "1" ]; then
+      echo "Could not resolve to an issue" >&2
+      exit 1
+    fi
     if [ -n "${STUB_ISSUE_BODY_DIR:-}" ] && [ -f "${STUB_ISSUE_BODY_DIR}/${3##*/}.md" ]; then
       jq -n --rawfile body "${STUB_ISSUE_BODY_DIR}/${3##*/}.md" '{body:$body}'
     elif [ -n "${STUB_ISSUE_BODY_FILE:-}" ]; then
@@ -599,6 +622,22 @@ case "$1 $2" in
         if [ "${STUB_CLASSIC:-404}" = "200" ]; then echo '{}'; exit 0; fi
         echo "gh: HTTP 404: not found" >&2; exit 1 ;;
       */rules/branches/*) echo "${STUB_RULESETS:-false}" ;;
+      repos/*/pulls/[0-9]*)
+        if [ "${STUB_REST_FAIL:-0}" = "1" ]; then echo "gh: HTTP 500: rest unavailable" >&2; exit 1; fi
+        if [ -n "${STUB_REST_PR_JSON:-}" ]; then cat "$STUB_REST_PR_JSON"; exit 0; fi
+        echo "gh: HTTP 404: Not Found" >&2; exit 1 ;;
+      repos/*/issues/[0-9]*/comments*)
+        if [ "${STUB_REST_FAIL:-0}" = "1" ]; then echo "gh: HTTP 500: rest unavailable" >&2; exit 1; fi
+        if [ "${STUB_REST_COMMENTS_OVERFLOW:-0}" = "1" ]; then
+          jq -n '[range(0; 100) | {body: ("comment-" + tostring)}]'
+          exit 0
+        fi
+        if [ -n "${STUB_REST_COMMENTS_JSON:-}" ]; then cat "$STUB_REST_COMMENTS_JSON"; exit 0; fi
+        echo '[]'; exit 0 ;;
+      repos/*/issues/[0-9]*)
+        if [ "${STUB_REST_FAIL:-0}" = "1" ]; then echo "gh: HTTP 500: rest unavailable" >&2; exit 1; fi
+        if [ -n "${STUB_REST_ISSUE_JSON:-}" ]; then cat "$STUB_REST_ISSUE_JSON"; exit 0; fi
+        echo "gh: HTTP 404: Not Found" >&2; exit 1 ;;
       *) echo "unhandled gh api path: $path" >&2; exit 1 ;;
     esac
     ;;
@@ -3101,6 +3140,143 @@ if [ "$_mg_count" -ge 10 ]; then
   ok "MG0: mergeable ケース群を実行した（${_mg_count} 件）"
 else
   bad "MG0: mergeable ケース群が空または不足（${_mg_count} 件）"
+fi
+
+# ── GR. GraphQL 403 時の REST API フォールバックと --github-input 案内 ──────────
+echo
+echo "== GR. GraphQL 403 時の REST API フォールバック =="
+GR_WORK="$TMP/gr-work"
+g clone -q "$TMP/origin.git" "$GR_WORK" >/dev/null 2>&1
+g -C "$GR_WORK" remote set-url origin "https://github.com/owner/repo.git"
+g -C "$GR_WORK" config "url.${TMP}/origin.git.insteadOf" "https://github.com/owner/repo.git"
+g -C "$GR_WORK" remote set-head origin develop >/dev/null 2>&1
+GR_REST_PR="$TMP/gr-rest-pr.json"
+jq -n --arg head "$HEAD_OID" --arg base "$BASE_OID" --argjson n "$PRN" '{
+  number: $n, state: "closed", merged: true, merged_at: "2026-11-20T00:00:00Z", draft: false,
+  title: "merged pr", body: "", html_url: ("https://github.com/owner/repo/pull/" + ($n | tostring)),
+  head: {ref: "feature/#7-x", sha: $head, repo: {id: 1, full_name: "owner/repo"}},
+  base: {ref: "develop", sha: $base, repo: {id: 1, full_name: "owner/repo"}}
+}' >"$GR_REST_PR"
+cp "$ROOT/scripts/merge-cleanup.sh" "$TMP/gr-mc.bak"
+cat >"$ROOT/scripts/merge-cleanup.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "## マージ後 Cleanup 結果"
+echo "delegated-rest-ok args=$*"
+exit 0
+STUB
+chmod +x "$ROOT/scripts/merge-cleanup.sh"
+: >"$STUB_LOG"
+STUB_GRAPHQL_403=1 STUB_REST_PR_JSON="$GR_REST_PR" run_finish "$GR_WORK" cleanup "$PRN"
+if [ "$RC" -eq 0 ] && has_line "$OUT" "CLEANUP_PR_STATE=MERGED" && has_line "$OUT" "CLEANUP_RC=0" \
+   && grep -q 'api repos/owner/repo/pulls/' "$STUB_LOG"; then
+  ok "GR1: finish.sh cleanup が GraphQL 403 でも REST API で MERGED を取得し委譲完走する"
+else
+  bad "GR1: finish.sh cleanup の GraphQL 403 REST フォールバック失敗（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+
+GR_REST_CLOSED="$TMP/gr-rest-closed.json"
+jq '.merged = false | .merged_at = null' "$GR_REST_PR" >"$GR_REST_CLOSED"
+STUB_GRAPHQL_403=1 STUB_REST_PR_JSON="$GR_REST_CLOSED" run_finish "$GR_WORK" cleanup "$PRN"
+if [ "$RC" -eq 0 ] && has_line "$OUT" "CLEANUP_PR_STATE=CLOSED"; then
+  ok "GR2: REST で merged=false, state=closed の PR は CLOSED に正規化される（MERGED と誤認しない）"
+else
+  bad "GR2: REST の未マージ closed 正規化が違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+
+STUB_GRAPHQL_403=1 STUB_REST_FAIL=1 run_finish "$GR_WORK" cleanup "$PRN"
+if [ "$RC" -eq 1 ] && has_text "$ERR" "--github-input" && has_text "$ERR" "finish.cleanup.state"; then
+  ok "GR3: cleanup で GraphQL 403 + REST も失敗時は --github-input の最小 index JSON 手順を案内する"
+else
+  bad "GR3: cleanup の REST 失敗時案内が不足（rc=${RC}）: ${ERR}"
+fi
+cp "$TMP/gr-mc.bak" "$ROOT/scripts/merge-cleanup.sh"
+chmod +x "$ROOT/scripts/merge-cleanup.sh"
+
+STUB_GRAPHQL_403=1 run_finish "$GR_WORK" precheck "$PRN"
+if [ "$RC" -eq 2 ] && has_text "$ERR" "--github-input" \
+   && has_text "$ERR" "finish.precheck.repo" && has_text "$ERR" "nameWithOwner" \
+   && has_text "$ERR" "finish.precheck.pr" && has_text "$ERR" "finish.precheck.threads"; then
+  ok "GR4: precheck で GraphQL 403 時は --github-input と必須エントリ（repo[nameWithOwner/url]・pr・threads）手順を案内して rc 2 で止まる"
+else
+  bad "GR4: precheck の GraphQL 403 時案内が不足（rc=${RC}）: ${ERR}"
+fi
+
+# ff_precheck_fetch_issue_body の GraphQL 403 → REST フォールバック（precheck の PR 取得は通して Issue 取得だけ 403）
+GR_REST_ISSUE="$TMP/gr-rest-issue.json"
+jq -n '{number: 9, state: "open", body: "- [x] 達成済み\n"}' >"$GR_REST_ISSUE"
+GR_CLOSES_BODY="$(printf 'Closes %s%s' '#' "$REFN")"
+PR_CLOSING_REFS_JSON='[]' write_pr_json "$GR_CLOSES_BODY" '[]'
+: >"$STUB_LOG"
+STUB_ISSUE_GRAPHQL_403=1 STUB_REST_ISSUE_JSON="$GR_REST_ISSUE" \
+  run_finish "$GR_WORK" precheck "$PRN"
+if has_line "$OUT" "AC_UNCHECKED_COUNT=0" && grep -q "api repos/owner/repo/issues/${REFN}" "$STUB_LOG"; then
+  ok "GR5: ff_precheck_fetch_issue_body が GraphQL 403 時に REST API へフォールバックして Issue 本文を取得する"
+else
+  bad "GR5: ff_precheck_fetch_issue_body の REST フォールバック失敗（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+
+GR_REST_ISSUE_UNCHECKED="$TMP/gr-rest-issue-unchecked.json"
+jq -n '{number: 9, state: "open", body: "- [ ] 未達成タスク\n"}' >"$GR_REST_ISSUE_UNCHECKED"
+STUB_ISSUE_GRAPHQL_403=1 STUB_REST_ISSUE_JSON="$GR_REST_ISSUE_UNCHECKED" \
+  run_finish "$GR_WORK" precheck "$PRN"
+if [ "$RC" -eq 1 ] && has_line "$OUT" "AC_UNCHECKED_COUNT=1"; then
+  ok "GR5b: REST フォールバックで未チェック AC がある Issue 本文を正しく AC_UNCHECKED_COUNT=1 で止める"
+else
+  bad "GR5b: REST フォールバックの未チェック AC 検出に失敗（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+
+GR_REST_ISSUE_NOBODY="$TMP/gr-rest-issue-nobody.json"
+jq -n '{number: 9, state: "open"}' >"$GR_REST_ISSUE_NOBODY"
+STUB_ISSUE_GRAPHQL_403=1 STUB_REST_ISSUE_JSON="$GR_REST_ISSUE_NOBODY" \
+  run_finish "$GR_WORK" precheck "$PRN"
+if [ "$RC" -eq 2 ] && ! has_line "$OUT" "AC_UNCHECKED_COUNT=0"; then
+  ok "GR5c: REST Issue 応答に body キーが無い場合は空文字へ倒さず fail-closed（rc 2）で止める"
+else
+  bad "GR5c: REST Issue 応答の body 欠損を fail-closed できなかった（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+
+: >"$STUB_LOG"
+STUB_PR_UNKNOWN_FIELD=1 run_finish "$GR_WORK" precheck "$PRN"
+if [ "$RC" -eq 2 ] && ! grep -q '^api repos/' "$STUB_LOG"; then
+  ok "GR6: 非回帰: Unknown JSON field では REST API へフォールバックしない"
+else
+  bad "GR6: Unknown JSON field で不要に REST API を呼んでいる（rc=${RC}）"
+fi
+
+# PR 番号 403 不在の GraphQL 404 エラーを GraphQL 403 と誤認しない
+GR_403_NUM=403
+: >"$STUB_LOG"
+STUB_PR_MISSING=1 run_finish "$GR_WORK" precheck "$GR_403_NUM"
+if [ "$RC" -eq 2 ] && has_text "$ERR" "が見つかりません" && ! has_text "$ERR" "--github-input" \
+   && ! grep -q '^api repos/' "$STUB_LOG"; then
+  ok "GR7: 非回帰: 番号 403 の PR 不在（Could not resolve to a PullRequest）を GraphQL 403 と誤認しない"
+else
+  bad "GR7: PR 番号 403 の不在エラーが GraphQL 403 経路へ誤分岐した（rc=${RC}）: ${ERR}"
+fi
+
+# finish-precheck-post-merge.sh のコメント取得も GraphQL 403 時に REST フォールバック + 上限到達 fail-closed
+GR_REST_COMMENTS="$TMP/gr-rest-comments.json"
+jq -n --arg prn "$PRN" '[{body: ("<!-- close-issue-report:PR-" + $prn + " -->\n手順: deploy を実行")}]' >"$GR_REST_COMMENTS"
+: >"$STUB_LOG"
+FF_POST_MERGE_TERMS="deploy" FF_POST_MERGE_PATHS="x.txt" \
+  STUB_ISSUE_GRAPHQL_403=1 STUB_ISSUE_COMMENTS_GRAPHQL_403=1 \
+  STUB_REST_ISSUE_JSON="$GR_REST_ISSUE" STUB_REST_COMMENTS_JSON="$GR_REST_COMMENTS" \
+  run_finish "$GR_WORK" precheck "$PRN"
+if has_text "$OUT" "POST_MERGE_HIT=" && has_text "$OUT" "report" \
+   && grep -q "api repos/owner/repo/issues/${REFN}/comments" "$STUB_LOG"; then
+  ok "GR8: finish-precheck-post-merge が GraphQL 403 時に REST コメント一覧へフォールバックして完了報告を走査する"
+else
+  bad "GR8: finish-precheck-post-merge の REST フォールバック失敗（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+
+FF_POST_MERGE_TERMS="deploy" FF_POST_MERGE_PATHS="x.txt" \
+  STUB_ISSUE_GRAPHQL_403=1 STUB_ISSUE_COMMENTS_GRAPHQL_403=1 \
+  STUB_REST_ISSUE_JSON="$GR_REST_ISSUE" STUB_REST_COMMENTS_OVERFLOW=1 \
+  run_finish "$GR_WORK" precheck "$PRN"
+if [ "$RC" -eq 2 ] && has_text "$ERR" "完全な一覧を確認できません" && has_text "$ERR" "--github-input"; then
+  ok "GR8b: REST コメント一覧が 10 ページ上限へ到達したときは fail-closed（rc 2）で --github-input を案内する"
+else
+  bad "GR8b: REST コメント上限到達の fail-closed に失敗（rc=${RC}）: ${ERR}"
 fi
 
 echo

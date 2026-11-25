@@ -230,9 +230,21 @@ ff_precheck_fetch_issue_body() {
   if ! json="$(gh issue view "$num" --repo "$owner" --json body 2>"$err")"; then
     text="$(cat "$err")"
     rm -f "$err"
-    die_env "Issue ${tok} の本文を取得できません（gh: ${text}）。取得失敗を未チェック 0 件とは読まない" "gh issue view ${num} --repo ${owner} --json body が通る状態で finish.sh precheck を再実行する"
+    if ff_gh_is_graphql_unavailable "$text"; then
+      local rest_err rest_text
+      rest_err="$(mktemp)" || die_env "一時ファイルを作れません" "TMPDIR を書ける場所へ向けて再実行する"
+      if ! json="$(ff_gh_rest_issue_view "$num" "$owner" "$PWD" "$rest_err")"; then
+        rest_text="$(cat "$rest_err" 2>/dev/null || true)"
+        rm -f "$rest_err"
+        die_env "Issue ${tok} の本文取得で GraphQL が利用できず、REST API フォールバックも失敗しました（REST: ${rest_text:-不明} / GraphQL: ${text}）。取得失敗を未チェック 0 件とは読まない" "$(ff_gh_github_input_hint precheck)"
+      fi
+      rm -f "$rest_err"
+    else
+      die_env "Issue ${tok} の本文を取得できません（gh: ${text}）。取得失敗を未チェック 0 件とは読まない" "gh issue view ${num} --repo ${owner} --json body が通る状態で finish.sh precheck を再実行する"
+    fi
+  else
+    rm -f "$err"
   fi
-  rm -f "$err"
   printf '%s' "$json" | jq -er 'if has("body") and (.body == null or (.body | type == "string")) then (.body // "") else error("body") end' \
     || die_env "Issue ${tok} の本文が文字列ではありません" "gh issue view の JSON を確かめて再実行する"
 }

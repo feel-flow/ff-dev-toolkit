@@ -93,6 +93,9 @@
 #   - `closingIssuesReferences` を返さない古い `gh`（PR 取得ごと失敗して素通しする）。
 #     本文走査だけへ落とすフォールバックは置かない — 閉じる集合が取れない状態で `Refs` を
 #     走査すると、上に書いた tracking Issue の恒常停止がそのまま戻るため
+#   - GraphQL 403 による REST API フォールバック時は `closingIssuesReferences` を取得
+#     できないため、PR 本文に closing keyword がないサイドバー手動リンクのみの Issue は
+#     判定対象外となる（本文走査の対象のみ判定）
 #   - heredoc 本文に書かれた `gh pr merge`（データであって実行されるコマンドではない）
 #   - クォート・`$()`・`` `...` `` が閉じていない呼び出し（解析不能として fail-open へ倒す）
 #   - `--body-file -`（stdin）・読めない / 8 KiB 超 / 通常ファイル以外の `--body-file`、
@@ -742,13 +745,90 @@ if [ -n "$REPO" ]; then
   GH_ARGS[1]="$REPO"
 fi
 
-if [ -n "$SELECTOR" ]; then
-  pr_json="$(cd "$CWD" 2>/dev/null && gh pr view "$SELECTOR" ${GH_ARGS[0]:+"${GH_ARGS[@]}"} --json number,body,url,closingIssuesReferences 2>/dev/null)" \
-    || mcp_skip "${REPO} の PR ${SELECTOR} を gh で読めない（認証切れ・オフライン・PR が見つからない）ため、閉じる Issue の工数実績を確認せずに通しました。"
-else
-  pr_json="$(cd "$CWD" 2>/dev/null && gh pr view ${GH_ARGS[0]:+"${GH_ARGS[@]}"} --json number,body,url,closingIssuesReferences 2>/dev/null)" \
-    || mcp_skip "${REPO} の PR ${SELECTOR} を gh で読めない（認証切れ・オフライン・PR が見つからない）ため、閉じる Issue の工数実績を確認せずに通しました。"
+# GraphQL 403 時の REST フォールバック共有ライブラリ（安価な前置フィルタ通過後にのみ読み込む）
+GH_REST_LIB="${BASH_SOURCE[0]%/*}/../scripts/lib/gh-rest-fallback.sh"
+GH_REST_AVAILABLE=0
+# shellcheck source=../scripts/lib/gh-rest-fallback.sh
+if [ -f "$GH_REST_LIB" ] && [ ! -L "$GH_REST_LIB" ] && [ -r "$GH_REST_LIB" ] \
+   && . "$GH_REST_LIB" 2>/dev/null \
+   && [ "$(type -t ff_gh_is_graphql_unavailable)" = "function" ]; then
+  GH_REST_AVAILABLE=1
 fi
+
+PR_JSON=""
+PR_USED_REST=0
+guard_fetch_pr_json() {
+  local err_tmp="" out="" err_text="" rc=0
+  PR_JSON=""
+  PR_USED_REST=0
+  err_tmp="$(mktemp 2>/dev/null)" || err_tmp=""
+  if [ -n "$SELECTOR" ]; then
+    out="$(cd "$CWD" 2>/dev/null && gh pr view "$SELECTOR" ${GH_ARGS[0]:+"${GH_ARGS[@]}"} --json number,body,url,closingIssuesReferences 2>"${err_tmp:-/dev/null}")" || rc=$?
+  else
+    out="$(cd "$CWD" 2>/dev/null && gh pr view ${GH_ARGS[0]:+"${GH_ARGS[@]}"} --json number,body,url,closingIssuesReferences 2>"${err_tmp:-/dev/null}")" || rc=$?
+  fi
+  if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
+    [ -z "$err_tmp" ] || rm -f "$err_tmp"
+    PR_JSON="$out"
+    return 0
+  fi
+  if [ -n "$err_tmp" ]; then
+    err_text="$(cat "$err_tmp" 2>/dev/null || true)"
+    rm -f "$err_tmp"
+  fi
+  if [ "$GH_REST_AVAILABLE" -eq 1 ] && ff_gh_is_graphql_unavailable "$err_text"; then
+    out="$(ff_gh_rest_pr_view "$SELECTOR" "$REPO" "$CWD" /dev/null)" || return 1
+    [ -n "$out" ] || return 1
+    PR_JSON="$out"
+    PR_USED_REST=1
+    return 0
+  fi
+  return 1
+}
+
+guard_fetch_issue_json() {
+  local num="$1" err_tmp="" out="" err_text="" rc=0
+  err_tmp="$(mktemp 2>/dev/null)" || err_tmp=""
+  out="$(cd "$CWD" 2>/dev/null && gh issue view "$num" ${GH_ARGS[0]:+"${GH_ARGS[@]}"} --json body,state 2>"${err_tmp:-/dev/null}")" || rc=$?
+  if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
+    [ -z "$err_tmp" ] || rm -f "$err_tmp"
+    printf '%s' "$out"
+    return 0
+  fi
+  if [ -n "$err_tmp" ]; then
+    err_text="$(cat "$err_tmp" 2>/dev/null || true)"
+    rm -f "$err_tmp"
+  fi
+  if [ "$GH_REST_AVAILABLE" -eq 1 ] && ff_gh_is_graphql_unavailable "$err_text"; then
+    ff_gh_rest_issue_view "$num" "$REPO" "$CWD" /dev/null
+    return $?
+  fi
+  return 1
+}
+
+guard_fetch_issue_comments_json() {
+  local num="$1" err_tmp="" out="" err_text="" rc=0
+  err_tmp="$(mktemp 2>/dev/null)" || err_tmp=""
+  out="$(cd "$CWD" 2>/dev/null && gh issue view "$num" ${GH_ARGS[0]:+"${GH_ARGS[@]}"} --json comments 2>"${err_tmp:-/dev/null}")" || rc=$?
+  if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
+    [ -z "$err_tmp" ] || rm -f "$err_tmp"
+    printf '%s' "$out"
+    return 0
+  fi
+  if [ -n "$err_tmp" ]; then
+    err_text="$(cat "$err_tmp" 2>/dev/null || true)"
+    rm -f "$err_tmp"
+  fi
+  if [ "$GH_REST_AVAILABLE" -eq 1 ] && ff_gh_is_graphql_unavailable "$err_text"; then
+    ff_gh_rest_issue_comments "$num" "$REPO" "$CWD" /dev/null
+    return $?
+  fi
+  return 1
+}
+
+guard_fetch_pr_json \
+  || mcp_skip "${REPO} の PR ${SELECTOR} を gh で読めない（認証切れ・オフライン・PR が見つからない）ため、閉じる Issue の工数実績を確認せずに通しました。"
+pr_json="$PR_JSON"
 [ -n "$pr_json" ] || mcp_skip "${REPO} の PR ${SELECTOR} を gh で読めない（認証切れ・オフライン・PR が見つからない）ため、閉じる Issue の工数実績を確認せずに通しました。"
 
 pr_unparsed="${REPO} の PR ${SELECTOR} を gh で読めたが内容を解釈できないため、閉じる Issue の工数実績を確認せずに通しました。"
@@ -877,7 +957,12 @@ if [ -n "$merge_text" ]; then
     )" || queue=""
   fi
 fi
-[ -n "$queue" ] || exit 0
+if [ -z "$queue" ]; then
+  if [ "$PR_USED_REST" -eq 1 ]; then
+    mcp_skip "${REPO} の PR ${pr_number} は GraphQL 利用不可のため REST API で取得しました。PR 本文に Issue 参照はありませんが、REST 経路ではサイドバー手動リンク（closingIssuesReferences）を確認できないため、手動リンク分の工数実績は未確認のまま通しました。"
+  fi
+  exit 0
+fi
 
 # 上限は「PR 本文に大量の参照がある形で PreToolUse の timeout: 10 を使い切らない」ための
 # 打ち切りで、無効化スイッチではない。`0` は数値なので文字種の正規化だけでは通り抜け、
@@ -1002,7 +1087,7 @@ while IFS= read -r row; do
     truncated=1
     break
   fi
-  issue_json="$(cd "$CWD" 2>/dev/null && gh issue view "$num" ${GH_ARGS[0]:+"${GH_ARGS[@]}"} --json body,state 2>/dev/null)" || issue_json=""
+  issue_json="$(guard_fetch_issue_json "$num")" || issue_json=""
   if [ -z "$issue_json" ]; then
     if [ "$kind" = "C" ]; then
       unread="${unread:+$unread, }#${num}"
@@ -1023,7 +1108,7 @@ while IFS= read -r row; do
       # 閉じる Issue の記入は報告印で代替しない
       unfilled="${unfilled:+$unfilled, }#${num}"
     else
-      comments_json="$(cd "$CWD" 2>/dev/null && gh issue view "$num" ${GH_ARGS[0]:+"${GH_ARGS[@]}"} --json comments 2>/dev/null)" || comments_json=""
+      comments_json="$(guard_fetch_issue_comments_json "$num")" || comments_json=""
       if [ -z "$comments_json" ]; then
         refs_comments_unread="${refs_comments_unread:+$refs_comments_unread, }#${num}"
       else
@@ -1045,6 +1130,7 @@ if [ -z "$unfilled" ] && [ -z "$refs_blocked" ]; then
   [ -z "$refs_fetch_unread" ] || mcp_skip "${REPO} の PR ${pr_number} の Refs 先 Issue（${refs_fetch_unread}）を gh で読めないため、その Issue の工数実績を確認せずに通しました。"
   [ -z "$refs_comments_unread" ] || mcp_skip "${REPO} の PR ${pr_number} の Refs 先 Issue（${refs_comments_unread}）のコメントを読めないため、完了報告の有無を確認せずに通しました。"
   [ "$truncated" -eq 0 ] || mcp_skip "${REPO} の PR ${pr_number} が閉じる Issue が照会上限（${MAX_ISSUES} 件）を超えたため、上限より後の Issue の工数実績を確認せずに通しました。"
+  [ "$PR_USED_REST" -eq 0 ] || mcp_skip "${REPO} の PR ${pr_number} は GraphQL 利用不可のため REST API で PR 本文のみ走査しました。REST 経路ではサイドバー手動リンク（closingIssuesReferences）を取得できないため、手動リンクのみの Issue がある場合の工数実績は未確認です。"
   exit 0
 fi
 

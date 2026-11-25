@@ -519,4 +519,91 @@ run_root_guard_cases() {
   else
     bad "別実体を示すhost handoff併存を受理した (rc=${fallback_rc})"
   fi
+
+  # skills ディレクトリ自身が symlink のホスト配置（Antigravity 等。実体側にのみ scripts/ がある）。
+  # 論理 cd "$skills_dir/.." はラッパー側へ畳み込むため、物理パス（cd -P / pwd -P）で実体側へ解決する。
+  local wrapper_root="$GUARD_ROOT/wrapper-skills-symlink"
+  local valid_phys
+  valid_phys="$(CDPATH= cd -P -- "$valid_root" && pwd -P)"
+  mkdir -p "$wrapper_root"
+  ln -s "$valid_root/skills" "$wrapper_root/skills"
+  fallback_rc=0
+  (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE CLAUDE_PLUGIN_ROOT GROK_PLUGIN_ROOT
+   FF_DEV_TOOLKIT_SKILL_FILE="$wrapper_root/skills/multi-review/SKILL.md" \
+     FF_GUARD_SCRIPT="$ROOT_GUARD_SCRIPT" \
+     bash -c '. "$FF_GUARD_SCRIPT" && printf "RESOLVED=%s\n" "$FF_DEV_TOOLKIT_ROOT"') \
+    >"$GUARD_ROOT/skills-dir-symlink.log" 2>&1 || fallback_rc=$?
+  if [ "$fallback_rc" -eq 0 ] \
+    && grep -qxF "RESOLVED=${valid_phys}" "$GUARD_ROOT/skills-dir-symlink.log"; then
+    ok "skills ディレクトリが symlink の配置でも FF_DEV_TOOLKIT_SKILL_FILE から物理 plugin root を解決できる"
+  else
+    bad "skills ディレクトリが symlink の配置で物理 plugin root を解決できない (rc=${fallback_rc})"
+    sed -n '1,80p' "$GUARD_ROOT/skills-dir-symlink.log" >&2 || true
+  fi
+
+  # skills/<skill> が symlink の配置でも物理パス解決できること
+  local wrapper_skill_entry="$GUARD_ROOT/wrapper-skill-entry-symlink"
+  mkdir -p "$wrapper_skill_entry/skills"
+  ln -s "$valid_root/skills/multi-review" "$wrapper_skill_entry/skills/multi-review"
+  fallback_rc=0
+  (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE CLAUDE_PLUGIN_ROOT GROK_PLUGIN_ROOT
+   FF_DEV_TOOLKIT_SKILL_FILE="$wrapper_skill_entry/skills/multi-review/SKILL.md" \
+     FF_GUARD_SCRIPT="$ROOT_GUARD_SCRIPT" \
+     bash -c '. "$FF_GUARD_SCRIPT" && printf "RESOLVED=%s\n" "$FF_DEV_TOOLKIT_ROOT"') \
+    >"$GUARD_ROOT/skill-entry-symlink.log" 2>&1 || fallback_rc=$?
+  if [ "$fallback_rc" -eq 0 ] \
+    && grep -qxF "RESOLVED=${valid_phys}" "$GUARD_ROOT/skill-entry-symlink.log"; then
+    ok "skills/<skill> が symlink の配置でも物理 plugin root を解決できる"
+  else
+    bad "skills/<skill> が symlink の配置で物理 plugin root を解決できない (rc=${fallback_rc})"
+    sed -n '1,80p' "$GUARD_ROOT/skill-entry-symlink.log" >&2 || true
+  fi
+
+  # skills symlink 経由の SKILL_FILE と物理 CLAUDE_PLUGIN_ROOT の併存が同一実体として通ること
+  fallback_rc=0
+  (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE GROK_PLUGIN_ROOT
+   CLAUDE_PLUGIN_ROOT="$valid_root" \
+     FF_DEV_TOOLKIT_SKILL_FILE="$wrapper_root/skills/multi-review/SKILL.md" \
+     bash "$ROOT_GUARD_SCRIPT") >"$GUARD_ROOT/skills-symlink-dual.log" 2>&1 || fallback_rc=$?
+  if [ "$fallback_rc" -eq 0 ]; then
+    ok "skills symlink 経由の SKILL_FILE と物理 CLAUDE_PLUGIN_ROOT の併存を同一実体として受理"
+  else
+    bad "skills symlink 経由の SKILL_FILE と物理 CLAUDE_PLUGIN_ROOT の併存を拒否した (rc=${fallback_rc})"
+    sed -n '1,80p' "$GUARD_ROOT/skills-symlink-dual.log" >&2 || true
+  fi
+
+  # 陰性: skills symlink 先に scripts/ と plugin.json が無い場合（実体側も不完全）は案内付き exit 2
+  local broken_real_root="$GUARD_ROOT/broken-real-for-symlink"
+  local wrapper_broken="$GUARD_ROOT/wrapper-broken-symlink"
+  mkdir -p "$broken_real_root/skills/multi-review" "$wrapper_broken"
+  printf '%s\n' '# fixture skill' >"$broken_real_root/skills/multi-review/SKILL.md"
+  ln -s "$broken_real_root/skills" "$wrapper_broken/skills"
+  fallback_rc=0
+  (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE CLAUDE_PLUGIN_ROOT GROK_PLUGIN_ROOT
+   FF_DEV_TOOLKIT_SKILL_FILE="$wrapper_broken/skills/multi-review/SKILL.md" \
+     bash "$ROOT_GUARD_SCRIPT") >"$GUARD_ROOT/skills-symlink-broken.log" 2>&1 || fallback_rc=$?
+  if [ "$fallback_rc" -eq 2 ] \
+    && grep -qF 'ff-dev-toolkitのhandoffを再構成してください' "$GUARD_ROOT/skills-symlink-broken.log"; then
+    ok "skills symlink の実体側に scripts/・manifest が無い場合は案内付き exit 2 で拒否"
+  else
+    bad "不完全な実体を指す skills symlink を拒否できない (rc=${fallback_rc})"
+  fi
+
+  # 陰性: 物理親が skills ではないディレクトリへの symlink（例: alt-dir/<skill>）は fail-closed で拒否
+  local wrong_parent_root="$GUARD_ROOT/wrong-parent-for-symlink"
+  local wrapper_wrong_parent="$GUARD_ROOT/wrapper-wrong-parent"
+  make_guard_root "$wrong_parent_root"
+  mkdir -p "$wrong_parent_root/not-skills/multi-review" "$wrapper_wrong_parent/skills"
+  printf '%s\n' '# fixture skill' >"$wrong_parent_root/not-skills/multi-review/SKILL.md"
+  ln -s "$wrong_parent_root/not-skills/multi-review" "$wrapper_wrong_parent/skills/multi-review"
+  fallback_rc=0
+  (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE CLAUDE_PLUGIN_ROOT GROK_PLUGIN_ROOT
+   FF_DEV_TOOLKIT_SKILL_FILE="$wrapper_wrong_parent/skills/multi-review/SKILL.md" \
+     bash "$ROOT_GUARD_SCRIPT") >"$GUARD_ROOT/skills-symlink-wrong-parent.log" 2>&1 || fallback_rc=$?
+  if [ "$fallback_rc" -eq 2 ] \
+    && grep -qF 'SKILL.mdからplugin rootを解決できません' "$GUARD_ROOT/skills-symlink-wrong-parent.log"; then
+    ok "物理親が skills でない場所を指す symlink を fail-closed で拒否"
+  else
+    bad "物理親が skills でない symlink を拒否できない (rc=${fallback_rc})"
+  fi
 }

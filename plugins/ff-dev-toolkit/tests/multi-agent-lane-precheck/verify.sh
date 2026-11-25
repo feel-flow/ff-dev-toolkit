@@ -24,13 +24,28 @@
 #   (7) どのレーンも起動しなかった回（単一レーンが止まった）は非 0 のまま直読を案内し、完了を名乗らない
 #   (8) MULTI_AGENT_LANE_PRECHECK=off で事前確認と記憶を止める / dry-run はプランへ状態を出す
 #   (9) 応答の accountId・email はログにも成果物にも出ない
+#   (10) 環境チェック（--print-reviewers）は available= の各 CLI について、利用枠・認証と sandbox の
+#        適用可否を起動前に 1 回で確かめて 1 行ずつ出す（Issue `#3001`）。使えない CLI は理由付きの
+#        unavailable、確かめられない CLI は unknown。保存済みの main= も確かめ、ホスト委譲のレーンだけ確かめない。
+#        既存の 9 行と終了コードは変えず、off では確かめない
 #
 # 空振り検出: handle_adapter_precheck_request の case から quota:exhausted を外すと (1)(2) と (6) の事前確認の記憶を含む 12 件が赤になる（2026-11-10 実測）。
 # 空振り検出: collect_unavailable_cross_tasks の lane_precheck_block 許容を外すと (2)(4) の 0 終了を含む 11 件が赤になる（2026-11-10 実測）。
 # 空振り検出: read_lane_memory を常に空へ倒すと (6) の 3 CLI 分の「再起動しない」を含む 8 件が赤になる（2026-11-10 実測）。
 # 空振り検出: stub が 1 度も呼ばれない形（PATH の stub が効かない）は (1) の前提の検査で赤になる。
+# 空振り検出: print_reviewers_state から print_lane_precheck_lines の呼び出しを外すと (10) の 16 件が赤になる（2026-11-25 実測）。
+# 空振り検出: lane_precheck_verdict_of で inert を unavailable に数えないと 1 件、refused-to-start / unsandboxed-start を数えないと 2 件、
+#             ログイン済み（authenticated）を available と読むと 3 件が赤になる（2026-11-25 実測）。
+# 空振り検出: MULTI_AGENT_LANE_PRECHECK=off を無視すると AC4 の 2 件、保存済みの main= を確かめずに飛ばすと 3 件が赤になる（2026-11-25 実測）。
 #
 # 実 CLI は 1 つも起動しない（全 CLI を stub で覆う）。書き込み不可の環境では skip。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/multi-agent.sh scripts/lib/multi-agent-*.sh
+# run-all-depends: scripts/adapters/ scripts/lib/adapter-common-*.sh scripts/lib/knowledge-read-acl.ps1
+# run-all-depends: scripts/agent-config.yaml scripts/perspectives/review/
+# run-all-depends: tests/lib/git-fixture.sh tests/lib/adapter-env-isolation.sh tests/lib/multi-agent-sources.sh
+# run-all-not-depends: /docs/04-quality/TESTING.md ヘッダの案内（git 障害時の切り分け手順の参照先）。中身は読まない
 
 set -euo pipefail
 
@@ -160,6 +175,18 @@ cat > "$STUB/grok" <<SH
 #!/usr/bin/env bash
 echo "grok \$*" >> "$TMP/calls"
 if [ "\${1:-}" = --sandbox ] && [ "\${3:-}" = inspect ]; then
+  # inert = Windows の実測の形（rc 0・拒否の目印なし・適用の記録も書かない）。refused / unsandboxed は
+  # アダプタが照合する grok 自身の目印（grok-cli-adapter.sh の SANDBOX_MARKER_*）を出す形
+  case "\$(cat "$TMP/grok-inspect")" in
+    inert) exit 0 ;;
+    refused)
+      echo "warning: sandbox could not be applied: stub deny path" >&2
+      echo "error: could not apply the 'read-only' sandbox profile; stub" >&2
+      exit 1 ;;
+    unsandboxed)
+      echo "Sandbox could not be applied, continuing without sandbox" >&2
+      exit 0 ;;
+  esac
   printf '{"event_type":"ProfileApplied","profile":"%s","enforced":true,"workspace":"%s","read_write_paths":["/tmp"]}\n' "\$2" "\$(pwd -P)" >> "\${GROK_HOME:?}/sandbox-events.jsonl"
   exit 0
 fi
@@ -191,6 +218,7 @@ reset_modes() {
   printf '%s\n' in > "$TMP/claude-auth"
   printf '%s\n' ok > "$TMP/claude-run"
   printf '%s\n' ok > "$TMP/grok-run"
+  printf '%s\n' applied > "$TMP/grok-inspect"
 }
 runs() { # <name> → 起動回数（モデルを起動した回だけ）
   local n
@@ -560,6 +588,199 @@ if /usr/bin/grep -qF '起動前の確認（モデルは起動しない）: 利�
   ok "dry-run: 副担当の利用枠切れをプランに出す"
 else
   bad "dry-run: 起動前の確認の行が無い"; printf '%s\n' "$DRY" | tail -15 | sed 's/^/    | /' >&2
+fi
+
+echo "== (10) 環境チェック（--print-reviewers）は available= の各 CLI の起動前の確認を 1 回で出す =="
+
+# 利用者の保存済み pair（XDG_CONFIG_HOME 配下）を読ませない。main は MULTI_AGENT_REVIEW_MAIN だけで与える。
+mkdir -p "$TMP/xdg" "$TMP/home"
+# print_rev <out> [NAME=VALUE...] [-- extra-args...]
+print_rev() {
+  local out="$1"; shift
+  local envs=() args=()
+  while [ $# -gt 0 ] && [ "$1" != "--" ]; do envs+=("$1"); shift; done
+  [ "${1:-}" = "--" ] && shift
+  args=("$@")
+  : > "$TMP/calls"; : > "$TMP/codex-runs"; : > "$TMP/claude-runs"; : > "$TMP/grok-runs"
+  set +e
+  ( cd "$REPO" && run_isolated PATH="$STUB:/usr/bin:/bin" CODEX_HOME="$TMP/codex-home" GROK_HOME="$TMP/grok-home" \
+      XDG_CONFIG_HOME="$TMP/xdg" HOME="$TMP/home" USERPROFILE="" \
+      MULTI_AGENT_LANE_PRECHECK=on MULTI_AGENT_LANE_PRECHECK_TIMEOUT=3 FF_DEV_TOOLKIT_SKIP=codex-auto-update \
+      env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY \
+      ${envs[@]+"${envs[@]}"} bash "$MULTI_AGENT" --task review --base develop --print-reviewers ${args[@]+"${args[@]}"} ) >"$out" 2>"$out.err"
+  PRINT_RC=$?
+  set -e
+}
+# 既存の 9 行（known= まで）。追加行はこの後ろにしか出ない契約。
+existing_lines() { LC_ALL=C awk '{ print } /^known=/ { exit }' "$1"; }
+lane_line() { LC_ALL=C awk -v k="lane_precheck.$2=" 'index($0, k) == 1 { print substr($0, length(k) + 1) }' "$1"; }
+show_out() { sed 's/^/    | /' "$1" >&2; sed 's/^/    ! /' "$1.err" >&2; }
+# available= の全 CLI がちょうど 1 行ずつ持つか（空の出力・行の欠けを緑にしない）
+each_available_has_one_line() { # <out>
+  local avail c n expected=0
+  avail="$(LC_ALL=C awk -F= '$1 == "available" { print $2; exit }' "$1")"
+  [ -n "$avail" ] || return 1
+  for c in $avail; do
+    expected=$((expected + 1))
+    n="$(LC_ALL=C awk -v k="lane_precheck.$c=" 'index($0, k) == 1 { n++ } END { print n + 0 }' "$1")"
+    [ "$n" -eq 1 ] || return 1
+  done
+  # available= に無い CLI の行を作らない
+  n="$(LC_ALL=C awk '/^lane_precheck\./ { n++ } END { print n + 0 }' "$1")"
+  [ "$n" -eq "$expected" ]
+}
+
+# AC1: 利用枠切れ（codex）と sandbox 不活性（grok）が同じ 1 回の出力に理由付きで出る。
+# codex は保存済みの main= でもある（main= が実際の主担当ホストと食い違う回に、利用枠切れを隠さない）
+reset_modes
+printf '%s\n' exhausted > "$TMP/codex-quota"
+printf '%s\n' inert > "$TMP/grok-inspect"
+print_rev "$TMP/pr-ac1.out" MULTI_AGENT_REVIEW_MAIN=codex-cli
+if [ "$PRINT_RC" -eq 0 ] && /usr/bin/grep -qx 'lane_precheck=on' "$TMP/pr-ac1.out" \
+   && [ "$(lane_line "$TMP/pr-ac1.out" codex-cli)" = "unavailable usage=exhausted sandbox=not-probed" ] \
+   && [ "$(lane_line "$TMP/pr-ac1.out" grok-cli)" = "unavailable usage=not-probed sandbox=inert" ]; then
+  ok "AC1: 利用枠切れの codex（main= でも）と sandbox 不活性の grok が、1 回の出力に unavailable と理由付きで出る"
+else
+  bad "AC1: rc=$PRINT_RC codex='$(lane_line "$TMP/pr-ac1.out" codex-cli)' grok='$(lane_line "$TMP/pr-ac1.out" grok-cli)'"; show_out "$TMP/pr-ac1.out"
+fi
+if [ "$(lane_line "$TMP/pr-ac1.out" claude-code)" = "unknown usage=authenticated sandbox=not-probed" ] && calls_has "claude auth status"; then
+  ok "AC1: 他の CLI（claude）も確かめ、ログイン済みでも残量を読めないので unknown と出す"
+else
+  bad "AC1: claude の行 '$(lane_line "$TMP/pr-ac1.out" claude-code)'"; show_out "$TMP/pr-ac1.out"
+fi
+if each_available_has_one_line "$TMP/pr-ac1.out"; then
+  ok "AC1: available= の各 CLI がちょうど 1 行ずつ持つ（欠けも余分も無い）"
+else
+  bad "AC1: available= と lane_precheck 行が対応しない"; show_out "$TMP/pr-ac1.out"
+fi
+if calls_has "codex app-server" && calls_has "grok --sandbox read-only inspect" \
+   && [ "$(runs codex)" -eq 0 ] && [ "$(runs claude)" -eq 0 ] && [ "$(runs grok)" -eq 0 ]; then
+  ok "AC1: 確かめるのは取得と probe だけで、どの CLI もモデルを起動しない"
+else
+  bad "AC1: 起動回数 codex=$(runs codex) claude=$(runs claude) grok=$(runs grok)"; sed 's/^/    | /' "$TMP/calls" >&2
+fi
+if /usr/bin/grep -qF 'grok-cli の sandbox（inert）' "$TMP/pr-ac1.out.err" && ! /usr/bin/grep -qF 'ProfileApplied' "$TMP/pr-ac1.out"; then
+  ok "AC1: CLI 側の理由（自由文）は stderr にだけ出し、stdout の機械可読面へ混ぜない"
+else
+  bad "AC1: sandbox の理由の出力先が違う"; show_out "$TMP/pr-ac1.out"
+fi
+if [ -z "$(find "$REPO" -name .lane-unavailable 2>/dev/null)" ] && [ ! -e "$REPO/.review-results" ]; then
+  ok "AC1: ツール側の状態は作らない（利用不可の記憶もレビューの出力先も無い）"
+else
+  bad "AC1: 環境チェックが記憶または出力先を作った"
+fi
+
+# AC2: 確かめられない CLI は unknown（使えるとも使えないとも断定しない）
+reset_modes
+printf '%s\n' garbage > "$TMP/codex-quota"
+print_rev "$TMP/pr-ac2.out" MULTI_AGENT_REVIEW_MAIN=claude-code
+if [ "$PRINT_RC" -eq 0 ] \
+   && [ "$(lane_line "$TMP/pr-ac2.out" claude-code)" = "unknown usage=authenticated sandbox=not-probed" ] \
+   && [ "$(lane_line "$TMP/pr-ac2.out" grok-cli)" = "unknown usage=not-probed sandbox=no-refusal" ] \
+   && [ "$(lane_line "$TMP/pr-ac2.out" copilot-cli)" = "unknown usage=not-probed sandbox=not-probed" ] \
+   && [ "$(lane_line "$TMP/pr-ac2.out" codex-cli)" = "unknown usage=failed sandbox=not-probed" ]; then
+  ok "AC2: 残量不明の claude・適用の記録が増えただけの grok・能力なしの copilot・答えが得られない codex は unknown"
+else
+  bad "AC2: claude='$(lane_line "$TMP/pr-ac2.out" claude-code)' grok='$(lane_line "$TMP/pr-ac2.out" grok-cli)' copilot='$(lane_line "$TMP/pr-ac2.out" copilot-cli)' codex='$(lane_line "$TMP/pr-ac2.out" codex-cli)'"; show_out "$TMP/pr-ac2.out"
+fi
+if each_available_has_one_line "$TMP/pr-ac2.out" \
+   && ! /usr/bin/grep -qE '^lane_precheck\.[a-z-]+=(available|unavailable) ' "$TMP/pr-ac2.out"; then
+  ok "AC2: 確かめられない CLI のどれにも available / unavailable を付けない"
+else
+  bad "AC2: 確かめられない CLI に断定の語が付いた"; show_out "$TMP/pr-ac2.out"
+fi
+# grok が起動を拒否する形（macOS の docker.sock symlink の実測）と sandbox 無しで起動する形も unavailable
+for gmode in refused:refused-to-start unsandboxed:unsandboxed-start; do
+  reset_modes
+  printf '%s\n' "${gmode%%:*}" > "$TMP/grok-inspect"
+  print_rev "$TMP/pr-grok.out" MULTI_AGENT_REVIEW_MAIN=claude-code
+  if [ "$(lane_line "$TMP/pr-grok.out" grok-cli)" = "unavailable usage=not-probed sandbox=${gmode#*:}" ] \
+     && /usr/bin/grep -qF "grok-cli の sandbox（${gmode#*:}）" "$TMP/pr-grok.out.err"; then
+    ok "grok ${gmode%%:*}: unavailable sandbox=${gmode#*:} と出し、理由は stderr にだけ出す"
+  else
+    bad "grok ${gmode%%:*}: '$(lane_line "$TMP/pr-grok.out" grok-cli)'"; show_out "$TMP/pr-grok.out"
+  fi
+done
+# ホスト委譲のレーンは CLI を起動しないので確かめない（取得も呼ばない）
+reset_modes
+printf '%s\n' exhausted > "$TMP/codex-quota"
+print_rev "$TMP/pr-deleg.out" MULTI_AGENT_REVIEW_MAIN=claude-code -- --delegate-to-host=codex-cli
+if [ "$PRINT_RC" -eq 0 ] && [ "$(lane_line "$TMP/pr-deleg.out" codex-cli)" = "skipped reason=delegated" ] \
+   && ! calls_has "codex app-server"; then
+  ok "ホスト委譲のレーン（codex）は確かめず skipped reason=delegated と出す"
+else
+  bad "委譲レーン: rc=$PRINT_RC codex='$(lane_line "$TMP/pr-deleg.out" codex-cli)'"; show_out "$TMP/pr-deleg.out"
+fi
+# sandbox を測れない（イベントログが通常ファイルでない）は undetermined の unknown で、unavailable にしない
+reset_modes
+mkdir -p "$TMP/grok-home-und/sessions/sandbox-events.jsonl"
+print_rev "$TMP/pr-ac2c.out" MULTI_AGENT_REVIEW_MAIN=claude-code GROK_HOME="$TMP/grok-home-und"
+if [ "$(lane_line "$TMP/pr-ac2c.out" grok-cli)" = "unknown usage=not-probed sandbox=undetermined" ]; then
+  ok "AC2: sandbox を測れない（undetermined）は unknown（使えないと断定しない）"
+else
+  bad "AC2: grok undetermined='$(lane_line "$TMP/pr-ac2c.out" grok-cli)'"; show_out "$TMP/pr-ac2c.out"
+fi
+# 陽性対照: 利用枠を読めて残っている codex だけが available になる（available の語が死んでいないこと）
+reset_modes
+print_rev "$TMP/pr-avail.out" MULTI_AGENT_REVIEW_MAIN=claude-code
+if [ "$(lane_line "$TMP/pr-avail.out" codex-cli)" = "available usage=available sandbox=not-probed" ]; then
+  ok "陽性対照: 利用枠ありと読めた codex は available"
+else
+  bad "陽性対照: codex='$(lane_line "$TMP/pr-avail.out" codex-cli)'"; show_out "$TMP/pr-avail.out"
+fi
+# 未ログインの claude（主担当でない）は unavailable usage=unauthenticated
+reset_modes
+printf '%s\n' out > "$TMP/claude-auth"
+print_rev "$TMP/pr-auth.out" MULTI_AGENT_REVIEW_MAIN=codex-cli
+if [ "$(lane_line "$TMP/pr-auth.out" claude-code)" = "unavailable usage=unauthenticated sandbox=not-probed" ]; then
+  ok "未ログインの claude は unavailable usage=unauthenticated"
+else
+  bad "claude out='$(lane_line "$TMP/pr-auth.out" claude-code)'"; show_out "$TMP/pr-auth.out"
+fi
+
+# AC3: 既存の 9 行（main= 〜 known=）と終了コードは確認の有無で変わらない（main 未設定 = 3 / 設定済み = 0）
+reset_modes
+printf '%s\n' exhausted > "$TMP/codex-quota"
+printf '%s\n' inert > "$TMP/grok-inspect"
+for shape in unset set; do
+  if [ "$shape" = set ]; then
+    print_rev "$TMP/pr-ac3-on.out" MULTI_AGENT_REVIEW_MAIN=claude-code MULTI_AGENT_REVIEW_SUB=codex-cli
+    on_rc="$PRINT_RC"
+    print_rev "$TMP/pr-ac3-off.out" MULTI_AGENT_REVIEW_MAIN=claude-code MULTI_AGENT_REVIEW_SUB=codex-cli MULTI_AGENT_LANE_PRECHECK=off
+    want_rc=0
+  else
+    print_rev "$TMP/pr-ac3-on.out"
+    on_rc="$PRINT_RC"
+    print_rev "$TMP/pr-ac3-off.out" MULTI_AGENT_LANE_PRECHECK=off
+    want_rc=3
+  fi
+  existing_lines "$TMP/pr-ac3-on.out" > "$TMP/pr-ac3-on.head"
+  existing_lines "$TMP/pr-ac3-off.out" > "$TMP/pr-ac3-off.head"
+  keys="$(LC_ALL=C awk -F= '{ printf "%s ", $1 }' "$TMP/pr-ac3-on.head")"
+  if [ "$on_rc" -eq "$want_rc" ] && [ "$PRINT_RC" -eq "$want_rc" ] && cmp -s "$TMP/pr-ac3-on.head" "$TMP/pr-ac3-off.head" \
+     && [ "$keys" = "main sub main_source sub_source source cross_review cross_review_source available known " ] \
+     && /usr/bin/grep -q '^lane_precheck\.' "$TMP/pr-ac3-on.out"; then
+    ok "AC3 (main ${shape}): 既存の 9 行は確認あり・なしでバイト一致・同じ並びで、終了コードは ${want_rc} のまま"
+  else
+    bad "AC3 (main ${shape}): rc on=${on_rc} off=${PRINT_RC}（期待 ${want_rc}）keys='${keys}'"
+    diff "$TMP/pr-ac3-on.head" "$TMP/pr-ac3-off.head" | sed 's/^/    | /' >&2 || true
+  fi
+done
+
+# AC4: MULTI_AGENT_LANE_PRECHECK=off は確かめず、確認を省いた旨の 1 行だけを出す
+reset_modes
+printf '%s\n' exhausted > "$TMP/codex-quota"
+print_rev "$TMP/pr-ac4.out" MULTI_AGENT_REVIEW_MAIN=claude-code MULTI_AGENT_LANE_PRECHECK=off
+if [ "$PRINT_RC" -eq 0 ] && [ "$(/usr/bin/grep -c '^lane_precheck' "$TMP/pr-ac4.out")" -eq 1 ] \
+   && /usr/bin/grep -qx 'lane_precheck=off' "$TMP/pr-ac4.out"; then
+  ok "AC4: off では lane_precheck=off の 1 行だけを出し、CLI ごとの行は出さない"
+else
+  bad "AC4: off の出力が違う（rc=${PRINT_RC}）"; show_out "$TMP/pr-ac4.out"
+fi
+if ! calls_has "codex app-server" && ! calls_has "claude auth" && ! calls_has "--sandbox"; then
+  ok "AC4: off では取得も sandbox の probe も 1 回も呼ばない"
+else
+  bad "AC4: off なのに確かめた"; sed 's/^/    | /' "$TMP/calls" >&2
 fi
 
 echo ""

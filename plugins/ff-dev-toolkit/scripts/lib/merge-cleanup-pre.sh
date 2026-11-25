@@ -111,8 +111,21 @@ if [ -n "$github_input" ]; then
   fi
   GH_OUT="$(cat "$WORK_TMP/github-pr.json")"
 else
-  GH_OUT="$(gh pr view "$PR_NUM" --json headRefName,headRefOid,state,baseRefName,title,isCrossRepository 2>&1)" \
-    || die "gh pr view が失敗しました: ${GH_OUT}（ネットワーク / 認証 / gh CLI 設定を確認してください）"
+  mc_pr_rc=0
+  GH_OUT="$(gh pr view "$PR_NUM" --json headRefName,headRefOid,state,baseRefName,title,isCrossRepository 2>&1)" || mc_pr_rc=$?
+  if [ "$mc_pr_rc" -ne 0 ]; then
+    if ff_gh_is_graphql_unavailable "$GH_OUT"; then
+      mc_rest_err="$WORK_TMP/pr-view-rest.err"
+      if GH_OUT="$(ff_gh_rest_pr_view "$PR_NUM" "" "$PWD" "$mc_rest_err")"; then
+        echo "ℹ️  GraphQL が利用できないため REST API で PR #${PR_NUM} の情報を取得しました。" >&2
+      else
+        mc_rest_msg="$(cat "$mc_rest_err" 2>/dev/null || true)"
+        die "gh pr view（GraphQL）が利用できず、REST API フォールバックも失敗しました: ${mc_rest_msg:-不明}。$(ff_gh_github_input_hint cleanup)"
+      fi
+    else
+      die "gh pr view が失敗しました: ${GH_OUT}（ネットワーク / 認証 / gh CLI 設定を確認してください）"
+    fi
+  fi
 fi
 
 PR_STATE="$(printf '%s' "$GH_OUT" | jq -r '.state')"

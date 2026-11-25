@@ -8,6 +8,12 @@
 # 空振り検出: compute_resume_identity から構成ファイル（scripts/lib/multi-agent-*.sh）の hash を外すと「構成ファイルの変更時に古い結果を再利用した」が赤（2026-10-20 実測）。直前の「入力が同じなら8観点すべてを再利用」が再利用の起きる入力であることを毎回測るので、この赤は identity の欠落からだけ来る。
 # 空振り検出: compute_resume_identity から adapter-common の構成ファイル（ADAPTER_COMMON_PARTS）の hash ループだけを外すと、「adapter-common の構成ファイルの変更時に古い結果を再利用した（resume identity が入口しか見ていない）」の 1 件だけが赤になる（2026-10-21 実測。成功 22。直前の「入力が同じなら8観点すべてを再利用」は緑のまま）。
 # 空振り検出: hash_resume_config の正規版行除外を無効にすると、新回帰15件の無変異15/0から13/2へ赤転（canonical-version-only / crlf-version-only。2026-10-22 実測）。同root再利用・custom/重複/不正/NULのrawhash・非metadata差・adapter差・成果物対照は緑のまま。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/multi-agent.sh scripts/lib/multi-agent-*.sh
+# run-all-depends: scripts/adapters/ scripts/lib/adapter-common-*.sh scripts/lib/knowledge-read-acl.ps1
+# run-all-depends: scripts/agent-config.yaml scripts/perspectives/review/ .claude-plugin/plugin.json
+# run-all-depends: tests/lib/git-fixture.sh tests/lib/adapter-env-isolation.sh tests/lib/multi-agent-sources.sh
 
 set -euo pipefail
 

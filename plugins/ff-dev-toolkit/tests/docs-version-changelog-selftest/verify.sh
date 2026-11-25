@@ -44,6 +44,10 @@
 # 一時ディレクトリを作成できない環境では skip して成功扱いにする
 # （fixture の組み立て自体が成立しないため。checkout が read-only でも、書ける
 # TMPDIR があれば完走する）。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: tests/docs-version-changelog/verify.sh tests/lib/docs-scan*.sh /docs/**.md
+# run-all-not-depends: docs-template/03-implementation/DECISION_TREE.md 昇順 Changelog の正例として名前を出す説明と fixture の本文（読まない）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

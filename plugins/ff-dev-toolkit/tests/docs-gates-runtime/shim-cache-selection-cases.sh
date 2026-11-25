@@ -29,7 +29,7 @@ run_shim_cache_content_selection() {
 
   run_content_case() { # label [explicit-root] [mode]
     rc=0
-    (cd "$consumer" && env -u FF_DEV_TOOLKIT_ROOT HOME="$root/home" CODEX_HOME="$codex_home" \
+    (cd "$consumer" && env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT HOME="$root/home" CODEX_HOME="$codex_home" \
       CLAUDE_CONFIG_DIR="$claude_home" GROK_HOME="$grok_home" \
       CODEX_REVIEW_CODEX_BIN="$root/bin/codex" SHIM_SELECTION_RESULT="$result" \
       FF_DEV_TOOLKIT_ROOT="${2:-}" \
@@ -137,7 +137,7 @@ run_shim_cache_selection() {
   # 戻る（Phase B がまさにそれだった）。呼び出し元の local 変数を動的スコープで参照する。
   run_shim_cache_case() { # $1: ログの出力先 / 戻り値: シムの rc
     # shim_default_grok=1 のときは GROK_HOME を外し、既定（$HOME/.grok）側を通す
-    (cd "$consumer" && unset FF_DEV_TOOLKIT_ROOT && export GROK_HOME="$root/home/.grok" && \
+    (cd "$consumer" && unset FF_DEV_TOOLKIT_ROOT CLAUDE_PLUGIN_ROOT && export GROK_HOME="$root/home/.grok" && \
       { [ -z "${shim_default_grok:-}" ] || unset GROK_HOME; } && \
       HOME="$root/home" CODEX_HOME="$codex_home" CLAUDE_CONFIG_DIR="$claude_home" \
       CODEX_REVIEW_CODEX_BIN="$stub_codex" \
@@ -214,7 +214,7 @@ run_shim_cache_selection() {
   make_shim_cache_candidate "$claude_cache/1.1.0" 1.1.0 claude-1.1.0
   # GROK_HOME も HOME も無い（set -u）環境でも Codex / Claude の解決は落ちない
   rc=0
-  (cd "$consumer" && unset FF_DEV_TOOLKIT_ROOT GROK_HOME HOME && CLAUDE_CONFIG_DIR="$claude_home" CODEX_HOME="$codex_home" \
+  (cd "$consumer" && unset FF_DEV_TOOLKIT_ROOT CLAUDE_PLUGIN_ROOT GROK_HOME HOME && CLAUDE_CONFIG_DIR="$claude_home" CODEX_HOME="$codex_home" \
     CODEX_REVIEW_CODEX_BIN="$stub_codex" SHIM_SELECTION_RESULT="$result" bash "$consumer/scripts/codex-review.sh" --print-toolkit-root) \
     >"$root/no-home.log" 2>&1 || rc=$?
   if [ "$rc" -eq 0 ] && ! grep -q 'unbound variable' "$root/no-home.log"; then
@@ -236,6 +236,34 @@ run_shim_cache_selection() {
     ok "より新しいClaude cacheをgrokの導入実体が上書きしない"
   else
     bad "grokの導入実体がより新しいClaude cacheを上書きした (rc=${rc})"
+  fi
+
+  # Claude Code クラウド配置（plugins/synced/<id>/ff-dev-toolkit）の探索と優先順位
+  local claude_synced="$claude_home/plugins/synced"
+  make_shim_cache_candidate "$claude_synced/id-120/ff-dev-toolkit" 1.2.0 synced-1.2.0
+  rc=0
+  run_shim_cache_case "$root/claude-cache-synced-tie.log" || rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(sed -n '1p' "$result")" = claude-1.2.0 ]; then
+    ok "同一versionならClaude syncedよりClaude cacheを優先する"
+  else
+    bad "同一version時にClaude syncedがClaude cacheより優先された (rc=${rc})"
+  fi
+  make_shim_cache_candidate "$claude_synced/id-130/ff-dev-toolkit" 1.3.0 synced-1.3.0
+  rc=0
+  run_shim_cache_case "$root/claude-synced-newer.log" || rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(sed -n '1p' "$result")" = synced-1.3.0 ]; then
+    ok "より新しいClaude syncedをcache/grok横断のsemantic version最大として選ぶ"
+  else
+    bad "Claude syncedの新しい版を選べない (rc=${rc})"
+  fi
+  rm -rf "$claude_home/plugins/cache" "$claude_synced/id-130"
+  make_shim_cache_candidate "$grok_dir/ff-dev-toolkit-cccc3333" 1.2.0 grok-1.2.0
+  rc=0
+  run_shim_cache_case "$root/synced-grok-tie.log" || rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(sed -n '1p' "$result")" = synced-1.2.0 ]; then
+    ok "cacheが無いとき同一versionならgrokよりClaude syncedを優先する"
+  else
+    bad "同一version時にgrokがClaude syncedより優先された (rc=${rc})"
   fi
 
   # 起動口の単一化を機械で守る。読めない回を「違反ゼロ」と同じ緑にしないため、対象が

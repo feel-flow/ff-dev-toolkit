@@ -250,6 +250,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 #### 全件ゲート
 
 - `FF_RUN_ALL_FULL`
+- `FF_RUN_ALL_CHANGED`（通常 PR のゲートの起動方法。`1` で base = `origin/HEAD`、ref を渡すとその base との差分から選んだ suite を回す変更ベースの部分ゲート。`FF_RUN_ALL_FULL=1` を gate 段の外から指定した回の用途の注意も、これを案内する）
 - `FF_RUN_ALL_WAIT`（`1` で先行する全件ゲート・`public-layout`・リリースの終了を自動待機してから開始。`0` / `1` / 空以外は suite 未実行のまま `rc=2` の fail-closed で停止）
 - `FF_RUN_ALL_WAIT_MAX_SECONDS`（`FF_RUN_ALL_WAIT=1` の待機上限秒数。`1`〜`86400`、既定 `3600`。`FF_RUN_ALL_WAIT` 未指定時でも非空なら検証し、範囲外・非数値は suite 未実行のまま `rc=2` で停止）
 
@@ -276,9 +277,13 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_CHANGELOG_PUBLIC_TAGS_REPO_URL`
 - `FF_CHANGELOG_TEST_REMOTE`
 - `FF_CHECK_WEEKLY_RELAX`
+- `FF_CHG_EDGES`（部分ゲートの選択 CLI `tests/changed-select/select.sh` の check が awk へ source の辺を渡す内部変数）
 - `FF_CHG_FILES`
+- `FF_CHG_PLUGIN_PREFIX`（同 CLI の derive / check へプラグインルートのリポジトリ相対接頭辞を渡す内部変数）
 - `FF_CHG_TESTS_DIR`
 - `FF_CHG_TESTS_PREFIX`
+- `FF_CHG_TESTS_REL`（同 CLI の check が awk へ tests/ のリポジトリ相対接頭辞を渡す内部変数）
+- `FF_CHG_TRACKED_LIST`（同 CLI の check が awk へ追跡下のファイル一覧の一時ファイルを渡す内部変数）
 - `FF_CKSUM_COUNT`
 - `FF_CR`
 - `FF_CURL_RC`
@@ -375,13 +380,14 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_RG_STDIN_AWK`
 - `FF_RUN_ALL_ALLOW_DIRTY`
 - `FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS`
-- `FF_RUN_ALL_CHANGED`
+- `FF_RUN_ALL_CHANGED_FILES_FROM`（試算モードへ渡す変更一覧のファイル。変更ベースの部分ゲートの指定があるときだけ読む。`FF_RUN_ALL_SELECT_ONLY=1` と組でだけ使え、試算モードでない回に与えると全件へ倒す）
 - `FF_RUN_ALL_CHECK_REGISTRATION`
 - `FF_RUN_ALL_DUMP_DECLARATIONS`
 - `FF_RUN_ALL_ELAPSED_FIXTURE`
 - `FF_RUN_ALL_ELAPSED_RECORD`（並列実行の起動順に使う suite 別経過秒の記録のパス。明示引数の実行はこれを与えたときだけ並べ替える）
 - `FF_RUN_ALL_ELAPSED_NEW`（起動順の記録を書き直す awk へ、今回 pass した suite の秒数を渡す内部変数）
 - `FF_RUN_ALL_LAUNCH_NAMES`（起動順を組み立てる awk へ suite 名の一覧を渡す内部変数）
+- `FF_RUN_ALL_TIME_BUDGET`（`off` で既定一覧の時間予算の判定を外す。基線を測っていない環境で回す私的な週次 CI 用。外した回は警告を出し、鮮度記録を partial にする。`off` / `on` / 空以外は 1 行警告して判定する）
 - `FF_RUN_ALL_FAST`
 - `FF_RELEASE_IN_FLIGHT_MAX_AGE`
 - `FF_RUN_ALL_JOBS`
@@ -391,6 +397,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_RUN_ALL_NESTED`
 - `FF_RUN_ALL_PROBE_LOG`
 - `FF_RUN_ALL_PROBE_RENDEZVOUS`
+- `FF_RUN_ALL_SELECT_ONLY`（`1` で変更ベースの選択だけを `select-only:` 行で出し、suite を回さず記録もせずに終わる試算モード。`tests/changed-select/simulate.sh` が使う）
 - `FF_RUN_ALL_VERIFY_STOP_AFTER_GUARD`（tests/run-all/verify.sh が観測の隔離の直後で走査を始めず終わる検査用注入口。`1` のときだけ）
 - `FF_RUN_ALL_WAIT_DIR`（全件ゲート自動待機モードの待機・開始排他マーカー領域の上書き先）
 - `FF_RUN_ALL_WAIT_POLL_INTERVAL`（全件ゲート自動待機モードのポーリング間隔秒数の検査用上書き。既定 `5`）
@@ -453,6 +460,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_TEST_MODE`
 - `FF_TEST_PATH_PREFIX`
 - `FF_TEST_STUB_PAYLOAD`
+- `FF_TIME_BUDGET_CALIBRATION_MS`（時間予算の判定 CLI `tests/time-budget/budget.sh` へ較正値を固定して渡す fixture 用の口。`run-all.sh` はゲートの判定でこれを落とす）
 - `FF_TIMEOUT_REASON_EXIT_TRAP`
 - `FF_TIMEOUT`
 - `FF_TO`

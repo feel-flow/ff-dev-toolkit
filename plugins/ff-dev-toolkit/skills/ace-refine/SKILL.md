@@ -20,7 +20,7 @@ description: ACE Playbook を定期整理する（stale エントリのアーカ
 
 - Claude Codeでは、その呼び出しでホストが渡した `${CLAUDE_PLUGIN_ROOT}` を使う
 - grok CLIでは、Bash tool 環境の `${GROK_PLUGIN_ROOT}` があればそれを使う（skill 経路では未設定が普通なので、次項の `FF_DEV_TOOLKIT_SKILL_FILE` を渡す）
-- Codexなど他ホストでは、実際に読み込んだこの `SKILL.md` の絶対パスを `FF_DEV_TOOLKIT_SKILL_FILE` として固定し、そこから `../..` を解決する
+- Codexなど他ホストでは、実際に読み込んだこの `SKILL.md` の絶対パスを `FF_DEV_TOOLKIT_SKILL_FILE` として固定し、`skills` が symlink でも物理パス（`cd -P` / `pwd -P`）で `../..` を解決する
 
 このskillを実行するAI hostは、Bash tool呼び出しを組み立てるとき、skill loaderが返した実値で `FF_DEV_TOOLKIT_SKILL_FILE="<このSKILL.mdの絶対パス>"; export FF_DEV_TOOLKIT_SKILL_FILE` を実行し、同じshell script bodyでresourceを呼び出す。placeholderのまま実行したり、cache pathを推測して埋めたりしない。
 plugin内ドキュメントの正本は、読み込んだこの `SKILL.md` のdirectoryを基準にした [plugin root固定契約](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) である。consumerへコピーされた `docs/` や物理CWDを基準に解決しない。
@@ -57,7 +57,7 @@ fi
 
 **このフェーズでは一切ファイルを書き換えない。** 出力の読み方は [scripts/ace/README.md](../../docs-template/scripts/ace/README.md) の各スクリプトの節。
 
-1. 候補算出（上は scripts/ace/ 導入済み、下は未導入。1 行だけ実行する）:
+1. 候補算出（導入済み / 未導入の 1 行のみ）:
 
    ```bash
    npx --yes tsx scripts/ace/ace-refine-report.ts docs/08-knowledge/PLAYBOOK.md
@@ -68,14 +68,14 @@ fi
    - **(3)「live から参照あり」の除外枠も既定では R3-a の対象にしない**。参照元（`パス:行`）を開き、ID を例に使っているだけ（テストの fixture・評価データ）と判断して archive する場合は、参照元の書き換えまで同じ refine で行う
    - **非 0 終了は候補 0 件ではなく「まだ何も測れていない」**。stderr の対象を直して再実行し、R2 へ進まない
 
-1b. 抽象度レポート（ADR-047。1 と同じく 1 行だけ）:
+1b. 抽象度レポート（ADR-047。1 行のみ）:
 
    ```bash
    npx --yes tsx scripts/ace/ace-abstraction-report.ts docs/08-knowledge/PLAYBOOK.md
    FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/ace-abstraction-report.ts" docs/08-knowledge/PLAYBOOK.md
    ```
 
-   **(4)「組にできなかった候補対」は 0 が正常**（0 以外はレポートのバグとして報告。冒頭に「不完全」があれば計算予算か保持の上限で打ち切った分なので 0 以外でもバグではなく、組を全件と扱わない）。legacy（旧テーブル形式）の候補は R3-b へ回す。日本語だけで共通する組は機械シグナルに出ないので、手順 2 は省かない。
+   **(4)「組にできなかった候補対」は 0 が正常**（0 以外はレポートのバグとして報告。冒頭に「不完全」があれば計算予算か保持の上限で打ち切った分なので 0 以外でもバグではなく、組を全件と扱わない）。legacy（旧テーブル形式）の候補は R3-b へ回す。日本語のみの共通組は機械検出されないため手順 2 を省かない。
 
 2. **近似重複・抽象度統合の抽出（LLM 判断）**: 1b の組を優先し、`inline` は索引タイトル、`omit` は live 本文検索で補う。**本文まで読んで**「アクションが同一か」「抽象度を 1 段上げれば同一か」で判定し、上げた主張から元のアクションを再導出できなければ棄却する（[PLAYBOOK.md](../../docs-template/08-knowledge/PLAYBOOK.md)「抽象度の下限と棄却基準（ff-dev-toolkit ADR-047）」）。
 3. カテゴリ指定があれば候補を絞る。
@@ -132,7 +132,7 @@ git merge-base --is-ancestor "origin/${default_branch}" HEAD || {
 
 R3-a / b / c は live のブロックを `playbook/archive/<category>.md` へ運ぶ。過去の圧縮で**既に保全済みの ID** へ verbatim コピーを足すと同一 `<a id>` が 2 つでき、**アンカーは先勝ち**なので後のブロックへは到達できない（ACE-490-2）。
 
-1. 書く前に既存出現数を数える（`grep -c` はファイルが無いと何も出さずに非 0 で終わる。終了コードではなく出力の件数で判定し、ファイル不在は 0 件）:
+1. 書く前に既存出現数を数える（`grep -c` の出力件数で判定。ファイル不在は 0 件）:
 
    ```bash
    grep -c "^### <ID>:" docs/08-knowledge/playbook/archive/<category>.md
@@ -165,7 +165,7 @@ R3-a / b / c は live のブロックを `playbook/archive/<category>.md` へ運
    - Promoted: ACE-CCC（PATTERNS.md へ蒸留）
    ```
 
-5. 検証ゲートを exit 0 まで回す。**各ゲートについて、プロジェクトの状態に合う 1 本だけを実行する**（一括実行すると未導入側で必ず失敗する）:
+5. 検証ゲートを exit 0 まで回す。**各ゲートは状態に合う 1 本だけ実行する**（一括実行すると未導入側で失敗する）:
 
    ```bash
    # 同期検証: npm script / scripts/ace/ 導入済み / 未導入 の 1 本だけ

@@ -25,6 +25,14 @@
 # 実 CLI・ネットワーク・課金は伴わない。一時領域を作れない環境では skip。
 #
 # run-all-required: no — 一時領域が無い環境の skip を許容する（multi-agent-serialization と同じ扱い）
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/multi-agent.sh scripts/lib/multi-agent-*.sh
+# run-all-depends: scripts/adapters/ scripts/lib/adapter-common-*.sh scripts/lib/knowledge-read-acl.ps1
+# run-all-depends: scripts/agent-config.yaml scripts/perspectives/review/
+# run-all-depends: docs-template/05-operations/deployment/multi-cli-review-orchestration.md docs-template/05-operations/deployment/git-workflow.md
+# run-all-depends: tests/lib/git-fixture.sh tests/lib/adapter-env-isolation.sh tests/lib/multi-agent-sources.sh
+# run-all-not-depends: /docs/04-quality/TESTING.md ヘッダの案内（git 障害時の切り分け手順の参照先）。中身は読まない
 
 set -euo pipefail
 

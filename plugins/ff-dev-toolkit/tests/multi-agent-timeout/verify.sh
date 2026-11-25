@@ -30,6 +30,14 @@
 # 書き込み不可の環境（read-only チェックアウト等）では skip して成功扱いにする。
 # 空振り検出: private-reasons-casesは無変異1/0。旧共有PIDパス・staging後の再確認除去・namespace fallback除去・理由writer fallback除去・私有祖先で走査終了・旧一律祖先拒否・空ケースの7変異は、syntax0の隔離コピーで全てrc1（2026-10-28実測）。command substitution・読取可能FIFO/symlink差替拒否・私有祖先の内外・sticky境界・mktemp失敗時の分類と後始末を同一経路で検査する。
 # 空振り検出: stderr の auth 正規表現から failed to authenticate を外すと auth(oauth-auth) と auth(非 Claude ホスト) と auth(逐次 2 観点) が赤になる（2026-11-04 実測。全文の oauth-full は残った語で緑のまま。bad は加算するだけで suite は止まらない）。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/multi-agent.sh scripts/lib/multi-agent-*.sh
+# run-all-depends: scripts/adapters/ scripts/lib/adapter-common-*.sh scripts/lib/knowledge-read-acl.ps1
+# run-all-depends: scripts/agent-config.yaml scripts/perspectives/review/ scripts/perspectives/implement/
+# run-all-depends: skills/multi-review/SKILL.md docs-template/05-operations/deployment/multi-cli-*.md
+# run-all-depends: docs-template/05-operations/deployment/*-cli-reviewer.md docs-template/06-reference/REVIEW_AGENT_CREATION_GUIDE.md
+# run-all-depends: tests/lib/git-fixture.sh tests/lib/adapter-env-isolation.sh tests/lib/multi-agent-sources.sh tests/lib/adapter-common-sources.sh
 
 set -euo pipefail
 

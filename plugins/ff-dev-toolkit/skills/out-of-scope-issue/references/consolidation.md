@@ -22,7 +22,10 @@ MCP: 取得値: MCP で同じ Issue の全文 body / updated_at / comments を�
 - 発見元: PR #{current_pr} / {tool 名}
 - 内容: {発見内容}
 - 既存 AC での扱い: {同じ完了条件に含まれる理由}
+- 追記分の予定（目安）: {+N.Nh（実装分 + レビュー対応分） / なし（既存の AC と予定に収まる）}
 ```
+
+`追記分の予定（目安）` の行は、統合先に `ff-effort` ブロックがあるときだけ書く（無ければ行ごと省く）。この発見で AC・作業が増えるときは増える分の予定を、単位はブロックの宣言どおりに書く（宣言の無い旧ブロックは `+N.Nd`）。値は 1 行に 1 つ。本文の工数ブロックへの加算予定行は、着手する側がこの目安を写す。本文を更新して AC を追記する場合は、同じ書き込みで工数ブロックへ加算予定行を足す（ブロックが無い Issue には新設しない）。書式・見積もり方・足す時機の正本は `create-issue` の [references/estimation.md「起票後に範囲を足すときの加算予定」](../../create-issue/references/estimation.md#起票後に範囲を足すときの加算予定)。
 
 `gh issue comment {number} --repo "$expected_repo"` / `gh issue edit {number} --repo "$expected_repo"` の終了コードを確認し、成功した操作だけを報告する。失敗時に次の成功形式を返さない。この経路を選んだ場合の戻り値:
 

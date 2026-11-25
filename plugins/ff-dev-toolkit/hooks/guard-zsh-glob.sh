@@ -32,6 +32,16 @@
 # （未引用の `?` の直後に `key=` が続く語。`gh api repos/o/r/contents/a.md?ref=main`。Issue `#2138`）も、
 # その名前のファイルが実在しない限り必ず 0 件になるので対象に入れる。一般のパス glob
 # （`ls *.md` / `ls a?.md`）は cwd 次第でマッチするので対象に入れない。
+# 例外は `rm -f`（`-rf` / `--force` を含む）のオペランドの未引用 glob（公開
+# https://github.com/feel-flow/ff-dev-toolkit/issues/165）。`-f` は「対象が無くても成功する」指定なので、書いた時点で
+# 0 件の回を想定している。一致するかどうかは呼び出し文字列から分からなくても、0 件の回には書いた意図と zsh の挙動
+# （NOMATCH で rm を実行せず非 0）が必ず食い違う。`=` を含まない形なので glob の前置フィルタとは別の候補（rm_candidate）で入れ、書き換え案は語の
+# 引用ではなく zsh の glob 修飾子 `(N)`・`(setopt null_glob; …)`・`find … -delete` にする（引用した glob は rm の
+# 対象を名前どおりのファイルへ変え、何も消さずに成功する）。この検出がある呼び出しは入力の書き換え（try_rewrite）
+# へ進めずに deny する。判定は tests/lib/zsh-glob-nomatch.sh の ff_zsh_rm_force_scan。実測（2026-11-25 zsh 5.9）:
+# `rm -f dir/x-*.json && echo ok` は 0 件のとき `no matches found` の rc=1 で `&&` の後段が走らない
+# （rm は外部コマンドなので `;` で続く文は走る）。`(N)`・サブシェルの `setopt null_glob` は 0 件でも成功し、`find -delete` は
+# 探すディレクトリが既にあるときだけ 0 件でも成功する（無いと find が非 0。中身のあるディレクトリに一致しても非 0）。
 #
 # ## 発火条件（zsh ホストだけ）
 #
@@ -109,6 +119,13 @@
 # ## 既知の限界（素通しする形）
 #
 #   - 一般のパス glob（`ls *.md` / `ls a*.ts b*.mts`）— 述語の対象外（上記）
+#   - rm -f の形のうち、`sudo rm` / `xargs rm` / `find … -exec rm` のように rm がコマンド名でない呼び出し、`-i` /
+#     `--interactive`（`=never` などを除く）を併せて書いた rm、同じシェルの前の文で `setopt null_glob` などを立てた
+#     後の rm（立てたサブシェル・置換を閉じた後の rm は数える）、`-` で始まる glob のオペランド（`rm -f -*.bak`。
+#     オプションと読む）、語の終わりに NULL_GLOB の `N` を含む glob 修飾子を付けた語（`x*(N)`。修飾子は語に続けて
+#     書いた空白・括弧を含まない `(…)` だけを読み、並べ替えの `oN` / `ON` と否定の `^N` の `N` は数えない）
+#   - 書き換え案 `(N)` を採った呼び出しは、git 書き込み連鎖の判定（tests/lib/git-write-chain-scan.sh）が語に続く
+#     `(N)` をサブシェルの括弧と読むので、同じ呼び出しの git の連鎖をその判定が見ない（判定の既存の挙動）
 #   - `$name:修飾子` のうち書き換え案が一意に決まらない呼び出し（上記）、`${…}` の直下（入れ子の二重引用・
 #     `$(…)` の外）の `$name:修飾子`、位置引数・特殊引数の修飾子（`$1:t` / `"$@:r"`）、`:&`（直前の置換の繰り返し）。
 #     未引用 scalar と equals は zsh-expansion-guard.sh へ委ねる。
@@ -317,6 +334,20 @@ case "$input" in
   *'*'* | *'?'* | *'['*) : ;;
   *) glob_candidate=0 ;;
 esac
+# `rm -f` のオペランドの未引用 glob（公開 https://github.com/feel-flow/ff-dev-toolkit/issues/165）の候補。
+# `=` を含まない形なので glob の候補とは別に数え、判定不能の deny（fail-closed）の面には同じく入れる。
+# 語としての `rm`（前後が英数字・`_`・`-` でない）で見る — 生の入力（JSON）の `"permission_mode"` などの綴りを
+# 候補に数えない（数えると jq が失敗した回に glob 文字を含むすべての呼び出しが判定不能の deny になる）。
+# 生の入力では改行・タブ・CR が `\n` / `\t` / `\r` の 2 文字で現れるので、その直後の rm も語の始まりとして数える
+# （数えないと、行頭の rm を持つ複数行の呼び出しが候補から落ちて素通しになる）。
+rm_word_re='(^|[^A-Za-z0-9_-])rm([^A-Za-z0-9_-]|$)'
+rm_raw_re='(^|[^A-Za-z0-9_-]|\\[ntr])rm([^A-Za-z0-9_-]|$)'
+rm_candidate=0
+if [[ $input =~ $rm_raw_re ]]; then
+  case "$input" in
+    *'*'* | *'?'* | *'['*) rm_candidate=1 ;;
+  esac
+fi
 # zsh の履歴修飾子（`$name:r` など。Issue `#2756`）の候補。判定は書き換え（try_rewrite）の走査が持ち、
 # ここは安価な前置フィルタ。equals / scalar の検出（zsh-expansion）を止めている回は扱わない。
 mod_candidate=0
@@ -325,7 +356,7 @@ if [ "$ff_zsh_exp_skipped" != 1 ]; then
     *'$'[A-Za-z_]*:[aAcefFghlpPqQrstuwWx]*) mod_candidate=1 ;;
   esac
 fi
-[ "$glob_candidate" -eq 1 ] || [ "$mod_candidate" -eq 1 ] || [ -n "$expansion_deny" ] || [ -n "$expansion_warning" ] || exit 0
+[ "$glob_candidate" -eq 1 ] || [ "$rm_candidate" -eq 1 ] || [ "$mod_candidate" -eq 1 ] || [ -n "$expansion_deny" ] || [ -n "$expansion_warning" ] || exit 0
 
 command -v jq >/dev/null 2>&1 || exit 0
 
@@ -355,10 +386,10 @@ deny() { # <reason>
 
 deny_unavailable() { # <理由>
   deny "⚠️ ff-dev-toolkit guard（zsh-nomatch-glob: 未引用 glob の NOMATCH）: **判定不能**のため停止しました（${1}）。
-このコマンドは \`-…=\` の右側に glob 文字を含む、または URL のクエリ文字列の形（\`…?key=value\`）を含む可能性がある候補ですが、判定ヘルパ（${HELPER_DIR_SHOWN}/zsh-glob-nomatch.sh / heredoc-strip.sh）で走査を完了できませんでした。判定できないまま通すと、zsh の NOMATCH でコマンド全体が走らない形を素通しします。
+このコマンドは \`-…=\` の右側に glob 文字を含む、URL のクエリ文字列の形（\`…?key=value\`）を含む、または \`rm -f\` のオペランドに未引用の glob を含む可能性がある候補ですが、判定ヘルパ（${HELPER_DIR_SHOWN}/zsh-glob-nomatch.sh / heredoc-strip.sh）で走査を完了できませんでした。判定できないまま通すと、zsh の NOMATCH でコマンドが走らない形を素通しします。
 対処:
   1) ff-dev-toolkit を更新・再インストールしてヘルパを復旧する
-  2) = の右側を引用した形（例: --include=\"*.md\"）、クエリ文字列の形は語全体を引用した形（例: \"repos/o/r/contents/a.md?ref=main\"）で書き直して再実行する
+  2) = の右側を引用した形（例: --include=\"*.md\"）、クエリ文字列の形は語全体を引用した形（例: \"repos/o/r/contents/a.md?ref=main\"）、\`rm -f\` の glob は zsh の修飾子 (N) を付けた形（例: rm -f dir/x-*.json(N)）で書き直して再実行する
   3) このコマンドに限って通す: コマンドの**先頭**へ環境代入 FF_ZSH_GLOB_ACK=1 を付けて再実行する
   4) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP=zsh-glob を設定する"
 }
@@ -610,7 +641,7 @@ if [ "$jq_rc" -ne 0 ]; then
   # rc=5 は入力が JSON でない（対象外として素通し）。それ以外はフィルタ自体の失敗。
   [ "$jq_rc" -eq 5 ] && exit 0
   # 修飾子の候補だけの呼び出し（glob / equals の候補ではない）は止めずに通す（冒頭の fail-open の面）
-  [ "$glob_candidate" -eq 0 ] && [ -z "$expansion_deny" ] && [ -z "$expansion_warning" ] && exit 0
+  [ "$glob_candidate" -eq 0 ] && [ "$rm_candidate" -eq 0 ] && [ -z "$expansion_deny" ] && [ -z "$expansion_warning" ] && exit 0
   deny_unavailable "コマンド本文の取り出し（jq）が失敗しました（rc=${jq_rc}）"
 fi
 [ -n "$cmd" ] || exit 0
@@ -625,7 +656,21 @@ if ! [[ $cmd =~ $query_re ]]; then
     *) glob_candidate=0 ;;
   esac
 fi
-[ "$glob_candidate" -eq 1 ] || [ "$mod_candidate" -eq 1 ] || [ -n "$expansion_deny" ] || [ -n "$expansion_warning" ] || exit 0
+# rm の候補は、語としての `rm`（前後が英数字・`_`・`-` でない。`format` や `git-rm` を数えない）と、`-` の後ろの
+# `f`（`-f` / `-rf` / `--force`。オペランドの後ろに書いた回も含む）と、glob 文字の 3 つが揃う呼び出しに絞る
+# （判定ヘルパの述語と同じ材料。語の位置と順序は判定ヘルパが見る）
+if [ "$rm_candidate" -eq 1 ]; then
+  [[ $cmd =~ $rm_word_re ]] || rm_candidate=0
+  case "$cmd" in
+    *-*f*) : ;;
+    *) rm_candidate=0 ;;
+  esac
+  case "$cmd" in
+    *'*'* | *'?'* | *'['*) : ;;
+    *) rm_candidate=0 ;;
+  esac
+fi
+[ "$glob_candidate" -eq 1 ] || [ "$rm_candidate" -eq 1 ] || [ "$mod_candidate" -eq 1 ] || [ -n "$expansion_deny" ] || [ -n "$expansion_warning" ] || exit 0
 
 # ---- 抜け道: コマンドの先頭（先頭の空白・タブ・改行だけを剥がす）の FF_ZSH_GLOB_ACK=1 --------
 # 先頭の語そのものに限る（guard-exit-code.sh の ACK と同じリテラル判定）。先頭に連なる環境代入を
@@ -647,7 +692,7 @@ esac
 # deny 文が案内する「先頭へ FF_ZSH_GLOB_ACK=1」が効く位置）。
 # equals だけの候補（`echo ====`。glob の前置フィルタに当たらない）は、ヘルパが返した equals の
 # deny（ASDD 検証不能の理由付き）を保留から出す。glob の判定不能 deny には置き換えない。
-if [ "$asdd_unverifiable" -eq 1 ] && [ "$glob_candidate" -eq 0 ]; then
+if [ "$asdd_unverifiable" -eq 1 ] && [ "$glob_candidate" -eq 0 ] && [ "$rm_candidate" -eq 0 ]; then
   exit 0
 fi
 if [ "$asdd_unverifiable" -eq 1 ]; then
@@ -655,7 +700,8 @@ if [ "$asdd_unverifiable" -eq 1 ]; then
 fi
 
 hits=""
-if [ "$glob_candidate" -eq 1 ]; then
+rm_hits=""
+if [ "$glob_candidate" -eq 1 ] || [ "$rm_candidate" -eq 1 ]; then
 # ---- heredoc 本文を落とす -----------------------------------------------------
 HEREDOC_HELPER="$HELPER_DIR/heredoc-strip.sh"
 [ -f "$HEREDOC_HELPER" ] && [ -r "$HEREDOC_HELPER" ] || deny_unavailable "heredoc 除去ヘルパのファイルが無いか読めません（${HELPER_DIR_SHOWN}/heredoc-strip.sh）"
@@ -675,17 +721,77 @@ SCAN_HELPER="$HELPER_DIR/zsh-glob-nomatch.sh"
 # shellcheck source=../tests/lib/zsh-glob-nomatch.sh
 . "$SCAN_HELPER" 2>/dev/null || deny_unavailable "判定ヘルパの読み込みに失敗しました"
 [ "$(type -t ff_zsh_glob_scan 2>/dev/null)" = "function" ] || deny_unavailable "判定ヘルパに ff_zsh_glob_scan がありません"
-scan_rc=0
-hits="$(ff_zsh_glob_scan "$code_only")" || scan_rc=$?
-case "$scan_rc" in
-  0) : ;;
-  4) deny_unavailable "引用・展開（'…' / \"…\" / \${…} / \$(…) / バッククォート）が閉じないまま入力が終わったため、走査を完了できません" ;;
-  *) deny_unavailable "判定ヘルパの走査（awk）が失敗しました（rc=${scan_rc}）" ;;
-esac
+if [ "$glob_candidate" -eq 1 ]; then
+  scan_rc=0
+  hits="$(ff_zsh_glob_scan "$code_only")" || scan_rc=$?
+  case "$scan_rc" in
+    0) : ;;
+    4) deny_unavailable "引用・展開（'…' / \"…\" / \${…} / \$(…) / バッククォート）が閉じないまま入力が終わったため、走査を完了できません" ;;
+    *) deny_unavailable "判定ヘルパの走査（awk）が失敗しました（rc=${scan_rc}）" ;;
+  esac
+fi
+if [ "$rm_candidate" -eq 1 ]; then
+  [ "$(type -t ff_zsh_rm_force_scan 2>/dev/null)" = "function" ] || deny_unavailable "判定ヘルパに ff_zsh_rm_force_scan がありません"
+  rm_rc=0
+  rm_hits="$(ff_zsh_rm_force_scan "$code_only")" || rm_rc=$?
+  case "$rm_rc" in
+    0) : ;;
+    4) deny_unavailable "引用・展開（'…' / \"…\" / \${…} / \$(…) / バッククォート）が閉じないまま入力が終わったため、走査を完了できません" ;;
+    *) deny_unavailable "判定ヘルパの走査（awk）が失敗しました（rc=${rm_rc}）" ;;
+  esac
+fi
 fi
 # 未引用 scalar の警告だけの呼び出しも、単語分割の書き換え（Issue `#2491`）を試すために先へ進める。
 # 修飾子の候補だけの呼び出しも、`${name}:` への書き換え（Issue `#2756`）を試すために進める（書き換えられなければ従来どおり無出力）。
-[ -n "$hits" ] || [ "$mod_candidate" -eq 1 ] || [ -n "$expansion_deny" ] || [ -n "$expansion_warning" ] || exit 0
+[ -n "$hits" ] || [ -n "$rm_hits" ] || [ "$mod_candidate" -eq 1 ] || [ -n "$expansion_deny" ] || [ -n "$expansion_warning" ] || exit 0
+
+# ---- rm -f の未引用 glob（公開 https://github.com/feel-flow/ff-dev-toolkit/issues/165） ------------------------
+# 入力の書き換え（try_rewrite）へは進めない。try_rewrite と下の deny 文の書き換え案は語を引用する形で、
+# 引用した glob は rm -f の対象を「その名前どおりのファイル」へ変え、何も消さずに成功する（Issue が報告した
+# 無音の失敗と同じ形になる）。書き換え案は zsh の glob 修飾子 (N) か、0 件の glob を許すサブシェル・find。
+if [ -n "$rm_hits" ]; then
+  rm_listed=""
+  rm_n=0
+  while IFS= read -r hit_line; do
+    [ -n "$hit_line" ] || continue
+    rm_n=$((rm_n + 1))
+    [ "$rm_n" -le 5 ] || continue
+    hit_word="${hit_line%%"${tab}"*}"
+    hit_fix="${hit_line#*"${tab}"}"
+    if [ "$hit_fix" = "-" ] || [ "$hit_fix" = "$hit_line" ]; then
+      rm_listed="${rm_listed}
+  ${hit_word}  →  （引用・展開・brace・括弧を含む語、語に続けて ( を書いた語（glob 修飾子・交替・グループ）、末尾が / の語、語頭が = の語のいずれかなので、修飾子を付けた案は出していません。glob 修飾子を書いた語は、その修飾子へ N を足してください（例: x*(.) → x*(.N)）。それ以外は下の 2) か 3) で書き直してください）"
+    else
+      rm_listed="${rm_listed}
+  ${hit_word}  →  ${hit_fix}"
+    fi
+  done <<EOF
+$rm_hits
+EOF
+  [ "$rm_n" -le 5 ] || rm_listed="${rm_listed}
+  （ほか $((rm_n - 5)) 語）"
+  rm_also=""
+  if [ -n "$hits" ]; then
+    rm_also_words=""
+    while IFS= read -r hit_line; do
+      [ -n "$hit_line" ] || continue
+      rm_also_words="${rm_also_words} ${hit_line%%"${tab}"*}"
+    done <<EOF
+$hits
+EOF
+    rm_also="
+同じ呼び出しには、zsh では必ず 0 件になる未引用 glob（\`-\` で始まる語の \`=\` の右側、または URL のクエリ文字列の形）もあります:${rm_also_words}  →  = の右側を引用してください（例: --include=\"*.md\"。クエリ文字列の形は語全体を引用する: \"repos/o/r/contents/a.md?ref=main\"）。"
+  fi
+  deny "⚠️ ff-dev-toolkit guard（zsh-nomatch-glob: rm -f の未引用 glob）: このホストの Bash ツールは zsh で動きます（${host_shell}）。\`rm -f\` は「消す対象が無くても成功する」ための指定ですが、zsh は既定（NOMATCH）で 0 件の未引用 glob を \`no matches found\` のエラーにし、\`rm\` を実行しないまま非 0 で終わらせます。初回などで対象がまだ無いと、\`&&\` で続く処理が走りません（\`;\` や改行で続く処理は走るので、結果が一部だけ欠けた形になります）。bash では同じ文字列が通るので、bash 前提で書いたコマンドがここでだけ落ちます。
+検出した語（実値 → 書き換え案）:${rm_listed}${rm_also}
+次のいずれかで書き直してください:
+  1) glob に zsh の修飾子 (N) を付ける（上の書き換え案。0 件なら語ごと消え、rm -f はオペランドが無くても成功します）
+  2) サブシェルで 0 件の glob を許してから消す: (setopt null_glob; rm -f <glob>)
+  3) 探すディレクトリが既にあるなら find で消す: find <ディレクトリ> -maxdepth 1 -name '<glob>' -delete（ディレクトリが無いと find は非 0 で終わるので、初回に無いことがある置き場には 1) か 2) を使います。中身のあるディレクトリに一致すると消せずに非 0 で終わるので、-r 付きの rm の代わりにはなりません）
+glob を引用すると（zsh で noglob を前置しても同じ）glob が展開されず、その名前どおりのファイルだけが対象になります（消したいファイルは消えません）。
+誤検知の場合（nonomatch を設定済みのシェル等）は、コマンドの**先頭**へ環境代入を付けて再実行します: FF_ZSH_GLOB_ACK=1 <コマンド>
+このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP=zsh-glob を設定します。判定の正本は ${HELPER_DIR_SHOWN}/zsh-glob-nomatch.sh です。"
+fi
 
 try_rewrite || true
 # 書き換えられなかった equals は、保留していた従来の deny をそのまま返す。

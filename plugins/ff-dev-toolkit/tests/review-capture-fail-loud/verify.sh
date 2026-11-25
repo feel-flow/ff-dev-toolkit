@@ -99,6 +99,12 @@
 #   review_body_present の awk 異常終了を rc1（型付き行なし）へ畳む → (c5) と (c6) が赤。
 #   describe_cli_failure の理由だけを旧文面の複製へ戻す → 正規形の照合（3 か所・describe の文）が赤（当初は出現行数 2 以上で見ていたため緑で、針を締めてから赤を確認した）。
 # 空振り検出: 不受理の正規形（REVIEW_BODY_REFUSAL_PHRASE）の文面を変える（書式変更）と正規形の照合 2 件（成果物・ERROR 行）が、拒否の診断の文面を変えると散文の行分類の 13 件と (c2) の診断が赤（期待の文面は実装を読まずに REFUSAL_PHRASE / PROSE_REFUSED_DIAG へ書いてある。2026-09-25 実測）。散文 fixture の照合が 20 件未満（節が空）なら強制の節が赤になる。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/multi-agent.sh scripts/lib/multi-agent-*.sh
+# run-all-depends: scripts/adapters/ scripts/lib/adapter-common-*.sh scripts/lib/knowledge-read-acl.ps1
+# run-all-depends: scripts/agent-config.yaml scripts/perspectives/review/
+# run-all-depends: tests/lib/git-fixture.sh tests/lib/adapter-env-isolation.sh tests/lib/multi-agent-sources.sh
 
 set -euo pipefail
 

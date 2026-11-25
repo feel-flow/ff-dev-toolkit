@@ -87,6 +87,27 @@
 # 空振り検出: SKILL上限超過の針なし短縮候補提示と抽出失敗時 fail-closed について、候補生成抑止・バイト数降順ソート反転・針あり除外無効化・3バイト未満の短針切り捨て・非-F正規表現grepのfail-closed無効化・未解決変数針fail-closed無効化・未閉引用符fail-closed無効化・抽出0件fail-closed無効化・非通常index verify.sh検査無効化・worktree読み取りへの逆行の 10 変異がすべて rc=1（detected 10）、無害コメント追記 1 件のみ rc=0（green-ok 1 / SURVIVED 0 / FALSE-POSITIVE 0 / NOT-APPLIED 0、対照 163 pass / 0 fail、2026-11-22 macOS 実測）。
 # 空振り検出: 読み直しWARNの抑止は7件、WT本文の誤使用と対象外断片での抑止は各1件、case空は末尾sentinel1件が赤。staged/集合/保存本文の診断を一般エラーへ変える変異は各1/1/2件が赤（2026-10-24実測）。確定集合の不在/空/不正と一覧・保存本文の読取失敗はW9/W10/W11が固有診断とrc2/WARNなしを要求する。
 # 空振り検出: 種別 H の常時 none 化・正規化時の行番号維持（無関係行シフトで偽陽性）・GIT_LITERAL_PATHSPECS 対応無効化・削除 D の HEAD 比較抑止・未解決衝突 U の通過・lib 不在の none 倒し（rc=0）の 6 変異がすべて rc=1、無害コメント追記 1 件のみ rc=0（7 件 / detected 6 / green-ok 1 / SURVIVED 0 / FALSE-POSITIVE 0 / NOT-APPLIED 0、正常 152 件 pass、2026-11-18 mutation-harness 実測）。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: tests/lib/git-fixture.sh tests/lib/exec-bit-guard.sh tests/lib/changelog-fragment-guard.sh
+# run-all-depends: tests/lib/skill-byte-guard.sh tests/lib/precommit-skip-line.sh tests/lib/skip-line-contract.sh
+# run-all-depends: tests/lib/relay-skip-lines.* tests/lib/release-skip-profile*.sh scripts/lib/stop-block.*
+# run-all-depends: scripts/lib/changelog-attribution-functions.* /scripts/check-release-required.sh /scripts/release-dev-toolkit.sh
+# run-all-depends: tests/finish/verify.sh tests/review-rejection-discipline/verify.sh
+# run-all-not-depends: /scripts/sync-dev-toolkit-to-public.sh fixture に書く同名の stub（--list-targets の代役）。実物は読まない
+# run-all-not-depends: /changelog.d/README.md fixture のリポジトリに作るファイルの名前
+# run-all-not-depends: /README.md fixture のリポジトリに作るファイルの名前
+# run-all-not-depends: tests/run-all/verify.sh 説明の言及（途中死の扱いの出典）
+# run-all-not-depends: tests/run-all/fixtures/not-executable/verify.sh fixture のリポジトリで stage する対象外パスの名前
+# run-all-not-depends: /oss/ff-dev-toolkit/CHANGELOG.md fixture のリポジトリで stage するパスの名前
+# run-all-not-depends: /oss/ff-dev-toolkit/README.md fixture のリポジトリで stage するパスの名前
+# run-all-not-depends: .claude-plugin/plugin.json fixture のリポジトリで stage するパスの名前
+# run-all-not-depends: skills/close-issue/SKILL.md 容量検査の fixture に置くパスの名前（実物は読まない）
+# run-all-not-depends: skills/multi-review/SKILL.md 容量検査の fixture に置くパスの名前（実物は読まない）
+# run-all-not-depends: tests/lib/release-skip-profile.tsv fixture に書く同名の表（実物は読まない）
+# run-all-not-depends: tests/asdd-runtime/runtime.test.mjs fixture のリポジトリに作るパスの名前
+# run-all-not-depends: /oss/ff-dev-toolkit/.github/workflows/weekly-public-run-all.yml fixture に作る同名ファイル（実物は読まない）
+# run-all-not-depends: docs-template/README.md 変数のディレクトリに続く README.md は fixture のリポジトリの同名ファイル（プラグイン内の README は読まない）
 
 set -euo pipefail
 

@@ -175,6 +175,16 @@ if [ -n "$github_input" ]; then
   GH_MERGED_JSON="$(mc_file_guard_list cleanup.merged-list merged "$MERGED_PR_LIMIT" 2>&1)" || mc_merged_rc=$?
 else
   GH_MERGED_JSON="$(gh pr list --state merged --limit "$MERGED_PR_LIMIT" --json headRefName,headRefOid,isCrossRepository,baseRefName 2>&1)" || mc_merged_rc=$?
+  if [ "$mc_merged_rc" -ne 0 ] && ff_gh_is_graphql_unavailable "$GH_MERGED_JSON"; then
+    mc_merged_rest_err="$WORK_TMP/merged-list-rest.err"
+    if GH_MERGED_JSON="$(ff_gh_rest_pr_list merged "$MERGED_PR_LIMIT" "" "$PWD" "$mc_merged_rest_err")"; then
+      mc_merged_rc=0
+      echo "ℹ️  GraphQL が利用できないため REST API でマージ済み PR 一覧を取得しました。" >&2
+    else
+      mc_merged_rest_msg="$(cat "$mc_merged_rest_err" 2>/dev/null || true)"
+      GH_MERGED_JSON="REST API フォールバック失敗（${mc_merged_rest_msg:-不明}）。$(ff_gh_github_input_hint cleanup)"
+    fi
+  fi
 fi
 if [ "$mc_merged_rc" -ne 0 ]; then
   echo "⚠️ マージ済み PR 一覧の取得に失敗しました（fail-closed で縮退）: $GH_MERGED_JSON"
@@ -191,6 +201,16 @@ else
     GH_OPEN_JSON="$(mc_file_guard_list cleanup.open-list open 1000 2>&1)" || mc_open_rc=$?
   else
     GH_OPEN_JSON="$(gh pr list --state open --limit 1000 --json headRefName 2>&1)" || mc_open_rc=$?
+    if [ "$mc_open_rc" -ne 0 ] && ff_gh_is_graphql_unavailable "$GH_OPEN_JSON"; then
+      mc_open_rest_err="$WORK_TMP/open-list-rest.err"
+      if GH_OPEN_JSON="$(ff_gh_rest_pr_list open 1000 "" "$PWD" "$mc_open_rest_err")"; then
+        mc_open_rc=0
+        echo "ℹ️  GraphQL が利用できないため REST API で open PR 一覧を取得しました。" >&2
+      else
+        mc_open_rest_msg="$(cat "$mc_open_rest_err" 2>/dev/null || true)"
+        GH_OPEN_JSON="REST API フォールバック失敗（${mc_open_rest_msg:-不明}）。$(ff_gh_github_input_hint cleanup)"
+      fi
+    fi
   fi
   if [ "$mc_open_rc" -ne 0 ]; then
     echo "⚠️ open PR 一覧の取得に失敗しました（fail-closed で縮退）: $GH_OPEN_JSON"

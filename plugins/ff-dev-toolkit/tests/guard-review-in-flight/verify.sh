@@ -176,6 +176,24 @@
 # 空振り検出: 走査の針が当たらない入力（本文が空・コメントだけ / 本文全体の字句解析の失敗）を「書き込み無し」として通す変異（tests/lib/review-write-scan.sh の ws_judge_file_program の ws_fail の前に return 1 を置く）を入れると (o3) の「コメントだけの本文」「空の本文」「引用符が閉じない本文」が赤になる（2026-09-27 実測。字句解析の取りこぼしと区別できない入力を緑へ倒さない）。
 # 空振り検出: ホスト環境へ解除変数（走行中ロックの ACK と hook 全体の SKIP。この実測は改名前の名前で行った）を置いたまま先頭の isolate_hook_env を外すと 238 件が赤、分離ライブラリの unset を外しても 238 件が赤（2026-09-28 実測、bundle `#1808`）。同じホスト環境でガード本体の最終 emit_deny の前に exit 0 を置く変異は 228 件赤 — 分離が本物の deny 退行を隠さない。
 # 空振り検出: (p) 節と (n20)（Issue `#2271`。2026-10-26 に WSL で実測、変異なしは 599 件緑）。hooks.json の PreToolUse から onFailure: block を消す → 1 件赤。PreToolUse の timeout を 10 へ戻す → 1 件赤。SubagentStop へ onFailure を足す → 1 件赤。hook の `trap ff_on_exit EXIT` を外す → (p) の exit 2 / exit 3 と (n) 節の巡回の記録が赤になり suite が (n) 節で止まる（計 24 件）。巡回の後始末の配線（ROUND_FINISH_ARMED=1）を外す → (n) 節で 20 件赤のうえ停止。差し込みの錨（ASDD ゲートの注記行）を書き換える → 2 件赤（錨が見つからない回を緑へ倒さない）。異常終了の告知（判定不能の systemMessage）を消す → 3 件赤（黙って通す形を緑へ倒さない）。異常終了の回の巡の記録（trap 内の review_round_commit）を外す → (n20) の 1 件赤。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: hooks/guard-review-in-flight.sh hooks/check-review-roster-drift.sh hooks/hooks.json
+# run-all-depends: hooks/asdd-hook-gate.sh hooks/asdd-feature.mjs scripts/asdd/config.mjs
+# run-all-depends: scripts/check-review-roster-drift.sh
+# run-all-depends: scripts/multi-review.sh scripts/multi-agent.sh scripts/lib/multi-agent-*.sh
+# run-all-depends: scripts/adapters/ scripts/agent-config.yaml scripts/perspectives/
+# run-all-depends: scripts/lib/stop-block*.sh scripts/lib/l4-declarations.tsv
+# run-all-depends: tests/lib/review-*.sh tests/lib/heredoc-strip*.sh tests/lib/git-isolated.gitconfig
+# run-all-depends: tests/lib/adapter-env-isolation.sh tests/lib/asdd-gate-drain.sh tests/lib/crlf-jq-shim.sh
+# run-all-depends: tests/lib/multi-agent-sources.sh tests/lib/git-fixture.sh
+# run-all-depends: scripts/lib/knowledge-read-acl.ps1
+# run-all-not-depends: scripts/templates/codex-review.sh hook に判定させるコマンド文字列の中の名前（シムは実行しない）
+# run-all-not-depends: scripts/mutation-harness.sh 説明の言及（変異の実測に使った道具）
+# run-all-not-depends: /README.md fixture のリポジトリ内のファイル名（hook に判定させるコマンドの対象）
+# run-all-not-depends: docs-template/README.md fixture のリポジトリ内の README.md の名前（プラグインの README は読まない）
+# run-all-not-depends: tests/github-input-release/fixtures/log.txt hook に判定させるコマンド文字列の中の名前
+# run-all-not-depends: mcp/.gitignore fixture のリポジトリに作る .gitignore の名前
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

@@ -81,6 +81,19 @@
 #   1 suite のまま。分割は同一プロセス内の source なので fixture・関数・カウンタを共有し、
 #   分割直後の PASS 総数は分割前と同じ 273（実測）。その後、構成を守る検査（src_cases の
 #   増分検査 + 未 source cases の照合）を 1 件足して 274。別 suite 化しなかった理由は ADR-052。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/templates/codex-review.sh scripts/setup-multi-agent.sh scripts/lib/setup-yq.*
+# run-all-depends: scripts/multi-agent.sh scripts/lib/multi-agent-*.sh scripts/perspectives/
+# run-all-depends: scripts/lib/github-input.* scripts/lib/merge-message.* scripts/lib/abs-path.*
+# run-all-depends: scripts/adapters/adapter-common.sh scripts/lib/adapter-common-*.sh
+# run-all-depends: tests/lib/git-fixture.sh tests/lib/adapter-env-isolation.sh tests/lib/cli-registry-parser.sh
+# run-all-depends: scripts/lib/knowledge-read-acl.ps1
+# run-all-not-depends: /README.md suite 自身の README（tests/review-wrapper-shim/README.md）を指すコメント
+# run-all-not-depends: /docs/04-quality/TESTING.md ヘッダの案内（ホスト git 障害時の切り分け手順の参照先）。中身は読まない
+# run-all-not-depends: .claude-plugin/plugin.json fixture の toolkit に書く同名のマニフェスト
+# run-all-not-depends: scripts/agent-config.yaml fixture の toolkit に書く同名の設定
+# run-all-not-depends: scripts/check-closing-keywords.sh dry-run では使わないので fixture に置かない理由の説明
 
 set -euo pipefail
 
@@ -150,6 +163,8 @@ for _s in CODEX_REASONING_EFFORT SKIP_CODEX_REVIEW CODEX_DEFAULT_REVIEWERS CODEX
       exit 1 ;;
   esac
 done
+# ホスト（Claude Code セッション）が export する CLAUDE_PLUGIN_ROOT が自動探索ケースへ漏れないよう隔離する
+ISOLATE_ENV+=(-u CLAUDE_PLUGIN_ROOT)
 
 echo "== 同梱レビューラッパー（シム）の契約 =="
 
@@ -257,7 +272,7 @@ run_shim() {
   # 残っていると rc=2（明示指定が在るのに使えない）にしかならず、rc ごとの案内を分けられない。
   local -a root_unset=() root_env=(FF_DEV_TOOLKIT_ROOT="$run_toolkit")
   if [ -n "${RUN_SHIM_NO_ROOT:-}" ]; then
-    root_unset=(-u FF_DEV_TOOLKIT_ROOT)
+    root_unset=(-u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT)
     root_env=(CODEX_HOME="$WORK/no-codex-home" CLAUDE_CONFIG_DIR="$WORK/no-claude-home")
   fi
   # 利用者設定（${XDG_CONFIG_HOME:-$HOME/.config}/ff-dev-toolkit/reviewers）をホストから

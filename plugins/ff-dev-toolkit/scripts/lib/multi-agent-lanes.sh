@@ -464,6 +464,10 @@ print_reviewers_state() {
   detect_available_clis >/dev/null
   printf 'available=%s\n' "$AVAILABLE_CLIS"
   printf 'known=%s\n' "$ALL_CLIS"
+  # 起動前の確認（利用枠・認証・sandbox の適用可否）を available= の CLI ごとに 1 行ずつ、既存行の
+  # **後ろ**へ足す（Issue `#3001`。契約は multi-agent-precheck.sh の print_lane_precheck_lines）。
+  # 終了コードは下の 2 行だけが決める。
+  print_lane_precheck_lines
   [[ -n "$REVIEW_MAIN" ]] && return 0
   return 3
 }

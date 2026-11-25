@@ -18,7 +18,7 @@ description: セルフレビューと別CLIの追加レビュー。Claude Code /
 
 - Claude Codeでは、その呼び出しでホストが渡した `${CLAUDE_PLUGIN_ROOT}` を使う
 - grok CLIでは、Bash tool 環境の `${GROK_PLUGIN_ROOT}` があればそれを使う（skill 経路では未設定が普通なので、次項の `FF_DEV_TOOLKIT_SKILL_FILE` を渡す）
-- Codexなど他ホストでは、実際に読み込んだこの `SKILL.md` の絶対パスを `FF_DEV_TOOLKIT_SKILL_FILE` として固定し、そこから `../..` を解決する
+- Codexなど他ホストでは、実際に読み込んだこの `SKILL.md` の絶対パスを `FF_DEV_TOOLKIT_SKILL_FILE` として固定し、`skills` が symlink でも物理パス（`cd -P` / `pwd -P`）で `../..` を解決する
 
 このskillを実行するAI hostは、Bash tool呼び出しを組み立てるとき、skill loaderが返した実値で `FF_DEV_TOOLKIT_SKILL_FILE="<このSKILL.mdの絶対パス>"; export FF_DEV_TOOLKIT_SKILL_FILE` を実行し、同じshell script bodyでresourceを呼び出す。placeholderのまま実行したり、cache pathを推測して埋めたりしない。
 plugin内ドキュメントの正本は、読み込んだこの `SKILL.md` のdirectoryを基準にした [plugin root固定契約](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) である。consumerへコピーされた `docs/` や物理CWDを基準に解決しない。
@@ -40,13 +40,13 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
 ## 前提・引数
 
 - 外部 CLI 経路は AI CLI と Mike Farah `yq` v4 が必要（ネイティブ経路は不要）。対象はコミット済み PR 差分（固定 base/head SHA）。
-- `$ARGUMENTS` は `multi-review.sh` へ渡す（[Perspective フィルタ](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#perspective-フィルタと単一-cli-縮退)）。`--staged` は `--base` / `MULTI_AGENT_BASE_BRANCH` と排他。AC 未指定時は自動投入（`--description` 優先）。
+- スキルの引数は、`--` で始まるオプション（値を含む）と PR 番号（正の整数 1 つ。base はその PR から解決）だけを `multi-review.sh` へ渡す（[Perspective フィルタ](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#perspective-フィルタと単一-cli-縮退)）。説明・AC・`PR <番号>` のような文は位置引数にしない（`Unknown option` で起動前に止まる）。説明は `--description "<文>"` で渡す。`--cli` / `--exclude-cli` は `--print-reviewers` の `known=` の正式名（`codex-cli` など。`codex` は `unknown CLI`）。`--staged` は `--base` / `MULTI_AGENT_BASE_BRANCH` と排他。AC 未指定時は自動投入（`--description` 優先）。
 
 ## 手順
 
 ### 0. 担当と経路の確定（PR 作成後に実行）
 
-本スキルは **PR 作成後**に実行する。担当は [レビュー担当の選択と利用制限時の継続](../../docs-template/05-operations/deployment/self-review.md#レビュー担当の選択と利用制限時の継続)（正本）に従い、本書は複製しない（主担当は実装ホスト）。**Claude Code / Codex / grok は最初に[主担当ホストのネイティブセルフレビュー](../../docs-template/05-operations/deployment/self-review.md#主担当ホストのネイティブセルフレビュー)で経路を選び**、ネイティブ時は固定対象・観点・read-only 制約を渡して親が対象 SHA・完了状態を照合する（手順 1・2 不要）。
+本スキルは **PR 作成後**に実行する。担当は [レビュー担当の選択と利用制限時の継続](../../docs-template/05-operations/deployment/self-review.md#レビュー担当の選択と利用制限時の継続)（正本）に従い、本書は複製しない（主担当は実装ホスト）。**Claude Code / Codex / grok は最初に[主担当ホストのネイティブセルフレビュー](../../docs-template/05-operations/deployment/self-review.md#主担当ホストのネイティブセルフレビュー)で経路を選び**、ネイティブ時は固定対象・観点・read-only 制約を渡して親が対象 SHA・完了状態を照合する（手順 1・2 不要）。ネイティブ時も手順 0b の `review-route.sh` を 1 回実行し、`REVIEW_SECURITY_GATE` がゲートを実行する値（`security-review` / `codex-security` / `grok-session` / `antigravity-session`）なら同じ巡で専用ゲートを実行し、PR 本文へ `REVIEW_SECURITY_RECORD_DONE` / `_SKIPPED` の書式で結果の行を書く（unverified / unsupported は報告行が結果の行）（[正本](../../docs-template/05-operations/deployment/self-review.md#主担当ホストのネイティブセルフレビュー)）。実行経路を変える変更は、初回レビューの前に[自己点検の一覧](../../docs-template/05-operations/deployment/self-review.md#6-実行経路を変える変更の自己点検初回レビューの前)を当てる。
 
 外部 CLI の環境チェック:
 
@@ -54,11 +54,11 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --print-reviewers
 ```
 
-`cross_review=off` / `features.multiReview=false` 時は手順 1・2 を省く（明示起動は実行）。別 CLI 追加時は `--mode cross-model --cli <CLI> --perspective comprehensive-review` と `.review-results/` 外の `--output-dir` を明示し、非 0・INCOMPLETE・未解消指摘は免除しない（設定保存は依頼時のみ[クロスレビューの単一固定](../../docs-template/05-operations/deployment/self-review.md#クロスレビューの単一固定cross_review)）。
+`cross_review=off` / `features.multiReview=false` 時は手順 1・2 を省く（明示起動は実行）。別 CLI は `lane_precheck.<CLI>=unavailable` の行（起動前の確認で利用枠切れ・未ログイン・sandbox 不適用と判明）を除いて選ぶ。別 CLI 追加時は `--mode cross-model --cli <CLI> --perspective comprehensive-review` と `.review-results/` 外の `--output-dir` を明示し、非 0・INCOMPLETE・未解消指摘は免除しない（設定保存は依頼時のみ[クロスレビューの単一固定](../../docs-template/05-operations/deployment/self-review.md#クロスレビューの単一固定cross_review)）。
 
 ### 0b. 変更クラス別のレーン数（経路）
 
-外部 CLI のレーン計画で実行し、経路・専用セキュリティゲートを読む。ネイティブ経路は手順0の正本で判定する:
+経路（外部 CLI のレーン数）と専用セキュリティゲートを読む。ネイティブ経路でもゲートの判定はここで行い、レーンは手順 0 の正本で決める:
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/review-route.sh" --git --base <base>
@@ -71,7 +71,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 cold/clear の新ブランチは `--fresh` 無しで開始する。旧ブランチの Critical が残るときのみ[退避専用経路](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#archive-only)で `--archive-only=<確認した旧ブランチ名>` を 1 回実行してから通常起動する（未回収requestや壊れたstateは保全停止、**同じブランチの2回目以降にfreshや退避を足さず**）。
 
 ```bash
-FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --dry-run --route <REVIEW_ROUTE の値> $ARGUMENTS
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --dry-run --route <REVIEW_ROUTE の値> <引数の規則で選んだオプション・PR 番号>
 ```
 
 CLI・観点・モード・timeout・警告を報告する（✅ は PATH 在のみ、無警告は成功保証でない、sandbox probe の INCOMPLETE は未確認、grok の docker.sock symlink は[read-only 手順](../../docs-template/05-operations/deployment/grok-cli-reviewer.md)）。
@@ -79,7 +79,7 @@ CLI・観点・モード・timeout・警告を報告する（✅ は PATH 在の
 ### 2. レビュー実行
 
 ```bash
-FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --route <REVIEW_ROUTE の値> $ARGUMENTS
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --route <REVIEW_ROUTE の値> <引数の規則で選んだオプション・PR 番号>
 ```
 
 **900秒/CLI**（`--timeout`）。作業を起動前に列挙し、起動と同じメッセージで着手。尽きたら[長時間ゲートの進捗表示](../../docs-template/05-operations/deployment/git-workflow.md#長時間ゲートの進捗表示)に従う。
@@ -92,7 +92,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ### レビュー待ち時間の使い方
 
-既定（高速）の `run-all.sh` は PR head へ detach した**別 worktree** で `FF_RUN_ALL_WAIT=1` 並走可（全レビュー終端後すぐ修正可、`FF_RUN_ALL_FULL=1` は並走不可。手順: [ステップ 6](../../docs-template/05-operations/deployment/git-workflow.md#ステップ6-セルフレビューpr作成後重要)）。baseline の赤と指摘は 1 fix commit へ束ね、HEAD が動いたら最終ゲートを省かない。
+ゲートは「変更対象の単体検証 → PR 作成 → レビュー収束 → 最終ゲート 1 回」の順。任意で、既定（高速）の `run-all.sh` を PR head へ detach した**別 worktree** で `FF_RUN_ALL_WAIT=1` 並走してよい（指摘 0 件の見込みが高い回向け。全レビュー終端後すぐ修正可、`FF_RUN_ALL_FULL=1` は並走不可。手順: [ステップ 6](../../docs-template/05-operations/deployment/git-workflow.md#ステップ6-セルフレビューpr作成後重要)）。baseline の赤と指摘は 1 fix commit へ束ね、HEAD が動いたら最終ゲートを省かない。
 
 **許可側**: `gh` 経由の GitHub 側作業（Issue 本文の AC 更新・PR 本文の更新・follow-up の起票・完了報告の下書き）は作業ツリーを触らないので回してよい。**禁止側**: 編集は溜めず、**レビュー終端後に直したらすぐ commit し、次の回転を dirty な作業ツリーで起動しない**（CLI は DISCARDED になり、レビューエージェント（`git diff <base>...HEAD` を見る）は PR の内容としては未解消のままと判定する）。
 

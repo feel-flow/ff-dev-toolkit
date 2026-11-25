@@ -25,6 +25,15 @@
 #   開始時のバイト列で出す・開始時に読めない（不在 / symlink / 空 / 読めない）なら CLI 前に rc 2・
 #   finish は plan 外の結果・生成後のレポート改変・producer digest の不一致・開始記録の改変と型崩れを拒否。
 # run-all-required: yes — consumer ready の証跡束縛を検証する唯一の suite
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/review-evidence.py scripts/multi-review.sh scripts/multi-agent.sh scripts/lib/multi-agent-*.sh
+# run-all-depends: scripts/adapters/ scripts/agent-config.yaml scripts/perspectives/ .claude-plugin/plugin.json
+# run-all-depends: tests/lib/git-fixture.sh tests/lib/review-round-counter*.sh
+# run-all-depends: tests/run-all/verify.sh tests/run-all/cases/*.sh tests/review-wrapper-shim/verify.sh
+# run-all-depends: scripts/lib/knowledge-read-acl.ps1
+# run-all-not-depends: scripts/mutation-harness.sh 説明の言及（変異の実測に使った道具で、suite は実行しない）
+# run-all-not-depends: skills/close-issue/references/report.md fixture のキャッシュに置く leaf の名前
 set -euo pipefail
 PLUGIN_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$PLUGIN_ROOT/tests/lib/git-fixture.sh"

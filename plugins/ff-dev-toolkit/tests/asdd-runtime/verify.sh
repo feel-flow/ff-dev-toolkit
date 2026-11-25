@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # 空振り検出: 不完全/欠落検索・未信頼marker・検索0件の一覧省略・raw stderr漏洩・workテスト本体の無効化を変異で赤、無害コメントを緑と実測。必須3ケースの成功出力が無い回も赤。
+# 空振り検出: generate.mjs の probeMultiReview が MULTI_AGENT_LANE_PRECHECK=off を渡さないと、--check が codex app-server を呼んだとして 1 件赤になる（2026-11-25 実測）。
 set -euo pipefail
 test_root="$(cd "$(dirname "$0")" && pwd)"
 # 部分 skip は reporter に依存しない経路で受け取る。node の TAP reporter はテスト内の

@@ -134,6 +134,16 @@
 # 変異検出: 説明文つき誘導スタブと版見出しで始まる分割側（H23 layout の追加ケース。変異の実測は最初の 5 ケースの時点）は、書き込み口の awk 4 変異（固定候補リンクの条件・履歴らしい行の条件・headingless の読み取り・レベル 2 見出しでの遮断を外す）と生成器の TS 3 変異（固定候補リンクの条件・候補の headingless・遮断を外す）で各 rc=1（2026-11-11 WSL 実測。無変異は rc=0）。
 # 依存: bash 3.2 / jq / mktemp / Node.js / npm ci 済みの mcp/node_modules。一時領域を作れない環境は skip ではなく赤（suite 全体の
 # skip 経路を持たない）。実作業ツリーには触れない（HOME・PATH・TMPDIR を隔離する）。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/jev/*.sh scripts/jev/*.ts scripts/jev/*.jq scripts/jev/questions/ scripts/jev/fixtures/ scripts/ace-run-ts.sh docs-template/scripts/ace/
+# run-all-depends: scripts/lib/playbook-changelog-* scripts/lib/knowledge-read-acl.ps1 scripts/lib/multi-agent-report-body.* tests/lib/crlf-jq-shim.sh
+# run-all-depends: skills/ace-curate/SKILL.md skills/ace-curate/references/curate.md skills/retrospective/SKILL.md skills/retrospective/references/ledger.md
+# run-all-depends: skills/multi-review/SKILL.md skills/multi-review/references/jev-dedupe.md tests/assess-impact/fixtures/cases/
+# run-all-depends: /docs/08-knowledge/*.md /docs/08-knowledge/playbook/ /docs/04-quality/jev-lang-ab/
+# run-all-not-depends: scripts/knowledge-commit.sh H23 の判定 lib の呼び出し元の説明（実行しない）
+# run-all-not-depends: docs-template/08-knowledge/playbook/testing.md 合成 Playbook（$SYN/playbook/testing.md）の名前
+# run-all-not-depends: docs-template/08-knowledge/PLAYBOOK.md 合成 Playbook（$SYN/PLAYBOOK.md）の名前
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

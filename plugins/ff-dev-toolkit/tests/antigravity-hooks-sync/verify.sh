@@ -4,6 +4,13 @@
 # hook-shim.sh / retrospective-chain-tail.mjs）の検証。
 # 空振り検出: 2026-11-15 macOS 実測: 不在 --plugin-root (rc=1)、展開可能 handler 0 件の hooks.json (rc=1)、空値フラグ (B8a-d)・空 hooks.json (B5)・symlink 出力先/親ディレクトリ (B7/B9)・非 JSON 入力 fail-open 既定値 (C12)・17 MiB stdin 上限 fail-open (E8)・read_file(SKILL.md) 非終端 (D6)・compact 引用文字列 (D9) を全件固定（無変異 baseline pass=59/fail=0）。
 # 変異検出: 2026-11-15 macOS 実測（mutation-harness 4/4 検出 + green 対照 1/1、2026-11-14 の 5/5 に追加）: (1) executionNum>=1 を >1 へ戻す (rc=1, pass=57/fail=2)、(2) executionNum 既定値 //0 を //1 へ戻す (rc=1, pass=58/fail=1)、(3) allowReadSkill:false を true へ戻す (rc=1, pass=58/fail=1)、(4) unwrapJsonEncodedString 展開バイパス (rc=1, pass=58/fail=1)、(5) 無害コメント追加 green 対照 (rc=0, pass=59/fail=0)。前回実測: Bash matcher / PreInvocation / updatedInput / GENERIC / 外側 </USER_REQUEST> 抽出（5/5）。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/antigravity/ hooks/ scripts/lib/l4-declarations.* scripts/lib/knowledge-read-acl.ps1
+# run-all-depends: .claude-plugin/plugin.json .mcp.json mcp/dist/ skills/retrospective/SKILL.md
+# run-all-depends: tests/lib/git-fixture.sh tests/lib/adapter-env-isolation.sh
+# run-all-not-depends: tests/run-all.sh hook に判定させるコマンド文字列の中の名前（ランナーは実行しない）
+# run-all-not-depends: /.claude-plugin/marketplace.json fixture に書く marketplace.json の名前（リポジトリの marketplace は読まない）
 set -euo pipefail
 
 SCRIPT_DIR="$(CDPATH='' cd -P -- "$(dirname -- "$0")" && pwd -P)"

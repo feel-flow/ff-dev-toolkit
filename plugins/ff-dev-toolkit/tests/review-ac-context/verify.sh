@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # run-all-required: yes — AC 自動投入・明示優先・再開入力固定の回帰を消さない。
 # 空振り検出: case 不在/空・構成ファイル空・取得配線なし・節集合空・file照合0件・resume再取得・本文argv化・共通helper不在/空の10変異が各rc1（2026-10-24 macOS実測）、無変異84件pass（2026-11-07 macOS実測）。完了marker不在も赤。拡張後の Issue 背景/スコープ外抽出（supp_names 空化）、PR 本文 untrusted 封入（PR 出力分岐無効化）、行頭三連バッククォート除外除去、字下げコード内 ff-effort 保護除去、空親見出し保持除去、writing.md 見出し（再現手順等）除去の独立変異はいずれも rc=1（基準 114 件緑、SURVIVED 0。2026-11-21 macOS 実測）。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: scripts/multi-review.sh scripts/multi-agent.sh scripts/lib/multi-agent-*.sh
+# run-all-depends: scripts/adapters/ scripts/agent-config.yaml scripts/perspectives/ .claude-plugin/
+# run-all-depends: scripts/check-closing-keywords.sh scripts/lib/github-input*.sh scripts/lib/merge-message*.sh
+# run-all-depends: tests/lib/git-fixture.sh tests/lib/adapter-env-isolation.sh tests/lib/multi-agent-sources.sh
+# run-all-depends: tests/lib/review-round-counter*.sh tests/lib/github-mcp-fixture*.sh
+# run-all-depends: scripts/lib/knowledge-read-acl.ps1
+# run-all-not-depends: skills/create-issue/references/writing.md 説明の言及（見出しの出典。suite は開かない）
+# run-all-not-depends: tests/github-input/fixtures/index.json 一時ディレクトリに作る入力のファイル名（別 suite の fixture は読まない）
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"

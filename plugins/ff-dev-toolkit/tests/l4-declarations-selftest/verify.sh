@@ -13,6 +13,28 @@
 # 起動は 4 本ずつ並べる。
 #
 # skip 経路は持たない（一時領域を作れない・jq / git が無いときは赤）。bash 3.2 互換。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: tests/l4-declarations/verify.sh tests/l4-declarations/fixtures/lib.sh
+# run-all-depends: scripts/lib/l4-declarations.* scripts/lib/stop-block.*
+# run-all-not-depends: tests/l4-declarations/fixtures/notice/update-check.sh 合成 root に書く同名の fixture（実物は読まない）
+# run-all-not-depends: tests/l4-declarations/fixtures/skip/zsh-glob.sh 合成 root に書く同名の fixture
+# run-all-not-depends: tests/l4-declarations/fixtures/skip/wsl-shell.sh 合成 root に書く同名の fixture
+# run-all-not-depends: tests/l4-declarations/fixtures/skip/effort-metrics.sh 合成 root に書く同名の fixture
+# run-all-not-depends: hooks/guard-zsh-glob.sh 名簿の owner 列から作る stub の名前
+# run-all-not-depends: hooks/auto-update-marketplace.sh 名簿の owner 列から作る stub の名前
+# run-all-not-depends: hooks/check-update.sh 名簿の owner 列から作る stub の名前
+# run-all-not-depends: hooks/guard-wsl-shell.sh 名簿の owner 列から作る stub の名前
+# run-all-not-depends: hooks/record-effort-wallclock.sh 名簿の owner 列から作る stub の名前
+# run-all-not-depends: scripts/record-gate-minutes.sh 名簿の owner 列から作る stub の名前
+# run-all-not-depends: tests/lib/zsh-expansion-guard.sh 名簿の owner 列から作る stub の名前
+# run-all-not-depends: tests/stop-block-contract/verify.sh 合成 root に書く試験の隔離ファイル
+# run-all-not-depends: tests/lib/adapter-env-isolation.sh 合成 root に書く試験の隔離ファイル
+# run-all-not-depends: PUBLIC-SURFACE.md 合成 root に書く公開面
+# run-all-not-depends: /oss/ff-dev-toolkit/README.md 合成 root に書く鍵の表
+# run-all-not-depends: .claude-plugin/plugin.json 合成 root に書く manifest
+# run-all-not-depends: /README.md 公開同期の配置を模して合成 root に書くファイル
+# run-all-not-depends: docs-template/README.md 変数のディレクトリに続く README.md は合成 root の同名ファイル（プラグイン内の README は読まない）
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

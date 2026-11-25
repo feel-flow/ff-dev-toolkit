@@ -989,9 +989,25 @@ fetch_open_set() { # <owner/repo> → REPO_NAMES / REPO_STATES（ok|fail）/ REP
     fi
     jq -r '.[].number' "${out}.raw" >"$out"
   elif ! gh issue list --repo "${repo}" --state open --limit "${OPEN_LIMIT}" --json number --jq '.[].number' >"${out}" 2>"${out}.err" </dev/null; then
-    REPO_STATES+=(fail); REPO_OPEN+=(" ")
-    printf 'gh issue list --repo %s に失敗しました（該当参照は 未確認 として扱います）: %s\n' "${repo}" "$(head -n 1 "${out}.err" 2>/dev/null)" >&2
-    return 0
+    local gh_err="" rest_lib="" rest_err=""
+    gh_err="$(cat "${out}.err" 2>/dev/null || true)"
+    rest_lib="$(CDPATH='' cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib/gh-rest-fallback.sh"
+    if [ -f "$rest_lib" ] && [ ! -L "$rest_lib" ] && [ -r "$rest_lib" ] \
+       && . "$rest_lib" 2>/dev/null \
+       && declare -F ff_gh_is_graphql_unavailable >/dev/null 2>&1 \
+       && ff_gh_is_graphql_unavailable "$gh_err"; then
+      if ! ff_gh_rest_open_issue_numbers "${repo}" "${OPEN_LIMIT}" "${out}" "${out}.rest.err"; then
+        rest_err="$(head -n 1 "${out}.rest.err" 2>/dev/null || true)"
+        REPO_STATES+=(fail); REPO_OPEN+=(" ")
+        printf 'gh issue list --repo %s の GraphQL 利用不可後の REST API フォールバックにも失敗しました（該当参照は 未確認 として扱います）: %s。%s\n' \
+          "${repo}" "${rest_err:-不明}" "$(ff_gh_github_input_hint lookup)" >&2
+        return 0
+      fi
+    else
+      REPO_STATES+=(fail); REPO_OPEN+=(" ")
+      printf 'gh issue list --repo %s に失敗しました（該当参照は 未確認 として扱います）: %s\n' "${repo}" "$(head -n 1 "${out}.err" 2>/dev/null)" >&2
+      return 0
+    fi
   fi
   count="$(awk 'END { print NR }' "${out}")"
   if [ "${count}" -ge "${OPEN_LIMIT}" ]; then

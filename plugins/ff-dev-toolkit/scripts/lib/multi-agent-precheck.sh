@@ -343,5 +343,131 @@ show_lane_precheck() { # <cli>
   esac
 }
 
+# ── 環境チェック（--print-reviewers）での起動前の確認（Issue `#3001`）──
+#
+# 潰す往復: 環境チェックは PATH 上の有無しか出さず、利用枠切れ・未ログイン・sandbox を適用できない
+# CLI は、候補ごとに --dry-run を回して初めて分かった（Windows で codex の利用枠切れと grok の sandbox
+# 不活性が重なり、別モデルの読みが 0 本のまま 1 回に 2〜3 往復。観測台帳 OBS-465）。
+#
+# available= の各 CLI について、上のレーン確認（run_lane_precheck = 利用枠・認証）と sandbox の判定
+# （multi-agent-plan.sh の probe_cli_sandbox = dry-run の警告と同じ probe）を 1 回ずつ呼び、結果を
+# 1 行ずつ出す。判定は書き写さない。どちらもモデルを起動しない。ツール側の状態（利用不可の記憶
+# .lane-unavailable・レビューの出力先）には書かない（この経路では出力先を検証する前に終わる）。
+# ただし grok の sandbox 判定は、grok 自身の sandbox イベントログへ 1 行足す（ACE-1311-1）。
+#
+# 確かめないのはホスト委譲のレーン（CLI を起動しない）だけ。実行時の apply_lane_precheck と違い、保存済みの
+# main= も確かめる — ここは追加レビューの候補を選ぶ材料で、main= が実際の主担当ホストと食い違う回
+# （main=codex-cli のまま Claude Code で実装している等）に、その CLI の利用枠切れを隠さないため。
+#
+# 出力（stdout。known= の後ろへ足す。既存行の並び・綴りと終了コードは変えない）:
+#   lane_precheck=on | off
+#   lane_precheck.<cli>=<verdict> usage=<usage> sandbox=<sandbox>
+#   lane_precheck.<cli>=skipped reason=delegated
+# verdict:
+#   unavailable … 起動前の確認で使えないと分かった。理由は usage=exhausted / unauthenticated、
+#                 sandbox=refused-to-start / unsandboxed-start / inert のどれか
+#   available   … 利用枠を読めて残っており、sandbox の拒否も見つからない。実行時の失敗（モデル非対応など）が
+#                 無いことの保証ではない
+#   unknown     … 確かめられない。使えるとも使えないとも言わない
+# usage:   available / exhausted / authenticated（ログイン済み。残量は報告できない）/ unauthenticated /
+#          not-probed（この CLI は起動前に確かめる手段を持たない）/ failed（手段はあるが今回は答えが無い）
+# sandbox: not-probed（この CLI に起動前の sandbox 判定が無い、またはアダプタが見つからず判定を走らせていない）/
+#          no-refusal（拒否も不活性も見つからない。適用の記録が増えた回のほか、probe の timeout・sandbox と
+#          無関係な失敗も含むので、適用の断定ではない）/ refused-to-start / unsandboxed-start / inert /
+#          undetermined（測れなかった）
+# off: MULTI_AGENT_LANE_PRECHECK=off（と review 以外のタスク）では確かめず、CLI ごとの行は出さない。
+# 期限: CLI ごとに直列で、利用枠・認証の取得が MULTI_AGENT_LANE_PRECHECK_TIMEOUT 秒（既定 10）、grok の
+# sandbox 判定が 30 秒まで。追加行を読まない呼び出し元（asdd の --check の probe）は off で呼ぶ。
+# 呼び出し元（print_reviewers_state）は set -e の下で、この後ろに終了コードを決める行を置く。
+# ここは非 0 を返さない。
+print_lane_precheck_lines() {
+  if ! lane_precheck_enabled; then
+    printf 'lane_precheck=off\n'
+    return 0
+  fi
+  printf 'lane_precheck=on\n'
+  local cli pre state cap usage sandbox_out sandbox reason
+  for cli in $AVAILABLE_CLIS; do
+    if task_is_delegated "$cli"; then
+      printf 'lane_precheck.%s=skipped reason=delegated\n' "$cli"
+      continue
+    fi
+    # here-string（<<<）は使わない。実装・版によっては一時ファイルを作り、作れない sandbox では read が
+    # 失敗して set -e の下で終了コード 0 / 3 の契約が崩れうる（Issue `#3001` のレビューで報告。macOS の
+    # /bin/bash 3.2.57 では一時ディレクトリへの書き込みを禁じても成功し、未再現）。run_lane_precheck は常に 2 語を返す。
+    pre="$(run_lane_precheck "$cli")"
+    state="${pre%% *}"
+    cap="${pre#* }"
+    usage="$(lane_precheck_usage_of "$state" "$cap")"
+    sandbox_out="$(lane_precheck_sandbox_of "$cli")"
+    sandbox="${sandbox_out%%$'\n'*}"
+    reason=""
+    if [[ "$sandbox_out" == *$'\n'* ]]; then
+      reason="${sandbox_out#*$'\n'}"
+    fi
+    printf 'lane_precheck.%s=%s usage=%s sandbox=%s\n' \
+      "$cli" "$(lane_precheck_verdict_of "$usage" "$sandbox")" "$usage" "$sandbox"
+    # CLI またはアダプタが書いた理由（自由文）は stdout の機械可読面へ混ぜない。対処（外す・カスタム
+    # プロファイルで動かす）の案内は --dry-run の警告が持つ。
+    if [[ -n "$reason" ]]; then
+      printf '  🔎 %s の sandbox（%s）: %s\n' "$cli" "$sandbox" "$reason" >&2
+    fi
+  done
+  return 0
+}
+
+# run_lane_precheck の "<state> <cap>" を usage= の値へ写す。
+lane_precheck_usage_of() { # <state> <cap>
+  case "$1" in
+    available|exhausted|authenticated|unauthenticated) printf '%s\n' "$1" ;;
+    *)
+      if [[ "${2:-}" == "failed" ]]; then
+        printf 'failed\n'
+      else
+        printf 'not-probed\n'
+      fi
+      ;;
+  esac
+}
+
+# sandbox の判定を走らせ、1 行目に sandbox= の値、報告があれば 2 行目にその理由（自由文）を返す。
+lane_precheck_sandbox_of() { # <cli>
+  local probe_out probe_rc=0 kind reason=""
+  probe_out="$(probe_cli_sandbox "$1")" || probe_rc=$?
+  case "$probe_rc" in
+    0)
+      kind="${probe_out%%$'\n'*}"
+      if [[ "$probe_out" == *$'\n'* ]]; then
+        reason="${probe_out#*$'\n'}"
+        reason="${reason%%$'\n'*}"
+      fi
+      case "$kind" in
+        refused-to-start|unsandboxed-start|inert|undetermined) ;;
+        # 契約外の種別は「測れなかった」と読む（使えないとも使えるとも断定しない）
+        *) kind="undetermined" ;;
+      esac
+      printf '%s\n%s\n' "$kind" "$reason"
+      ;;
+    1) printf 'no-refusal\n' ;;
+    *) printf 'not-probed\n' ;;
+  esac
+}
+
+# usage= と sandbox= から verdict を決める（値の意味は print_lane_precheck_lines のヘッダ）。
+lane_precheck_verdict_of() { # <usage> <sandbox>
+  case "$1" in
+    exhausted|unauthenticated) printf 'unavailable\n'; return 0 ;;
+  esac
+  case "$2" in
+    refused-to-start|unsandboxed-start|inert) printf 'unavailable\n'; return 0 ;;
+  esac
+  if [[ "$1" == "available" ]]; then
+    case "$2" in
+      not-probed|no-refusal) printf 'available\n'; return 0 ;;
+    esac
+  fi
+  printf 'unknown\n'
+}
+
 # 読み込み完了の印（multi-agent.sh の読み込み部が照合する。最後の行に置く）
 _ma_part_loaded="multi-agent-precheck.sh"

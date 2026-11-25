@@ -53,6 +53,11 @@
 # 全 fixture が ff-dev-toolkit を含む（G13 だけが意図的に外す）。
 #
 # 書き込み不可の環境（read-only チェックアウト等）では skip して成功扱いにする。
+#
+# 依存の宣言（変更ベースの部分ゲートが、この suite を選ぶ変更）:
+# run-all-depends: tests/plugin-description-enumeration/verify.sh tests/skill-count-consistency/verify.sh
+# run-all-not-depends: /.claude-plugin/marketplace.json fixture に書く marketplace.json の名前（実物は読まない）
+# run-all-not-depends: .claude-plugin/plugin.json 期待する診断文の中の名前（実物は読まない）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

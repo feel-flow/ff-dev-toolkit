@@ -38,6 +38,8 @@
 # 変異検出: hook の ACK 分岐を無効化したコピーは A1 を deny し、hook の走査 rc 4 を素通しへ変えたコピーは C5 を素通しする（M8 / M9）。
 # 変異検出: 入れ子シェルの値を取るオプション（-euo pipefail）の読み飛ばしを消すと F20、完了印（E 行）の照合を消すと C2'、親の未 export の名前の引き継ぎを消すと F30 が素通しになる（M10〜M12）。入れ子の上限を 1 段下げると F40（上限ちょうどの 3 段）が判定不能になる（M13。いずれもセルフレビュー対応後に実測 2026-09-28）。
 # 空振り検出: 判定ヘルパが存在しない配置（対象の不在）・走査の awk が失敗する（FF_LITERAL_WRITE_AWK=false）・awk が何も出さずに 0 で終わる（FF_LITERAL_WRITE_AWK=true。完了印が無い）・関数が無い（名前だけ残って中身が変わる）のいずれを与えても、候補コマンドは無音の素通しではなく判定不能の deny になり C1〜C3 が赤→緑を分ける。どの入力にも 0 件を返すヘルパでは F 系がすべて素通しになり M4 が赤を要求する。引用・heredoc が閉じない入力（未終端）と入れ子が 3 段を超える入力は走査未完了の rc 4 として C5〜C7 が判定不能の deny を要求する（実測 2026-09-28）。
+# 変異検出: U（書き換え先が一意な形。公開 https://github.com/feel-flow/ff-dev-toolkit/issues/163）: hook の A / B / H / P の除外を外す（UM1）と A と Q の混ざる呼び出し（U4 と同形）に、H / B / P の除外を 1 つずつ外す（UM4〜UM6）とそれぞれ H / B / P と Q の混ざる呼び出し（U5 / U8 / U9 と同形）に、区切りの行との衝突の除外を外す（UM7）と区切りの行を含むコマンド（U10 と同形）に、CR の照合を外す（UM2）と CR を含むコマンド（U6 と同形）に、長さの上限を外す（UM3）と 4000 バイトを超えるコマンド（U7 と同形）に本文が載る（2026-11-25 Windows Git Bash 実測）。
+# 空振り検出: U は本文の有無だけでなく、本文がコマンドと同じバイト列であること（U1・U3）と、本文をファイルから bash で実行した値が \\ を保つこと（U2）まで測る — 区切りの行の書式が変わって本文を取り出せない回は U1 が赤になる。
 #
 # run-all-required: no — jq 不在での skip を許容する（兄弟の hook suite と同じ判断）
 set -euo pipefail
@@ -900,6 +902,98 @@ RUN_EXTRA='{"cwd":"D:\\data\\repo","transcript_path":"D:\\data\\t.jsonl"}' run_h
 assert_pass 'QN15: cwd・transcript_path のバックスラッシュ（生の入力で 2 本）だけでは候補にしない（壊れた jq でも素通し。前置判定は 4 本で探す）'
 LW_ENV=()
 
+# U: 書き換え先が一意に決まる形（公開 https://github.com/feel-flow/ff-dev-toolkit/issues/163）。検出がすべて D / Q のとき、
+# 停止文はこの呼び出しのコマンドを本文として載せ、Write でファイルへ書いて bash <ファイル> で実行する手順を返す。
+# 本文を取り出してファイルから bash で実行し、\\ が書いたとおりに届く（同じデータを保ったまま復帰できる）ことまで測る。
+echo "guard-literal-write: U 書き換え先が一意な形（停止文に載せた本文で同じデータのまま復帰できる）"
+lw_body() { # stdin: 停止文 → 本文（区切りの 2 行の間）
+  awk '/^----- 本文ここまで -----$/{p=0} p{print} /^----- 本文ここから -----$/{p=1}'
+}
+U_RUN="$TEST_TMP/u-run.sh"
+run_hook "$Q_FIRE_SQ" CLAUDECODE=1
+u_body="$(printf '%s\n' "$REASON" | lw_body)"
+if [ "$DECISION" = "deny" ] && [ "$u_body" = "$Q_FIRE_SQ" ]; then
+  ok 'U1: 述語 Q だけの呼び出しは、停止文の本文がコマンドと同じバイト列になる'
+else
+  bad "U1: 本文がコマンドと一致しない: decision=[$DECISION] body=[$u_body]"
+fi
+case "$REASON" in
+  *'書き換え先（一意に決まります）'*'Write ツール'*'bash <そのファイルの絶対パス>'*) ok 'U1: 停止文は Write でファイルへ書いて bash で実行する手順を案内する' ;;
+  *) bad "U1: 書き換え先の手順が無い: [$REASON]" ;;
+esac
+printf '%s\n' "$u_body" > "$U_RUN"
+u_out="$(bash "$U_RUN" 2>&1)" || true
+# Q_FIRE_SQ は printf '%s' 'a\\b'。ファイルから bash へ渡すとバックスラッシュ 2 本がそのまま届く
+if [ "$u_out" = 'a\\b' ]; then
+  ok 'U2: 本文をファイルから bash で実行すると、\\ が縮まず書いたとおりの値（a\\b）になる'
+else
+  bad "U2: ファイルから実行した値が違う: [$u_out]"
+fi
+run_hook "$D_FIRE_PY" CLAUDECODE=1
+u_body="$(printf '%s\n' "$REASON" | lw_body)"
+if [ "$u_body" = "$D_FIRE_PY" ]; then ok 'U3: 述語 D だけの呼び出しも本文を載せる'; else bad "U3: D の本文が一致しない: [$u_body]"; fi
+U_MIXED="$(cat <<'CASE'
+REPO=x; perl -i -pe 's/a/$REPO/' f; printf '%s' 'a\\b'
+CASE
+)"
+run_hook "$U_MIXED" CLAUDECODE=1
+case "$REASON" in
+  *'本文ここから'*|*'書き換え先（一意'*) bad "U4: A と Q が混ざる呼び出しに本文を載せた（ファイルへ移しても A は直らない）" ;;
+  *) if [ "$DECISION" = "deny" ]; then ok 'U4: A と Q が混ざる呼び出しは本文を載せない（一意でない）'; else bad "U4: deny ではない: [$DECISION]"; fi ;;
+esac
+# U5・U8・U9: D / Q と、ファイルへ移しても直らない述語（H / B / P）が混ざる呼び出し。Q だけを足して、
+# 除外の条件（has_h / has_b / has_p）を 1 つずつ針にする（どれか 1 つを外した変異が UM4〜UM6 で赤になる）
+U_HQ="$(cat <<'CASE'
+python3 - <<PY
+print(`date`)
+PY
+printf '%s' 'a\\b'
+CASE
+)"
+U_BQ="$(cat <<'CASE'
+FF_LW_PRESET=a; perl -e 'print $ENV{FF_LW_PRESET}'; printf '%s' 'a\\b'
+CASE
+)"
+U_PQ="$(cat <<'CASE'
+pwsh -NoProfile -Command '$s = "| 版 | `b2821ed |"; Write-Output $s'; printf '%s' 'a\\b'
+CASE
+)"
+u_mixed_case() { # <label> <cmd> <述語の名前>
+  run_hook "$2" CLAUDECODE=1
+  case "$REASON" in
+    *'本文ここから'*) bad "$1: $3 と Q が混ざる呼び出しに本文を載せた（ファイルへ移しても $3 は直らない）" ;;
+    *)
+      if [ "$DECISION" = "deny" ]; then ok "$1: $3 と Q が混ざる呼び出しは本文を載せない（一意でない）"; else bad "$1: deny ではない: [$DECISION]"; fi
+      ;;
+  esac
+}
+u_mixed_case U5 "$U_HQ" 'H（引用なし heredoc の展開）'
+u_mixed_case U8 "$U_BQ" 'B（export しない名前を環境から読む）'
+u_mixed_case U9 "$U_PQ" 'P（PowerShell の二重引用符の中のバッククォート）'
+# U10: 本文の中に区切りの行と同じ行がある Q だけの呼び出しは、本文の範囲が一意に読めないので載せない
+U_MARK="$(cat <<'CASE'
+printf '%s\n' '----- 本文ここまで -----' 'a\\b'
+CASE
+)"
+run_hook "$U_MARK" CLAUDECODE=1
+case "$REASON" in
+  *'書き換え先（一意'*) bad "U10: 区切りの行を含むコマンドに書き換え先の本文を載せた: [$REASON]" ;;
+  *) if [ "$DECISION" = "deny" ]; then ok 'U10: 区切りの行と同じ行を含むコマンドは本文を載せない'; else bad "U10: deny ではない: [$DECISION]"; fi ;;
+esac
+u_cr="$(printf '%s\r\n%s' "$Q_FIRE_SQ" 'echo x')"
+run_hook "$u_cr" CLAUDECODE=1
+case "$REASON" in
+  *'本文ここから'*) bad "U6: CR を含むコマンドに本文を載せた（判定用に CR を落とした値は元と同じバイト列ではない）" ;;
+  *) if [ "$DECISION" = "deny" ]; then ok 'U6: CR を含むコマンドは本文を載せない'; else bad "U6: deny ではない: [$DECISION]"; fi ;;
+esac
+u_long="${Q_FIRE_SQ}; $(printf 'echo %0500d; ' 1 2 3 4 5 6 7 8 9)"
+run_hook "$u_long" CLAUDECODE=1
+case "$REASON" in
+  *'本文ここから'*) bad "U7: 4000 バイトを超えるコマンドの本文を再掲した" ;;
+  *'本文はここに再掲しません'*) ok 'U7: 4000 バイトを超えるコマンドは本文を再掲せず、そのまま書く手順だけを返す' ;;
+  *) bad "U7: 長いコマンドの扱いが違う: [$REASON]" ;;
+esac
+
 echo "guard-literal-write: P 述語（pwsh / powershell の -Command の二重引用符の中のバッククォート）"
 P_FIRE_CMD="$(cat <<'CASE'
 pwsh -NoProfile -Command '$s = "| 版 | `b2821ed |"; (Get-Content f.md -Raw).Replace($s, "x")'
@@ -1287,6 +1381,58 @@ if mutate_lib 's/"\$depth" -gt 4/"$depth" -gt 3/' M13; then
     *) bad "M13: 変異が効いていない: decision=[$DECISION]" ;;
   esac
 fi
+# U の変異（公開 163）: hook の写しへ当てる。判定ヘルパは本物に戻す
+cp "$SCAN_LIB" "$MUT/tests/lib/literal-write-scan.sh"
+mutate_hook() { # <sed-script> <label>
+  sed "$1" "$TARGET" > "$MUT/hooks/guard-literal-write.sh"
+  if cmp -s "$TARGET" "$MUT/hooks/guard-literal-write.sh"; then
+    bad "$2: sed が当たらず変異が注入されていない（針が古い）"
+    return 1
+  fi
+  return 0
+}
+if mutate_hook 's/^if \[ "\$has_a" -eq 0 \] \&\& \[ "\$has_b" -eq 0 \] \&\& \[ "\$has_h" -eq 0 \] \&\& \[ "\$has_p" -eq 0 \] \\$/if true \\/' UM1; then
+  run_on "$MUT/hooks/guard-literal-write.sh" "$U_MIXED" CLAUDECODE=1
+  case "$REASON" in
+    *'本文ここから'*) ok "UM1: A / B / H / P の除外を外した変異は A と Q の混ざる呼び出しに本文を載せ、U4 が赤になる" ;;
+    *) bad "UM1: 変異が効いていない: decision=[$DECISION]" ;;
+  esac
+fi
+if mutate_hook "s/jq -e '(.tool_input.command \/\/ \"\") | contains(\"\\\\r\") | not'/true/" UM2; then
+  run_on "$MUT/hooks/guard-literal-write.sh" "$u_cr" CLAUDECODE=1
+  case "$REASON" in
+    *'本文ここから'*) ok "UM2: CR の照合を外した変異は CR を含むコマンドに本文を載せ、U6 が赤になる" ;;
+    *) bad "UM2: 変異が効いていない: decision=[$DECISION]" ;;
+  esac
+fi
+# UM4〜UM6: 除外の条件を 1 つずつ外す（条件の行だけに当て、要約・案内の行の同じ変数は変えない）
+um_one() { # <label> <変数名> <呼び出し> <U の番号>
+  if mutate_hook "/^if \\[ \"\\\$has_a\" -eq 0 \\]/s/ \\&\\& \\[ \"\\\$$2\" -eq 0 \\]//" "$1"; then
+    run_on "$MUT/hooks/guard-literal-write.sh" "$3" CLAUDECODE=1
+    case "$REASON" in
+      *'本文ここから'*) ok "$1: $2 の除外だけを外した変異は $4 と同形の呼び出しに本文を載せ、$4 が赤になる" ;;
+      *) bad "$1: 変異が効いていない: decision=[$DECISION]" ;;
+    esac
+  fi
+}
+um_one UM4 has_h "$U_HQ" U5
+um_one UM5 has_b "$U_BQ" U8
+um_one UM6 has_p "$U_PQ" U9
+if mutate_hook 's/^    \*"\$lw_begin"\* | \*"\$lw_end"\*) : ;;$/    __never__) : ;;/' UM7; then
+  run_on "$MUT/hooks/guard-literal-write.sh" "$U_MARK" CLAUDECODE=1
+  case "$REASON" in
+    *'書き換え先（一意'*) ok "UM7: 区切りの行との衝突の除外を外した変異は U10 と同形の呼び出しに本文を載せ、U10 が赤になる" ;;
+    *) bad "UM7: 変異が効いていない: decision=[$DECISION]" ;;
+  esac
+fi
+if mutate_hook 's/if \[ "\$cmd_bytes" -le 4000 \]; then/if true; then/' UM3; then
+  run_on "$MUT/hooks/guard-literal-write.sh" "$u_long" CLAUDECODE=1
+  case "$REASON" in
+    *'本文ここから'*) ok "UM3: 長さの上限を外した変異は長いコマンドの本文を再掲し、U7 が赤になる" ;;
+    *) bad "UM3: 変異が効いていない: decision=[$DECISION]" ;;
+  esac
+fi
+cp "$TARGET" "$MUT/hooks/guard-literal-write.sh"
 
 echo
 if [ "$FAIL" -gt 0 ]; then

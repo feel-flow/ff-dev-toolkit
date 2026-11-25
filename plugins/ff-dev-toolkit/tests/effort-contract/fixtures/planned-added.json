@@ -1,0 +1,122 @@
+[
+  {
+    "number": 401,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 24.0h\n- effort_ai_planned: 4.5h\n- effort_ai_planned_added: +3.0h（2026-11-22 コメントで追記の AC 4 件。後続 PR 1 本分の実装とレビュー）\n- effort_ai_actual: 13.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 402,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 1.0h\n- effort_ai_planned_added: +2.0h（2026-11-20 本文へ追記の AC 3 件）\n- effort_ai_planned_added: +1.0h（2026-11-22 部分 PR を 1 本追加）\n- effort_ai_actual: 4.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 403,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 2.0h\n- effort_ai_actual: 2.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 404,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 4.0d\n- effort_ai_planned: 0.5d\n- effort_ai_planned_added: +0.5d（2026-10-30 追記の AC 3 群）\n- effort_ai_actual: 1.0d\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 405,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 2.0h\n- effort_ai_planned_added: +0.5d（宣言 h のブロックに d の値）\n- effort_ai_actual: 2.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 406,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 2.0h\n- effort_ai_planned_added: 1.0h（先頭の + が無い）\n- effort_ai_actual: 3.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 407,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 2.0h\n- effort_ai_planned_added: +abc\n- effort_ai_actual: (未記入)\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 408,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 1.0h\n- effort_ai_planned_added: +1.5hours\n- effort_ai_actual: 2.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 409,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 1.0h\n- effort_ai_planned_added: +0.0h（正でない値）\n- effort_ai_actual: 1.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 410,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 1.0h\n- effort_ai_planned_added: +1.0h\n- effort_ai_actual: 2.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 411,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 1.0h\n- effort_ai_planned_added: +abc\n- effort_ai_planned_added: +1.0h（2026-11-23 読める行が後ろにあっても前の読めない行は消えない）\n- effort_ai_actual: 2.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 412,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 1.0h\n- effort_ai_planned_added: +3.0h + 4.0h（2026-11-22 追記の AC 4 件、2026-11-24 部分 PR 1 本）\n- effort_ai_actual: 8.5h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 413,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 1.0h\n- effort_ai_planned_added: +1.5h3\n- effort_ai_actual: 2.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 414,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 1.0h\n- effort_ai_planned_added:\n- effort_ai_actual: 2.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 415,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 1.0d\n- effort_ai_planned: 0.5d\n- effort_ai_planned_added: +1.0h（宣言の無い旧ブロックに h の値）\n- effort_ai_actual: 1.0d\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 416,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 2.0h\n- effort_ai_planned_added: +1.0h（読める加算行があっても実績が未記入なら予定のみ）\n- effort_ai_actual: (未記入)\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 417,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 4.5h\n  - effort_ai_planned_added: +3.0h（字下げした入れ子）\n- effort_ai_actual: 13.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 418,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 4.5h\n- effort_ai_planned_added：+3.0h（全角コロン）\n- effort_ai_actual: 13.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 419,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 4.5h\n- effort_ai_actual: 13.0h\n<!-- ff-effort:end -->\n- effort_ai_planned_added: +3.0h（end マーカーの後ろ）\n"
+  },
+  {
+    "number": 420,
+    "body": "## やること\n\n- 加算予定は `- effort_ai_planned_added: +N.Nh（…）` の形で足す\n- `effort_ai_planned_added: +N.Nh` を本文の例として書く\n例: effort_ai_planned_added: +1.0h\n\n## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 2.0h\n- effort_ai_actual: 2.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 421,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 4.5h\n* effort_ai_planned_added: +3.0h（* の箇条）\n- effort_ai_actual: 13.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 422,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 4.5h\n- effort_ai_planned_added: +3.0h（2026-11-22 追記の AC 4 件）、+4.0h（2026-11-24 部分 PR 1 本）\n- effort_ai_actual: 13.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 423,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 4.5h\n- effort_ai_planned_added: +3.0h（2026-11-22 追記の AC 4 件。実装 2.0h + レビュー 1.0h（2 巡））\n- effort_ai_actual: 7.5h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 424,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 1.0h\n- effort_ai_planned_added: +1.0h (half-width note)\n- effort_ai_actual: 2.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 425,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 1.0h\n- effort_ai_planned_added: +1.0h　（全角空白の後の注記）\n- effort_ai_actual: 2.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 426,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 4.5h\n- `effort_ai_planned_added`: +3.0h（キーをバッククォートで囲む）\n- effort_ai_actual: 13.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 427,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 4.5h\n+ effort_ai_planned_added: +3.0h（+ の箇条）\n- effort_ai_actual: 13.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 428,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 4.5h\n- effort_ai_planned_add: +3.0h（キーの綴りの欠け）\n- effort_ai_actual: 13.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 429,
+    "body": "## やること\n\n書式の例:\n\n```markdown\n- effort_ai_planned_added: +N.Nh（YYYY-MM-DD <経路と件数>。<根拠 1 行>）\n```\n\n- effort_ai_planned_added を複数行合計する\n\n## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 2.0h\n- effort_ai_actual: 2.0h\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 430,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 1.0h\n- effort_ai_planned_added: +1.0h（閉じていない注記\n- effort_ai_actual: 2.0h\n<!-- ff-effort:end -->\n"
+  }
+]
